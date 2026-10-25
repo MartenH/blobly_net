@@ -251,14 +251,14 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
 	if why := frame_send_refusal(f) {
-		return error('Vector: ${why}')
+		return not_written('Vector: ${why}')
 	}
 	// SILENCE IS A PROMISE. A channel opened `,silent` was opened that way because something
 	// live is on the other end; the transceiver will not acknowledge, so the frame could not
 	// arrive anyway, and reporting success for it would put a row in the trace for traffic that
 	// never existed.
 	if b.silent {
-		return error('Vector: this channel is open in silent mode and cannot transmit (id 0x${f.id:X})')
+		return not_written('Vector: this channel is open in silent mode and cannot transmit (id 0x${f.id:X})')
 	}
 	// THE CHANNEL'S PROTOCOL, not the frame's wish. An FD frame on a channel configured for
 	// classic CAN has nowhere truthful to go: the port is open at interface V3, the transceiver
@@ -267,13 +267,13 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// arbitration rate (which is not what the caller asked for either). Named as a channel
 	// configuration problem, because that is what fixes it.
 	if f.fd && !b.fd {
-		return error('Vector: this channel is open as classic CAN and cannot send a CAN-FD frame (id 0x${f.id:X}, ${f.data.len} bytes) — give its address a data bitrate, as vector:<n>@500000/2000000, or set the channel type to canfd in the project')
+		return not_written('Vector: this channel is open as classic CAN and cannot send a CAN-FD frame (id 0x${f.id:X}, ${f.data.len} bytes) — give its address a data bitrate, as vector:<n>@500000/2000000, or set the channel type to canfd in the project')
 	}
 	if f.brs && !f.fd {
 		// The library's XL_ERR_EDL_NOT_SET, refused here where it can be explained: the bit-rate
 		// switch is what an FD frame does BETWEEN its phases, so a classic frame has no phase to
 		// switch to.
-		return error('Vector: brs is set on a frame that is not FD (id 0x${f.id:X}) — the bit-rate switch belongs to a CAN-FD frame')
+		return not_written('Vector: brs is set on a frame that is not FD (id 0x${f.id:X}) — the bit-rate switch belongs to a CAN-FD frame')
 	}
 	// REFUSED, not truncated. `vector:` is a vendor interface, so clamps_to_classic() is false
 	// and wire_frame() hands the trace the frame AS ASKED — nine bytes recorded, eight on the
@@ -284,10 +284,10 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// STILL 8 FOR A NON-FD FRAME on an FD channel: the limit belongs to the frame format, not to
 	// the channel. A 12-byte payload with `fd` unset is as malformed on an FD wire as anywhere.
 	if !f.fd && f.data.len > 8 {
-		return error('Vector: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
+		return not_written('Vector: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
 	if f.data.len > 64 {
-		return error('Vector: ${f.data.len} bytes does not fit a CAN-FD frame (id 0x${f.id:X}) — 64 is the maximum')
+		return not_written('Vector: ${f.data.len} bytes does not fit a CAN-FD frame (id 0x${f.id:X}) — 64 is the maximum')
 	}
 	// BEFORE THE TRANSMIT, not after it. Above eight bytes CAN-FD carries only the sizes a DLC can
 	// encode, so a 9-byte payload goes out as 12 with the remainder padded — and the trace would
@@ -299,7 +299,7 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// happened, which is worse than either padding silently or refusing cleanly. The check belongs
 	// where it can still prevent something.
 	if f.fd && f.data.len !in fd_lengths {
-		return error('Vector: ${f.data.len} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — a DLC can only express ${fd_lengths}, so this would go out padded; pad it deliberately and the trace will match the wire')
+		return not_written('Vector: ${f.data.len} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — a DLC can only express ${fd_lengths}, so this would go out padded; pad it deliberately and the trace will match the wire')
 	}
 	// THE ID AGAINST ITS DECLARED WIDTH, which cannot be left to XL: the shim marks an extended
 	// frame by setting bit 31 of the identifier, so `id: 0x80000001, extended: false` already
@@ -308,7 +308,7 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	limit := if f.extended { u32(0x1FFF_FFFF) } else { u32(0x7FF) }
 	if f.id > limit {
 		width := if f.extended { '29-bit' } else { '11-bit' }
-		return error('Vector: id 0x${f.id:X} does not fit a ${width} identifier')
+		return not_written('Vector: id 0x${f.id:X} does not fit a ${width} identifier')
 	}
 	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
@@ -340,14 +340,15 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	} else {
 		st = C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
 	}
+	// -2001..-2003 are the shim's own refusals, made before XL is called
 	if st == -2001 {
-		return error('Vector: a CAN-FD frame cannot also be a remote request (id 0x${f.id:X}) — RTR does not exist in FD')
+		return not_written('Vector: a CAN-FD frame cannot also be a remote request (id 0x${f.id:X}) — RTR does not exist in FD')
 	}
 	if st == -2002 {
-		return error('Vector: brs without fd (id 0x${f.id:X})')
+		return not_written('Vector: brs without fd (id 0x${f.id:X})')
 	}
 	if st == -2003 {
-		return error('Vector: ${n} bytes cannot be carried by this frame format (id 0x${f.id:X})')
+		return not_written('Vector: ${n} bytes cannot be carried by this frame format (id 0x${f.id:X})')
 	}
 	if st == -2000 {
 		// The WIRE is the limit, not the bench. Named distinctly so a caller can back off and

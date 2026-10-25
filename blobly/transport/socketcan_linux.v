@@ -55,7 +55,7 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
 	if why := frame_send_refusal(frame) {
-		return error('socketcan: ${why}')
+		return not_written('socketcan: ${why}')
 	}
 	mut cid := if frame.extended {
 		(frame.id & can_eff_mask) | can_eff_flag

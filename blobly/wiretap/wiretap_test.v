@@ -680,3 +680,35 @@ fn test_a_foreign_reclaim_keeps_the_received_esi() {
 	got := r.refuse(1)
 	assert got.len == 1 && got[0].fate() == .foreign && got[0].frame.esi
 }
+
+// A listen-only refusal is NotWritten, so the record it noted is refused rather than kept: an
+// identical frame somebody else sent, claimed meanwhile, is theirs, and no record stays open
+// (the settling the GUI's TapBus does after a failed send, #350).
+fn test_a_listen_only_refusal_leaves_no_open_record() {
+	iface := 'inproc:wt-silent'
+	transport.set_listen_only(iface, true)
+	defer {
+		transport.clear_listen_only()
+	}
+	mut bus := transport.open(iface)!
+	defer {
+		bus.close()
+	}
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, iface, f, 0, [0], '', false)
+	r.claim(0, iface, f, 1) or { assert false }
+	bus.send(f) or {
+		if transport.refused_for_certain(err) {
+			got := r.refuse(1)
+			assert got.len == 1 && got[0].fate() == .foreign
+		} else {
+			r.unsure(1)
+		}
+		assert r.outstanding() == 0, 'the refused send left its record open'
+		return
+	}
+	assert false, 'a listen-only wire transmitted'
+}

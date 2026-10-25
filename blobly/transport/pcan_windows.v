@@ -215,7 +215,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	// this file was extracted to end (codex round 3 on #204). Length and FD stay below: what this
 	// CHANNEL can carry is the backend's own question.
 	if why := frame_shape_error(f) {
-		return error('PCAN: ${why}')
+		return not_written('PCAN: ${why}')
 	}
 	mut mt := u8(0)
 	if f.extended {
@@ -230,7 +230,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	// channel has no CAN_WriteFD either.
 	if b.fd {
 		dlc := fd_dlc_for(f.data.len) or {
-			return error('PCAN: ${f.data.len} bytes is not a payload size a DLC can express (id 0x${f.id:X}) — ${fd_lengths}')
+			return not_written('PCAN: ${f.data.len} bytes is not a payload size a DLC can express (id 0x${f.id:X}) — ${fd_lengths}')
 		}
 		if f.fd {
 			mt |= pcan_msg_fd
@@ -246,7 +246,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 			// A classic frame is still a classic frame on an FD wire: eight bytes, whatever the
 			// channel could otherwise carry. Refused rather than promoted, or the trace would
 			// record a classic frame that went out as FD.
-			return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — set fd on the frame, or send 8 bytes')
+			return not_written('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — set fd on the frame, or send 8 bytes')
 		}
 		st := C.ct_pcan_write_fd(b.channel, f.id, mt, dlc, u8(f.data.len), f.data.data)
 		match pcan_write_verdict(st) {
@@ -262,14 +262,14 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 		// say — CAN_Write would put a classic frame on the wire and report success, which is the
 		// silent truncation this backend has always refused. Say what to change, because the
 		// answer is in the address.
-		return error('PCAN: this channel is classic — name a data rate to open it for CAN-FD (pcan:${'<channel>'}@500000/2000000), id 0x${f.id:X}')
+		return not_written('PCAN: this channel is classic — name a data rate to open it for CAN-FD (pcan:${'<channel>'}@500000/2000000), id 0x${f.id:X}')
 	}
 	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
 	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
 	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
 	// wire, and the echo can never match its own record.
 	if f.data.len > 8 {
-		return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
+		return not_written('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
 	n := f.data.len
 	st := C.ct_pcan_write(b.channel, f.id, mt, u8(n), f.data.data)
