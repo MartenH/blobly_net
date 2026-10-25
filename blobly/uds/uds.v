@@ -302,9 +302,9 @@ fn sub_mask(sid u8) u8 {
 // echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
 // or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte), or
 // a 0x19 04 / 06's sub-function and DTC.
-// Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x34,
-// 0x35, 0x37, 0x84), so the SID is all there is to match there. A 0x22 answer's records,
-// 0x23's length and 0x2A's identifiers are correlate's (correlate.v), asked first.
+// Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
+// 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. A multi-DID 0x22 answer's
+// records and 0x2A's identifiers are correlate's (correlate.v), asked first.
 fn echo_of(req []u8) (int, bool) {
 	wmba := if req.len > 1 { 2 + int(req[1] & 0x0F) + int(req[1] >> 4) } else { 1 }
 	// 0x19 04 / 06 answer one DTC, named after the sub-function: the DTC is echoed too, so a late
