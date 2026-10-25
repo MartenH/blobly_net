@@ -22,12 +22,25 @@
 module transport
 
 // NotWritten is a send that was REFUSED before anything reached the socket: a frame the wire
-// cannot carry, a listen-only mark, a bus that has failed, a connection that is over for
-// writing. The hub reads the type: a write that FAILED may still have put the frame on the
-// wire, and its pending entry is kept matchable for a grace; a send that was never attempted
-// has no acknowledgement coming, and an entry kept for it could claim a late acknowledgement
-// meant for the original write and file that frame under the wrong handle (codex round 9 on
-// #251). Drivers return it through not_written().
+// cannot carry (frame_send_refusal, frame_shape_error, software_frame_refusal, a backend's own
+// length rules), a frame the CHANNEL cannot carry (an FD frame on a channel opened classic, a
+// Vector port opened `,silent`), a listen-only mark (SilentBus), a bus that has failed, a
+// connection that is over for writing. A remote frame is among them though refusing one is a
+// decision of ours rather than a law of CAN (#215): refused is refused, and no acknowledgement
+// is coming either way. Every backend returns it, through not_written(), for every frame,
+// channel and listen-only refusal; a write the driver attempted, a silence reconcile that
+// failed in the driver, and the hub's own closed and closing answers are plain errors, the
+// carrier's.
+//
+// Its readers. The hub: a write that FAILED may still have put the frame on the wire,
+// and its pending entry is kept matchable for a grace; a send that was never attempted has no
+// acknowledgement coming, and an entry kept for it could claim a late acknowledgement meant for
+// the original write and file that frame under the wrong handle (codex round 9 on #251). The
+// send watches and the GUI's trace (refused_for_certain), which settle a refused send's record
+// rather than keep it as a send that may have gone out. And the GUI's transmit-tap health poll,
+// for which a refusal that never reached the controller is no evidence about it (#142). And
+// ISO-TP and UDS, where a request refused before the wire keeps its own error rather than being
+// read as the carrier failing.
 pub struct NotWritten {
 	Error
 pub:

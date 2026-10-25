@@ -165,6 +165,13 @@ pub fn is_backpressure(e IError) bool {
 	return e.msg().contains(busy_marker)
 }
 
+// refused_for_certain is whether a failed send certainly put nothing on the wire: refused before
+// the driver was asked (NotWritten), or a full transmit queue (is_backpressure). Any other
+// failure may have gone out.
+pub fn refused_for_certain(err IError) bool {
+	return err is NotWritten || is_backpressure(err)
+}
+
 // send_waiting_for_room offers a frame, waiting out a full vendor transmit queue.
 //
 // A saturated bus is the slowest thing in the system and says so by refusing; a replay of a busy

@@ -244,7 +244,7 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	p := wire_policy(s.iface)
 	s.inner.reconcile_silence(p.silent)!
 	if p.silent {
-		return error('${s.iface}: listen-only — nothing is transmitted on this wire')
+		return not_written('${s.iface}: listen-only — nothing is transmitted on this wire')
 	}
 	// AND THE FORMAT THIS WIRE CARRIES, for the same reason silence is applied here: every emitter
 	// opens its own bus, and a rule checked at each of them holds until somebody adds the next one.
@@ -270,9 +270,7 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	// as the driver will carry it: padded or clamped, so the frame noted is the frame that returns
 	ws, toks := watch_before(s.iface, wire_frame(s.iface, out))
 	s.inner.send(out) or {
-		// refused for certain by its type or a full queue; any other failure may have gone out
-		definite := err is NotWritten || is_backpressure(err)
-		watch_after(ws, toks, if definite { Sent.refused } else { Sent.unknown })
+		watch_after(ws, toks, if refused_for_certain(err) { Sent.refused } else { Sent.unknown })
 		return err
 	}
 	watch_after(ws, toks, .taken)

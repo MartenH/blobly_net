@@ -320,7 +320,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
 	if why := frame_send_refusal(f) {
-		return error('Kvaser: ${why}')
+		return not_written('Kvaser: ${why}')
 	}
 	// BRS WITHOUT FD IS NOT A FRAME. Bit-rate switching is a property of an FD frame's data
 	// phase; a classic frame has no second phase to switch into. Left through, it goes out
@@ -328,7 +328,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// same silent disagreement between record and wire that the FD refusal below exists to
 	// prevent. Vector refuses it for the same reason.
 	if f.brs && !f.fd {
-		return error('Kvaser: brs without fd (id 0x${f.id:X}) — bit-rate switching belongs to a CAN-FD frame\'s data phase, and a classic frame has none')
+		return not_written('Kvaser: brs without fd (id 0x${f.id:X}) — bit-rate switching belongs to a CAN-FD frame\'s data phase, and a classic frame has none')
 	}
 	if f.fd {
 		// THE CHANNEL DECIDES, not the frame. A handle opened classic cannot carry an FD frame
@@ -336,10 +336,10 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 		// success, which is the silent truncation this backend has always refused. Say what to
 		// change, because the answer is in the address.
 		if !b.fd {
-			return error('Kvaser: this channel is classic — name a data rate to open it for CAN-FD (kvaser:${'N'}@500000/2000000), id 0x${f.id:X}')
+			return not_written('Kvaser: this channel is classic — name a data rate to open it for CAN-FD (kvaser:${'N'}@500000/2000000), id 0x${f.id:X}')
 		}
 		if f.data.len !in fd_lengths {
-			return error('Kvaser: ${f.data.len} bytes is not a CAN-FD length (id 0x${f.id:X}) — 0..8, 12, 16, 20, 24, 32, 48 or 64')
+			return not_written('Kvaser: ${f.data.len} bytes is not a CAN-FD length (id 0x${f.id:X}) — 0..8, 12, 16, 20, 24, 32, 48 or 64')
 		}
 		ext := if f.extended { 1 } else { 0 }
 		brs := if f.brs { 1 } else { 0 }
@@ -356,7 +356,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// gives the trace the frame AS ASKED: truncating here records nine bytes against eight on the
 	// wire, and the echo can never match its own record.
 	if f.data.len > 8 {
-		return error('Kvaser: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
+		return not_written('Kvaser: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
 	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }

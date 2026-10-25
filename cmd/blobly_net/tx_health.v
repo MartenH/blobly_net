@@ -96,6 +96,22 @@ fn (app &App) wire_reader_owns_locked(wire string) bool {
 	return txhealth.wire_owned(rows, app.rx_open_failed[wire])
 }
 
+// note_health_failure is the failure entry point, and a refusal that never reached the driver
+// is no evidence about the controller: a listen-only mark, a frame no controller could carry, a
+// frame its channel cannot carry (FD on a channel opened classic, a Vector port opened `,silent`)
+// are decided in software, above or inside the backend, and the transceiver was never asked.
+// Counted as evidence they do real damage — on an unmonitored wire the FIRST such refusal spends
+// the once-per-run advisory latch, so the genuine fault that follows says nothing at all, and on
+// a polled wire it pins the gate to the 200 ms failure cadence for a wire that is perfectly
+// healthy (code-review high). Every backend returns `NotWritten` for each of those
+// (frame_rules.v), so the type is the whole answer.
+fn (mut t TapBus) note_health_failure(err IError) {
+	if err is transport.NotWritten {
+		return
+	}
+	t.note_health(.failure)
+}
+
 // note_health asks this tap's wire for its fault ladder and narrates a change.
 //
 // Called from TapBus.send on BOTH outcomes: a failure asks promptly (something may have just
@@ -121,84 +137,6 @@ fn (app &App) wire_reader_owns_locked(wire string) bool {
 // an immutable receiver on Linux, where `inner` resolves to a concrete SocketCAN bus, and fails on
 // the Windows target where it does not: the `-os windows -check` cross-compile in CLAUDE.md is
 // what caught it, in seconds, for a ten-minute CI round trip.
-// reached_the_driver reports whether a failed send is evidence ABOUT THE CONTROLLER.
-//
-// A refusal that never touched the wire says nothing about the bus: a listen-only mark and a
-// frame no controller could carry are decided in software, above or inside the backend, and the
-// transceiver was never asked. Counted as evidence they do real damage — on an unmonitored wire
-// the FIRST such refusal spends the once-per-run advisory latch, so the genuine fault that
-// follows says nothing at all, and on a polled wire it pins the gate to the 200 ms failure
-// cadence for a wire that is perfectly healthy (code-review high).
-//
-// WHY NOT `err is transport.NotWritten`, which is exactly this concept and already exists:
-// because its own comment lists "a listen-only mark" and "a frame the wire cannot carry" among
-// its cases and the CODE does not return it for either — only shared.v's "bus is not open yet"
-// and one CANsub refusal construct one. Widening it is the right end state and is NOT done here:
-// the hub reads that type to decide whether a pending echo entry stays matchable, so changing
-// which refusals carry it changes the echo matcher on a path with a great deal of history, and
-// that belongs in its own change with its own review. Until then this asks the two pure
-// predicates the backends themselves ask, which is a duplication named rather than hidden.
-fn (t &TapBus) reached_the_driver(err IError, wire transport.CanFrame) bool {
-	// WHAT THE BACKEND ITSELF SAID, first and cheapest. `NotWritten` IS this concept — "a send
-	// that was never attempted" — and where a driver returns it there is nothing to infer.
-	if err is transport.NotWritten {
-		return false
-	}
-	if transport.wire_policy(t.iface).silent {
-		return false // SilentBus refused it; the transceiver never saw a thing
-	}
-	// THE FRAME RULES OF THIS WIRE'S OWN TIER (transport.tier_refusal): the impossible-frame set
-	// every backend shares, plus the lengths the VENDOR backends refuse rather than clamp. Asking
-	// the shared set alone read a PCAN/Kvaser/Vector length refusal as a fault of the controller,
-	// which polled a healthy wire and could narrate `bus ok` at it (codex). The recorder's send
-	// watch asks the same rule (SilentBus.send).
-	if _ := transport.tier_refusal(t.iface, wire) {
-		return false
-	}
-	return true
-}
-
-// WHAT IS STILL NOT COVERED, and why it is not guessed at. A vendor backend also refuses on
-// CHANNEL properties — an FD frame on a channel opened classic, a Vector port opened `,silent` —
-// and `frame_rules.v` says in as many words that those belong to the backend and not to the
-// shared rules, because only the backend knows how its channel was opened. A tap cannot ask them
-// without keeping its own copy of each backend's open state, which is the per-backend duplication
-// this repo already refuses.
-//
-// The complete answer is `NotWritten` at those sites, which the branch above already reads: its
-// own comment lists "a frame the wire cannot carry" and "a listen-only mark" among its cases and
-// the code returns it for neither, so widening it makes this path better with no change here.
-// Not done in this PR because the hub reads that type to decide whether a pending echo entry
-// stays matchable, so it moves echo attribution on a path with a great deal of history and wants
-// its own change and its own review. Filed as #350 rather than left as a comment nobody will find.
-//
-// Until then the residue is small and one-directional: on a vendor wire, a frame refused for a
-// CHANNEL reason may prompt one health poll that says something true (`bus ok`) at a moment
-// nothing asked about, and on an unmonitored Vector wire it may spend the once-per-run advisory —
-// whose text does not depend on the cause, so the operator is told the same true thing either
-// way, only earlier.
-
-// NOT DEMONSTRATED ON THIS BENCH, and worth saying so. Neither refusal can be produced on a
-// wire that is both unmonitored and SocketCAN: SocketCAN CLAMPS an over-wide id rather than
-// refusing it (clamps_to_classic — the refusing tier is the vendor backends), and a listen-only
-// mark is published from an ENABLED row, which by definition has a reader and so is suppressed a
-// step earlier. The damage this prevents is therefore on vendor hardware: a refused frame shape
-// spending the once-per-run advisory latch, and the 200 ms failure cadence pinned to a healthy
-// wire. Reasoned from the code and the predicates, not measured — no CI runner has a PCAN.
-
-// note_health_failure is the failure entry point: it decides whether the failure is evidence
-// about the controller at all before anything else happens. A refusal that never reached the
-// driver is not, and treating it as one is what spends the advisory latch on a healthy wire.
-fn (mut t TapBus) note_health_failure(err IError, wire transport.CanFrame) {
-	if t.health_src == .no_controller {
-		return // the common case, answered without touching wire_policy
-	}
-	if !t.reached_the_driver(err, wire) {
-		return
-	}
-	t.note_health(.failure)
-}
-
 fn (mut t TapBus) note_health(why txhealth.Why) {
 	// A SOFTWARE BUS HAS NO LADDER. Checked first and without a lock, because it is the common
 	// case — every test, every in-process project, sim-demo entire — and because the answer is a

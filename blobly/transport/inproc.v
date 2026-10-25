@@ -90,7 +90,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// 2 on #204). So is a payload no frame carries; an FD payload of a length a DLC cannot express
 	// is padded, which is what a controller genuinely does. See frame_rules.v and clamps_to_classic.
 	if why := software_frame_refusal(frame) {
-		return error('inproc: ${why}')
+		return not_written('inproc: ${why}')
 	}
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload
 	// verbatim would make a headless test pass where hardware pads to 12, which is the one

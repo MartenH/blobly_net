@@ -31,7 +31,7 @@ pub fn (c &SoftChannel) ending_of(err IError, sending bool) Ending {
 	if m.starts_with('timeout') || m == stall_note || m == exhausted_note(c.total_wait_ms) {
 		return .waited_out
 	}
-	if sending && (err is transport.NotWritten || transport.wire_policy(c.iface).silent) {
+	if sending && err is transport.NotWritten {
 		return .refused
 	}
 	return .failed
