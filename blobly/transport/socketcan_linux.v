@@ -8,6 +8,7 @@ fn C.ct_can_open(&u8) int
 fn C.ct_can_send(int, u32, &u8, u8, int, int, int) int
 fn C.ct_can_recv(int, &u32, &u8, int, &u8, &i64) int
 fn C.ct_can_close(int)
+fn C.ct_carrier_errno(int) int
 fn C.strerror(int) &char
 
 // Stable SocketCAN id flag/mask constants (linux/can.h ABI).
@@ -115,10 +116,12 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			return error('timeout')
 		}
 		if dlc <= -1000 {
-			return error('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
+			e := -(dlc + 1000)
+			msg := 'recv on ${b.iface}: ${cerr(e)}' // the errno names the culprit
+			return if carrier_errno(e) { carrier_gone(msg) } else { error(msg) }
 		}
 		if dlc < 0 {
-			return error('recv failed on ${b.iface}')
+			return carrier_gone('recv failed on ${b.iface}')
 		}
 		// A kernel ERROR frame (CAN_RAW_ERR_FILTER subscribed at open): the bus's health
 		// talking, not traffic — fold it into the ladder, never surface it as data. The
@@ -203,6 +206,12 @@ pub fn (mut b SocketCanBus) close() {
 		C.ct_can_close(b.fd)
 		b.fd = -1
 	}
+}
+
+// carrier_errno: a receive's errno leaves the socket unable to deliver (not open, its interface
+// gone or down), so the receive is the carrier gone (CarrierGone) and not one record's failure.
+pub fn carrier_errno(errno int) bool {
+	return C.ct_carrier_errno(errno) != 0
 }
 
 fn cerr(errno int) string {

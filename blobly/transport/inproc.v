@@ -138,7 +138,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 // waiting, so a closed bus answered every retry-on-timeout loop at once: a spin (#401).
 pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	if timeout_ms < 0 {
-		frame := <-b.queue or { return error(inproc_closed) }
+		frame := <-b.queue or { return carrier_gone(inproc_closed) }
 		return frame
 	}
 	// THE SELECT IS AN EXPRESSION, and its `false` is the closed channel: this V runs the receive
@@ -157,7 +157,7 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 		return frame
 	}
 	if !chan_open {
-		return error(inproc_closed)
+		return carrier_gone(inproc_closed)
 	}
 	return error('timeout')
 }

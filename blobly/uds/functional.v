@@ -93,7 +93,19 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 		if stop_asked(targets) {
 			return error(abandoned_note)
 		}
-		tap.recv(0) or { break }
+		tap.recv(0) or {
+			// a raw tap has no PDU to fail: an empty one ends the drain, any other error is the
+			// listener's, as it is in the wait below
+			if is_silence(err.msg()) {
+				break
+			}
+			if stop_asked(targets) {
+				return error(abandoned_note)
+			}
+			return CarrierFailed{
+				text: 'UDS: the functional listener failed: ${err.msg()}'
+			}
+		}
 	}
 	for t in targets {
 		if stop_asked(targets) {
@@ -420,7 +432,7 @@ fn functional_addressed_held(mut c Client, mut via AddressedSend, target u32, re
 			if c.stopping() || abandoned(err.msg()) {
 				return error(abandoned_note)
 			}
-			if carrier_failed(err.msg()) {
+			if err is transport.CarrierGone {
 				return CarrierFailed{
 					text: err.msg()
 				}

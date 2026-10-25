@@ -215,6 +215,12 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 
 static inline void ct_can_close(int fd) { if (fd >= 0) close(fd); }
 
+/* Whether a receive's errno leaves the socket unable to deliver: not open, or its interface gone
+ * or down. A short read (EIO here) or an error one reception reported (ETIMEDOUT, ECOMM, ...) is not. */
+static inline int ct_carrier_errno(int e) {
+	return e == EBADF || e == ENOTSOCK || e == ENODEV || e == ENXIO || e == ENETDOWN;
+}
+
 // CAN id flag/mask accessors (so V doesn't need the kernel #defines).
 static inline uint32_t ct_eff_flag(void) { return CAN_EFF_FLAG; }
 static inline uint32_t ct_rtr_flag(void) { return CAN_RTR_FLAG; }

@@ -170,7 +170,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		if timeout_ms == 0 {
 			// asked before the socket is: a closed bus is closed, not quiet
 			if stdatomic.load_i64(&b.closed_flag) != 0 {
-				return error('bus is closed')
+				return carrier_gone('bus is closed')
 			}
 			if !readable_now(b.rx.sock.handle) {
 				return error('timeout')
@@ -198,7 +198,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
 		n, _ := b.rx.read(mut buf) or {
 			if stdatomic.load_i64(&b.closed_flag) != 0 {
-				return error('bus is closed')
+				return carrier_gone('bus is closed')
 			}
 			if timeout_ms < 0 && err.code() == net.err_timed_out_code {
 				continue // a slice ended without a frame; forever means forever
