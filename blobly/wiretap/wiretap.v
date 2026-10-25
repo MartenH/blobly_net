@@ -52,6 +52,49 @@ pub:
 	first bool
 	tag   string // whatever the caller attached at note(): the logical channel, here
 	done  bool   // the caller already accounted for this emission at note() time
+	// the send this is the echo of has not settled yet (see Ring.sends_settle): refuse() may
+	// still give the echo to another send, or to nobody
+	open bool
+}
+
+// Provisional is one monitor's claim on a record whose send has not settled: what refuse() needs
+// to take the echo again.
+struct Provisional {
+	monitor int
+	t_ms    f64 // when the echo was read
+mut:
+	ctx u64 // the caller's identity for what it did with the echo (attach)
+}
+
+// Reclaim is what refuse() did with one echo the refused send had claimed: given to the identical
+// send noted before the echo was read (`found`, with that send's claim in `to`), else to nobody,
+// which makes the frame somebody else's.
+pub struct Reclaim {
+pub:
+	monitor int
+	t_ms    f64
+	frame   transport.CanFrame
+	ctx     u64 // as attached to the refused send's claim, else none_ctx
+	found   bool
+	to      Claim
+}
+
+// none_ctx is a claim nothing was attached to.
+pub const none_ctx = u64(0xFFFF_FFFF_FFFF_FFFF)
+
+// EchoFate is what a refused send's echo comes to for whoever acted on it.
+pub enum EchoFate {
+	moved     // another send's echo, and the first claim on it: what was done stays, now that send's
+	duplicate // another send's echo, already accounted for: what was done is undone
+	foreign   // nobody's send: the frame is somebody else's
+}
+
+// fate is the one reading of a Reclaim.
+pub fn (rc Reclaim) fate() EchoFate {
+	if !rc.found {
+		return .foreign
+	}
+	return if rc.to.first && !rc.to.done { EchoFate.moved } else { EchoFate.duplicate }
 }
 
 // Pending is one emission still waiting for its echo. `seq` is the caller's row identity,
@@ -100,13 +143,17 @@ mut:
 	// transmitter: a repeat arriving at a monitor that already claimed this record finds
 	// nothing left for it.
 	claimed []int
+	// The send has not been reported sent or refused (Ring.sends_settle only), and the claims
+	// made meanwhile, which refuse() takes back.
+	open        bool
+	provisional []Provisional
 }
 
 // settled: every monitor that could have seen this emission has accounted for it, so no future
 // frame can match it. Nothing is lost by dropping it, which makes it the first thing to give up
-// when the ring is full.
+// when the ring is full — unless its send is still open, when a refusal would need it back.
 fn (p &Pending) settled() bool {
-	if p.allowed.len == 0 {
+	if p.open || p.allowed.len == 0 {
 		return false // nobody named: any monitor may still claim it (see `allowed`)
 	}
 	for m in p.allowed {
@@ -131,6 +178,10 @@ pub struct Ring {
 pub mut:
 	window_ms f64 = default_window_ms
 	cap       int = default_cap
+	// The caller reports every noted send's outcome, sent() or refuse(), and a claim stays
+	// provisional until it does: a send refused after an identical send's echo claimed its record
+	// gives that echo back (refuse).
+	sends_settle bool
 mut:
 	items []Pending
 }
@@ -172,6 +223,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		brs:     f.brs
 		data:    f.data.clone()
 		t_ms:    t_ms
+		open:    r.sends_settle
 	}
 	mut evicted := []u64{}
 	if r.cap > 0 && r.items.len > r.cap {
@@ -297,11 +349,19 @@ pub fn (mut r Ring) claim_noted_by(monitor int, iface string, f transport.CanFra
 			&& p.brs == f.brs && p.data == f.data {
 			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
+			if p.open {
+				r.items[i].provisional << Provisional{
+					monitor: monitor
+					t_ms:    t_ms
+					ctx:     none_ctx
+				}
+			}
 			return Claim{
 				seq:   p.seq
 				first: first
 				tag:   p.tag
 				done:  p.done
+				open:  p.open
 			}
 		}
 	}
@@ -372,6 +432,83 @@ pub fn (mut r Ring) forget(seq u64) {
 			return
 		}
 	}
+}
+
+// index_of is the record of emission `seq`, searched from the newest: a send settles moments after
+// it is noted.
+fn (r &Ring) index_of(seq u64) int {
+	for i := r.items.len - 1; i >= 0; i-- {
+		if r.items[i].seq == seq {
+			return i
+		}
+	}
+	return -1
+}
+
+// attach keeps the caller's identity for what it did with `monitor`'s provisional claim on `seq`
+// (a recording entry, say), returned by refuse() if that send is refused.
+pub fn (mut r Ring) attach(seq u64, monitor int, ctx u64) {
+	i := r.index_of(seq)
+	if i < 0 {
+		return
+	}
+	for k in 0 .. r.items[i].provisional.len {
+		if r.items[i].provisional[k].monitor == monitor {
+			r.items[i].provisional[k].ctx = ctx
+		}
+	}
+}
+
+// sent settles emission `seq`: the driver took it, so the echoes it claimed are its own.
+pub fn (mut r Ring) sent(seq u64) {
+	i := r.index_of(seq)
+	if i < 0 || !r.items[i].open {
+		return
+	}
+	r.items[i].open = false
+	r.items[i].provisional = []
+}
+
+// refuse settles emission `seq` as refused: its record goes without a verdict, and each echo it
+// had claimed is claimed again from what is left — by an identical send noted no later than the
+// echo was read, else by nobody (the echo was somebody else's frame). Returns what became of
+// each, oldest claim first.
+pub fn (mut r Ring) refuse(seq u64) []Reclaim {
+	i := r.index_of(seq)
+	if i < 0 {
+		return []
+	}
+	p := r.items[i]
+	r.items.delete(i)
+	mut out := []Reclaim{}
+	if p.provisional.len == 0 {
+		return out
+	}
+	f := transport.CanFrame{
+		id:       p.id
+		extended: p.ext
+		rtr:      p.rtr
+		fd:       p.fd
+		brs:      p.brs
+		data:     p.data
+	}
+	for pv in p.provisional {
+		mut rc := Reclaim{
+			monitor: pv.monitor
+			t_ms:    pv.t_ms
+			frame:   f
+			ctx:     pv.ctx
+		}
+		if c := r.claim_noted_by(pv.monitor, p.iface, f, pv.t_ms, pv.t_ms) {
+			rc = Reclaim{
+				...rc
+				found: true
+				to:    c
+			}
+		}
+		out << rc
+	}
+	return out
 }
 
 // drop_expired discards timed-out records without reporting them — used on the claim path,

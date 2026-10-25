@@ -66,6 +66,8 @@ mut:
 	snap_rows  []TraceRow
 	snap_trecs []TRec
 	snap_chans []Chan
+	// each row's project `enabled`, beside snap_chans: what the Buses tick shows (tickrule)
+	snap_model_en []bool
 	// The grouped Trace view's aggregate and its sorted rows, kept between frames so that a
 	// repaint clears and refills them rather than building a map of ~400-byte values and
 	// copying it out, thirty times a second (panel_trace.v). GUI thread only.

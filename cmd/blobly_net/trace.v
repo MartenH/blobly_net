@@ -433,21 +433,11 @@ fn (mut app App) unrecord(rec_id u64) {
 	// Located by its id, kept alongside each entry. Arithmetic on a base does not survive a
 	// deletion in the MIDDLE — two emit-time sends on different interfaces can fail out of
 	// order — after which every later id would point one entry off and a retraction would
-	// delete an unrelated frame. The ids are ascending, so this is a binary search.
-	mut lo := 0
-	mut hi := app.rec_ids.len - 1
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		if app.rec_ids[mid] == rec_id {
-			app.rec.delete(mid)
-			app.rec_ids.delete(mid)
-			return
-		}
-		if app.rec_ids[mid] < rec_id {
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
+	// delete an unrelated frame.
+	i := app.rec_index_locked(rec_id)
+	if i >= 0 {
+		app.rec.delete(i)
+		app.rec_ids.delete(i)
 	}
 }
 
@@ -472,7 +462,8 @@ fn (app &App) tx_counts_locked() string {
 // that is RUNNING for the wire rather than the row named by the tap — two enabled rows on one
 // destination share one reader and one running flag, and the load is the wire's, so the
 // alias's frames would otherwise land on a row the panel and the toolbar skip (r1).
-fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
+// It settles the send's echo too (settle_emit_locked), under the same lock.
+fn (mut app App) count_tx_load(seq u64, iface string, f transport.CanFrame) {
 	key := transport.destination_key(iface)
 	pt := probe_lock_begin()
 	app.mu.lock()
@@ -480,6 +471,7 @@ fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
 	defer {
 		app.mu.unlock()
 	}
+	app.settle_emit_locked(seq)
 	i := app.load_owner_locked(key)
 	if i < 0 {
 		return
@@ -564,10 +556,13 @@ fn (app &App) wire_rates_rule_locked(i int) (int, int) {
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
 // did not reach the wire, which is exactly what the mark says — but the pending record goes, so
-// expiry does not report it a second time.
+// expiry does not report it a second time, and any echo it had claimed is claimed again
+// (settle_echo_locked).
 fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 	app.mu.lock()
-	app.taps.forget(seq)
+	for rc in app.taps.refuse(seq) {
+		app.settle_echo_locked(rc)
+	}
 	// note_emit counted it before the driver was asked, because the echo can arrive first. The
 	// driver refused, so it never reached the wire and the count must come back — but only to
 	// the session that paid for it. A driver on one interface can block across a Clear while a
@@ -601,6 +596,108 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 		}
 	}
 	app.mu.unlock()
+}
+
+// settle_emit is a send the driver took: the echoes it claimed are its own. Caller holds app.mu.
+fn (mut app App) settle_emit_locked(seq u64) {
+	app.taps.sent(seq)
+}
+
+// settle_echo_locked is what becomes of an echo a refused send had claimed. Moved to another of
+// our sends, the recording entry it wrote stays, under that send's channel; already accounted for
+// by that send, the entry goes; nobody's send, the frame was somebody else's — an RX row and an
+// RX entry, as rx_loop would have written. The E2E verifier never saw it (stated, not handled).
+// Caller holds app.mu.
+fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
+	ri := app.rec_index_locked(rc.ctx)
+	match rc.fate() {
+		.moved {
+			if ri >= 0 && rc.to.tag != '' {
+				app.rec[ri] = canlog.LogEntry{
+					...app.rec[ri]
+					iface: rc.to.tag
+				}
+			}
+			if ri >= 0 && rc.to.open {
+				app.taps.attach(rc.to.seq, rc.monitor, rc.ctx)
+			}
+		}
+		.duplicate {
+			if ri >= 0 {
+				app.rec.delete(ri)
+				app.rec_ids.delete(ri)
+			}
+		}
+		.foreign {
+			if rc.monitor < 0 || rc.monitor >= app.chans.len {
+				return
+			}
+			c := app.chans[rc.monitor]
+			dest := transport.destination_key(c.iface)
+			if ri >= 0 {
+				app.rec[ri] = canlog.LogEntry{
+					...app.rec[ri]
+					iface: c.name
+					dir:   .rx
+				}
+			} else if app.recording {
+				app.rec_append_locked(canlog.LogEntry{
+					t_s:   app.since_s()
+					iface: c.name
+					frame: rc.frame
+					dir:   .rx
+				})
+			}
+			if !app.paused {
+				k := gkey_frame(org_rx, c.name, dest, rc.frame)
+				disp, reading := app.j1939_frame_locked(dest, dest, rc.frame, app.lookup_name_on(dest,
+					rc.frame.id, rc.frame.extended))
+				app.push_row_locked(TraceRow{
+					t_ms:    rc.t_ms
+					ch:      c.name
+					origin:  org_rx
+					id:      rc.frame.id
+					ext:     rc.frame.extended
+					fd:      rc.frame.fd
+					brs:     rc.frame.brs
+					rtr:     rc.frame.rtr
+					name:    disp
+					reading: reading
+					data:    rc.frame.data.clone()
+					key:     k
+					wire:    dest
+				})
+				app.gcount[k]++
+			}
+			nominal, data := app.wire_rates_locked(rc.monitor)
+			app.chans[rc.monitor].load_bits += transport.frame_bits(rc.frame, nominal, data)
+			app.chans[rc.monitor].rx++
+			app.rx++
+			app.chans[rc.monitor].rx_last = rc.t_ms
+			app.chans[rc.monitor].rx_seen++
+		}
+	}
+}
+
+// rec_index_locked is the position of recording entry `rec_id`, or -1. Caller holds app.mu.
+fn (app &App) rec_index_locked(rec_id u64) int {
+	if rec_id == rec_none {
+		return -1
+	}
+	mut lo := 0
+	mut hi := app.rec_ids.len - 1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if app.rec_ids[mid] == rec_id {
+			return mid
+		}
+		if app.rec_ids[mid] < rec_id {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return -1
 }
 
 // claim_echo_locked confirms the emission this frame is the echo of, and reports whether it

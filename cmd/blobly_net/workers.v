@@ -981,12 +981,16 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// listed first.
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
-					a.rec_append_locked(canlog.LogEntry{
+					id := a.rec_append_locked(canlog.LogEntry{
 						t_s:   a.since_s()
 						iface: ch_own
 						frame: f
 						dir:   .tx
 					})
+					// a send still in its driver may yet be refused, and this entry with it
+					if c.open {
+						a.taps.attach(c.seq, ci, id)
+					}
 				}
 			}
 		}

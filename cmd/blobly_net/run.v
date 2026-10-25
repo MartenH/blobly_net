@@ -899,7 +899,9 @@ fn (mut app App) start() {
 		m.lock()
 	}
 	app.mu.lock()
-	app.taps = wiretap.Ring{}
+	app.taps = wiretap.Ring{
+		sends_settle: true
+	}
 	// The consumer counters belong to ONE run. Cleared here, with the generation, under the same
 	// lock: carried across a restart they would count a previous run's arrivals towards this
 	// run's gate, which is the readiness check passing before anything is actually listening.
