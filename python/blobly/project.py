@@ -201,10 +201,16 @@ class Bus:
         pass
 
     def _frame_key(self, who, id, ext, hint=None):
-        """(id, ext) a wait matches: an int and the kind ext names, refused where no frame can carry
-        it; `hint` what to add to that refusal (default: that a 29-bit id is ext=True)."""
+        """(id, ext) a wait matches: an int and the kind ext names (None: either kind, as on_message
+        and Lua's expect take it), refused where no frame can carry it; `hint` what to add to that
+        refusal (default: that a 29-bit id is ext=True)."""
         if isinstance(id, bool) or not isinstance(id, int):
             raise TypeError(f"{who}: an id is an int{self._message_note()}, not {id!r}")
+        if ext is None:
+            if not 0 <= id <= 0x1FFF_FFFF:
+                shown = f"0x{id:X}" if id >= 0 else str(id)
+                raise ValueError(f"{who}: {shown} is not a CAN id (at most 29 bits)")
+            return id, None
         if hint is None:
             hint = "; a 29-bit id is ext=True" if not ext and 0 <= id <= 0x1FFF_FFFF else ""
         wide = bool(ext)
@@ -252,8 +258,8 @@ class Bus:
         """The first frame another node sends with this id AND kind, waited for at most timeout_ms
         in all; blobly.Timeout when none came, its message saying what came instead.
 
-        `id` is an int, its kind `ext` (False or None: 11-bit, True: 29-bit), or on a Channel a
-        Message of it, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
+        `id` is an int, its kind `ext` (None: either kind, False: 11-bit, True: 29-bit), or on a
+        Channel a Message of it, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
         wait however many other frames arrive: a finite number of milliseconds, and nothing read
         once it has passed but the first look (a wait of 0 reads at most one queued frame).
 
@@ -272,7 +278,7 @@ class Bus:
             run = self._run()
         others = collections.Counter()
         for f in self._frames_until(deadline, run):
-            if (f.id, f.ext) == want:
+            if f.id == want[0] and want[1] in (None, f.ext):
                 self._same_run(run)
                 if e2e:
                     _passed(self.name, f)

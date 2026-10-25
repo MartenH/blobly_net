@@ -715,14 +715,14 @@ class TestExpect:
             x.recv(0)  # X's handle is open before Y sends
             y.send(0x123, b"\x01", ext=True)
             y.send(0x123, b"\x02")
-            assert x.expect(0x123, 1000) == blobly.Frame(0x123, b"\x02"), \
+            assert x.expect(0x123, 1000, ext=False) == blobly.Frame(0x123, b"\x02"), \
                 "the 29-bit 0x123 was taken for the 11-bit one"
             y.send(0x123, b"\x03", ext=True)
             assert x.expect(0x123, 1000, ext=True) == blobly.Frame(0x123, b"\x03", ext=True)
             y.send(0x200, b"")
             y.send(0x123, b"\x04", ext=True)
             with pytest.raises(blobly.Timeout) as e:
-                x.expect(0x123, 100)
+                x.expect(0x123, 100, ext=False)
             # the expected id's other kind is named first, ahead of the commoner
             assert ("expected a frame 0x123 within 100 ms; 2 other frames came: "
                     "1 of 0x123 (29-bit), 1 of 0x200") in str(e.value)
@@ -885,11 +885,24 @@ class TestExpect:
                 assert e.value.code == _lib.BB_ERR_STATE
                 assert reads.call_count == at_restart[0], "a frame of the replacement run was read"
 
+    def test_a_bare_id_matches_either_kind_and_ext_narrows_it(self):
+        with blobly.open("inproc:EXPECTKIND") as tx, blobly.open("inproc:EXPECTKIND") as rx:
+            tx.send(0x100, b"\x01", ext=True)
+            assert rx.expect(0x100, timeout_ms=1000).ext is True, "a bare id is either kind"
+            tx.send(0x100, b"\x02", ext=True)
+            tx.send(0x100, b"\x03")
+            f = rx.expect(0x100, timeout_ms=1000, ext=False)
+            assert (f.ext, f.data) == (False, b"\x03"), "ext=False skips the 29-bit frame"
+            with pytest.raises(blobly.Timeout, match=re.escape("expected a frame 0x100 (29-bit)")):
+                rx.expect(0x100, timeout_ms=50, ext=True)
+
     def test_what_no_wait_can_match_is_refused_before_waiting(self):
         with blobly.Project(SIM_DEMO) as net:
             can1, can2 = net.channels.CAN1, net.channels.CAN2
             with pytest.raises(ValueError, match=re.escape("0x18DAF110 is not an 11-bit id; a 29-bit id is ext=True")):
-                can1.expect(0x18DAF110)
+                can1.expect(0x18DAF110, ext=False)
+            with pytest.raises(ValueError, match=re.escape("0x20000000 is not a CAN id (at most 29 bits)")):
+                can1.expect(0x2000_0000)
             for bad in (None, float("nan"), "100"):
                 with pytest.raises(TypeError):
                     can1.expect(0x102, bad)
