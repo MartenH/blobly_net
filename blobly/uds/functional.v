@@ -328,7 +328,7 @@ enum Heard {
 // heard is what one answer `resp` to the functional `req` means for its target — the rule both
 // forms (CAN and addressed) share, so they cannot classify one answer two ways.
 fn heard(mut c Client, req []u8, resp []u8, pended bool) (Heard, FunctionalReply) {
-	match answer_to(req, resp) {
+	match answer_to_sized(req, resp, c.read_sizes(req)) {
 		.positive {
 			if req[0] == sid_diagnostic_session_control {
 				c.adopt(resp)
