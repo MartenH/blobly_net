@@ -44,10 +44,10 @@ pub fn (mut env Env) stop_senders() {
 	}
 }
 
-fn (mut env Env) sender(l lua.State) ?&cyclic.Sender {
-	h := int(l.arg_int(1))
-	if h < 0 || h >= env.senders.len {
-		return none
+fn (mut env Env) sender(l lua.State) !&cyclic.Sender {
+	h := handle_arg(l, 1, 'the sender handle')!
+	if h >= env.senders.len {
+		return error('the sender handle ${h} names no sender')
 	}
 	return env.senders[h]
 }
@@ -70,16 +70,16 @@ fn pairs_from(l lua.State, i int) !map[string]f64 {
 fn l_cyclic_start(l lua.State) i32 {
 	mut env := env_of(l)
 	ff := transport.parse_frame_format(l.arg_str(5)) or { return l.fail('bus.send_cyclic: ${err}') }
-	id := l.arg_int_exact(2) or { return l.fail('bus.send_cyclic: an id is an integer') }
-	if id < 0 || id > 0x1FFF_FFFF {
-		return l.fail('bus.send_cyclic: ${id} is not a CAN identifier')
+	id := can_id_arg(l, 2) or { return l.fail('bus.send_cyclic: ${err}') }
+	period := int_arg(l, 6, 'period_ms', min_i32, max_i32) or {
+		return l.fail('bus.send_cyclic: ${err}')
 	}
 	h := env.start_sender(l.arg_str(1), cyclic.Spec{
-		id:        u32(id)
+		id:        id
 		ext:       l.arg_bool(3)
 		data:      l.arg_bytes(4)
 		format:    ff
-		period_ms: int(l.arg_int(6))
+		period_ms: int(period)
 	}) or { return l.fail('bus.send_cyclic: ${err}') }
 	l.push_int(h)
 	return 1
@@ -94,12 +94,15 @@ fn l_cyclic_start_msg(l lua.State) i32 {
 		return l.fail('bus.send_message_cyclic: unknown message "${l.arg_str(2)}"')
 	}
 	vals := pairs_from(l, 5) or { return l.fail('bus.send_message_cyclic: ${err}') }
+	period := int_arg(l, 4, 'period_ms', min_i32, max_i32) or {
+		return l.fail('bus.send_message_cyclic: ${err}')
+	}
 	h := env.start_sender(name, cyclic.Spec{
 		by_message: true
 		message:    msg
 		values:     vals
 		e2e:        l.arg_bool(3)
-		period_ms:  int(l.arg_int(4))
+		period_ms:  int(period)
 	}) or { return l.fail('bus.send_message_cyclic: ${err}') }
 	l.push_int(h)
 	return 1
@@ -107,14 +110,14 @@ fn l_cyclic_start_msg(l lua.State) i32 {
 
 fn l_cyclic_data(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.sender(l) or { return l.fail('bad sender handle') }
+	mut s := env.sender(l) or { return l.fail('sender: ${err}') }
 	s.set_data(l.arg_bytes(2)) or { return l.fail('sender:update: ${err}') }
 	return 0
 }
 
 fn l_cyclic_signals(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.sender(l) or { return l.fail('bad sender handle') }
+	mut s := env.sender(l) or { return l.fail('sender: ${err}') }
 	vals := pairs_from(l, 2) or { return l.fail('sender:update: ${err}') }
 	s.set_values(vals) or { return l.fail('sender:update: ${err}') }
 	return 0
@@ -122,7 +125,7 @@ fn l_cyclic_signals(l lua.State) i32 {
 
 fn l_cyclic_period(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.sender(l) or { return l.fail('bad sender handle') }
+	mut s := env.sender(l) or { return l.fail('sender: ${err}') }
 	ms := l.arg_int_exact(2) or { return l.fail('sender:period: a period is a whole number of ms') }
 	s.set_period(int(ms)) or { return l.fail('sender:period: ${err}') }
 	return 0
@@ -131,7 +134,7 @@ fn l_cyclic_period(l lua.State) i32 {
 // __cyclic_status(h) -> sent, failed, error, period_ms, running
 fn l_cyclic_status(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.sender(l) or { return l.fail('bad sender handle') }
+	mut s := env.sender(l) or { return l.fail('sender: ${err}') }
 	i := s.info()
 	l.push_int(i64(i.sent))
 	l.push_int(i64(i.failed))
@@ -144,7 +147,7 @@ fn l_cyclic_status(l lua.State) i32 {
 // __cyclic_stop(h) -> true once its loop is out
 fn l_cyclic_stop(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.sender(l) or { return l.fail('bad sender handle') }
+	mut s := env.sender(l) or { return l.fail('sender: ${err}') }
 	l.push_bool(s.stop())
 	return 1
 }
@@ -244,7 +247,7 @@ fn (mut env Env) say_keep_alive(mut c UdsConn) {
 // __uds_keep_alive(h, period_ms): 0 stops it
 fn l_uds_keep_alive(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mut c := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive: ${err}') }
 	ms := l.arg_int_exact(2) or { return l.fail('diag:keep_alive: a period is a whole number of ms') }
 	if ms != 0 && (ms < uds.keepalive_min_ms || ms > uds.keepalive_max_ms) {
 		return l.fail('diag:keep_alive: a period of ${ms} ms: give ${uds.keepalive_min_ms} .. ${uds.keepalive_max_ms}, or 0 to stop')
@@ -256,7 +259,7 @@ fn l_uds_keep_alive(l lua.State) i32 {
 // __uds_keep_alive_status(h) -> period_ms, sent, failures, running, failure
 fn l_uds_keep_alive_status(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive_status: ${err}') }
 	mut st := uds.KeepAliveStatus{}
 	if !isnil(c.ka) {
 		mut k := c.ka

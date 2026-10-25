@@ -79,6 +79,8 @@ static inline int       ctlua_to_bool(lua_State *L, int i) { return lua_toboolea
 static inline int       ctlua_is_num(lua_State *L, int i)  { return lua_isnumber(L, i); }
 static inline int       ctlua_is_str(lua_State *L, int i)  { return lua_isstring(L, i); }
 static inline int       ctlua_is_nil(lua_State *L, int i)  { return lua_isnil(L, i); }
+static inline int       ctlua_type(lua_State *L, int i)    { return lua_type(L, i); }
+static inline const char *ctlua_typename(lua_State *L, int t) { return lua_typename(L, t); }
 /* returns the string pointer + writes its length to *len (byte-clean). */
 static inline const char *ctlua_to_lstr(lua_State *L, int i, int *len) {
 	size_t n = 0;

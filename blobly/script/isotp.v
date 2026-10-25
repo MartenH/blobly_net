@@ -67,6 +67,12 @@ fn (mut env Env) isotp_conn(h i64) ?&IsotpConn {
 	return unsafe { &env.isotps[h] }
 }
 
+// isotp_arg is the open ISO-TP channel argument i names.
+fn (mut env Env) isotp_arg(l lua.State, i int) !&IsotpConn {
+	h := handle_arg(l, i, 'the isotp handle')!
+	return env.isotp_conn(h) or { error('the isotp handle ${h} is not an open channel') }
+}
+
 // isotp_failed raises a raw ISO-TP call's failure: the run's deadline when it cut the wait.
 fn isotp_failed(l lua.State, err IError) i32 {
 	if env_of(l).expired() {
@@ -78,7 +84,7 @@ fn isotp_failed(l lua.State, err IError) i32 {
 // __isotp_send(h, data): one whole message, on the wire when it returns
 fn l_isotp_send(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.isotp_conn(l.arg_int(1)) or { return l.fail('bad isotp handle') }
+	mut c := env.isotp_arg(l, 1) or { return l.fail('isotp send: ${err}') }
 	c.ch.send(l.arg_bytes(2)) or { return isotp_failed(l, err) }
 	return 0
 }
@@ -86,7 +92,7 @@ fn l_isotp_send(l lua.State) i32 {
 // __isotp_recv(h, timeout_ms): the next whole message, or nil when none came in time
 fn l_isotp_recv(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.isotp_conn(l.arg_int(1)) or { return l.fail('bad isotp handle') }
+	mut c := env.isotp_arg(l, 1) or { return l.fail('isotp recv: ${err}') }
 	ms := l.arg_int_exact(2) or { return l.fail('isotp recv: timeout_ms is not an integer') }
 	if ms < 0 {
 		return l.fail('isotp recv: a wait of ${ms} ms; 0 looks, more waits')
@@ -108,9 +114,9 @@ fn l_isotp_recv(l lua.State) i32 {
 // __isotp_close(h): the channel let go; closing a closed one does nothing
 fn l_isotp_close(l lua.State) i32 {
 	mut env := env_of(l)
-	h := l.arg_int(1)
-	if h < 0 || h >= env.isotps.len {
-		return l.fail('bad isotp handle')
+	h := handle_arg(l, 1, 'the isotp handle') or { return l.fail('isotp close: ${err}') }
+	if h >= env.isotps.len {
+		return l.fail('isotp close: the isotp handle ${h} names no channel')
 	}
 	if !env.isotps[h].closed {
 		env.isotps[h].ch.close()
@@ -122,7 +128,7 @@ fn l_isotp_close(l lua.State) i32 {
 // __uds_timing(h): timeout_ms, p2_star_ms, margin_ms, pending_budget_ms as they stand
 fn l_uds_timing(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c := env.conn_arg(l, 1) or { return l.fail('diag:timing: ${err}') }
 	t := c.cli.timing()
 	l.push_int(t.timeout_ms)
 	l.push_int(t.p2_star_ms)
@@ -159,7 +165,7 @@ fn waits_args(l lua.State, first int) !uds.Waits {
 // keeps one), from the next request on; refused whole (uds.Client.state)
 fn l_uds_set_timing(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mut c := env.conn_arg(l, 1) or { return l.fail('diag:set_timing: ${err}') }
 	w := waits_args(l, 2) or { return l.fail(err.msg()) }
 	c.cli.state(w) or { return l.fail(err.msg()) }
 	return 0
@@ -177,7 +183,7 @@ fn l_uds_timing_check(l lua.State) i32 {
 // __uds_target(h): the logical address a DoIP connection's requests go to, a CAN one's request id
 fn l_uds_target(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
 	l.push_int(i64(c.ch.rx_id))
 	return 1
 }
@@ -187,7 +193,7 @@ fn l_uds_target(l lua.State) i32 {
 // and another target starts again from the waits and sizes the script stated
 fn l_uds_retarget(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mut c := env.conn_arg(l, 1) or { return l.fail('diag:retarget: ${err}') }
 	if mut c.ch is doip.DoipClient {
 		mut target := u16(0)
 		if l.arg_is_nil(2) {

@@ -896,7 +896,7 @@ function bus.send_cyclic(channel, id, data, period_ms, opts)
   end
   if math.type(period_ms) ~= "integer" then error("bus.send_cyclic: period_ms is a whole number of ms", 2) end
   if data ~= nil and type(data) ~= "string" then error("bus.send_cyclic: data is bytes (a string)", 2) end
-  if math.type(id) ~= "integer" then error("bus.send_cyclic: an id is an integer", 2) end
+  if math.tointeger(id) == nil then error("bus.send_cyclic: an id is an integer, not " .. tostring(id), 2) end
   return setmetatable({ handle = __cyclic_start(channel, id, opts.ext or false, data or "", opts.format,
     period_ms) }, Sender)
 end
@@ -993,7 +993,7 @@ local function jms(fname, ms, default)
   return math.floor(ms)
 end
 local function jint(fname, what, v, top)
-  if math.type(v) ~= "integer" or v < 0 or v > top then
+  if math.tointeger(v) == nil or v < 0 or v > top then
     error(string.format("%s: %s is an integer 0..0x%X, not %s", fname, what, top, tostring(v)), 3)
   end
 end
@@ -1037,10 +1037,11 @@ function dbc.messages(channel) return __dbc_messages(channel) end
 -- the (by_id, key, ext) a message argument is, or an error raised at the caller of the caller
 local function __dbc_key(fname, key, ext)
   if type(key) == "number" then
-    if math.type(key) ~= "integer" or key < 0 or key > 0x1FFFFFFF then
+    local n = math.tointeger(key)
+    if n == nil or n < 0 or n > 0x1FFFFFFF then
       error(fname .. ": an id is an integer 0..0x1FFFFFFF, not " .. key, 3)
     end
-    return true, key, ext or false
+    return true, n, ext or false
   end
   if type(key) ~= "string" then error(fname .. ": a message is a name or an id", 3) end
   return false, key, false

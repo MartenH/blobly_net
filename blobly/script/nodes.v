@@ -76,10 +76,7 @@ fn l_uds_node(l lua.State) i32 {
 // node_arg is the node argument `i` names (an index uds.node answered).
 fn node_arg(l lua.State, i int) !sysview.SysNode {
 	env := env_of(l)
-	n := l.arg_int_exact(i) or { -1 }
-	if n < 0 || n >= env.sys.nodes.len {
-		return error('bad node ${n}')
-	}
+	n := int_arg(l, i, 'the node', 0, env.sys.nodes.len - 1) or { return error('uds.node: ${err}') }
 	return env.sys.nodes[int(n)]
 }
 
@@ -180,7 +177,7 @@ fn l_node_read(l lua.State) i32 {
 	mut env := env_of(l)
 	node := node_arg(l, 2) or { return l.fail(err.msg()) }
 	x := did_arg(l, node, 3) or { return l.fail('${node.name}: ${err.msg()}') }
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mut c := env.conn_arg(l, 1) or { return l.fail('node:read: ${err}') }
 	env.on_node(c, node.name) or { return l.fail(err.msg()) }
 	data := c.cli.read_data_by_identifier(x.id) or { return l.fail(err.msg()) }
 	texts := x.read_texts(data) or { return l.fail(err.msg()) }
@@ -231,7 +228,7 @@ fn l_node_write(l lua.State) i32 {
 	for i in 5 .. l.nargs() + 1 {
 		texts << l.arg_str(i)
 	}
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mut c := env.conn_arg(l, 1) or { return l.fail('node:write: ${err}') }
 	env.on_node(c, node.name) or { return l.fail(err.msg()) }
 	sysview.write_described(mut c.cli, x, texts) or { return l.fail(err.msg()) }
 	return 0
@@ -248,9 +245,10 @@ fn lua_int(text string) ?i64 {
 fn l_node_on(l lua.State) i32 {
 	mut env := env_of(l)
 	node := node_arg(l, 2) or { return l.fail(err.msg()) }
-	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c := env.conn_arg(l, 1) or { return l.fail('uds.node: ${err}') }
 	env.on_node(c, node.name) or { return l.fail(err.msg()) }
-	env.seed_sizes(int(l.arg_int(1)), int(l.arg_int(2)))
+	// conn_arg and node_arg have read both whole
+	env.seed_sizes(int(l.arg_int_exact(1) or { 0 }), int(l.arg_int_exact(2) or { 0 }))
 	return 0
 }
 

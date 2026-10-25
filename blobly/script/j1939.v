@@ -128,13 +128,13 @@ fn l_j1939_listen(l lua.State) i32 {
 fn l_j1939_wait(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	ms := env.bounded(l.arg_int(2))
+	ms := env.bounded(ms_up(l, 2))
 	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	mut lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	ch := env.chans[ci]
-	pgn := l.arg_int(3)
-	sa := l.arg_int(4)
+	pgn := int_arg(l, 3, 'the PGN', -1, 0x3FFFF) or { return l.fail('j1939.expect: ${err}') }
+	sa := int_arg(l, 4, 'the source address', -1, 0xFF) or { return l.fail('j1939.expect: ${err}') }
 	any_one := pgn < 0 && sa < 0
 	mut got := []j1939.Assembled{}
 	mut others := map[string]int{} // what came instead of a match: counted, not kept
@@ -232,7 +232,7 @@ fn l_j1939_faults(l lua.State) i32 {
 fn l_j1939_addresses(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	ms := env.bounded_window(l.arg_int(2))
+	ms := env.bounded_window(ms_up(l, 2))
 	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	if ms > 0 {

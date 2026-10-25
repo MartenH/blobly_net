@@ -49,6 +49,8 @@ fn C.ctlua_to_bool(&C.lua_State, int) int
 fn C.ctlua_is_num(&C.lua_State, int) int
 fn C.ctlua_is_str(&C.lua_State, int) int
 fn C.ctlua_is_nil(&C.lua_State, int) int
+fn C.ctlua_type(&C.lua_State, int) int
+fn C.ctlua_typename(&C.lua_State, int) &char
 fn C.ctlua_to_lstr(&C.lua_State, int, &i32) &char
 fn C.ctlua_error(&C.lua_State, &char) int
 fn C.ctlua_newtable(&C.lua_State)
@@ -163,6 +165,33 @@ pub fn (l State) arg_int_exact(i int) ?i64 {
 		return none
 	}
 	return v
+}
+
+// arg_given is argument i as a refusal quotes it: nil, a boolean or a number as Lua writes them,
+// a string in quotes (cut at 40 bytes), else its type (a table).
+pub fn (l State) arg_given(i int) string {
+	t := C.ctlua_type(l, i)
+	match t {
+		-1, 0 {
+			return 'nil'
+		}
+		1 {
+			return l.arg_bool(i).str()
+		}
+		3 {
+			if v := l.arg_int_exact(i) {
+				return v.str()
+			}
+			return l.arg_num(i).str()
+		}
+		4 {
+			s := l.arg_str(i)
+			return if s.len > 40 { '"${s[..40]}..."' } else { '"${s}"' }
+		}
+		else {
+			return 'a ' + unsafe { cstring_to_vstring(C.ctlua_typename(l, t)) }
+		}
+	}
 }
 
 pub fn (l State) arg_num(i int) f64 {
