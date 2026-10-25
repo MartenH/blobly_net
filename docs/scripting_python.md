@@ -661,6 +661,65 @@ with blobly.Project("projects/j1939-script.blobnet") as net:
 
 [j1939_listen.py](../python/examples/j1939_listen.py) is a complete script.
 
+### Network management
+
+`ch.nm()` is the channel's NM reading, an `NmListener` (`blobly/nm`, the reading the GUI's
+Network Management panel has, [nm.md](nm.md)): who reports in on the channel's NM cluster, who
+keeps the network awake, who woke it, and the declared nodes that never report. It reads the
+frames the channel's own handle reads — by `recv`, `expect`, the event loop or its own waits — so a
+frame is still consumed once, and what the channel sends is never in it. With no arguments it is
+configured as the panel is, per wire: the system model's bus named like a row on the wire (its
+range, timeout and node names), else the wire's ARXML NM-PDU frames, else a row's own `nm:`; a
+wire with none raises `blobly.Refused`, since nothing guesses a frame is NM. `ch.nm(lo, hi, *,
+ext=False, timeout_ms=300)` reads the range the script states instead (29-bit where `hi` is past
+0x7FF, or with `ext`), naming no node, as a new reading. It sends nothing.
+
+```python
+import blobly
+
+with blobly.Project("projects/nm-demo/nm-demo.blobnet") as net:
+    body = net.channels.body
+    nm = body.nm()
+    with net.replay(body, speed=4, loop=False):    # the demo's recording, at 4x
+        r = nm.expect_state("awake", 3000, kept_awake_by=["sysnode", "domain"])
+        assert r.kept_awake_by == ["sysnode", "domain"] and r.woken_by == "sysnode"
+        print(r.missing, r.node("sysnode").bits)   # ['zone_a'] NmBits(raw=17, repeat_request=True, ...
+        nm.expect_state("releasing", 8000)
+        nm.expect_asleep(4000)
+```
+
+- A reading is **as of the handle's latest read**, never the wall clock's now: a channel nobody has
+  read for a while reads as it was then, not as asleep, since what the bus carried meanwhile is
+  still queued. `NmReading.t_ms` says when that was. The waits read; the properties do not.
+- **`nm.expect_state(state, timeout_ms=1000, *, kept_awake_by=None)`** reads the channel until the
+  reading is in `state` (`"awake"`, `"releasing"` or `"asleep"`) — and, given `kept_awake_by`,
+  kept awake by exactly those nodes, in any order — within one deadline, as `expect`'s, asked
+  after every read, so a state reached by silence is seen; `blobly.Timeout` otherwise, its message
+  saying what the reading was. **`nm.expect_asleep(timeout_ms=1000)`** is
+  `expect_state("asleep", timeout_ms)`, and **`nm.expect(predicate, timeout_ms=1000, *,
+  what=...)`** waits for any condition on the reading.
+- **`nm.reading(window_ms=0)`** is the `NmReading`, after reading the channel for `window_ms` (0
+  reads nothing). `nm.state`, `nm.kept_awake_by`, `nm.woken_by`, `nm.nodes`, `nm.missing` and
+  `nm.unknown` are its fields, each a reading of its own.
+- An **`NmReading`** has `state`; `kept_awake_by` (the nodes heard within the timeout asking for
+  the network, the declared ones in declaration order, then the others as first heard);
+  `woken_by`, `woken_active` and `woken_ms` (the frame that ended the last silence; the first
+  frame heard counts only if it says active wake-up); `repeat_requested_by`; `nodes`; `missing`
+  and `unknown` (names); `heard` and `last_heard_ms`; `frames`, `malformed`, `last_error` and
+  `dropped`; `timeout_ms` and `timeout_default`; `source` (`"system.toml"`, `"ARXML"`,
+  `"project"` or `"script"`), `origin` and `cluster` (its frames in words); `t_ms`; and
+  `node(name)`.
+- An **`NmNode`** has `name` (its declaration's, else `"NID 0x13"`), `nid`, `can_id`, `ext`,
+  `missing`, `unknown`, `live` (heard within the timeout), `keeps_awake`, `count`,
+  `last_heard_ms`, `cadence_ms` (the mean interval within the timeout), `last_interval_ms`, `bits`
+  and `pn` (the partial-network mask its latest frame requests, else `None`). **`NmBits`** names
+  the control bit vector: `raw`, `repeat_request`, `ready_to_sleep`, `active_wakeup`, `pn_info`,
+  and `wants_network`. A missing node has no `bits`, `nid` or `last_heard_ms` it did not state.
+- Times are when the frames were received, on `blobly.now_ms()`'s clock. A stop and a start of the
+  project, or `ch.close()`, begin a new reading.
+
+[nm_monitor.py](../python/examples/nm_monitor.py) is a complete script.
+
 ---
 
 ## 7. The event loop
@@ -1973,6 +2032,7 @@ after `start()`.
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
 | `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
+| `ch.nm(lo=None, hi=None, *, ext=False, timeout_ms=300)` | The row's `NmListener`: who reports in on its NM cluster and who keeps it awake, by its wire's configuration or the range given ([Network management](#network-management)). |
 | `ch.isotp(tx, rx)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top ([Raw ISO-TP](#raw-iso-tp)). |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
 | `ch.discover(timeout_ms=1200)` | A DoIP row's entity asked who it is: a `DoipAnnouncement`; `Timeout` when none came. |
@@ -1990,6 +2050,35 @@ after `start()`.
 | `listener.faults()` | The `J1939Fault`s since the last call. Reads nothing. |
 | `listener.addresses(window_ms=0)` | The directory by address, a `J1939Address` each, after reading the channel for `window_ms`. |
 | `listener.dropped` | Messages and faults dropped untaken, the queues (1024 each) being full. |
+
+### `NmListener`
+
+`ch.nm()`: the channel's NM reading ([Network management](#network-management)).
+
+| member | what |
+|---|---|
+| `nm.channel` | The channel it reads. |
+| `nm.explicit` | The `(lo, hi, ext, timeout_ms)` the script stated, `None` for the wire's own configuration. |
+| `nm.reading(window_ms=0)` | The `NmReading` as of the handle's latest read, after reading the channel for `window_ms`. |
+| `nm.state`, `nm.kept_awake_by`, `nm.woken_by`, `nm.nodes`, `nm.missing`, `nm.unknown` | That reading's fields, read nothing. |
+| `nm.expect_state(state, timeout_ms=1000, *, kept_awake_by=None)` | The first reading in `state` (kept awake by exactly those nodes), within one deadline; `Timeout` otherwise. |
+| `nm.expect_asleep(timeout_ms=1000)` | `expect_state("asleep", timeout_ms)`. |
+| `nm.expect(predicate, timeout_ms=1000, *, what="the NM condition")` | The first reading `predicate` holds for, within one deadline; `Timeout` naming `what` otherwise. |
+
+### `NmReading`, `NmNode`, `NmBits`
+
+Frozen dataclasses ([Network management](#network-management)).
+
+| field | what |
+|---|---|
+| `NmReading.state`, `.kept_awake_by`, `.repeat_requested_by` | `"awake"`, `"releasing"` or `"asleep"`; the nodes asking for the network (declared order, then first heard); the live nodes asking for a repeat. |
+| `NmReading.woken_by`, `.woken_active`, `.woken_ms` | The node whose frame ended the last silence (`None` before any), whether it said active wake-up, when. |
+| `NmReading.nodes`, `.missing`, `.unknown`, `.node(name)` | The reporters as first heard then the declared nodes never heard; the names of those missing and of the reporters nothing declares; one node by name. |
+| `NmReading.heard`, `.last_heard_ms`, `.frames`, `.malformed`, `.last_error`, `.dropped` | Whether an NM frame was read, the last one, the counts, why the last malformed frame did not parse, frames from reporters past the 256 kept. |
+| `NmReading.timeout_ms`, `.timeout_default`, `.source`, `.origin`, `.cluster`, `.t_ms` | The configuration: its timeout (and whether it is a default), where it came from, what it was read from, its frames in words; the moment the reading is of. |
+| `NmNode.name`, `.nid`, `.can_id`, `.ext`, `.missing`, `.unknown`, `.live`, `.keeps_awake` | Who it is and what it is now. |
+| `NmNode.count`, `.last_heard_ms`, `.cadence_ms`, `.last_interval_ms`, `.bits`, `.pn` | Its frames, when last heard, its mean and latest interval, its latest control bits and PN request. |
+| `NmBits.raw`, `.repeat_request`, `.ready_to_sleep`, `.active_wakeup`, `.pn_info`, `.wants_network` | The control bit vector, and its bits by name. |
 
 ### `J1939Message`, `J1939Fault`, `J1939Address`, `J1939Name`
 
@@ -2351,7 +2440,7 @@ Python covers bringing a project up, its channels, raw CAN, DBC messages and sig
 loop, background senders, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
 (its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
-discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, a bus opened by address,
+discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, the NM reading, a bus opened by address,
 interface discovery and Vector channel assignment, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
@@ -2385,6 +2474,7 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
 - Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
 - J1939 transport-protocol reassembly and the address directory are here ([J1939](#j1939)).
+- The NM reading is here ([Network management](#network-management)).
 
 **Phase 3: hardening for AI.** A JSON run report and an overall run timeout, an API stability
 policy for this package, and possibly an MCP server.
