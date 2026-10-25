@@ -41,11 +41,12 @@ fn field_spec(x DidDesc, f Field) uds.FieldSpec {
 	ranged := f.typ == 'bool' || f.name in x.ranges
 	lim := x.limit(f)
 	return uds.FieldSpec{
-		width:  f.width()
-		signed: f.typ.starts_with('i')
-		ranged: ranged
-		min:    lim.min
-		max:    lim.max
+		width:   f.width()
+		signed:  f.typ.starts_with('i')
+		boolean: f.typ == 'bool'
+		ranged:  ranged
+		min:     lim.min
+		max:     lim.max
 	}
 }
 

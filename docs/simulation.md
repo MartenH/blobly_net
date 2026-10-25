@@ -478,8 +478,9 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   `default`, the parameter status DID at 0 (uncoded), a `signal` DID with the value the
   simulation is sending for that signal now (a generator on the node of that name; zeros of the
   signal's width before it has sent, or without one; a dropped frame changes nothing) — the
-  value as the frame encodes it, cast to the DID field's type as blobly_emb's generated code
-  casts it (a fraction toward zero, the whole width of a `u64`). A DoIP
+  value as the frame encodes it: exactly at factor 1 and offset 0 (the whole width of a `u64`),
+  else rounded to the nearest integer, and held to the DID field's width (a `bool` 1 for any
+  nonzero value). A DoIP
   entity's live DIDs read the node of that name as a CAN channel of the project simulates it,
   and say so at Start when none does. A `bytes` DID whose bytes are not hex is not served at all.
   Several DIDs per `0x22`, as ISO allows. A live value is what the transport TOOK: a frame a

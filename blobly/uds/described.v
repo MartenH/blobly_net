@@ -20,7 +20,6 @@
 // there is no bootloader to hand the ECU to.
 module uds
 
-import math
 import time
 
 // Session masks, one bit per 0x10 session value (bit n-1 for session n); 0 = every session.
@@ -41,8 +40,9 @@ pub:
 // parameter, the range a written value must lie in.
 pub struct FieldSpec {
 pub:
-	width  int
-	signed bool
+	width   int
+	signed  bool
+	boolean bool // a bool: any nonzero value is 1
 	ranged bool
 	min    i64
 	max    i64
@@ -531,29 +531,37 @@ fn (mut s Server) refresh_live(d DidSpec) {
 	s.dids[d.id] = live_field_bytes(v, d.fields[0])
 }
 
-// live_field_bytes is a signal's value in its DID field, big-endian at the field's width: the
-// field's integer type cast from the value, as blobly_emb's generated code fills the field
-// (`T(phys)`, toward zero), held to what the width holds; NaN is 0.
-pub fn live_field_bytes(v f64, f FieldSpec) []u8 {
+// LiveValue is a live signal's value as an exact integer: `bits` read as an i64 (two's
+// complement) when `negative`, as a u64 otherwise, so both 64-bit ranges are carried whole.
+pub struct LiveValue {
+pub:
+	bits     u64
+	negative bool
+}
+
+// live_int is `v` as a LiveValue.
+pub fn live_int(v i64) LiveValue {
+	return LiveValue{
+		bits:     u64(v)
+		negative: v < 0
+	}
+}
+
+// live_field_bytes is a live value in its DID field, big-endian at the field's width: held to
+// what the width holds, a bool 1 for any nonzero value (blobly_emb's did_signal_encode).
+pub fn live_field_bytes(v LiveValue, f FieldSpec) []u8 {
 	w := f.width // 1, 2, 4 or 8 (sysview.Field.width)
-	bits := 8 * w
-	t := math.trunc(v)
+	umax := if w >= 8 { max_u64 } else { (u64(1) << (8 * w)) - 1 }
+	smax := umax >> 1
 	mut raw := u64(0)
-	if f.signed && !math.is_nan(t) {
-		half := math.pow(2, f64(bits - 1))
-		raw = u64(if t < -half {
-			if bits == 64 { min_i64 } else { -(i64(1) << (bits - 1)) }
-		} else if t >= half {
-			if bits == 64 { max_i64 } else { (i64(1) << (bits - 1)) - 1 }
-		} else {
-			i64(t)
-		})
-	} else if t > 0 {
-		raw = if t >= math.pow(2, f64(bits)) {
-			if bits == 64 { max_u64 } else { (u64(1) << bits) - 1 }
-		} else {
-			u64(t)
-		}
+	if f.boolean {
+		raw = if v.bits != 0 { u64(1) } else { u64(0) }
+	} else if f.signed && v.negative {
+		raw = u64(if i64(v.bits) < -i64(smax) - 1 { -i64(smax) - 1 } else { i64(v.bits) })
+	} else if f.signed {
+		raw = if v.bits > smax { smax } else { v.bits }
+	} else if !v.negative {
+		raw = if v.bits > umax { umax } else { v.bits }
 	}
 	mut out := []u8{len: w}
 	for i in 0 .. w {
