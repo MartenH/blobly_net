@@ -1874,3 +1874,22 @@ fn test_an_old_generation_cannot_remove_its_replacement() {
 	join.close()
 	fresh.close()
 }
+
+// A plain Bus behind the hub (PCAN's path) commits before it sends, so a refusal it makes before
+// its driver is asked must be NotWritten for the hub to drop the token: no acknowledgement is
+// coming, and an entry kept for the grace could claim somebody else's identical frame (#350).
+fn test_a_refusal_before_the_driver_leaves_no_pending_entry() {
+	make := fn (spec string) !Bus {
+		return open_inproc('nw-hub')!
+	}
+	mut a := shared_open('hub:nw-refused', 'inproc:nw-hub', make)!
+	defer {
+		a.close()
+	}
+	a.send(CanFrame{ id: 0x123, brs: true }) or {
+		assert err is NotWritten, err.msg()
+		assert shared_test_pending(mut a) == 0, 'a refused send kept its token open'
+		return
+	}
+	assert false, 'brs without fd was sent'
+}

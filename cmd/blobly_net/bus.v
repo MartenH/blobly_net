@@ -305,9 +305,8 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	pb := probe_alloc_mark()
 	transport.send_waiting_for_room(mut t.inner, wire, 200, t.cancel) or {
 		probe_alloc_note(.inner, pb)
-		// refused for certain by its type or a full queue; any other failure may have gone out
-		definite := err is transport.NotWritten || transport.is_backpressure(err)
-		kept := t.app.retract_emit(seq, t.origin, epoch, noted, definite, rec_id)
+		kept := t.app.retract_emit(seq, t.origin, epoch, noted, transport.refused_for_certain(err),
+			rec_id)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend — unless it now stands for an echo another send or the bus put there
 		if !kept {
@@ -317,7 +316,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
 		// above, so a status call through a vendor DLL never delays retracting the row this send
 		// did not put on the wire.
-		t.note_health_failure(err, wire)
+		t.note_health_failure(err)
 		return err
 	}
 	probe_alloc_note(.inner, pb)

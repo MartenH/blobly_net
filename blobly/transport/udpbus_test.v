@@ -230,3 +230,17 @@ fn test_udp_read_returns_what_arrived_and_zero_is_a_look() {
 		}
 	}
 }
+
+// A frame no controller could send is refused before the socket: NotWritten.
+fn test_udp_refuses_an_impossible_frame_as_not_written() {
+	group, port := uniq_group(0) // nothing is received, so sharing slot 0 collides with nothing
+	mut a := open_udp(group, port) or { panic('open: ${err}') }
+	defer {
+		a.close()
+	}
+	a.send(CanFrame{ id: 0x123, brs: true }) or {
+		assert err is NotWritten, err.msg()
+		return
+	}
+	assert false, 'brs without fd was sent'
+}

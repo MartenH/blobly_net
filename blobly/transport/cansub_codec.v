@@ -161,7 +161,7 @@ pub fn cansub_encode_frame(f CanFrame) ![]u8 {
 	// both silently and both reported as success — so the device put a different frame on the wire
 	// from the one wiretap recorded, and the echo of our own frame could never match it.
 	if why := frame_shape_error(f) {
-		return error('CANsub: ${why}')
+		return not_written('CANsub: ${why}')
 	}
 	// No remote-frame branch: frame_rules.v refuses one before this is reached, so everything
 	// encoded here carries its payload. The DECODER still reads them — the device can report a

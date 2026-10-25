@@ -123,7 +123,7 @@ pub fn (mut b UdpBus) send(frame CanFrame) ! {
 	// only thing keeping impossible frames off it is this check. An FD length a DLC cannot express
 	// is padded — see frame_rules.v.
 	if why := software_frame_refusal(frame) {
-		return error('udp: ${why}')
+		return not_written('udp: ${why}')
 	}
 	// Same padding as the hardware path: a software bus that carries a 9-byte FD payload
 	// verbatim does not reproduce the wire, and a test against it would pass where hardware

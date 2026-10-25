@@ -576,7 +576,7 @@ fn send_failure(err IError, ch isotp.Channel, stopping bool, sid u8, discarded i
 			discarded: discarded
 		}
 	}
-	if abandoned(err.msg()) || err is transport.NotWritten || transport.wire_policy(ch.iface).silent {
+	if abandoned(err.msg()) || err is transport.NotWritten {
 		return err
 	}
 	return CarrierFailed{
