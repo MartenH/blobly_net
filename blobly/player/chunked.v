@@ -49,6 +49,12 @@ mut:
 // open_chunker reads the file once for the census and time span, then starts the reader.
 // A file whose rows the stream cannot put in time order is refused; replay it from memory.
 pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
+	return open_chunker_until(path, specs, rows, unsafe { nil })
+}
+
+// open_chunker_until is open_chunker, its pass given up (an error, `stopped`) once `stop`,
+// asked every few thousand rows, answers true; nil asks nothing.
+pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () bool) !&Chunker {
 	if rows <= 0 {
 		return error('chunk size must be positive, not ${rows}')
 	}
@@ -63,7 +69,10 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	mut raw := canlog.Log{}
 	mut kept := 0
 	// Plan every row, keeping only the counts.
-	for {
+	for n := 0; true; n++ {
+		if n % 4096 == 0 && !isnil(stop) && stop() {
+			return error('stopped')
+		}
 		r := s.next(mut raw) or { break }
 		raw.rows.clear()
 		raw.rows << r

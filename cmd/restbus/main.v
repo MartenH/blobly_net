@@ -200,8 +200,7 @@ fn main() {
 	mut buses := map[string]transport.Bus{}
 	buses[o.iface] = bus
 	sent, failed, first_err := pump(mut p, mut buses, 500)
-	report_read(prep.read_error())
-	report_pump(sent, failed, first_err)
+	report_pump(sent, failed, first_err, prep.read_error())
 }
 
 // pump is the transmit loop for both paths, and it is a FUNCTION rather than inline code for a
@@ -275,18 +274,17 @@ fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (
 	return sent, failed, first_err
 }
 
-// report_read says a streamed recording's read error: each pass ended there.
-fn report_read(err string) {
-	if err != '' {
-		eprintln('\nrestbus: read error, each pass ended there: ${err}')
-	}
-}
-
-// report_pump is the shared tail: both paths say the same thing and exit the same way.
-fn report_pump(sent u64, failed u64, first_err string) {
+// report_pump is the shared tail: both paths say the same thing and exit the same way. A
+// streamed recording's read error ended each pass early, so it fails the run as a send does.
+fn report_pump(sent u64, failed u64, first_err string, read_err string) {
 	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
+	if read_err != '' {
+		eprintln('read error, each pass ended there: ${read_err}')
+	}
 	if failed > 0 {
 		eprintln('first failure: ${first_err}')
+	}
+	if failed > 0 || read_err != '' {
 		exit(1)
 	}
 }
@@ -478,8 +476,7 @@ fn run_multi(o Opts, rec &replay.Source) {
 	// its neighbours. (Applying the wait to one path and not the other dropped a frame per full
 	// queue on a saturated destination, which is why both paths share `pump` at all.)
 	sent, failed, first_err := pump(mut p, mut buses, 5)
-	report_read(plan.read_error())
-	report_pump(sent, failed, first_err)
+	report_pump(sent, failed, first_err, plan.read_error())
 }
 
 // resolve_bus asks blobly/player, which owns the rule — see the note there on why this is not

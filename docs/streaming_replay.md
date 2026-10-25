@@ -270,8 +270,11 @@ import (whole-file by design, 2000-row cap).
    plan) and `replay.plan_for`/`start` (Lua, the C ABI, Python) all go through it.
    - **The switch**: an `.mf4` of at least `BLOBLY_MF4_STREAM_MB` MiB (default 64; `0` streams
      every `.mf4`) streams; below it, and for every candump `.log`, the whole file loads. A file
-     the stream cannot put in the loader's order (`out_of_order` in the survey) loads whole and
-     says so. The Replay panel marks a streamed group.
+     whose stream would differ from the loader's rows (`replay.stream_differs`: rows out of time
+     order, or frames whose payload the stream could not hold — `unresolved`, `evicted`) loads
+     whole and says so. The Replay panel marks a streamed group. Both reads before the first
+     frame (the survey and the chunker's open pass) ask a stop every 4096 rows — the GUI's run
+     ending, a script's deadline (`give_up`) — so a Stop during a long open does not wait it out.
    - **Why 64 and not 0.** Measured with a scratch harness (open + plan + release every frame
      as fast as the player gives it; output hashed and identical in both paths on every file):
 

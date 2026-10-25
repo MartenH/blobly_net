@@ -41,43 +41,78 @@ pub:
 	streamed bool
 	log      canlog.Log // the whole recording; empty when streamed
 	note     string     // why a file above the threshold plays from memory, if it does
+	// asked while a streamed source is read before it plays (open and prepare); true gives the
+	// read up with `stopped`
+	stop fn () bool = unsafe { nil }
 }
 
 // open_recording opens `path` for a replay under the threshold in force.
 pub fn open_recording(path string) !Source {
-	return open_recording_at(path, stream_mb())
+	return open_recording_at(path, stream_mb(), unsafe { nil })
+}
+
+// open_recording_until is open_recording, given up once `stop` answers true.
+pub fn open_recording_until(path string, stop fn () bool) !Source {
+	return open_recording_at(path, stream_mb(), stop)
 }
 
 // open_recording_at opens `path` for a replay under a threshold of `mb` MiB: surveyed when it
-// streams, loaded otherwise. A file the stream cannot put in the loader's order (rows out of
-// time order) is loaded, since only the loader's sort places them.
-pub fn open_recording_at(path string, mb i64) !Source {
+// streams, loaded otherwise — and loaded, with a note, when the stream would not reproduce the
+// loader's rows (stream_differs).
+pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
+	mut note := ''
 	if streams(path, u64(os.file_size(path)), mb) {
-		sv := mf4.survey_file(path)!
+		mut sink := StopSink{
+			stop: stop
+		}
+		sv := mf4.survey_file_into(path, mut sink)!
 		if sv.frames == 0 {
 			return error('${os.base(path)} holds no frames')
 		}
-		if sv.out_of_order == 0 {
+		why := stream_differs(sv)
+		if why == '' {
 			return Source{
 				path:     path
 				buses:    sv.buses
 				streamed: true
+				stop:     stop
 			}
 		}
-		log, buses := load(path)!
-		return Source{
-			path:  path
-			buses: buses
-			log:   log
-			note:  '${os.base(path)}: ${sv.out_of_order} rows out of time order — replayed from memory'
-		}
+		note = '${os.base(path)}: ${why} — replayed from memory'
 	}
 	log, buses := load(path)!
 	return Source{
 		path:  path
 		buses: buses
 		log:   log
+		note:  note
+		stop:  stop
 	}
+}
+
+// stream_differs says how the stream's rows would differ from the loader's, '' when they would
+// not: rows out of time order (only the loader's sort places them), or frames whose payload the
+// stream could not hold until they were decoded.
+pub fn stream_differs(sv mf4.Survey) string {
+	if sv.out_of_order > 0 {
+		return '${sv.out_of_order} rows out of time order'
+	}
+	if sv.unresolved > 0 || sv.evicted > 0 {
+		return '${sv.unresolved + sv.evicted} frames whose payload the stream cannot hold'
+	}
+	return ''
+}
+
+// StopSink keeps nothing and asks `stop` every few thousand rows.
+struct StopSink {
+	stop fn () bool = unsafe { nil }
+mut:
+	n int
+}
+
+fn (mut s StopSink) row(_ &canlog.Log, _ canlog.Row) bool {
+	s.n++
+	return s.n % 4096 != 0 || isnil(s.stop) || !s.stop()
 }
 
 // Prepared is a source planned for its buses (player.BusSpec): what each bus keeps, the span,
@@ -97,7 +132,7 @@ mut:
 // the same Planner over the same rows, so both decide the same.
 pub fn (s &Source) prepare(specs []player.BusSpec) !Prepared {
 	if s.streamed {
-		c := player.open_chunker(s.path, specs, player.chunk_rows)!
+		c := player.open_chunker_until(s.path, specs, player.chunk_rows, s.stop)!
 		return Prepared{
 			buses:    c.buses
 			t0_s:     c.t0_s
@@ -158,7 +193,7 @@ pub fn scan_at(path string, db candb.Database, mb i64) !([]mf4.BusInfo, map[stri
 		if sv.frames == 0 {
 			return error('${os.base(path)} holds no frames')
 		}
-		if sv.out_of_order == 0 {
+		if stream_differs(sv) == '' {
 			for b in sv.buses {
 				i := sink.labels.index(b.iface)
 				cens[b.iface] = if i >= 0 && i < sink.by.len {
@@ -186,7 +221,7 @@ mut:
 	labels []string
 }
 
-fn (mut s CensusSink) row(labels &canlog.Log, r canlog.Row) {
+fn (mut s CensusSink) row(labels &canlog.Log, r canlog.Row) bool {
 	b := int(r.bus)
 	for s.by.len <= b {
 		s.by << player.new_census(s.db)
@@ -196,4 +231,5 @@ fn (mut s CensusSink) row(labels &canlog.Log, r canlog.Row) {
 	s.raw.rows.clear()
 	s.raw.rows << r
 	s.by[b].add(s.raw.frame(0), r.t_s)
+	return true
 }

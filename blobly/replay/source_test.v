@@ -109,8 +109,8 @@ fn drive(mut p player.Player) []string {
 fn test_a_streamed_replay_decides_and_plays_as_the_loaded_one() {
 	mut withheld := 0
 	for name in mf4_samples {
-		mem := open_recording_at(sample(name), 1 << 20) or { panic(err) }
-		str := open_recording_at(sample(name), 0) or { panic(err) }
+		mem := open_recording_at(sample(name), 1 << 20, unsafe { nil }) or { panic(err) }
+		str := open_recording_at(sample(name), 0, unsafe { nil }) or { panic(err) }
 		assert !mem.streamed && str.streamed && str.log.len() == 0
 		assert str.buses == mem.buses
 		for exclude in [[]string{}, ['SUT']] {
@@ -149,7 +149,7 @@ fn test_a_script_replay_streams_a_large_mf4() {
 	src := sample('two_buses.mf4')
 	rec := open_recording(src) or { panic(err) }
 	assert rec.streamed
-	mem := open_recording_at(src, 1 << 20) or { panic(err) }
+	mem := open_recording_at(src, 1 << 20, unsafe { nil }) or { panic(err) }
 	mut plan := mem.prepare(specs_for(&mem, [])) or { panic(err) }
 	want := plan.buses.map(it.report.kept)
 	plan.close()
@@ -311,8 +311,8 @@ fn test_a_recording_larger_than_one_read_streams_whole() {
 	defer {
 		os.rm(path) or {}
 	}
-	mem := open_recording_at(path, 1 << 20) or { panic(err) }
-	str := open_recording_at(path, 0) or { panic(err) }
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
 	assert str.streamed && str.buses == mem.buses && mem.buses.len == 2
 	mut a := mem.prepare(specs_for(&mem, ['SUT'])) or { panic(err) }
 	mut b := str.prepare(specs_for(&str, ['SUT'])) or { panic(err) }
@@ -349,8 +349,8 @@ fn test_a_streamed_j1939_bus_is_subtracted_as_the_loaded_one() {
 		os.rm(path) or {}
 	}
 	db := candb.load_dbc_file(os.join_path(src_repo, 'dbc', 'j1939_demo.dbc')) or { panic(err) }
-	mem := open_recording_at(path, 1 << 20) or { panic(err) }
-	str := open_recording_at(path, 0) or { panic(err) }
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
 	assert str.streamed && str.buses == mem.buses
 	mut gone := 0
 	mut pgn := 0
@@ -380,4 +380,30 @@ fn test_a_streamed_j1939_bus_is_subtracted_as_the_loaded_one() {
 		assert got == want, '${exclude}'
 	}
 	assert gone > 0 && pgn > 0 && tp > 0
+}
+
+fn test_a_streamed_open_and_plan_are_given_up_when_asked() {
+	path := os.join_path(os.temp_dir(), 'replay_stop_${os.getpid()}.mf4')
+	big_mf4(path, 20_000)
+	defer {
+		os.rm(path) or {}
+	}
+	yes := fn () bool {
+		return true
+	}
+	if _ := open_recording_at(path, 0, yes) {
+		assert false, 'an open asked to stop is given up'
+	} else {
+		assert err.msg() == 'stopped'
+	}
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	held := Source{
+		...str
+		stop: yes
+	}
+	held.prepare(specs_for(&str, [])) or {
+		assert err.msg() == 'stopped'
+		return
+	}
+	assert false, 'a plan asked to stop is given up'
 }

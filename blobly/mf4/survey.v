@@ -45,15 +45,17 @@ pub mut:
 
 // RowSink is told every row the survey reads, in the stream's order, with the label table the
 // row's bus indexes: what a caller that must look at the frames (the Replay panel's census) asks
-// of the same one pass.
+// of the same one pass. Answering false stops the survey, which then fails with `stopped`.
 pub interface RowSink {
 mut:
-	row(labels &canlog.Log, r canlog.Row)
+	row(labels &canlog.Log, r canlog.Row) bool
 }
 
 struct NoSink {}
 
-fn (mut n NoSink) row(_ &canlog.Log, _ canlog.Row) {}
+fn (mut n NoSink) row(_ &canlog.Log, _ canlog.Row) bool {
+	return true
+}
 
 // survey reads the recording once through the stream. A cursor's failure is the survey's, as
 // it is the loader's: a half-surveyed file is not a surveyed one.
@@ -97,7 +99,9 @@ pub fn survey_into(mut src ByteSource, mut sink RowSink) !Survey {
 		}
 		sv.frames++
 		counts[b]++
-		sink.row(&log, r)
+		if !sink.row(&log, r) {
+			return error('stopped')
+		}
 		if !seen[b] || acq_of[b] != s.last_acq {
 			seen[b] = true
 			acq_of[b] = s.last_acq

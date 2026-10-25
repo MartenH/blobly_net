@@ -179,10 +179,15 @@ pub mut:
 // something other than asked: a recorded bus that does not resolve, an exclusion no target's
 // database declares, two targets on one recorded or live bus, and nothing left to play.
 pub fn plan_for(source string, targets []Target) !Plan {
+	return plan_until(source, targets, unsafe { nil })
+}
+
+// plan_until is plan_for, a streamed recording's reads given up once `stop` answers true.
+pub fn plan_until(source string, targets []Target, stop fn () bool) !Plan {
 	if targets.len == 0 {
 		return error('replay: no channel to play onto')
 	}
-	rec := open_recording(source)!
+	rec := open_recording_until(source, stop)!
 	buses := rec.buses
 	mut specs := []player.BusSpec{}
 	mut dbs := []candb.Database{}
@@ -260,7 +265,7 @@ pub fn start(source string, targets []Target, o Options) !&Session {
 	if !player.speed_ok(o.speed) {
 		return error('replay: speed ${o.speed} — a rate of at least ${player.min_speed}, finite')
 	}
-	mut pl := plan_for(source, targets)!
+	mut pl := plan_until(source, targets, o.give_up)!
 	mut buses := map[string]transport.Bus{}
 	for t in targets { // plan_for refused two targets on one wire
 		mut b := o.open(t.iface, t.name) or {
@@ -329,6 +334,7 @@ fn (mut s Session) run(j Job) {
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
+	mut read_err := ''
 	for {
 		s.mu.lock()
 		stop := s.stopping || (!isnil(s.give_up) && s.give_up())
@@ -346,11 +352,8 @@ fn (mut s Session) run(j Job) {
 			first_err = ''
 		}
 		p.due_into(now, mut batch)
-		if first_err == '' {
-			re := prep.read_error()
-			if re != '' {
-				first_err = '${os.base(s.source)}: ${re}'
-			}
+		if read_err == '' && prep.read_error() != '' {
+			read_err = '${os.base(s.source)}: ${prep.read_error()}'
 		}
 		mut cut := false
 		for e in batch {
@@ -375,7 +378,7 @@ fn (mut s Session) run(j Job) {
 				...s.st
 				sent:   sent
 				failed: failed
-				error:  first_err
+				error:  joined(first_err, read_err)
 			}
 			s.mu.unlock()
 			break
@@ -391,7 +394,7 @@ fn (mut s Session) run(j Job) {
 			passes: st.loops
 			sent:   sent
 			failed: failed
-			error:  first_err
+			error:  joined(first_err, read_err)
 		}
 		s.taken = asked
 		s.mu.unlock()
@@ -405,6 +408,11 @@ fn (mut s Session) run(j Job) {
 		}
 		player.wait_until_ms(mut sw, until)
 	}
+}
+
+// joined is a send failure and a read failure, either or both.
+fn joined(send string, read string) string {
+	return if send == '' || read == '' { send + read } else { '${send}; ${read}' }
 }
 
 fn (mut s Session) is_stopping() bool {
