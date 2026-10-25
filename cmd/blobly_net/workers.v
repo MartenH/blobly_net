@@ -917,6 +917,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				for cj, other in a.chans {
 					if transport.destination_key(other.iface) == dead {
 						a.chans[cj].enabled = false
+						a.chans[cj].retired = true
 					}
 				}
 				// Same rule as every other writer of chans[].enabled: republish the wire list
@@ -969,6 +970,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// channel of the row it confirmed: recording at emit instead let a fast responder's
 		// answer reach the file before the request, because the simulation and the monitor are
 		// different threads on different sockets and neither waits for the other.
+		mut echo_rec := rec_none
 		if a.recording {
 			if c := claimed {
 				// FIRST claim only. Two channels may share a wire, and each monitor claims its
@@ -981,13 +983,24 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// listed first.
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
-					a.rec_append_locked(canlog.LogEntry{
+					echo_rec = a.rec_append_locked(canlog.LogEntry{
 						t_s:   a.since_s()
 						iface: ch_own
 						frame: f
 						dir:   .tx
 					})
 				}
+			}
+		}
+		// a send still in its driver may yet be refused, and give this echo back: what was done
+		// with it now is what that undoes (settle_echo_locked)
+		if c := claimed {
+			if c.open {
+				a.taps.attach(c.seq, ci, a.keep_echo_obs(EchoObs{
+					rec_id: echo_rec
+					epoch:  a.tx_epoch
+					paused: a.paused
+				}))
 			}
 		}
 		a.mu.unlock()

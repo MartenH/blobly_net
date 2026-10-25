@@ -17,6 +17,7 @@ module main
 
 import os
 import blobly.player
+import blobly.wiretap
 import time
 import sync.stdatomic
 import vgui
@@ -109,6 +110,9 @@ fn main() {
 	mut app := &App{
 		t0_ns:   time.sys_mono_now()
 		wake_ms: wake_ms
+		taps:    wiretap.Ring{
+			sends_settle: true
+		}
 	}
 	app.send_id_buf = mkbuf('101', 24)
 	app.send_data_buf = mkbuf('01', 64)
@@ -394,10 +398,15 @@ fn main() {
 		app.snap_trecs << app.trecs
 		app.snap_chans.clear()
 		app.snap_chans << app.chans
+		app.snap_model_en.clear()
+		for pc in app.proj.channels {
+			app.snap_model_en << pc.enabled
+		}
 		rows := app.snap_rows
 		gcount := app.gcount.clone()
 		trecs := app.snap_trecs
 		chans := app.snap_chans
+		model_en := app.snap_model_en
 		app.mu.unlock()
 
 		app.plot_auto_step(rows, frame)
@@ -420,7 +429,7 @@ fn main() {
 		app.cfg_file_visible = false // the File tab sets it when it draws, below
 
 		if app.show_buses {
-			draw_buses(mut app, chans)
+			draw_buses(mut app, chans, model_en)
 		}
 		if app.show_sim {
 			draw_sim(mut app)

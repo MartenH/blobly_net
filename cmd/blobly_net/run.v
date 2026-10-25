@@ -723,6 +723,7 @@ fn (mut app App) start() {
 	for ci in 0 .. app.chans.len {
 		if ci < app.proj.channels.len {
 			app.chans[ci].enabled = app.proj.channels[ci].enabled
+			app.chans[ci].retired = false
 		}
 	}
 	app.push_listen_only_locked()
@@ -899,7 +900,9 @@ fn (mut app App) start() {
 		m.lock()
 	}
 	app.mu.lock()
-	app.taps = wiretap.Ring{}
+	app.taps = wiretap.Ring{
+		sends_settle: true
+	}
 	// The consumer counters belong to ONE run. Cleared here, with the generation, under the same
 	// lock: carried across a restart they would count a previous run's arrivals towards this
 	// run's gate, which is the readiness check passing before anything is actually listening.
@@ -1035,6 +1038,7 @@ fn (mut app App) start() {
 	for ci in 0 .. app.chans.len {
 		if ci < app.proj.channels.len {
 			app.chans[ci].enabled = app.proj.channels[ci].enabled
+			app.chans[ci].retired = false
 		}
 	}
 	app.push_listen_only_locked()

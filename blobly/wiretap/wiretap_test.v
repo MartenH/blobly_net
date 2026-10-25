@@ -507,3 +507,176 @@ fn test_a_claim_noted_by_a_time_skips_what_was_noted_after_it() {
 	assert c.seq == 1
 	assert r.claim_noted_by(0, 'vcan0', f, 150, 150) == none
 }
+
+// #558: send A is noted and stalls in its driver; send B of the same frame goes out and its echo
+// claims A's older record. A is then refused: the echo is B's, so B's record is no longer open
+// for the ECU's next identical frame, which is somebody else's.
+fn test_a_refused_send_gives_its_claimed_echo_to_the_identical_send() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(1), 2])
+	r.note(1, 'vcan0', f, 0, [0], 'A', false)
+	r.note(2, 'vcan0', f, 1, [0], 'B', false)
+	r.sent(2)
+	c := r.claim(0, 'vcan0', f, 2) or {
+		assert false, 'the echo was not claimed'
+		return
+	}
+	assert c.seq == 1 && c.open
+	r.attach(1, 0, 77)
+	got := r.refuse(1)
+	assert got.len == 1
+	assert got[0].found && got[0].to.seq == 2 && got[0].to.tag == 'B'
+	assert got[0].ctx == 77 && got[0].t_ms == 2 && got[0].frame.data == f.data
+	assert got[0].fate() == .moved
+	if x := r.claim(0, 'vcan0', f, 3) {
+		assert false, 'the ECU frame after the refusal was taken for send ${x.seq}'
+	}
+	assert r.expire(default_window_ms + 10) == []u64{}, 'B was seen and must not be called missing'
+}
+
+// Refused with no identical send to give it to, the echo was somebody else's frame.
+fn test_a_refused_send_with_nothing_left_makes_its_echo_foreign() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0, 1], '', false)
+	r.claim(0, 'vcan0', f, 1) or { assert false }
+	r.claim(1, 'vcan0', f, 1.5) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 2
+	assert got.all(!it.found && it.fate() == .foreign && it.ctx == none_ctx)
+	assert got.map(it.monitor) == [0, 1]
+	assert r.outstanding() == 0
+}
+
+// A send noted after the echo was read cannot be its source.
+fn test_a_reclaim_never_reaches_a_send_noted_after_the_echo() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.claim(0, 'vcan0', f, 1) or { assert false }
+	r.note(2, 'vcan0', f, 5, [0], '', false)
+	got := r.refuse(1)
+	assert got.len == 1 && !got[0].found
+	c := r.claim(0, 'vcan0', f, 6) or {
+		assert false, 'the later send lost its own echo'
+		return
+	}
+	assert c.seq == 2
+}
+
+// The other send already accounted for by another claim: what the echo did is a duplicate.
+fn test_a_reclaim_onto_an_accounted_send_is_a_duplicate() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0, 1], '', false)
+	r.note(2, 'vcan0', f, 1, [0, 1], '', true)
+	r.claim(0, 'vcan0', f, 2) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 1 && got[0].found && got[0].to.seq == 2
+	assert got[0].fate() == .duplicate, 'B was recorded at emit (done)'
+}
+
+// A claimed record whose send is still open is not settled: eviction keeps it for a refusal.
+fn test_an_open_send_is_not_evicted_as_settled() {
+	mut r := Ring{
+		sends_settle: true
+		cap:          2
+	}
+	f := frame(0x120, [u8(5)])
+	g := frame(0x121, [u8(6)])
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.claim(0, 'vcan0', f, 1) or { assert false }
+	r.note(2, 'vcan0', g, 2, [0], '', false)
+	r.sent(2)
+	r.claim(0, 'vcan0', g, 3) or { assert false }
+	r.note(3, 'vcan0', g, 4, [0], '', false)
+	got := r.refuse(1)
+	assert got.len == 1, 'the open record was evicted before its send settled'
+}
+
+// Without sends_settle nothing is provisional: the ring behaves as before.
+fn test_without_sends_settle_a_refusal_reclaims_nothing() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	c := r.claim(0, 'vcan0', f, 1) or {
+		assert false
+		return
+	}
+	assert !c.open
+	assert r.refuse(1) == []Reclaim{}
+	assert r.outstanding() == 0
+}
+
+// A write that failed and may have gone out keeps the echo it claimed; with none, its record goes.
+fn test_an_unsure_send_keeps_its_echo() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.note(2, 'vcan0', f, 1, [0], '', false)
+	r.claim(0, 'vcan0', f, 2) or { assert false }
+	r.unsure(1)
+	r.unsure(2)
+	assert r.outstanding() == 1, 'the claimed record stays, the unclaimed one goes'
+	assert r.refuse(1) == []Reclaim{}, 'settled by unsure: nothing is provisional'
+}
+
+// The refused send's own accounting travels with each reclaim: which claim was first, and
+// whether the send was recorded at note().
+fn test_a_reclaim_carries_the_refused_claim() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'can:a', f, 0, [0, 1], 'A', true)
+	r.claim(0, 'can:a', f, 1) or { assert false }
+	r.claim(1, 'can:a', f, 2) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 2
+	assert got[0].first && !got[1].first
+	assert got.all(it.done && it.iface == got[0].iface && it.iface != '')
+}
+
+// At the cap with nothing settled, a claimed open record goes before a watched, unanswered one,
+// whose eviction would be reported as missing.
+fn test_at_the_cap_an_answered_open_record_goes_before_a_verdict() {
+	mut r := Ring{
+		sends_settle: true
+		cap:          2
+	}
+	f := frame(0x120, [u8(5)])
+	g := frame(0x121, [u8(6)])
+	r.note(1, 'vcan0', g, 0, [0], '', false)
+	r.note(2, 'vcan0', f, 1, [0], '', false)
+	r.claim(0, 'vcan0', f, 2) or { assert false }
+	evicted := r.note(3, 'vcan0', g, 3, [0], '', false)
+	assert evicted == []u64{}, 'an unanswered record was evicted with a verdict'
+	assert r.refuse(2) == []Reclaim{}
+}
+
+// A frame given back to the bus is the frame as received: ESI is no part of echo identity, so it
+// comes from the reading, not from our record.
+fn test_a_foreign_reclaim_keeps_the_received_esi() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := transport.CanFrame{
+		id:   0x120
+		fd:   true
+		data: [u8(5)]
+	}
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.claim(0, 'vcan0', transport.CanFrame{ ...f, esi: true }, 1) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 1 && got[0].fate() == .foreign && got[0].frame.esi
+}

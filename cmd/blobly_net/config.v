@@ -1136,6 +1136,7 @@ fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
 	app.mu.lock()
 	if ci < app.chans.len {
 		app.chans[ci].enabled = en
+		app.chans[ci].retired = false
 	}
 	app.proj.channels[ci].enabled = en
 	// chans[].enabled moved, so the wire list has to move with it -- the marks are consulted per

@@ -54,6 +54,9 @@ struct Chan {
 	replay_loop    bool
 mut:
 	enabled bool
+	// rx_loop took this row out of the run because its wire's adapter stopped answering;
+	// `enabled` is false with it, and Start or the tick clears both (tickrule)
+	retired bool
 	rx      u64
 	// BUS LOAD (transport.busload): bit-times seen on this wire since the last roll, rolled
 	// once a second into `load_hist` — the last 60 seconds of load, oldest first — and the
@@ -278,7 +281,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq, rec_id, epoch := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
+	seq, rec_id, epoch, noted := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	// BENEATH THE RECORD, and through the shared helper cmd/restbus also uses.
@@ -302,10 +305,14 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	pb := probe_alloc_mark()
 	transport.send_waiting_for_room(mut t.inner, wire, 200, t.cancel) or {
 		probe_alloc_note(.inner, pb)
-		t.app.retract_emit(seq, t.origin, epoch)
+		// refused for certain by its type or a full queue; any other failure may have gone out
+		definite := err is transport.NotWritten || transport.is_backpressure(err)
+		kept := t.app.retract_emit(seq, t.origin, epoch, noted, definite, rec_id)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
-		// from the backend
-		t.app.unrecord(rec_id)
+		// from the backend — unless it now stands for an echo another send or the bus put there
+		if !kept {
+			t.app.unrecord(rec_id)
+		}
 		// WHY DID IT FAIL? A refused send is the moment the fault ladder is worth asking for, and
 		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
 		// above, so a status call through a vendor DLL never delays retracting the row this send
@@ -317,7 +324,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	pc := probe_alloc_mark()
 	t.sent = wire
 	// The driver has it: it is on the wire, and the wire's load.
-	t.app.count_tx_load(t.iface, wire)
+	t.app.count_tx_load(seq, noted, t.iface, wire)
 	// …and only now is it a frame we PUT on the wire, which is what the `verify:` self-send
 	// notice is about (#95). Above the retract path on purpose: a refused send must not warn
 	// about a frame that never went out, nor consume the once-per-run latch that the real

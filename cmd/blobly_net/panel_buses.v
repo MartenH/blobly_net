@@ -3,6 +3,7 @@ module main
 import blobly.transport
 import blobly.project
 import vgui
+import tickrule
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
 // grey off (disabled) / red down (attached but the CAN iface is DOWN) / green run / amber idle.
@@ -187,7 +188,9 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	return u8(220), u8(170), u8(70), 'idle'
 }
 
-fn draw_buses(mut app App, chans []Chan) {
+// `model_en` is each row's project `enabled`, snapshotted with `chans`: the tick shows and edits
+// it (tickrule), since it is what Save writes and the next Start opens.
+fn draw_buses(mut app App, chans []Chan, model_en []bool) {
 	// From the SNAPSHOT this frame was given, not from live state: the rows were cloned under
 	// app.mu and re-reading past that clone races the workers writing into it.
 	read_dests := read_destinations(chans)
@@ -225,8 +228,11 @@ fn draw_buses(mut app App, chans []Chan) {
 		}
 		for i in idxs {
 			c := chans[i]
-			new := vgui.checkbox('##en${i}', c.enabled)
-			if new != c.enabled {
+			// the project's bit where the snapshot lines up with the rows (a rebuild realigns them)
+			tk := tickrule.tick(if model_en.len == chans.len { model_en[i] } else { c.enabled },
+				c.retired, app.running)
+			new := vgui.checkbox('##en${i}', tk.ticked)
+			if new != tk.ticked {
 				// TOPOLOGY IS FIXED AT START; WORKLOAD STAYS LIVE (#120). This tick decides
 				// which buses a measurement OPENS, and changing that under a running one meant
 				// spawning readers against ports other threads hold and handing wires between
@@ -274,6 +280,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				}
 				if refusal == '' {
 					app.chans[i].enabled = new
+					app.chans[i].retired = false
 					// THE TICK IS A PROJECT EDIT, like the Replay panel's
 					// set_chan_enabled_stopped already is. It used to move only the runtime
 					// copy: Configure went on showing the row ticked, and Save wrote it
@@ -362,6 +369,10 @@ fn draw_buses(mut app App, chans []Chan) {
 					vgui.text_colored(u8(240), u8(150), u8(60), 'STILL SILENT')
 					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is transmit-enabled, but the transceiver will not leave listen-only — so nothing sent on this wire reaches the bus, however much this app reports as sent. Retried on every receive.')
 				}
+			}
+			// own line, wrapped: the channel row is narrow and would clip it
+			if tk.note != '' {
+				vgui.text_colored_wrapped(215, 90, 90, tk.note)
 			}
 			// system awareness: when a system.toml is loaded, name the ECUs that sit on
 			// this bus — the channel row alone doesn't say WHO is on the wire. The system
