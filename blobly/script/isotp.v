@@ -35,8 +35,8 @@ fn l_isotp_open(l lua.State) i32 {
 	name := l.arg_str(1)
 	has_tx := !l.arg_is_nil(2)
 	has_rx := !l.arg_is_nil(3)
-	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('isotp.open("${name}"): tx is not an integer') } } else { 0 }
-	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('isotp.open("${name}"): rx is not an integer') } } else { 0 }
+	txi := if has_tx { id_arg(l, 2, 'tx', min_i64, max_i64) or { return l.fail('isotp.open("${name}"): ${err}') } } else { 0 }
+	rxi := if has_rx { id_arg(l, 3, 'rx', min_i64, max_i64) or { return l.fail('isotp.open("${name}"): ${err}') } } else { 0 }
 	ask := udsconn.Ask{
 		what:   'isotp.open'
 		has_tx: has_tx
@@ -128,7 +128,7 @@ fn l_isotp_close(l lua.State) i32 {
 // __uds_timing(h): timeout_ms, p2_star_ms, margin_ms, pending_budget_ms as they stand
 fn l_uds_timing(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn_arg(l, 1) or { return l.fail('diag:timing: ${err}') }
+	c, _ := env.conn_arg(l, 1) or { return l.fail('diag:timing: ${err}') }
 	t := c.cli.timing()
 	l.push_int(t.timeout_ms)
 	l.push_int(t.p2_star_ms)
@@ -165,7 +165,7 @@ fn waits_args(l lua.State, first int) !uds.Waits {
 // keeps one), from the next request on; refused whole (uds.Client.state)
 fn l_uds_set_timing(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:set_timing: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:set_timing: ${err}') }
 	w := waits_args(l, 2) or { return l.fail(err.msg()) }
 	c.cli.state(w) or { return l.fail(err.msg()) }
 	return 0
@@ -183,7 +183,7 @@ fn l_uds_timing_check(l lua.State) i32 {
 // __uds_target(h): the logical address a DoIP connection's requests go to, a CAN one's request id
 fn l_uds_target(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
+	c, _ := env.conn_arg(l, 1) or { return l.fail('uds target: ${err}') }
 	l.push_int(i64(c.ch.rx_id))
 	return 1
 }
@@ -193,18 +193,16 @@ fn l_uds_target(l lua.State) i32 {
 // and another target starts again from the waits and sizes the script stated
 fn l_uds_retarget(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:retarget: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:retarget: ${err}') }
 	if mut c.ch is doip.DoipClient {
 		mut target := u16(0)
 		if l.arg_is_nil(2) {
 			ci := env.find_chan(c.chan) or { return l.fail(err.msg()) }
 			target = env.chans[ci].carrier.ecu
 		} else {
-			a := l.arg_int_exact(2) or { return l.fail('retarget: the address is not an integer') }
-			if a < 0 || a > 0xFFFF {
-				return l.fail('retarget: ${a} is not a logical address (0 .. 0xFFFF)')
-			}
-			target = u16(a)
+			target = u16(id_arg(l, 2, 'the logical address', 0, 0xFFFF) or {
+				return l.fail('diag:retarget: ${err}')
+			})
 		}
 		// under the connection's lock: a keep-alive is never in the middle of it
 		c.mu.lock()

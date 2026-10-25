@@ -896,7 +896,7 @@ function bus.send_cyclic(channel, id, data, period_ms, opts)
   end
   if math.type(period_ms) ~= "integer" then error("bus.send_cyclic: period_ms is a whole number of ms", 2) end
   if data ~= nil and type(data) ~= "string" then error("bus.send_cyclic: data is bytes (a string)", 2) end
-  if math.tointeger(id) == nil then error("bus.send_cyclic: an id is an integer, not " .. tostring(id), 2) end
+  if type(id) ~= "number" or math.tointeger(id) == nil then error("bus.send_cyclic: an id is an integer, not " .. tostring(id), 2) end
   return setmetatable({ handle = __cyclic_start(channel, id, opts.ext or false, data or "", opts.format,
     period_ms) }, Sender)
 end
@@ -993,7 +993,7 @@ local function jms(fname, ms, default)
   return math.floor(ms)
 end
 local function jint(fname, what, v, top)
-  if math.tointeger(v) == nil or v < 0 or v > top then
+  if type(v) ~= "number" or math.tointeger(v) == nil or v < 0 or v > top then
     error(string.format("%s: %s is an integer 0..0x%X, not %s", fname, what, top, tostring(v)), 3)
   end
 end

@@ -133,7 +133,7 @@ fn l_j1939_wait(l lua.State) i32 {
 	mut lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	ch := env.chans[ci]
-	pgn := int_arg(l, 3, 'the PGN', -1, 0x3FFFF) or { return l.fail('j1939.expect: ${err}') }
+	pgn := id_arg(l, 3, 'the PGN', -1, 0x3FFFF) or { return l.fail('j1939.expect: ${err}') }
 	sa := int_arg(l, 4, 'the source address', -1, 0xFF) or { return l.fail('j1939.expect: ${err}') }
 	any_one := pgn < 0 && sa < 0
 	mut got := []j1939.Assembled{}

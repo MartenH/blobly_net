@@ -463,7 +463,8 @@ fn l_log(l lua.State) i32 {
 }
 
 fn l_sleep(l lua.State) i32 {
-	ms := env_of(l).bounded(ms_up(l, 1))
+	asked := ms_up(l, 1)
+	ms := env_of(l).bounded(if asked > 0 { asked } else { 0 })
 	if ms > 0 {
 		time.sleep(ms * time.millisecond)
 	}
@@ -524,8 +525,8 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 	has_rx := !l.arg_is_nil(3)
 	// exact: a value that is not an integer must not become id 0 — for a flash, that addresses
 	// an erase at an endpoint the script never named
-	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('${what}("${name}"): tx is not an integer') } } else { 0 }
-	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('${what}("${name}"): rx is not an integer') } } else { 0 }
+	txi := if has_tx { id_arg(l, 2, 'tx', min_i64, max_i64) or { return l.fail('${what}("${name}"): ${err}') } } else { 0 }
+	rxi := if has_rx { id_arg(l, 3, 'rx', min_i64, max_i64) or { return l.fail('${what}("${name}"): ${err}') } } else { 0 }
 	ask := udsconn.Ask{
 		what:   what
 		has_tx: has_tx
@@ -663,7 +664,7 @@ fn l_uds_close(l lua.State) i32 {
 
 fn l_uds_session(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:session: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:session: ${err}') }
 	sub := byte_arg(l, 2, 'the session') or { return l.fail('diag:session: ${err}') }
 	params := c.cli.diagnostic_session(sub) or { return l.fail(err.msg()) }
 	l.push_bytes(params)
@@ -672,7 +673,7 @@ fn l_uds_session(l lua.State) i32 {
 
 fn l_uds_read_did(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:read_did: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:read_did: ${err}') }
 	did := did_id_arg(l, 2) or { return l.fail('diag:read_did: ${err}') }
 	data := c.cli.read_data_by_identifier(did) or { return l.fail(err.msg()) }
 	l.push_bytes(data)
@@ -869,12 +870,7 @@ fn l_someip_call(l lua.State) i32 {
 			vals << none
 			continue
 		}
-		// exact: 1.5 or 1e30 is refused rather than read as 0, a different header
-		v := l.arg_int_exact(3 + i) or { return l.fail('someip.call: ${names[i]} is not an integer') }
-		if v < 0 || v > lim {
-			return l.fail('someip.call: ${names[i]} ${v} does not fit')
-		}
-		vals << v
+		vals << id_arg(l, 3 + i, names[i], 0, lim) or { return l.fail('someip.call: ${err}') }
 	}
 	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
 	timeout := int(env.bounded_window(ms_up(l, 9)))
@@ -941,14 +937,14 @@ fn hex_bytes(x string) ?[]u8 {
 
 fn l_uds_tester_present(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:tester_present: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:tester_present: ${err}') }
 	c.cli.tester_present() or { return l.fail(err.msg()) }
 	return 0
 }
 
 fn l_uds_raw(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:raw: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:raw: ${err}') }
 	resp := c.cli.raw(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
 	return 1
@@ -956,7 +952,7 @@ fn l_uds_raw(l lua.State) i32 {
 
 fn l_uds_reset(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:reset: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:reset: ${err}') }
 	kind := byte_arg(l, 2, 'the reset kind') or { return l.fail('diag:reset: ${err}') }
 	resp := c.cli.ecu_reset(kind) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
@@ -965,7 +961,7 @@ fn l_uds_reset(l lua.State) i32 {
 
 fn l_uds_comm_control(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:comm_control: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:comm_control: ${err}') }
 	control := byte_arg(l, 2, 'the control') or { return l.fail('diag:comm_control: ${err}') }
 	ctype := byte_arg(l, 3, 'the communication type') or {
 		return l.fail('diag:comm_control: ${err}')
@@ -976,15 +972,15 @@ fn l_uds_comm_control(l lua.State) i32 {
 
 fn l_uds_dtc_setting(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:dtc_setting: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:dtc_setting: ${err}') }
 	c.cli.control_dtc_setting(l.arg_int(2) != 0) or { return l.fail(err.msg()) }
 	return 0
 }
 
 fn l_uds_clear_dtc(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:clear_dtcs: ${err}') }
-	group := int_arg(l, 2, 'the DTC group', 0, 0xFF_FFFF) or {
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:clear_dtcs: ${err}') }
+	group := id_arg(l, 2, 'the DTC group', 0, 0xFF_FFFF) or {
 		return l.fail('diag:clear_dtcs: ${err}')
 	}
 	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
@@ -1004,7 +1000,7 @@ fn l_uds_functional(l lua.State) i32 {
 	fid := if nil_id {
 		i64(doip.default_functional_address)
 	} else {
-		l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
+		id_arg(l, 2, 'the functional id', min_i64, max_i64) or { return l.fail('uds.functional: ${err}') }
 	}
 	req := l.arg_bytes(3)
 	window := int(env.bounded_window(ms_up(l, 4)))
@@ -1024,7 +1020,7 @@ fn l_uds_functional(l lua.State) i32 {
 	}
 	mut targets := []uds.FunctionalTarget{}
 	for i in 5 .. l.nargs() + 1 {
-		mut c := env.conn_arg(l, i) or { return l.fail('uds.functional: ${err}') }
+		mut c, _ := env.conn_arg(l, i) or { return l.fail('uds.functional: ${err}') }
 		if !c.can || c.chan != name {
 			return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not a CAN target here')
 		}
@@ -1063,7 +1059,7 @@ fn (mut env Env) uds_functional_doip(l lua.State, name string, fa i64, req []u8,
 	if l.nargs() != 5 {
 		return l.fail('uds.functional("${name}"): a DoIP channel is one connection to one entity — pass its one uds.open connection')
 	}
-	mut c := env.conn_arg(l, 5) or { return l.fail('uds.functional: ${err}') }
+	mut c, _ := env.conn_arg(l, 5) or { return l.fail('uds.functional: ${err}') }
 	if c.chan != name || c.ch !is doip.DoipClient {
 		return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not this DoIP channel')
 	}
@@ -1122,7 +1118,7 @@ fn l_e2e_p01_protect(l lua.State) i32 {
 
 fn l_uds_raw_suppressed(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:raw_suppressed: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:raw_suppressed: ${err}') }
 	answered := c.cli.raw_suppressed(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bool(answered)
 	return 1
@@ -1144,7 +1140,7 @@ fn push_dtc_report(l lua.State, r uds.DtcReport) {
 
 fn l_uds_dtcs(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:dtcs: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:dtcs: ${err}') }
 	mask := byte_arg(l, 2, 'the status mask') or { return l.fail('diag:dtcs: ${err}') }
 	r := c.cli.dtcs(mask) or { return l.fail(err.msg()) }
 	push_dtc_report(l, r)
@@ -1153,7 +1149,7 @@ fn l_uds_dtcs(l lua.State) i32 {
 
 fn l_uds_supported_dtcs(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:supported_dtcs: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:supported_dtcs: ${err}') }
 	r := c.cli.supported_dtcs() or { return l.fail(err.msg()) }
 	push_dtc_report(l, r)
 	return 1
@@ -1176,7 +1172,7 @@ fn push_dtc_head(l lua.State, rec uds.DtcRecord, avail u8) {
 // l_uds_snapshot_ids (0x19 03): an array of {code, name, record}.
 fn l_uds_snapshot_ids(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:snapshot_ids: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:snapshot_ids: ${err}') }
 	ids := c.cli.snapshot_ids() or { return l.fail(err.msg()) }
 	l.new_table()
 	for i, s in ids {
@@ -1191,7 +1187,7 @@ fn l_uds_snapshot_ids(l lua.State) i32 {
 
 // dtc_args: the DTC code and the record number of a 0x19 04 / 06 call (args 2 and 3).
 fn dtc_args(l lua.State) !(u32, u8) {
-	code := int_arg(l, 2, 'the DTC', 0, 0xFF_FFFF)!
+	code := id_arg(l, 2, 'the DTC', 0, 0xFF_FFFF)!
 	return u32(code), byte_arg(l, 3, 'the record number')!
 }
 
@@ -1199,7 +1195,7 @@ fn dtc_args(l lua.State) !(u32, u8) {
 // {number, dids = array of {id, data}}.
 fn l_uds_snapshot(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:snapshot: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:snapshot: ${err}') }
 	code, rec := dtc_args(l) or { return l.fail('diag:snapshot: ${err}') }
 	s := c.cli.snapshot(code, rec) or { return l.fail(err.msg()) }
 	l.new_table()
@@ -1227,7 +1223,7 @@ fn l_uds_snapshot(l lua.State) i32 {
 // aging (0x02), failed_cycles (0x03).
 fn l_uds_extended(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:extended: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:extended: ${err}') }
 	code, rec := dtc_args(l) or { return l.fail('diag:extended: ${err}') }
 	e := c.cli.extended(code, rec) or { return l.fail(err.msg()) }
 	l.new_table()
@@ -1252,7 +1248,7 @@ fn l_uds_extended(l lua.State) i32 {
 // l_uds_did_size states a snapshot DID's size (args: handle, DID, bytes).
 fn l_uds_did_size(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:did_size: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:did_size: ${err}') }
 	id := did_id_arg(l, 2) or { return l.fail('diag:did_size: ${err}') }
 	n := int_arg(l, 3, 'the size', 0, 4095) or { return l.fail('diag:did_size: ${err}') }
 	c.cli.set_did_size(id, int(n))
@@ -1262,7 +1258,7 @@ fn l_uds_did_size(l lua.State) i32 {
 // l_uds_ext_size states an extended data record's size (args: handle, record number, bytes).
 fn l_uds_ext_size(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:ext_record_size: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:ext_record_size: ${err}') }
 	rec := byte_arg(l, 2, 'the record number') or { return l.fail('diag:ext_record_size: ${err}') }
 	n := int_arg(l, 3, 'the size', 0, 4095) or { return l.fail('diag:ext_record_size: ${err}') }
 	c.cli.set_ext_record_size(rec, int(n))
@@ -1281,7 +1277,7 @@ fn l_uds_dtc_code(l lua.State) i32 {
 
 fn l_uds_dtc_count(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:dtc_count: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:dtc_count: ${err}') }
 	mask := byte_arg(l, 2, 'the status mask') or { return l.fail('diag:dtc_count: ${err}') }
 	n := c.cli.dtc_count(mask) or { return l.fail(err.msg()) }
 	l.push_int(n.count)
@@ -1290,7 +1286,7 @@ fn l_uds_dtc_count(l lua.State) i32 {
 
 fn l_uds_write_did(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:write_did: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:write_did: ${err}') }
 	did := did_id_arg(l, 2) or { return l.fail('diag:write_did: ${err}') }
 	c.cli.write_data_by_identifier(did, l.arg_bytes(3)) or {
 		return l.fail(err.msg())
@@ -1301,7 +1297,7 @@ fn l_uds_write_did(l lua.State) i32 {
 // l_uds_sec_seed: the seed, and whether it says the level is unlocked already (no key is sent)
 fn l_uds_sec_seed(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
 	level := byte_arg(l, 2, 'the level') or { return l.fail('diag:security_access: ${err}') }
 	seed := c.cli.security_request_seed(level) or { return l.fail(err.msg()) }
 	l.push_bytes(seed)
@@ -1311,7 +1307,7 @@ fn l_uds_sec_seed(l lua.State) i32 {
 
 fn l_uds_sec_key(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:security_access: ${err}') }
 	level := byte_arg(l, 2, 'the level') or { return l.fail('diag:security_access: ${err}') }
 	c.cli.security_send_key(level, l.arg_bytes(3)) or { return l.fail(err.msg()) }
 	return 0
@@ -1319,7 +1315,7 @@ fn l_uds_sec_key(l lua.State) i32 {
 
 fn l_uds_read_dtc(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:read_dtcs: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:read_dtcs: ${err}') }
 	mask := byte_arg(l, 2, 'the status mask') or { return l.fail('diag:read_dtcs: ${err}') }
 	dtcs := c.cli.read_dtc_by_status_mask(mask) or { return l.fail(err.msg()) }
 	l.push_bytes(dtcs)

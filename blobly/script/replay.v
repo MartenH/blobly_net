@@ -178,7 +178,7 @@ fn l_replay_status(l lua.State) i32 {
 fn l_replay_wait(l lua.State) i32 {
 	mut env := env_of(l)
 	mut s := env.session(l) or { return l.fail('replay: ${err}') }
-	ms := if l.arg_num(2) < 0 { i64(-1) } else { ms_up(l, 2) }
+	ms := ms_up(l, 2)
 	until := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	for {
 		left := if ms < 0 { i64(100) } else { i64(until - time.sys_mono_now()) / 1_000_000 }

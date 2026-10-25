@@ -247,7 +247,7 @@ fn (mut env Env) say_keep_alive(mut c UdsConn) {
 // __uds_keep_alive(h, period_ms): 0 stops it
 fn l_uds_keep_alive(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive: ${err}') }
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive: ${err}') }
 	ms := l.arg_int_exact(2) or { return l.fail('diag:keep_alive: a period is a whole number of ms') }
 	if ms != 0 && (ms < uds.keepalive_min_ms || ms > uds.keepalive_max_ms) {
 		return l.fail('diag:keep_alive: a period of ${ms} ms: give ${uds.keepalive_min_ms} .. ${uds.keepalive_max_ms}, or 0 to stop')
@@ -259,7 +259,7 @@ fn l_uds_keep_alive(l lua.State) i32 {
 // __uds_keep_alive_status(h) -> period_ms, sent, failures, running, failure
 fn l_uds_keep_alive_status(l lua.State) i32 {
 	mut env := env_of(l)
-	c := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive_status: ${err}') }
+	c, _ := env.conn_arg(l, 1) or { return l.fail('diag:keep_alive_status: ${err}') }
 	mut st := uds.KeepAliveStatus{}
 	if !isnil(c.ka) {
 		mut k := c.ka

@@ -156,7 +156,7 @@ pub fn (l State) arg_int(i int) i64 {
 }
 
 // arg_int_exact is arg_int for an argument that must BE an integer: none for a value Lua cannot
-// convert exactly (a string, 1.5, 1e30), where arg_int answers 0 — for a caller to whom 0 means
+// convert exactly (a non-numeric string, 1.5, 1e30; a numeric string converts), where arg_int answers 0 — for a caller to whom 0 means
 // something (a DTC group, a request byte).
 pub fn (l State) arg_int_exact(i int) ?i64 {
 	mut ok := i32(0)
@@ -186,7 +186,14 @@ pub fn (l State) arg_given(i int) string {
 		}
 		4 {
 			s := l.arg_str(i)
-			return if s.len > 40 { '"${s[..40]}..."' } else { '"${s}"' }
+			if s.len <= 40 {
+				return '"${s}"'
+			}
+			mut n := 40
+			for n > 0 && s[n] & 0xC0 == 0x80 {
+				n-- // not inside a UTF-8 character
+			}
+			return '"${s[..n]}..."'
 		}
 		else {
 			return 'a ' + unsafe { cstring_to_vstring(C.ctlua_typename(l, t)) }
@@ -204,6 +211,11 @@ pub fn (l State) arg_bool(i int) bool {
 
 pub fn (l State) arg_is_nil(i int) bool {
 	return C.ctlua_is_nil(l, i) != 0
+}
+
+// arg_is_number is whether argument i is a number, not a string that converts to one.
+pub fn (l State) arg_is_number(i int) bool {
+	return C.ctlua_type(l, i) == 3
 }
 
 pub fn (l State) arg_is_num(i int) bool {
