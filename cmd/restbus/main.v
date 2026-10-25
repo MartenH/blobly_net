@@ -30,6 +30,7 @@ import blobly.candb
 import blobly.mf4
 import os
 import blobly.player
+import blobly.replay
 import time
 import blobly.transport
 
@@ -74,9 +75,14 @@ fn main() {
 		println('stream: read-ahead high-water ${sv.max_queued} rows / ${sv.max_ahead_s * 1000.0:.1f} ms, writer disorder ${sv.max_disorder_s * 1000.0:.1f} ms, clock steps ${sv.clock_steps}, forced ${sv.forced}, evicted ${sv.evicted}, refused ${sv.refused}, unresolved ${sv.unresolved}, out of order ${sv.out_of_order}')
 		return
 	}
-	rec := mf4.load_recording(o.source) or {
+	// Loaded whole, or surveyed and then streamed a chunk at a time when it is a large .mf4
+	// (replay.streams, BLOBLY_MF4_STREAM_MB).
+	rec := replay.open_recording(o.source) or {
 		eprintln('restbus: ${o.source}: ${err}')
 		exit(1)
+	}
+	if rec.note != '' {
+		eprintln('restbus: ${rec.note}')
 	}
 	if o.maps.len > 0 {
 		run_multi(o, &rec)
@@ -102,16 +108,32 @@ fn main() {
 		exit(1)
 	}
 
-	on_bus := player.sel_on_bus(&rec.log, iface)
-	if on_bus.len == 0 {
+	// One bus is the multi-bus plan with one mapping: the same Planner, onto --iface.
+	mut prep := rec.prepare([
+		player.BusSpec{
+			src:                 iface
+			dst:                 o.iface
+			db:                  db
+			exclude:             o.exclude
+			replay_unattributed: o.replay_unattr
+		},
+	]) or {
+		eprintln('restbus: ${o.source}: ${err}')
+		exit(1)
+	}
+	defer {
+		prep.close()
+	}
+	plan := prep.buses[0]
+	if plan.source == 0 {
 		eprintln('restbus: no frames on ${iface}')
 		exit(1)
 	}
-	kept, rep := player.subtract(&rec.log, on_bus, db, o.exclude, o.replay_unattr)
-	span := rec.log.t_s(int(on_bus.last())) - rec.log.t_s(int(on_bus[0]))
+	rep := plan.report
+	span := prep.end_s - prep.t0_s
 
 	println('source   ${o.source}')
-	println('bus      ${o.bus} -> ${iface}: ${on_bus.len} frames over ${span:.2f}s')
+	println('bus      ${o.bus} -> ${iface}: ${plan.source} frames over ${span:.2f}s')
 	println('database ${os.base(o.dbc)}: ${db.messages.len} messages, ${db.nodes.len} nodes')
 	println('exclude  ${o.exclude.join(', ')}: ${rep.withheld_excluded} frames withheld')
 	println('replay   ${rep.kept} frames')
@@ -148,16 +170,15 @@ fn main() {
 	}
 	fd_n := rep.fd // the plan's own count, the one the GUI states too (#184)
 	if fd_n > 0 {
-		pct := 100.0 * f64(fd_n) / f64(kept.len)
-		big := kept.count(rec.log.rows[it].len > 8)
-		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%), ${big} with payloads over 8 bytes')
+		pct := 100.0 * f64(fd_n) / f64(rep.kept)
+		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%), ${rep.fd_long} with payloads over 8 bytes')
 		println('           the destination interface must be CAN-FD capable and up')
 	}
 	if o.dry_run {
 		println('dry run: nothing transmitted')
 		return
 	}
-	if kept.len == 0 {
+	if rep.kept == 0 {
 		eprintln('restbus: nothing left to replay after the subtraction')
 		exit(1)
 	}
@@ -173,17 +194,13 @@ fn main() {
 
 	// Over the SOURCE bus's span, not the filtered subset's: removing the SUT's frames must not
 	// shorten the loop or move its origin.
-	mut p := player.new_player_log(rec.log, kept, o.speed, o.loop, rec.log.t_s(int(on_bus[0])),
-		rec.log.t_s(int(on_bus.last())))
-	// Keyed by the label these entries actually CARRY, not by the destination string. They were
-	// never relabelled — that is build_multi's job, and only the --map path does it — so they
-	// still carry the recording's own bus label, which is the one `player.on_bus` filtered on
-	// just above. Keying it this way is what lets `pump` have a single routing rule ("send each
-	// frame to the bus its label names") instead of a mode flag that would silently reroute
-	// every frame if it were ever passed wrong.
+	mut p := prep.player(o.speed, o.loop)
+	// The plan relabelled every entry to its destination, --iface, so `pump`'s one routing rule
+	// ("send each frame to the bus its label names") lands it there.
 	mut buses := map[string]transport.Bus{}
-	buses[iface] = bus
+	buses[o.iface] = bus
 	sent, failed, first_err := pump(mut p, mut buses, 500)
+	report_read(prep.read_error())
 	report_pump(sent, failed, first_err)
 }
 
@@ -198,8 +215,7 @@ fn main() {
 // local to this function, and do not inline it back into a caller that holds one.
 //
 // ONE routing rule: every frame goes to the bus its own `iface` label names. Both callers key
-// `buses` by the label their entries carry — the --map path because build_multi relabelled them
-// to the destination, the single-bus path because it never relabelled them at all.
+// `buses` by destination, the label the plan relabelled every entry to.
 // `attempts` differs per path on purpose — see the call sites.
 fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (u64, u64, string) {
 	// A StopWatch, NOT time.ticks(): ticks() is whole milliseconds (and GetTickCount, ~15.6 ms,
@@ -259,6 +275,13 @@ fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (
 	return sent, failed, first_err
 }
 
+// report_read says a streamed recording's read error: each pass ended there.
+fn report_read(err string) {
+	if err != '' {
+		eprintln('\nrestbus: read error, each pass ended there: ${err}')
+	}
+}
+
 // report_pump is the shared tail: both paths say the same thing and exit the same way.
 fn report_pump(sent u64, failed u64, first_err string) {
 	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
@@ -271,10 +294,10 @@ fn report_pump(sent u64, failed u64, first_err string) {
 // run_multi replays several recorded buses at once: one stream, one clock, one open bus per
 // destination. See blobly/player/multibus.v for why the buses must not each get their own
 // player — a gateway ECU polices the timing BETWEEN them.
-// `rec` by REFERENCE, not by value: it carries the whole recording's `[]canlog.LogEntry`, and
-// under `-prod` a by-value copy in this frame would make every call this function makes cost
-// O(frames) — see `pump` and docs/known_issues.md.
-fn run_multi(o Opts, rec &mf4.Recording) {
+// `rec` by REFERENCE, not by value: it may carry the whole recording, and under `-prod` a
+// by-value copy in this frame would make every call this function makes cost O(frames) — see
+// `pump` and docs/known_issues.md.
+fn run_multi(o Opts, rec &replay.Source) {
 	mut specs := []player.BusSpec{}
 	mut unknown_on := map[string][]string{}
 	for m in o.maps {
@@ -338,7 +361,13 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 		exit(1)
 	}
 
-	plan := player.build_multi_log(rec.log, specs)
+	mut plan := rec.prepare(specs) or {
+		eprintln('restbus: ${o.source}: ${err}')
+		exit(1)
+	}
+	defer {
+		plan.close()
+	}
 	mut name_of := map[string]string{}
 	for b in rec.buses {
 		name_of[b.iface] = if b.name != '' { b.name } else { b.iface }
@@ -437,7 +466,7 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 	dsts := specs.map(it.dst).join(', ')
 	println('transmitting on ${dsts} at ${o.speed}x${if o.loop { ', looping' } else { '' }} — ctrl-C to stop')
 
-	mut p := player.new_player_log(plan.log, plan.sel, o.speed, o.loop, plan.t0_s, plan.end_s)
+	mut p := plan.player(o.speed, o.loop)
 	// `buses` is keyed by destination and build_multi relabelled every entry to its destination,
 	// so `pump`'s one routing rule lands each frame on the right wire.
 	//
@@ -449,6 +478,7 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 	// its neighbours. (Applying the wait to one path and not the other dropped a frame per full
 	// queue on a saturated destination, which is why both paths share `pump` at all.)
 	sent, failed, first_err := pump(mut p, mut buses, 5)
+	report_read(plan.read_error())
 	report_pump(sent, failed, first_err)
 }
 

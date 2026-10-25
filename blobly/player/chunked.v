@@ -217,7 +217,7 @@ struct Pass {
 	t0   f64
 	skip f64 // rows earlier than this many seconds into the recording are planned, not played
 mut:
-	src     mf4.FileSource
+	src     &mf4.FileSource // on the heap: `stream` reads through it
 	stream  mf4.Stream
 	raw     canlog.Log // the stream's labels, kept across chunks; the rows of the chunk being read
 	planner Planner
@@ -227,7 +227,7 @@ mut:
 
 // open_pass opens the file for one pass; a file changed since the census is refused.
 fn open_pass(job ReadJob, skip f64) !Pass {
-	mut src := mf4.open_source(job.path)!
+	mut src := mf4.open_file_source(job.path)!
 	if src.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
 		src.close()
 		return error('${job.path} changed since it was opened')

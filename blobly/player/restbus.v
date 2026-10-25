@@ -52,6 +52,8 @@ pub:
 	// number that will actually reach the send loop rather than one taken from the recording
 	// before subtraction (#184); by the frame's flag, which is what the loaders set.
 	fd int
+	// Of `fd`, how many carry more than 8 bytes.
+	fd_long int
 	// The ids behind the two buckets above that have them, so a report can name those rather
 	// than merely count them.
 	// Sorted, each id once.
@@ -519,6 +521,7 @@ mut:
 	unknown_n         int
 	remote_n          int
 	fd_n              int // CAN-FD frames among the kept
+	fd_long_n         int // of those, the ones over 8 bytes
 	// KEYED BY IDENTITY, not by number — the same `key(id, ext)` the decision itself uses.
 	unattr  map[u64]bool
 	unknown map[u64]bool
@@ -546,6 +549,9 @@ pub fn (mut t Tally) add_decision(dec Decision, f transport.CanFrame) bool {
 	keep := t.file(dec.verdict, id)
 	if keep && f.fd {
 		t.fd_n++
+		if f.data.len > 8 {
+			t.fd_long_n++
+		}
 	}
 	if dec.by_pgn {
 		t.pgn_matched++
@@ -612,6 +618,7 @@ pub fn (t Tally) done(kept int) Subtraction {
 		unknown:               t.unknown_n
 		remote:                t.remote_n
 		fd:                    t.fd_n
+		fd_long:               t.fd_long_n
 		unattributed_ids:      u_ids
 		unknown_ids:           k_ids
 		pgn_matched:           t.pgn_matched
@@ -720,61 +727,81 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 	return census_sel(&log, log.all(), db)
 }
 
-// census_sel is census over the arena — the ONE body; census is this over a Log built from
-// its entries.
+// census_sel is census over the arena — census and the streamed census are this body too
+// (Census), one frame at a time.
 pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
-	mut w := new_walker(db, [], true)
-	mut nodes := map[string]int{}
-	mut unattributed := 0
-	mut unknown := 0
-	mut remote := 0
-	mut pgn_matched := 0
-	mut pgn_hint := 0
-	mut tp_n := 0
+	mut c := new_census(db)
 	for si in sel {
-		f := log.frame(int(si))
-		// THROUGH THE DECIDER, because this census is the PREVIEW of what the subtraction will
-		// decide, and the two had drifted twice: asking `defined` before RTR put a remote frame on
-		// an undefined id into `unknown` -- which the editor labels "replays regardless" -- while
-		// the replay drops every remote frame before it looks at the database (codex on #216);
-		// and asking the exact key alone, after the decider learned to match a declared J1939
-		// message by PGN, told the operator there was nothing to exclude on the very bus where
-		// Start would have subtracted by PGN (self-review of #171). One body, no third drift.
-		dec := w.decide(f, log.t_s(int(si)))
-		if dec.by_pgn {
-			pgn_matched++
+		c.add(log.frame(int(si)), log.t_s(int(si)))
+	}
+	return c.done()
+}
+
+// Census tallies one bus's frames in recorded order into a NodeCensus: the ONE body behind
+// census_sel and a census taken while a recording streams past.
+pub struct Census {
+mut:
+	w            Walker
+	nodes        map[string]int
+	unattributed int
+	unknown      int
+	remote       int
+	total        int
+	pgn_matched  int
+	pgn_hint     int
+	tp_n         int
+}
+
+pub fn new_census(db candb.Database) Census {
+	return Census{
+		w: new_walker(db, [], true)
+	}
+}
+
+// add tallies the next frame of the bus, recorded at `t_s`.
+pub fn (mut c Census) add(f transport.CanFrame, t_s f64) {
+	// THROUGH THE DECIDER, because this census is the PREVIEW of what the subtraction will
+	// decide: a separate lookup drifted from it twice (remote frames on undefined ids, and
+	// J1939 PGN matches).
+	dec := c.w.decide(f, t_s)
+	c.total++
+	if dec.by_pgn {
+		c.pgn_matched++
+	}
+	if dec.pgn_hint {
+		c.pgn_hint++
+	}
+	if dec.tp {
+		c.tp_n++
+	}
+	match dec.verdict {
+		.drop_remote {
+			c.remote++
 		}
-		if dec.pgn_hint {
-			pgn_hint++
+		.keep_unknown {
+			c.unknown++
 		}
-		if dec.tp {
-			tp_n++
+		.keep_unattributed, .drop_unattributed {
+			c.unattributed++
 		}
-		match dec.verdict {
-			.drop_remote {
-				remote++
-			}
-			.keep_unknown {
-				unknown++
-			}
-			.keep_unattributed, .drop_unattributed {
-				unattributed++
-			}
-			.keep, .drop_excluded {
-				for n in dec.senders {
-					nodes[n]++
-				}
+		.keep, .drop_excluded {
+			for n in dec.senders {
+				c.nodes[n]++
 			}
 		}
 	}
+}
+
+// done is the census of the frames added so far.
+pub fn (c &Census) done() NodeCensus {
 	return NodeCensus{
-		nodes:         nodes.clone()
-		unattributed:  unattributed
-		unknown:       unknown
-		remote:        remote
-		total:         sel.len
-		pgn_matched:   pgn_matched
-		pgn_hint:      pgn_hint
-		tp_attributed: tp_n
+		nodes:         c.nodes.clone()
+		unattributed:  c.unattributed
+		unknown:       c.unknown
+		remote:        c.remote
+		total:         c.total
+		pgn_matched:   c.pgn_matched
+		pgn_hint:      c.pgn_hint
+		tp_attributed: c.tp_n
 	}
 }

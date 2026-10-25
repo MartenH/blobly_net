@@ -43,9 +43,27 @@ pub mut:
 	clock_steps    int // times the clock stepped back by more than the window — counted apart from disorder
 }
 
+// RowSink is told every row the survey reads, in the stream's order, with the label table the
+// row's bus indexes: what a caller that must look at the frames (the Replay panel's census) asks
+// of the same one pass.
+pub interface RowSink {
+mut:
+	row(labels &canlog.Log, r canlog.Row)
+}
+
+struct NoSink {}
+
+fn (mut n NoSink) row(_ &canlog.Log, _ canlog.Row) {}
+
 // survey reads the recording once through the stream. A cursor's failure is the survey's, as
 // it is the loader's: a half-surveyed file is not a surveyed one.
 pub fn survey(mut src ByteSource) !Survey {
+	mut none_ := NoSink{}
+	return survey_into(mut src, mut none_)
+}
+
+// survey_into is survey, handing every row to `sink` as it is read.
+pub fn survey_into(mut src ByteSource, mut sink RowSink) !Survey {
 	mut s := open_stream(mut src)!
 	mut sv := Survey{
 		groups: s.cursors.len
@@ -79,6 +97,7 @@ pub fn survey(mut src ByteSource) !Survey {
 		}
 		sv.frames++
 		counts[b]++
+		sink.row(&log, r)
 		if !seen[b] || acq_of[b] != s.last_acq {
 			seen[b] = true
 			acq_of[b] = s.last_acq
@@ -115,4 +134,13 @@ pub fn survey_file(path string) !Survey {
 		src.close()
 	}
 	return survey(mut src)!
+}
+
+// survey_file_into surveys a file on disk, handing every row to `sink`.
+pub fn survey_file_into(path string, mut sink RowSink) !Survey {
+	mut src := open_source(path)!
+	defer {
+		src.close()
+	}
+	return survey_into(mut src, mut sink)!
 }

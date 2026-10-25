@@ -30,6 +30,7 @@ mut:
 	src        string
 	buses_lbl  string // the group's bus names, joined — the same label its notifications use
 	loading    bool   // registered but still decoding the recording / waiting for its wires
+	streamed   bool   // read from the file a chunk at a time while it plays (replay.streams)
 	dur_s      f64
 	state      player.State
 	pos_s      f64
@@ -635,11 +636,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		return
 	}
 
-	// Decoded ONCE for the whole group, however many channels read from it.
-	log, buses := load_recording_for_replay(source) or {
+	// Opened ONCE for the whole group, however many channels read from it: loaded, or surveyed
+	// and then streamed when it is a large .mf4 (replay.streams).
+	src := replay.open_recording(source) or {
 		a.notify('replay ${label}: ${err}')
 		return
 	}
+	if src.note != '' {
+		a.notify('replay ${label}: ${src.note}')
+	}
+	buses := src.buses
 	mut specs := []player.BusSpec{}
 	for ch in chans {
 		src_label := resolve_replay_bus(buses, ch) or {
@@ -702,9 +708,15 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.notify('replay: ${c}')
 		return
 	}
-	plan := player.build_multi_log(log, specs)
+	mut prep := src.prepare(specs) or {
+		a.notify('replay ${label}: ${err}')
+		return
+	}
+	defer {
+		prep.close()
+	}
 	mut total := 0
-	for i, b in plan.buses {
+	for i, b in prep.buses {
 		total += b.report.kept
 		// EVERY BUCKET THAT REMOVED A FRAME, not just the excluded node's. Reporting only
 		// `withheld_excluded`, a remote-only recording announced "nothing to replay, 0 withheld"
@@ -723,7 +735,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// reads as a successful measurement quietly missing traffic. Said here, from the plan's
 		// own post-subtraction count and after every refusal above, so it names frames that will
 		// actually be sent by a run that will actually start. A warning, not a refusal: the
-		// classic half is real. plan.buses is in specs order, which is chans order.
+		// classic half is real. prep.buses is in specs order, which is chans order.
 		if b.report.fd > 0 && i < chans.len && chans[i].for_open().refuses_fd_frames() {
 			why += '; ${b.report.fd} CAN-FD frame(s) on a classic ${chans[i].adapter} channel — each will be refused and counted as failed'
 		}
@@ -873,19 +885,21 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	dispatching = true
-	mut p := player.new_player_log(plan.log, plan.sel, speed, repeat, plan.t0_s, plan.end_s)
+	mut p := prep.player(speed, repeat)
 	mut sw := time.new_stopwatch()
 	mut batch := []canlog.LogEntry{cap: 256}
 	mut dues := []f64{cap: 256}
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
+	mut read_said := false
 	mut announced_sent := u64(0)
 	mut announced_failed := u64(0)
 	mut announced := false
 	p.play(0.0)
 	a.mu.lock()
 	ctl.loading = false
+	ctl.streamed = prep.streamed
 	ctl.dur_s = p.duration_s()
 	ctl.state = p.state()
 	ctl.speed = p.speed
@@ -972,6 +986,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			p.due_into_scheduled(now, mut batch, mut dues)
 		} else {
 			p.due_into(now, mut batch)
+		}
+		if !read_said && prep.read_error() != '' {
+			read_said = true
+			a.notify('replay ${label}: ${os.base(source)}: ${prep.read_error()} — each pass ends there')
 		}
 		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
@@ -1243,12 +1261,6 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 	}
 }
 
-// load_recording_for_replay decodes a `.mf4` or candump `.log` once, with its buses
-// (replay.load): Start's resolver and the Configure row's Scan match against ONE list.
-fn load_recording_for_replay(source string) !(canlog.Log, []mf4.BusInfo) {
-	return replay.load(source)
-}
-
 // resolve_replay_bus asks blobly/player, which owns the rule, through replay.resolve_bus.
 fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 	return replay.resolve_bus(buses, ch.replay_bus) or { error('${err} (${os.base(ch.replay_src)})') }
@@ -1280,10 +1292,11 @@ mut:
 	census  map[string]player.NodeCensus // by bus label (BusInfo.iface)
 }
 
-// scan_replay_source decodes a recording off the UI thread and files the result under mu.
-// The census runs the SAME attribution the rest-bus subtraction applies (player.census sits
-// beside the Decider), so what the row previews is what Start will do; the bus list comes out
-// of the same loader Start uses, for the same reason.
+// scan_replay_source reads a recording off the UI thread and files the result under mu.
+// The census runs the SAME attribution the rest-bus subtraction applies (player.Census sits
+// beside the Decider), so what the row previews is what Start will do; the bus list comes from
+// the same opening Start uses (replay.scan: the survey for a streamed .mf4, else the loader),
+// for the same reason.
 //
 // `mine` is the entry this worker was started for, and BOTH write-backs compare pointers
 // before touching the map: a slow scan finishing after the row was rescanned — or after the
@@ -1291,7 +1304,7 @@ mut:
 // the newer result. Same ownership rule as ReplayState.token, same reason.
 fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &ReplayScan) {
 	mut a := unsafe { app }
-	log, buses := load_recording_for_replay(path) or {
+	buses, cens := replay.scan(path, db) or {
 		a.mu.lock()
 		if sc := a.replay_scans[ci] {
 			if voidptr(sc) == voidptr(mine) {
@@ -1305,10 +1318,6 @@ fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &Re
 		// says "scanning…" until the next input event happens along (codex #135 r1)
 		vgui.wake()
 		return
-	}
-	mut cens := map[string]player.NodeCensus{}
-	for b in buses {
-		cens[b.iface] = player.census_sel(&log, player.sel_on_bus(&log, b.iface), db)
 	}
 	a.mu.lock()
 	if sc := a.replay_scans[ci] {

@@ -73,6 +73,7 @@ fn draw_replay(mut app App) {
 		src := c.src
 		buses := c.buses_lbl
 		loading := c.loading
+		streamed := c.streamed
 		dur := c.dur_s
 		pos := c.pos_s
 		st := c.state
@@ -89,6 +90,9 @@ fn draw_replay(mut app App) {
 		if loading {
 			vgui.text_dim('loading the recording…')
 			continue
+		}
+		if streamed {
+			vgui.text_dim('streamed from disk (a seek re-reads up to it)')
 		}
 		// No pass number on a finished group: there is no current pass, and the count is the
 		// one it ended on -- "(loop 2)" on something that is not playing reads as a claim that
