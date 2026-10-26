@@ -301,6 +301,10 @@ and `cmd/blobly_net/foldrule/`, WHOSE RECEIVE STATE A ROW DRAWS — the key the 
 Network panel and the toolbar fold the readers' state under: the destination for a CAN row,
 whose aliases share one reader, and the row itself for a DoIP or SOME/IP row, which has its own
 (#336: the row the endpoint claim refused drew its sibling's `last RX`);
+and `cmd/blobly_net/hostrule/`, WHICH ROW A HOSTED DoIP ENTITY'S WATCHER ASKS — the project row
+it was started for, by index (`Chan.proj_idx`), for its tick, its `running` mark and its entry in
+the hosted-entity table; never a row found by name and interface, which two rows may share (#408:
+a disabled row listed first kept its enabled copy's entity down);
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
