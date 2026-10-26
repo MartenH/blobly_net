@@ -569,11 +569,15 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		}
 	}
 	app.mu.unlock()
-	// a channel's frames in its own format, which on a wire two rows dispute the wire has not (#384)
-	fr := transport.row_framing(iface, chan_name)
+	// a channel's frames in its own format, which on a wire two rows dispute the wire has not
+	// (#384): the tap frames it for its row and its wire in one policy read
+	sent := if chan_name == '' || f.format_stated { f } else { transport.CanFrame{
+			...f
+			row: chan_name
+		} }
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
-	b.send(fr.raised(f)) or {
+	b.send(sent) or {
 		app.notify('TX failed: ${err}')
 		return false
 	}

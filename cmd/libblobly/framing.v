@@ -20,8 +20,13 @@ pub fn bb_framing_attach(h i32, row i32) i32 {
 		bb_mu.unlock()
 		return fail(bb_err, 'no channel ${row}')
 	}
-	name := bb_run_rows[int(row)].name
+	ch := bb_run_rows[int(row)]
 	bb_mu.unlock()
+	// a row is a row of its wire: a name on another wire may be another row's there
+	if transport.wire_key(ch.iface_with_bitrate()) != transport.wire_key(hd.iface) {
+		return fail(bb_err, '${ch.name} is a row of ${ch.iface}, not of ${hd.iface}, where this handle is open')
+	}
+	name := ch.name
 	hd.row = name
 	ok()
 	return if transport.row_framing(hd.iface, name).fd { 1 } else { 0 }

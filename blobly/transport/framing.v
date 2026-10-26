@@ -53,10 +53,18 @@ pub fn wire_framing(iface string) Framing {
 // replaced while a Lua script still holds a bus it opened, and an answer frozen at open time is one
 // that goes stale while a wire transmits.
 pub fn framed_for_wire(iface string, f CanFrame) CanFrame {
-	if f.fd || f.format_stated {
-		return f.unstated()
+	return wire_policy(iface).frame(f)
+}
+
+// frame is `f` as this policy puts it on the wire: a stated format kept, else raised — upward only
+// — to the format of the row it is sent as (`CanFrame.row`, `rows`), then to the wire's; the
+// send-side intent removed. One policy, so the row and the wire are one project's.
+pub fn (p WirePolicy) frame(f CanFrame) CanFrame {
+	if f.format_stated || f.row == '' {
+		return p.framing.apply(f)
 	}
-	return wire_framing(iface).apply(f)
+	row := p.rows[f.row] or { Framing{} }
+	return p.framing.apply(row.apply(f.unstated()))
 }
 
 // apply is the stamp itself. Idempotent: it is applied at the GUI tap (so the trace RECORDS the
@@ -82,12 +90,13 @@ pub fn (fr Framing) apply(f CanFrame) CanFrame {
 
 // unstated is the frame with the send-side intent removed, once the format has been decided.
 pub fn (f CanFrame) unstated() CanFrame {
-	if !f.format_stated {
+	if !f.format_stated && f.row == '' {
 		return f
 	}
 	return CanFrame{
 		...f
 		format_stated: false
+		row:           ''
 	}
 }
 
@@ -194,16 +203,6 @@ pub fn row_declared(row Framing, row_enabled bool, wire Framing) Framing {
 	return wire
 }
 
-// raised is `f` in this format where its caller stated none: `apply`'s upward-only stamp, with a
-// stated frame left as it is — the statement is the wire stage's to consume, so a stated classic
-// frame is still classic there.
-pub fn (fr Framing) raised(f CanFrame) CanFrame {
-	if f.format_stated {
-		return f
-	}
-	return fr.apply(f)
-}
-
 // row_framing is the format row `row`'s own emitters on `iface` raise a frame to: the row's where
 // the published project has it as an enabled FD row of that name on that wire
 // (project.row_framings), else classic, which raises nothing. Read per send, like wire_framing.
@@ -214,11 +213,11 @@ pub fn row_framing(iface string, row string) Framing {
 	return wire_policy(iface).rows[row] or { Framing{} }
 }
 
-// RowFramedBus is a bus a ROW's own emitters send through: every frame stating no format raised to
-// the row's (`row_framing`, asked per send) before the bus beneath frames it for its wire. On a wire
-// whose rows agree the two are one format; on a wire two enabled rows dispute, the wire is
-// undeclared and this is what keeps an FD row's generators and simulated ECUs FD (#384). Replay
-// never goes through one.
+// RowFramedBus is a bus a ROW's own emitters send through: every frame it sends is marked as that
+// row's (`CanFrame.row`), so the bus beneath, framing it for its wire (SilentBus, the GUI's tap),
+// raises one stating no format to the row's in the same policy read. On a wire whose rows agree the
+// two are one format; on a wire two enabled rows dispute, the wire is undeclared and this is what
+// keeps an FD row's generators and simulated ECUs FD (#384). Replay never goes through one.
 @[heap]
 pub struct RowFramedBus {
 	iface string
@@ -241,15 +240,27 @@ pub fn row_framed(b Bus, iface string, row string) Bus {
 }
 
 pub fn (mut r RowFramedBus) send(f CanFrame) ! {
-	out := row_framing(r.iface, r.row).raised(f)
+	out := r.as_row(f)
 	r.inner.send(out)!
-	r.sent = out.unstated()
+	r.sent = out
 }
 
-// sent_frame is what the bus beneath handed on, where it says (SentFrame), else the frame raised.
+// as_row is `f` marked as this row's, unless its caller stated a format.
+pub fn (r &RowFramedBus) as_row(f CanFrame) CanFrame {
+	if f.format_stated {
+		return f
+	}
+	return CanFrame{
+		...f
+		row: r.row
+	}
+}
+
+// sent_frame is what the bus beneath handed on, where it says (SentFrame), else the last frame
+// as its wire frames it.
 pub fn (r &RowFramedBus) sent_frame() CanFrame {
 	inner := r.inner
-	return if inner is SentFrame { inner.sent_frame() } else { r.sent }
+	return if inner is SentFrame { inner.sent_frame() } else { framed_for_wire(r.iface, r.sent) }
 }
 
 pub fn (mut r RowFramedBus) recv(timeout_ms int) !CanFrame {

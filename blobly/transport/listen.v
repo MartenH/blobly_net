@@ -157,8 +157,15 @@ pub fn replace_wire_policy_rows(silent []string, framed map[string]Framing, rows
 			continue
 		}
 		k := wire_key(i)
+		prev := next[k] or { WirePolicy{} }
+		// two spellings of one wire are one wire: their rows merge
+		for name, fr in prev.rows {
+			if name !in fd {
+				fd[name] = fr
+			}
+		}
 		next[k] = WirePolicy{
-			...(next[k] or { WirePolicy{} })
+			...prev
 			rows: fd
 		}
 	}
@@ -278,7 +285,7 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	//
 	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
 	// records, and replay reproduces a recording rather than originating anything.
-	out := if s.verbatim { frame.unstated() } else { p.framing.apply(frame) }
+	out := if s.verbatim { frame.unstated() } else { p.frame(frame) }
 	// unwatched: nothing records it, or this wire's tier refuses it (noted, its normalised form
 	// could claim somebody else's frame before the refusal came back)
 	mut unwatched := !sends_watched()

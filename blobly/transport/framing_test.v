@@ -347,19 +347,49 @@ fn test_a_row_declares_over_an_undeclared_wire_only_while_enabled() {
 	assert row_declared(classic, true, classic) == classic
 }
 
-fn test_raised_is_upward_only_and_leaves_a_statement_alone() {
+fn test_a_row_frame_is_raised_upward_only_and_a_statement_kept() {
 	fd_brs := Framing{
 		fd:  true
 		brs: true
 	}
-	up := fd_brs.raised(CanFrame{ id: 1, data: []u8{len: 12} })
-	assert up.fd && up.brs && up.data.len == 12
-	assert !Framing{}.raised(CanFrame{ id: 1 }).fd, 'a classic row raises nothing'
-	already := fd_brs.raised(CanFrame{ id: 1, fd: true })
+	p := WirePolicy{
+		rows: {
+			'FD': fd_brs
+		}
+	}
+	up := p.frame(CanFrame{ id: 1, data: []u8{len: 12}, row: 'FD' })
+	assert up.fd && up.brs && up.data.len == 12 && up.row == '', 'raised, the row consumed'
+	assert !p.frame(CanFrame{ id: 1, row: 'CL' }).fd, 'a row the wire has no FD entry for raises nothing'
+	already := p.frame(CanFrame{ id: 1, fd: true, row: 'FD' })
 	assert already.fd && !already.brs, 'a frame that says fd keeps its own brs'
-	stated := FrameFormat.classic.stamp(CanFrame{ id: 1, data: []u8{len: 8} }) or { panic(err) }
-	kept := fd_brs.raised(stated)
-	assert !kept.fd && kept.format_stated, 'the statement is the wire stage to consume'
+	stated := FrameFormat.classic.stamp(CanFrame{ id: 1, data: []u8{len: 8}, row: 'FD' }) or {
+		panic(err)
+	}
+	kept := p.frame(stated)
+	assert !kept.fd && !kept.format_stated && kept.row == '', 'a stated classic frame stays classic'
+	on_fd := WirePolicy{
+		framing: fd_brs
+	}
+	assert on_fd.frame(CanFrame{ id: 1, row: 'CL' }).fd, 'a classic row never lowers the wire'
+}
+
+// two spellings of one wire are one wire: the rows each published merge
+fn test_rows_published_under_two_spellings_of_a_wire_merge() {
+	fd := Framing{
+		fd: true
+	}
+	replace_wire_policy_rows([], map[string]Framing{}, {
+		'inproc':     {
+			'A': fd
+		}
+		'inproc:CAN': {
+			'B': fd
+		}
+	})
+	defer {
+		clear_wire_framing()
+	}
+	assert row_framing('inproc:CAN', 'A').fd && row_framing('inproc', 'B').fd
 }
 
 // Two rows dispute the wire, so it is undeclared: each row's handle sends in its own row's format,

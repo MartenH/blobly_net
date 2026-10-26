@@ -887,7 +887,8 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	defer {
 		hd.leave()
 	}
-	hd.bus.send(transport.row_framing(hd.iface, hd.row).raised(frame)) or {
+	// as the row it is attached to, framed for that row and the wire in one policy read (framing.v)
+	hd.bus.send(transport.CanFrame{ ...frame, row: hd.row }) or {
 		return fail(bb_err, 'send: ${err.msg()}')
 	}
 	return ok()

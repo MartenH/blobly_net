@@ -22,6 +22,10 @@ pub mut:
 	// consumed by the framing decision (`Framing.apply`, `framed_for_wire`) — the frame that goes
 	// on to a backend, a record or a receiver never carries it.
 	format_stated bool
+	// SEND-SIDE ONLY: the project row this frame is sent as, by name (RowFramedBus, #384): a frame
+	// stating no format takes that row's (WirePolicy.rows) where it is FD, decided in the one read
+	// of the wire's policy that also frames it for the wire. Consumed with `format_stated`.
+	row string
 	// ESI — the transmitting node was error-passive when it sent this. A received STATUS, not a
 	// choice the sender makes, which is why it is deliberately absent from the echo identity in
 	// `wiretap` and from the trace's group key: a message whose transmitter goes error-passive
