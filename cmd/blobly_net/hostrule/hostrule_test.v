@@ -25,17 +25,13 @@ fn test_each_row_files_its_own_entity() {
 	assert host_key(0) != host_key(1)
 }
 
-fn test_a_row_is_found_by_its_project_index_wherever_it_sits() {
+fn test_a_position_built_from_another_row_is_not_this_one() {
 	rows := [Row{
-		proj_idx: 2
-		enabled:  true
-	}, Row{
-		proj_idx: 0
+		proj_idx: 1
 		enabled:  false
 	}]
-	assert row_of(rows, 0)? == 1
-	assert row_of(rows, 2)? == 0
-	assert !enabled(rows, 0, true)
+	assert row_of(rows, 0) == none
+	assert enabled(rows, 0, true)
 }
 
 fn test_a_row_with_no_runtime_row_falls_back() {

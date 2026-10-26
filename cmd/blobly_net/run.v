@@ -1456,8 +1456,8 @@ fn (app &App) doip_is_hosted(pi int) bool {
 // from an interface string standing in for a channel; see hostrule. `pi` is the project row.
 fn (app &App) doip_host_failed(pi int) bool {
 	mut a := unsafe { app }
-	simulated := pi >= 0 && pi < a.proj.channels.len && a.proj.channels[pi].is_doip()
-		&& a.proj.channels[pi].hosts_doip_entity()
+	chs := a.proj.channels // one array for the bound and the read: this is a script's thread
+	simulated := pi >= 0 && pi < chs.len && chs[pi].is_doip() && chs[pi].hosts_doip_entity()
 	if !simulated {
 		return false // tester-only: nothing for us to host, so nothing can have failed
 	}
@@ -1548,17 +1548,6 @@ fn (app &App) host_rows_locked() []hostrule.Row {
 		proj_idx: it.proj_idx
 		enabled:  it.enabled
 	})
-}
-
-// chan_enabled reports project row `pi`'s LIVE tick from the Buses panel.
-fn (app &App) chan_enabled(pi int, pch project.Channel) bool {
-	a := unsafe { app }
-	a.mu.lock()
-	defer {
-		a.mu.unlock()
-	}
-	// not started yet: the project's own value is all there is
-	return hostrule.enabled(a.host_rows_locked(), pi, pch.enabled)
 }
 
 // doip_should_host reports whether project row `pi`'s entity should be listening right now: its

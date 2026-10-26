@@ -4,6 +4,7 @@ import os
 import blobly.transport
 import blobly.telem
 import blobly.script
+import hostrule
 import vgui
 
 // ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----
@@ -187,6 +188,9 @@ fn (app &App) diag_targets() []DiagTarget {
 	// would otherwise reach only entities this application started — while the normal
 	// tester-only case, a DoIP channel pointed at a REAL ECU, has no simulated nodes, is not
 	// hosted, and never reaches diag_plan at all. That is the case a bench actually uses.
+	a.mu.lock()
+	rows := app.host_rows_locked()
+	a.mu.unlock()
 	for pi, c in app.proj.channels {
 		if !c.is_doip() {
 			continue
@@ -194,7 +198,7 @@ fn (app &App) diag_targets() []DiagTarget {
 		// The LIVE tick, not the load-time value. The Buses checkbox writes app.chans, so a
 		// channel switched off stayed selectable and the panel could still reach the external
 		// ECU — and one switched on after starting disabled never appeared at all.
-		if !app.chan_enabled(pi, c) {
+		if !hostrule.enabled(rows, pi, c.enabled) { // unstarted: the project's own value
 			continue
 		}
 		if c.hosts_doip_entity() {

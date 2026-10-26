@@ -10,7 +10,9 @@ module hostrule
 // enabled copy kept the enabled row's entity down and was marked running in its place.
 //
 // The index holds for a watcher's whole life: it is a run worker, so the rebuild that replaces
-// app.chans waits for it to leave first (drainrule), and a run's topology does not change.
+// app.chans waits for it to leave first (drainrule), and a run's topology does not change. A
+// caller that is not drained (the GUI thread, a script) asks under app.mu, so it reads the rows
+// of one project: a row index from another one finds no row, or the row now at that index.
 
 // Row is what a watcher reads of one runtime row.
 pub struct Row {
@@ -19,15 +21,11 @@ pub:
 	enabled  bool // its live Buses tick
 }
 
-// row_of is the position of the runtime row built from project row `proj_idx`, or none.
+// row_of is the position of the runtime row built from project row `proj_idx`, or none. The rows
+// are built 1:1 from the project's, so that position is the index itself.
 pub fn row_of(rows []Row, proj_idx int) ?int {
 	if proj_idx >= 0 && proj_idx < rows.len && rows[proj_idx].proj_idx == proj_idx {
 		return proj_idx
-	}
-	for i, r in rows {
-		if r.proj_idx == proj_idx {
-			return i
-		}
 	}
 	return none
 }
