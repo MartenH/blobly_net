@@ -201,11 +201,8 @@ pub fn cansub_request_stoppable(host string, method string, path string, body st
 	// open budget left the identity request with nothing (codex round 4 on #248); the redial on
 	// retry stays inside the second.
 	mut c, reused := cansub_conn(host, timeout, stop)!
-	if stop_asked(stop) {
-		return error('${method} ${path}: abandoned, stop requested')
-	}
 	deadline := time.now().add(timeout)
-	r := c.exchange(method, path, body, deadline) or {
+	r := c.exchange(method, path, body, deadline, stop) or {
 		// EVICTION IS EXCHANGE'S, not ours: a connection whose socket failed is already dead and
 		// out of the pool by the time the error reaches here, retired under its own turn so no
 		// waiter could take it in between; and a caller that merely ran out of budget in the
@@ -216,10 +213,7 @@ pub fn cansub_request_stoppable(host string, method string, path string, body st
 		}
 		// The connection was one the device may have closed while idle: dial and try once more.
 		mut fresh, _ := cansub_conn(host, deadline - time.now(), stop)!
-		if stop_asked(stop) {
-			return error('${method} ${path}: abandoned, stop requested')
-		}
-		return fresh.exchange(method, path, body, deadline)!
+		return fresh.exchange(method, path, body, deadline, stop)!
 	}
 	return r
 }
@@ -276,7 +270,7 @@ fn cansub_conn(host string, budget time.Duration, stop fn () bool) !(&CansubConn
 	// earlier. Each try is given `budget` from once the name is resolved.
 	d := cansub_connect_attempts[CansubDialed](time.now().add(budget), fn [host, budget, stop] () !CansubDialed {
 		mut t, deadline := cansub_dial(host, budget, stop)!
-		return cansub_handshake(mut t, host, deadline)
+		return cansub_handshake(mut t, host, deadline, stop)
 	})!
 	mut tcp := d.tcp
 	mut conn := d.ssl
@@ -307,12 +301,12 @@ fn cansub_conn(host string, budget time.Duration, stop fn () bool) !(&CansubConn
 	return c, false
 }
 
-// cansub_handshake runs the TLS handshake on a connected socket, giving up at `deadline`: each of
-// the handshake's reads waits at most what is left of it when the handshake starts
-// (SSLConn.connect takes the socket's read timeout), so a peer that never answers costs that and
-// no more; one that trickles a record per read can stretch it, which this device does not do.
-// The socket is closed on failure.
-fn cansub_handshake(mut t net.TcpConn, host string, deadline time.Time) !CansubDialed {
+// cansub_handshake runs the TLS handshake on a connected socket, giving up at `deadline` or
+// within dial_stop_poll_ms of `stop` (nil: never asked). The handshake's own reads wait at most
+// what is left (SSLConn.connect takes the socket's read timeout), and a watchdog shuts the socket
+// down at the deadline or the stop, which ends a read in progress — so a peer that trickles its
+// records cannot stretch the handshake past the deadline either. The socket is closed on failure.
+fn cansub_handshake(mut t net.TcpConn, host string, deadline time.Time, stop fn () bool) !CansubDialed {
 	started := time.now()
 	left := deadline - started
 	if left <= 0 {
@@ -328,22 +322,91 @@ fn cansub_handshake(mut t net.TcpConn, host string, deadline time.Time) !CansubD
 		t.close() or {}
 		return err
 	}
+	mut dog := &HandshakeWatch{}
+	handle := t.sock.handle
+	spawn dog.watch(handle, deadline, stop)
 	c.connect(mut t, host) or {
+		why := dog.finish()
 		t.close() or {}
+		match why {
+			.stopped { return error('TLS handshake with ${host}: abandoned, stop requested') }
+			.timed_out { return error('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms') }
+			.not_fired {}
+		}
 		if err.code() == mbedtls_err_ssl_timeout {
 			return error_with_code('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms',
 				err.code())
 		}
 		return err
 	}
+	if dog.finish() != .not_fired {
+		// The watchdog fired as the handshake completed: the socket is shut down, so the
+		// connection is no use.
+		c.shutdown() or {}
+		t.close() or {}
+		return error('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms')
+	}
 	return CansubDialed{t, c}
+}
+
+// HandshakeEnd is why a handshake's watchdog shut its socket down, or not_fired.
+enum HandshakeEnd {
+	not_fired
+	timed_out
+	stopped
+}
+
+// HandshakeWatch is the watchdog over one handshake: it shuts the socket down at the deadline or
+// the stop unless the handshake finished first. `mu` decides which came first.
+@[heap]
+struct HandshakeWatch {
+mut:
+	mu       sync.Mutex
+	finished bool
+	fired    HandshakeEnd
+}
+
+fn (mut w HandshakeWatch) watch(handle int, deadline time.Time, stop fn () bool) {
+	for {
+		w.mu.lock()
+		if w.finished {
+			w.mu.unlock()
+			return
+		}
+		why := if stop_asked(stop) {
+			HandshakeEnd.stopped
+		} else if deadline - time.now() <= 0 {
+			HandshakeEnd.timed_out
+		} else {
+			HandshakeEnd.not_fired
+		}
+		if why != .not_fired {
+			w.fired = why
+			w.finished = true
+			net.shutdown(handle)
+			w.mu.unlock()
+			return
+		}
+		w.mu.unlock()
+		time.sleep(dial_stop_poll_ms * time.millisecond)
+	}
+}
+
+// finish ends the watch and says whether the watchdog had fired first.
+fn (mut w HandshakeWatch) finish() HandshakeEnd {
+	w.mu.lock()
+	defer {
+		w.mu.unlock()
+	}
+	w.finished = true
+	return w.fired
 }
 
 // mbedtls_err_ssl_timeout is MBEDTLS_ERR_SSL_TIMEOUT (-0x6800): a read waited out its timeout.
 const mbedtls_err_ssl_timeout = -26624
 
 // exchange sends one request and reads its complete reply on this connection.
-fn (mut c CansubConn) exchange(method string, path string, body string, deadline time.Time) !CansubResponse {
+fn (mut c CansubConn) exchange(method string, path string, body string, deadline time.Time, stop fn () bool) !CansubResponse {
 	// THE BUDGET IS THE CALLER'S and the wait for the connection is INSIDE it. Two channels on
 	// one device share the connection, so a 700 ms health poll can queue behind an open's
 	// two-second PUT; a plain lock() would hold the poll for the whole PUT and only then look at
@@ -359,6 +422,11 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 	}
 	if c.dead {
 		return error('connection to ${c.host} is closed')
+	}
+	// ASKED WITH THE TURN HELD, the last moment before anything is written: a request that
+	// queued behind another sends nothing once its stop is asked.
+	if stop_asked(stop) {
+		return error('${method} ${path}: abandoned, stop requested')
 	}
 	if deadline - time.now() <= 0 {
 		return error('${method} ${path}: no budget left after waiting for the connection')
@@ -827,7 +895,7 @@ pub fn cansub_forget_addr(host string) {
 fn cansub_dial(host string, budget time.Duration, stop fn () bool) !(&net.TcpConn, time.Time) {
 	addr := cansub_addr(host) or { return error('cannot resolve ${host}') }
 	deadline := time.now().add(budget)
-	tcp := dial_tcp_within('${addr}:${cansub_https_port}', deadline, stop) or {
+	tcp := dial_tcp_within('${addr}:${cansub_port()}', deadline, stop) or {
 		// A connect nothing answered is NOT a stale address: the name is kept, so a health poll
 		// against a device that blackholes does not look it up again every period. An open that
 		// fails its identity read forgets the address and resolves again (open_cansub_bus),
@@ -842,13 +910,23 @@ fn cansub_dial(host string, budget time.Duration, stop fn () bool) !(&net.TcpCon
 		// had just made (codex round 6 on #248).
 		cansub_refresh_addr(host)
 		fresh := cansub_addr(host) or { return error('cannot resolve ${host}') }
-		dial_tcp_within('${fresh}:${cansub_https_port}', deadline, stop)!
+		dial_tcp_within('${fresh}:${cansub_port()}', deadline, stop)!
 	}
 	return tcp, deadline
 }
 
 // cansub_https_port is the device's REST and WebSocket port.
 const cansub_https_port = 443
+
+__global (
+	// The port the REST path dials instead of the device's, for a test that points it at a local
+	// listener; 0 is the device's own.
+	cansub_port_for_test int
+)
+
+fn cansub_port() int {
+	return if cansub_port_for_test > 0 { cansub_port_for_test } else { cansub_https_port }
+}
 
 // cansub_resolves reports whether a device id can be found on this machine at all, so a caller can
 // tell "not plugged in" from "plugged in and refusing".
