@@ -750,7 +750,7 @@ pub fn apply_listen_only(chs []Channel) {
 	//
 	// The name stays `apply_listen_only` because every caller means "publish this project's wire
 	// policy" and always did; what it publishes has grown.
-	transport.replace_wire_policy(quiet, wire_framings(chs))
+	transport.replace_wire_policy_rows(quiet, wire_framings(chs), row_framings(chs))
 }
 
 // apply_framing publishes what format each wire carries, so frames this app ORIGINATES on it are
@@ -818,6 +818,45 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 	}
 	for k in classic {
 		out.delete(k)
+	}
+	return out
+}
+
+// row_framings is, per wire, the format each FD row's own emitters raise their frames to, by row
+// name (Channel.emitter_framing; transport.row_framing reads it per send, #384). A name two rows on
+// one wire carry with different formats names neither, as a disagreement leaves a wire undeclared.
+pub fn row_framings(chs []Channel) map[string]map[string]transport.Framing {
+	mut seen := map[string]transport.Framing{} // by wire and row name
+	mut split := map[string]bool{}
+	for c in chs {
+		if !c.enabled || c.is_eth() {
+			continue
+		}
+		key := compose_key(transport.wire_key(c.iface_with_bitrate()), c.name)
+		fr := c.emitter_framing()
+		if existing := seen[key] {
+			if existing != fr {
+				split[key] = true
+			}
+			continue
+		}
+		seen[key] = fr
+	}
+	mut out := map[string]map[string]transport.Framing{}
+	for c in chs {
+		if !c.enabled || c.is_eth() {
+			continue
+		}
+		k := transport.wire_key(c.iface_with_bitrate())
+		key := compose_key(k, c.name)
+		fr := seen[key] or { continue }
+		if !fr.fd || key in split {
+			continue
+		}
+		if k !in out {
+			out[k] = map[string]transport.Framing{}
+		}
+		out[k][c.name] = fr
 	}
 	return out
 }
@@ -2123,7 +2162,7 @@ pub fn (c Channel) origination_framing() Framing {
 }
 
 // emitter_framing is the format this row's OWN emitters raise a frame stating none to
-// (transport.row_framed, #384): its generators, its simulated ECUs and their diagnostic servers, a
+// (row_framings, transport.row_framed, #384): its generators, its simulated ECUs and their diagnostic servers, a
 // script's or a host's handle on it. An enabled CAN row's declaration — which on a wire two enabled
 // rows dispute (wire_framings leaves it undeclared) is the only one that frame has; a disabled row
 // declares nothing about the run, and an FD row whose adapter cannot carry FD is not declared FD,
@@ -2133,20 +2172,6 @@ pub fn (c Channel) emitter_framing() transport.Framing {
 		return transport.Framing{}
 	}
 	return c.origination_framing().to_wire()
-}
-
-// sender_framing is the format a generator resolved to `sb` (nested under row `own`) raises its
-// frames to: its owning row's emitter_framing, none where no single row owns its target (a bare
-// wire, an ambiguous `bus:`), which then follows the wire.
-pub fn sender_framing(sb SenderBus, own int, chs []Channel) transport.Framing {
-	if sb.chan == '' {
-		return transport.Framing{}
-	}
-	rows := sender_target_rows(sb, own, chs)
-	if rows.len != 1 {
-		return transport.Framing{}
-	}
-	return chs[rows[0]].emitter_framing()
 }
 
 // framed returns `f` as this channel would put it on the wire.

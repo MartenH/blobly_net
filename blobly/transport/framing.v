@@ -102,7 +102,7 @@ pub fn (f CanFrame) unstated() CanFrame {
 //
 // Everything else states nothing. A ROW'S OWN emitters — its generators, its simulated ECUs, a
 // script's or a host's handle on the row — are raised to that row's format (`RowFramedBus`,
-// #384); the rest — ISO-TP testers, flash, the shell, replay — are framed per wire as before.
+// #384); the rest — ISO-TP testers, flash, the shell, replay — are framed per wire.
 
 // FrameFormat is a per-frame format choice. `wire` states nothing: the wire's declaration decides.
 pub enum FrameFormat {
@@ -194,46 +194,54 @@ pub fn row_declared(row Framing, row_enabled bool, wire Framing) Framing {
 	return wire
 }
 
-// raised is `f` in this format where its caller stated none: upward only, as `apply`, and a frame
-// that already says `fd` or carries a statement is left as it is — the statement is the wire
-// stage's to consume, so a stated classic frame is still classic there.
+// raised is `f` in this format where its caller stated none: `apply`'s upward-only stamp, with a
+// stated frame left as it is — the statement is the wire stage's to consume, so a stated classic
+// frame is still classic there.
 pub fn (fr Framing) raised(f CanFrame) CanFrame {
-	if f.format_stated || f.fd || !fr.fd {
+	if f.format_stated {
 		return f
 	}
-	return CanFrame{
-		...f
-		fd:  true
-		brs: fr.brs
+	return fr.apply(f)
+}
+
+// row_framing is the format row `row`'s own emitters on `iface` raise a frame to: the row's where
+// the published project has it as an enabled FD row of that name on that wire
+// (project.row_framings), else classic, which raises nothing. Read per send, like wire_framing.
+pub fn row_framing(iface string, row string) Framing {
+	if row == '' {
+		return Framing{}
 	}
+	return wire_policy(iface).rows[row] or { Framing{} }
 }
 
 // RowFramedBus is a bus a ROW's own emitters send through: every frame stating no format raised to
-// the row's (`Framing.raised`) before the bus beneath frames it for its wire. On a wire whose rows
-// agree the two are one format; on a wire two enabled rows dispute, the wire is undeclared and this
-// is what keeps an FD row's generators and simulated ECUs FD (#384). Replay never goes through one.
+// the row's (`row_framing`, asked per send) before the bus beneath frames it for its wire. On a wire
+// whose rows agree the two are one format; on a wire two enabled rows dispute, the wire is
+// undeclared and this is what keeps an FD row's generators and simulated ECUs FD (#384). Replay
+// never goes through one.
 @[heap]
 pub struct RowFramedBus {
-	framing Framing
+	iface string
+	row   string
 mut:
 	inner Bus
 	sent  CanFrame
 }
 
-// row_framed is `b` with the frames it is given raised to `fr`; `b` itself where `fr` is classic,
-// which raises nothing.
-pub fn row_framed(b Bus, fr Framing) Bus {
-	if !fr.fd {
+// row_framed is `b`, opened on `iface`, sending as row `row`'s own emitter; `b` itself for no row.
+pub fn row_framed(b Bus, iface string, row string) Bus {
+	if row == '' {
 		return b
 	}
 	return &RowFramedBus{
-		framing: fr
-		inner:   b
+		iface: iface
+		row:   row
+		inner: b
 	}
 }
 
 pub fn (mut r RowFramedBus) send(f CanFrame) ! {
-	out := r.framing.raised(f)
+	out := row_framing(r.iface, r.row).raised(f)
 	r.inner.send(out)!
 	r.sent = out.unstated()
 }

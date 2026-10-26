@@ -11,17 +11,20 @@ BO_ 771 Plain: 2 Tester
 // A canfd row and a can row on one wire, which declares nothing: what the script sends on each
 // row goes out in that row's format, and opts.format states one (#384).
 fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
-	transport.clear_wire_framing()
-	db := candb.parse_dbc(framing_dbc) or { panic(err) }
-	mut env := new_env([
-		ChanInfo{
-			name:    'FD'
-			iface:   'inproc:UTFRAMING'
-			db:      db
-			framing: transport.Framing{
+	transport.replace_wire_policy_rows([], map[string]transport.Framing{}, {
+		'inproc:UTFRAMING': {
+			'FD': transport.Framing{
 				fd:  true
 				brs: true
 			}
+		}
+	})
+	db := candb.parse_dbc(framing_dbc) or { panic(err) }
+	mut env := new_env([
+		ChanInfo{
+			name:  'FD'
+			iface: 'inproc:UTFRAMING'
+			db:    db
 		},
 		ChanInfo{
 			name:  'CL'
@@ -30,7 +33,10 @@ fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
 		},
 	]) or { panic(err) }
 	env.on_output = fn (s string) {}
-	defer { env.close() }
+	defer {
+		env.close()
+		transport.clear_wire_framing()
+	}
 	env.run_source('
 		test("each row in its own format", function()
 			bus.recv("CL", 0)

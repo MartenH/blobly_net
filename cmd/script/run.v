@@ -204,7 +204,6 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			j1939:     hrun.reads_j1939(c.cfg)
 			sources:   c.sources
 			nm:        hrun.nm_config(c.cfg)
-			framing:   c.cfg.emitter_framing()
 		}
 	}
 	mut env := script.new_env(chans) or {

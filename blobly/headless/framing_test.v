@@ -55,8 +55,6 @@ fn test_each_row_emitter_on_a_disputed_wire_sends_its_own_format() {
 		r.stop()
 	}
 	assert !transport.wire_framing('inproc:HDISPUTE').fd, 'the rows disagree, so the wire is undeclared'
-	// a tester request to the wire's default diagnostic server, the FD row's: 3E 00
-	bus.send(transport.CanFrame{ id: 0x7E0, data: [u8(0x02), 0x3E, 0x00, 0, 0, 0, 0, 0] })!
 	want := {
 		u32(0x321): true // the FD row's generator
 		0x100:      true // its simulated SUT (Powertrain)
@@ -66,7 +64,14 @@ fn test_each_row_emitter_on_a_disputed_wire_sends_its_own_format() {
 	}
 	mut seen := map[u32]bool{}
 	until := time.ticks() + 3000
+	mut asked := i64(0)
 	for time.ticks() < until && seen.len < want.len {
+		// a tester request to the wire's default diagnostic server, the FD row's (3E 00), again
+		// until answered: the server's loop subscribes on a thread of its own
+		if u32(0x7E8) !in seen && time.ticks() - asked >= 200 {
+			asked = time.ticks()
+			bus.send(transport.CanFrame{ id: 0x7E0, data: [u8(0x02), 0x3E, 0x00, 0, 0, 0, 0, 0] })!
+		}
 		f := bus.recv(20) or { continue }
 		if fd := want[f.id] {
 			assert f.fd == fd, '0x${f.id:X} went out ${if f.fd { 'FD' } else { 'classic' }}'

@@ -363,22 +363,32 @@ fn test_raised_is_upward_only_and_leaves_a_statement_alone() {
 }
 
 // Two rows dispute the wire, so it is undeclared: each row's handle sends in its own row's format,
-// and a frame stated classic through the FD row's handle stays classic.
+// a frame stated classic through the FD row's handle stays classic, and the format is asked per
+// send, so a project published since is what the next frame follows.
 fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
 	clear_listen_only()
-	clear_wire_framing()
 	fd_row := Framing{
 		fd:  true
 		brs: true
 	}
+	replace_wire_policy_rows([], map[string]Framing{}, {
+		'inproc:framing_rows': {
+			'FD': fd_row
+		}
+	})
+	assert !wire_framing('inproc:framing_rows').fd, 'the wire itself declares nothing'
+	assert row_framing('inproc:framing_rows', 'FD') == fd_row
+	assert !row_framing('inproc:framing_other', 'FD').fd, 'a row is a row of its wire'
 	mut fd_raw := open('inproc:framing_rows') or { panic(err) }
-	mut fd_tx := row_framed(fd_raw, fd_row)
-	mut cl_tx := row_framed(open('inproc:framing_rows') or { panic(err) }, Framing{})
+	mut fd_tx := row_framed(fd_raw, 'inproc:framing_rows', 'FD')
+	mut cl_tx := row_framed(open('inproc:framing_rows') or { panic(err) }, 'inproc:framing_rows',
+		'CL')
 	mut rx := open('inproc:framing_rows') or { panic(err) }
 	defer {
 		fd_tx.close()
 		cl_tx.close()
 		rx.close()
+		clear_wire_framing()
 	}
 	fd_tx.send(CanFrame{ id: 0x401, data: []u8{len: 12} }) or { panic(err) }
 	a := rx.recv(500) or { panic(err) }
@@ -391,9 +401,14 @@ fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
 	c := rx.recv(500) or { panic(err) }
 	assert c.id == 0x403 && !c.fd && !c.format_stated, 'a stated classic frame is not raised'
 	// a metered handle prices what the wrapper sent
-	if fd_tx is SentFrame {
-		assert !fd_tx.sent_frame().fd, 'the last send was the stated classic one'
+	probe := fd_tx
+	if probe is SentFrame {
+		assert !probe.sent_frame().fd, 'the last send was the stated classic one'
 	} else {
 		assert false, 'a row-framed bus says what it sent'
 	}
+	clear_wire_framing()
+	fd_tx.send(CanFrame{ id: 0x404, data: []u8{len: 8} }) or { panic(err) }
+	d := rx.recv(500) or { panic(err) }
+	assert d.id == 0x404 && !d.fd, 'the row was published away: asked per send, not at open'
 }

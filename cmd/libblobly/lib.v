@@ -492,8 +492,10 @@ mut:
 	j1939 J1939Tap
 	// the NM listener bb_nm_attach bound to the handle's frames (nm.v)
 	nm NmTap
-	// the row bb_framing_attach bound its sends' format to (framing.v)
-	framing RowFraming
+	// the address it was opened on, and the row bb_framing_attach bound its sends to ('' none):
+	// a frame stating no format goes out in that row's (framing.v)
+	iface string
+	row   string
 }
 
 __global (
@@ -823,8 +825,9 @@ pub fn bb_bus_open(iface &char) i32 {
 		project.address_rates(name)
 	}
 	mut hd := &BusHandle{
-		bus: transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
+		bus:   transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
 			name, nominal, data)
+		iface: name
 	}
 	closing := &hd.closing
 	hd.stop = fn [closing] () bool {
@@ -884,7 +887,9 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	defer {
 		hd.leave()
 	}
-	hd.bus.send(hd.framed(frame)) or { return fail(bb_err, 'send: ${err.msg()}') }
+	hd.bus.send(transport.row_framing(hd.iface, hd.row).raised(frame)) or {
+		return fail(bb_err, 'send: ${err.msg()}')
+	}
 	return ok()
 }
 

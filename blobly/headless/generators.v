@@ -22,7 +22,7 @@ mut:
 	s       project.Sender // as edited
 	channel string         // the channel it is written under
 	open    string         // the interface its loop opens; '' when it has nothing to send on
-	framing transport.Framing // the format its frames are raised to: its target row's (project.sender_framing)
+	row     string         // the row it sends as (transport.row_framed): the one owning its target, '' none
 	note    string         // why it cannot send, '' when it can
 	dbs     []candb.Database
 	id      u32 // its frame's id: its message's, for one with a message
@@ -156,7 +156,7 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		return
 	}
 	rows := project.sender_target_rows(sb, ci, proj.channels)
-	g.framing = project.sender_framing(sb, ci, proj.channels)
+	g.row = sb.chan
 	enabled := rows.filter(proj.channels[it].enabled)
 	if rows.len > 0 && enabled.len == 0 {
 		g.note = 'every channel on ${sb.iface} has left the run'
@@ -223,7 +223,7 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 		g.end(why)
 		return
 	}
-	mut bus := transport.row_framed(opened, g.framing)
+	mut bus := transport.row_framed(opened, g.open, g.row)
 	mut was := false
 	mut fresh := true // the cycle sends at once: started, or started again
 	g.mu.lock()
@@ -363,11 +363,11 @@ fn (mut r Run) gen(i int) !&Gen {
 	return r.gens[i]
 }
 
-// payload_cap is the most a frame on `iface`, raised to `fr`, carries of a payload: a classic frame
+// payload_cap is the most a frame row `row` sends on `iface` carries of a payload: a classic frame
 // on a wire SocketCAN clamps takes 8 bytes, any other frame 64 (a vendor backend refuses what its
 // wire cannot carry, a software bus carries it).
-fn payload_cap(iface string, fr transport.Framing) int {
-	fd := fr.fd || transport.wire_framing(iface).fd
+fn payload_cap(iface string, row string) int {
+	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
 	return if transport.clamps_to_classic(iface) && !fd { 8 } else { 64 }
 }
 
@@ -566,7 +566,7 @@ pub fn (mut r Run) gen_value(i int, signal string, value f64) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.framing), signal, value)!
+	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, value)!
 }
 
 // gen_source gives `signal` of generator g the value source `w` from its next frame.
@@ -576,5 +576,5 @@ pub fn (mut r Run) gen_source(i int, signal string, w project.GenCfg) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.framing), signal, w)!
+	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, w)!
 }

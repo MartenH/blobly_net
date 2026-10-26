@@ -568,9 +568,9 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 			}
 		}
 	}
-	// a channel's frames in its own format, which on a wire two rows dispute the wire has not (#384)
-	fr := app.row_framing_locked(chan_name, iface)
 	app.mu.unlock()
+	// a channel's frames in its own format, which on a wire two rows dispute the wire has not (#384)
+	fr := transport.row_framing(iface, chan_name)
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
 	b.send(fr.raised(f)) or {
@@ -580,25 +580,6 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 	// The count is the tap's job (note_emit), like the row and the recording — a generator that
 	// bypasses tx_on still transmits, and used to be invisible here.
 	return true
-}
-
-// row_framing_locked is the format channel `chan_name`'s frames on `iface` are raised to: the first
-// enabled row of that name on that wire (project.Channel.emitter_framing); none for '' or no such
-// row, which leaves the wire to decide. Caller holds app.mu.
-fn (app &App) row_framing_locked(chan_name string, iface string) transport.Framing {
-	if chan_name == '' {
-		return transport.Framing{}
-	}
-	dest := transport.destination_key(iface)
-	for c in app.chans {
-		if c.name != chan_name || !c.enabled || c.proj_idx < 0 || c.proj_idx >= app.proj.channels.len {
-			continue
-		}
-		if transport.destination_key(c.iface) == dest {
-			return app.proj.channels[c.proj_idx].emitter_framing()
-		}
-	}
-	return transport.Framing{}
 }
 
 // available_adapters is the adapter-picker list for THIS platform — only backends that

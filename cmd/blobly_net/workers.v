@@ -193,7 +193,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		return
 	}
 	// its frames in the row's own format, which on a wire two rows dispute the wire has not (#384)
-	mut bus := transport.row_framed(tap, sc.pch.emitter_framing())
+	mut bus := transport.row_framed(tap, sc.iface, sc.pch.name)
 	consumer_attached(a, sc.iface, gen)
 	mut engine := sim.Engine{}
 	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
@@ -471,7 +471,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				time.sleep(200 * time.millisecond)
 				continue
 			}
-			ch = isotp.on_bus(transport.row_framed(tapped, pch.emitter_framing()), a.bitrate_iface(iface),
+			ch = isotp.on_bus(transport.row_framed(tapped, iface, pch.name), a.bitrate_iface(iface),
 				tx, rx, ext) or {
 				if !open_err_said {
 					open_err_said = true
@@ -544,7 +544,7 @@ fn report_func_leaves(app &App, gen u64, who string, leaves []uds.FuncLeave) {
 	}
 }
 
-fn diag_server_loop(app &App, iface string, chan_name string, fr transport.Framing, server uds.Server, gen u64) {
+fn diag_server_loop(app &App, iface string, chan_name string, server uds.Server, gen u64) {
 	// Same as uds_node_loop above: open_tap_on resolves through bitrate_iface, which walks
 	// app.chans, so this loop holds a census slot for as long as it is in the run.
 	defer {
@@ -559,7 +559,7 @@ fn diag_server_loop(app &App, iface string, chan_name string, fr transport.Frami
 		consumer_failed(a, iface, gen)
 		return
 	}
-	mut ch := isotp.on_bus(transport.row_framed(tapped, fr), a.bitrate_iface(iface), diag_rx_id,
+	mut ch := isotp.on_bus(transport.row_framed(tapped, iface, chan_name), a.bitrate_iface(iface), diag_rx_id,
 		diag_tx_id, false) or {
 		notify_gen(app, gen,
 			'${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
@@ -1647,7 +1647,6 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			carrier: script.carrier_of(pch)
 			j1939:   wire_j1939
 			nm:      wire_nm
-			framing: pch.emitter_framing() // the row's frames in its own format (#384)
 			// priced as the Buses row prices the wire
 			nominal:   nominal
 			data_rate: data_rate

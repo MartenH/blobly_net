@@ -1,15 +1,9 @@
 // A row's format on a host's handle (bb.h's bb_framing_attach): frames sent on a bus handle bound
-// to a row, stating no format, raised to the row's (project.Channel.emitter_framing, #384) — the
-// rule the Lua script's handle on a row follows.
+// to a row, stating no format, raised to the row's (transport.row_framing, #384) — the rule the
+// Lua script's handle on a row follows.
 module main
 
 import blobly.transport
-
-// RowFraming is what bb_framing_attach bound a handle to: the row's format in run `gen`.
-struct RowFraming {
-	framing transport.Framing
-	gen     u64
-}
 
 @[export: 'bb_framing_attach']
 pub fn bb_framing_attach(h i32, row i32) i32 {
@@ -26,24 +20,9 @@ pub fn bb_framing_attach(h i32, row i32) i32 {
 		bb_mu.unlock()
 		return fail(bb_err, 'no channel ${row}')
 	}
-	fr := bb_run_rows[int(row)].emitter_framing()
-	gen := bb_run_gen
+	name := bb_run_rows[int(row)].name
 	bb_mu.unlock()
-	hd.framing = RowFraming{
-		framing: fr
-		gen:     gen
-	}
+	hd.row = name
 	ok()
-	return if fr.fd { 1 } else { 0 }
-}
-
-// framed is `f` as the handle's row raises it, while the run it was attached in is the one started.
-fn (hd &BusHandle) framed(f transport.CanFrame) transport.CanFrame {
-	if !hd.framing.framing.fd {
-		return f
-	}
-	bb_mu.lock()
-	current := bb_dbs_live && bb_run_gen == hd.framing.gen
-	bb_mu.unlock()
-	return if current { hd.framing.framing.raised(f) } else { f }
+	return if transport.row_framing(hd.iface, name).fd { 1 } else { 0 }
 }

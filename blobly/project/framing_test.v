@@ -174,15 +174,24 @@ fn test_a_row_emitter_keeps_its_row_format_on_a_disputed_wire() {
 	assert !eth.emitter_framing().fd, 'an Ethernet row has no CAN format'
 }
 
-fn test_a_generator_raises_to_the_row_that_owns_its_target() {
+fn test_the_fd_rows_of_a_wire_are_published_by_name() {
 	rows := disputed_rows()
-	own := resolve_sender_bus('', rows[0], rows)
-	assert sender_framing(own, 0, rows).fd, 'nested under the FD row, no bus: the FD row'
-	to_classic := resolve_sender_bus('classic', rows[0], rows)
-	assert !sender_framing(to_classic, 0, rows).fd, 'its bus: names the classic row'
-	to_fd := resolve_sender_bus('fd', rows[1], rows)
-	assert sender_framing(to_fd, 1, rows).fd, 'a classic row generator sent on the FD row'
-	ambiguous := resolve_sender_bus('inproc:W6', rows[1], rows)
-	assert ambiguous.chan == ''
-	assert !sender_framing(ambiguous, 1, rows).fd, 'no row owns it: the wire decides'
+	m := row_framings(rows)
+	assert m.len == 1
+	k := transport.wire_key('inproc:W6')
+	assert m[k].keys() == ['fd'], 'the enabled FD row only: classic and disabled rows raise nothing'
+	assert m[k]['fd'] == transport.Framing{ fd: true, brs: true }
+	// one name on one wire with two formats names neither
+	mut split := rows.clone()
+	split << Channel{ name: 'fd', adapter: 'virtual', iface: 'inproc:W6', bitrate: 500000, enabled: true }
+	assert row_framings(split).len == 0
+}
+
+// a generator sends as the row that owns its target: SenderBus.chan, none for an ambiguous bus:
+fn test_a_generator_sends_as_the_row_that_owns_its_target() {
+	rows := disputed_rows()
+	assert resolve_sender_bus('', rows[0], rows).chan == 'fd'
+	assert resolve_sender_bus('classic', rows[0], rows).chan == 'classic'
+	assert resolve_sender_bus('fd', rows[1], rows).chan == 'fd'
+	assert resolve_sender_bus('inproc:W6', rows[1], rows).chan == '', 'no row owns it: the wire decides'
 }
