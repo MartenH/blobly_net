@@ -173,12 +173,16 @@ pub fn cansub_parse_response(raw string) !CansubResponse {
 	}
 }
 
-// cansub_request performs one request and returns the parsed reply.
-//
-// A new connection per request, closed by `Connection: close`. The REST API is for configuration —
-// a handful of calls when a channel opens — so pooling would buy nothing and cost a class of
-// staleness bugs. Frames never come this way; they are on the WebSocket.
+// cansub_request performs one request and returns the parsed reply. See
+// cansub_request_stoppable.
 pub fn cansub_request(host string, method string, path string, body string, timeout time.Duration) !CansubResponse {
+	return cansub_request_stoppable(host, method, path, body, timeout, unsafe { nil })
+}
+
+// cansub_request_stoppable is one request whose wait for a connection also ends within
+// dial_stop_poll_ms of `stop` answering true (nil: never asked), and which sends nothing once it
+// has.
+pub fn cansub_request_stoppable(host string, method string, path string, body string, timeout time.Duration, stop fn () bool) !CansubResponse {
 	// ONE TLS CONNECTION PER DEVICE, KEPT OPEN. Every request used to make its own connection and
 	// send `Connection: close`, reading until the device hung up — and the device answers a second
 	// request on a kept-alive connection in under a millisecond against ~110 ms for a fresh one
@@ -189,30 +193,27 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	// connection the device has closed fails on the first byte and the second attempt is the real
 	// one. What it buys: an open's three REST calls at ~120 ms instead of ~470, and a health
 	// poll at ~1 ms instead of a TLS handshake twice a second (#240).
-	// ONE DEADLINE FOR THE WHOLE CALL — the wait for the connection, the exchange, the redial and
-	// the retry all spend from it. Given a fresh budget each, a 700 ms health poll whose first
-	// exchange timed out went on to dial (seconds, to a device that has gone) and try again with
-	// 700 ms more (codex round 2 on #248). What is not on the clock is the dial itself: V's
-	// dial_tcp takes no timeout, so a retry is only STARTED while budget remains.
-	// THE BUDGET STARTS ONCE THERE IS A CONNECTION. The first dial is a name lookup plus a TLS
-	// handshake that nothing here can interrupt — 2.7 s cold on Windows — and charged against a
-	// two-second open budget it left the identity request with nothing, so the open forgot the
-	// address it had just found and repeated the same cold failure (codex round 4 on #248). The
-	// redial on retry stays inside the deadline, as before: by then the name is known.
-	mut c, reused := cansub_conn(host)!
+	// TWO BUDGETS OF `timeout`: one for the connection — the TCP connect (cansub_dial) and the
+	// TLS handshake (cansub_handshake), from once the name is resolved, since a cold lookup is
+	// the OS resolver's seconds — and, once there is a connection, one for everything after it:
+	// the wait for the connection's turn, the exchange, the redial and the retry. Neither is
+	// charged with what came before it, because a cold connection charged against a two-second
+	// open budget left the identity request with nothing (codex round 4 on #248); the redial on
+	// retry stays inside the second.
+	mut c, reused := cansub_conn(host, timeout, stop)!
 	deadline := time.now().add(timeout)
-	r := c.exchange(method, path, body, deadline) or {
+	r := c.exchange(method, path, body, deadline, stop) or {
 		// EVICTION IS EXCHANGE'S, not ours: a connection whose socket failed is already dead and
 		// out of the pool by the time the error reaches here, retired under its own turn so no
 		// waiter could take it in between; and a caller that merely ran out of budget in the
 		// queue leaves a healthy connection alone — a drop() here waited for the turn it had
 		// just failed to get, and then closed a connection that was fine (codex round 3 on #248).
-		if !reused || !c.dead || deadline - time.now() <= 0 {
+		if !reused || !c.dead || deadline - time.now() <= 0 || stop_asked(stop) {
 			return err
 		}
 		// The connection was one the device may have closed while idle: dial and try once more.
-		mut fresh, _ := cansub_conn(host)!
-		return fresh.exchange(method, path, body, deadline)!
+		mut fresh, _ := cansub_conn(host, deadline - time.now(), stop)!
+		return fresh.exchange(method, path, body, deadline, stop)!
 	}
 	return r
 }
@@ -250,7 +251,7 @@ struct CansubDialed {
 	ssl &ssl.SSLConn
 }
 
-fn cansub_conn(host string) !(&CansubConn, bool) {
+fn cansub_conn(host string, budget time.Duration, stop fn () bool) !(&CansubConn, bool) {
 	existing := rlock cansub_pool {
 		cansub_pool.conns[host] or { unsafe { nil } }
 	}
@@ -266,18 +267,10 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 	// A handshake a signal interrupted is dialled again at once, socket closed first — the same
 	// allowance the stream's open makes (cansub_connect_attempts, cansub.v), and this dial is
 	// the identity read that comes BEFORE it, so an interruption here failed the open one step
-	// earlier. Bounded by the read ceiling, which is what a caller of this dial can wait anyway.
-	d := cansub_connect_attempts[CansubDialed](time.now().add(cansub_conn_read_ceiling), fn [host] () !CansubDialed {
-		mut t := cansub_dial(host)!
-		mut c := ssl.new_ssl_conn(
-			validate:     false // the device signs its own certificate; see the note at the top
-			read_timeout: cansub_conn_read_ceiling
-		)!
-		c.connect(mut t, host) or {
-			t.close() or {}
-			return err
-		}
-		return CansubDialed{t, c}
+	// earlier. Each try is given `budget` from once the name is resolved.
+	d := cansub_connect_attempts[CansubDialed](time.now().add(budget), fn [host, budget, stop] () !CansubDialed {
+		mut t, deadline := cansub_dial(host, budget, stop)!
+		return cansub_handshake(mut t, host, deadline, stop)
 	})!
 	mut tcp := d.tcp
 	mut conn := d.ssl
@@ -308,12 +301,112 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 	return c, false
 }
 
-// cansub_conn_read_ceiling is the SSL layer's read timeout, fixed at construction: the widest any
-// request asks for. The per-request budget is set on the socket underneath (exchange).
-const cansub_conn_read_ceiling = 5 * time.second
+// cansub_handshake runs the TLS handshake on a connected socket, giving up at `deadline` or
+// within dial_stop_poll_ms of `stop` (nil: never asked). The handshake's own reads wait at most
+// what is left (SSLConn.connect takes the socket's read timeout), and a watchdog shuts the socket
+// down at the deadline or the stop, which ends a read in progress — so a peer that trickles its
+// records cannot stretch the handshake past the deadline either. The socket is closed on failure.
+fn cansub_handshake(mut t net.TcpConn, host string, deadline time.Time, stop fn () bool) !CansubDialed {
+	started := time.now()
+	left := deadline - started
+	if left <= 0 {
+		t.close() or {}
+		return error('TLS handshake with ${host}: no time left after the connect')
+	}
+	wait := cansub_read_wait(left)
+	t.set_read_timeout(wait)
+	mut c := ssl.new_ssl_conn(
+		validate:     false // the device signs its own certificate; see the note at the top
+		read_timeout: wait
+	) or {
+		t.close() or {}
+		return err
+	}
+	mut dog := &HandshakeWatch{}
+	handle := t.sock.handle
+	spawn dog.watch(handle, deadline, stop)
+	c.connect(mut t, host) or {
+		why := dog.finish()
+		t.close() or {}
+		match why {
+			.stopped { return error('TLS handshake with ${host}: abandoned, stop requested') }
+			.timed_out { return error('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms') }
+			.not_fired {}
+		}
+		if err.code() == mbedtls_err_ssl_timeout {
+			return error_with_code('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms',
+				err.code())
+		}
+		return err
+	}
+	if dog.finish() != .not_fired {
+		// The watchdog fired as the handshake completed: the socket is shut down, so the
+		// connection is no use.
+		c.shutdown() or {}
+		t.close() or {}
+		return error('TLS handshake with ${host} timed out after ${(time.now() - started).milliseconds()} ms')
+	}
+	return CansubDialed{t, c}
+}
+
+// HandshakeEnd is why a handshake's watchdog shut its socket down, or not_fired.
+enum HandshakeEnd {
+	not_fired
+	timed_out
+	stopped
+}
+
+// HandshakeWatch is the watchdog over one handshake: it shuts the socket down at the deadline or
+// the stop unless the handshake finished first. `mu` decides which came first.
+@[heap]
+struct HandshakeWatch {
+mut:
+	mu       sync.Mutex
+	finished bool
+	fired    HandshakeEnd
+}
+
+fn (mut w HandshakeWatch) watch(handle int, deadline time.Time, stop fn () bool) {
+	for {
+		w.mu.lock()
+		if w.finished {
+			w.mu.unlock()
+			return
+		}
+		why := if stop_asked(stop) {
+			HandshakeEnd.stopped
+		} else if deadline - time.now() <= 0 {
+			HandshakeEnd.timed_out
+		} else {
+			HandshakeEnd.not_fired
+		}
+		if why != .not_fired {
+			w.fired = why
+			w.finished = true
+			net.shutdown(handle)
+			w.mu.unlock()
+			return
+		}
+		w.mu.unlock()
+		time.sleep(dial_stop_poll_ms * time.millisecond)
+	}
+}
+
+// finish ends the watch and says whether the watchdog had fired first.
+fn (mut w HandshakeWatch) finish() HandshakeEnd {
+	w.mu.lock()
+	defer {
+		w.mu.unlock()
+	}
+	w.finished = true
+	return w.fired
+}
+
+// mbedtls_err_ssl_timeout is MBEDTLS_ERR_SSL_TIMEOUT (-0x6800): a read waited out its timeout.
+const mbedtls_err_ssl_timeout = -26624
 
 // exchange sends one request and reads its complete reply on this connection.
-fn (mut c CansubConn) exchange(method string, path string, body string, deadline time.Time) !CansubResponse {
+fn (mut c CansubConn) exchange(method string, path string, body string, deadline time.Time, stop fn () bool) !CansubResponse {
 	// THE BUDGET IS THE CALLER'S and the wait for the connection is INSIDE it. Two channels on
 	// one device share the connection, so a 700 ms health poll can queue behind an open's
 	// two-second PUT; a plain lock() would hold the poll for the whole PUT and only then look at
@@ -330,6 +423,11 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 	if c.dead {
 		return error('connection to ${c.host} is closed')
 	}
+	// ASKED WITH THE TURN HELD, the last moment before anything is written: a request that
+	// queued behind another sends nothing once its stop is asked.
+	if stop_asked(stop) {
+		return error('${method} ${path}: abandoned, stop requested')
+	}
 	if deadline - time.now() <= 0 {
 		return error('${method} ${path}: no budget left after waiting for the connection')
 	}
@@ -344,7 +442,7 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 
 // converse is one request and its complete reply on a connection whose turn is held.
 fn (mut c CansubConn) converse(method string, path string, body string, deadline time.Time) !CansubResponse {
-	c.tcp.set_read_timeout(deadline - time.now())
+	c.set_read_budget(deadline - time.now())
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
 	if body != '' {
 		req += 'Content-Type: application/json\r\nContent-Length: ${body.len}\r\n'
@@ -361,7 +459,7 @@ fn (mut c CansubConn) converse(method string, path string, body string, deadline
 		if left <= 0 {
 			return error('${method} ${path}: the reply did not complete within the budget')
 		}
-		c.tcp.set_read_timeout(left)
+		c.set_read_budget(left)
 		n := c.ssl.read(mut buf) or {
 			// A peer close is reported by the TLS layer through its error path as often as by
 			// a zero read. With bytes already in hand and the failure not a timeout, this is
@@ -393,6 +491,24 @@ fn (mut c CansubConn) converse(method string, path string, body string, deadline
 		c.retire()
 	}
 	return cansub_parse_response(raw.bytestr())
+}
+
+// set_read_budget is what one read may wait, set on the TLS layer — whose reads wait on the
+// socket for its own timeout — and on the socket under it.
+fn (mut c CansubConn) set_read_budget(left time.Duration) {
+	wait := cansub_read_wait(left)
+	c.ssl.set_read_timeout(wait)
+	c.tcp.set_read_timeout(wait)
+}
+
+// cansub_read_wait is a read timeout for what is left of a budget: whole milliseconds, rounded
+// up and at least one, because the TLS layer reads a timeout under a millisecond — or none — as
+// "wait for ever".
+fn cansub_read_wait(left time.Duration) time.Duration {
+	if left <= time.millisecond {
+		return time.millisecond
+	}
+	return ((left + time.millisecond - 1) / time.millisecond) * time.millisecond
 }
 
 // cansub_is_timeout is whether a socket error is the read timeout — the one error that says
@@ -522,7 +638,12 @@ pub fn cansub_get(host string, path string) !string {
 // health poll is a question asked twice a second whose answer is only ever displayed; there is
 // nothing to gain by waiting five seconds for it, and a Stop that hangs is what it costs.
 pub fn cansub_get_within(host string, path string, timeout time.Duration) !string {
-	r := cansub_request(host, 'GET', path, '', timeout)!
+	return cansub_get_stoppable(host, path, timeout, unsafe { nil })
+}
+
+// cansub_get_stoppable is cansub_get_within that a stop also ends (cansub_request_stoppable).
+pub fn cansub_get_stoppable(host string, path string, timeout time.Duration, stop fn () bool) !string {
+	r := cansub_request_stoppable(host, 'GET', path, '', timeout, stop)!
 	if r.status != 200 {
 		return error('GET ${path} -> HTTP ${r.status}')
 	}
@@ -768,20 +889,43 @@ pub fn cansub_forget_addr(host string) {
 }
 
 // cansub_dial connects to the device by its remembered address, resolving the name on the first
-// call and again after a connect that fails. See cansub_request for the measurement behind it.
-fn cansub_dial(host string) !&net.TcpConn {
+// call and again after a connect that is refused, within `budget` of once the name is known — the
+// deadline it returns, which the handshake spends the rest of — or until `stop` is asked
+// (dial_tcp_within). See cansub_request for the measurement behind it.
+fn cansub_dial(host string, budget time.Duration, stop fn () bool) !(&net.TcpConn, time.Time) {
 	addr := cansub_addr(host) or { return error('cannot resolve ${host}') }
-	if tcp := net.dial_tcp('${addr}:443') {
-		return tcp
+	deadline := time.now().add(budget)
+	tcp := dial_tcp_within('${addr}:${cansub_port()}', deadline, stop) or {
+		// A connect nothing answered is NOT a stale address: the name is kept, so a health poll
+		// against a device that blackholes does not look it up again every period. An open that
+		// fails its identity read forgets the address and resolves again (open_cansub_bus),
+		// which is where a device that moved is found.
+		if err is DialStopped || err is DialTimedOut {
+			return err
+		}
+		// Refused or unreachable at once: the device may have moved. A REFRESH, not a forget:
+		// nothing here has learned the device is the wrong one, only that the address is stale,
+		// so the generation — which a dial in flight is checked against — is left alone. Bumped
+		// here, this very dial came back to a changed generation and refused the connection it
+		// had just made (codex round 6 on #248).
+		cansub_refresh_addr(host)
+		fresh := cansub_addr(host) or { return error('cannot resolve ${host}') }
+		dial_tcp_within('${fresh}:${cansub_port()}', deadline, stop)!
 	}
-	// The remembered address did not answer: the device may have moved. Look it up again, once.
-	// A REFRESH, not a forget: nothing here has learned the device is the wrong one, only that
-	// the address is stale, so the generation — which a dial in flight is checked against — is
-	// left alone. Bumped here, this very dial came back to a changed generation and refused
-	// the connection it had just made (codex round 6 on #248).
-	cansub_refresh_addr(host)
-	fresh := cansub_addr(host) or { return error('cannot resolve ${host}') }
-	return net.dial_tcp('${fresh}:443')!
+	return tcp, deadline
+}
+
+// cansub_https_port is the device's REST and WebSocket port.
+const cansub_https_port = 443
+
+__global (
+	// The port the REST path dials instead of the device's, for a test that points it at a local
+	// listener; 0 is the device's own.
+	cansub_port_for_test int
+)
+
+fn cansub_port() int {
+	return if cansub_port_for_test > 0 { cansub_port_for_test } else { cansub_https_port }
 }
 
 // cansub_resolves reports whether a device id can be found on this machine at all, so a caller can

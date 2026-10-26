@@ -125,7 +125,9 @@ mut:
 	stop       shared CansubStop
 	reader     thread
 	health_thr thread
-	started    bool
+	// Signalled by health_loop as it returns: what close() waits on, bounded (cansub_health_join).
+	health_done chan bool
+	started     bool
 }
 
 // CansubStop carries what the reader thread and the bus both touch. `shared` rather than a plain
@@ -343,7 +345,8 @@ fn open_cansub_bus(iface string) !SharedDriver {
 		host:  host
 		spec:  spec
 		ws:    ws
-		rx:    chan CansubRecord{cap: 4096}
+		rx:          chan CansubRecord{cap: 4096}
+		health_done: chan bool{cap: 1}
 	}
 	lock b.stop {
 		b.stop.phy_silent = silent
@@ -363,6 +366,9 @@ fn open_cansub_bus(iface string) !SharedDriver {
 // endpoint and nothing in the frame stream carries it, so polling is the only source — but it has
 // no business sharing a thread with the frames.
 fn (mut b CansubBus) health_loop() {
+	defer {
+		b.health_done <- true
+	}
 	for {
 		if !rlock b.stop {
 			b.stop.running
@@ -552,8 +558,8 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 // per poll costs nothing and the firmware may change), and RECORD the refusal against the wire so
 // the Buses row shows NOT SILENT / STILL SILENT with the device's own answer, until a Stop and
 // Start applies the mark at open. What would make the toggle work is closing the WebSocket around
-// the PUT — a real reconnect inside the poll thread, the #214 shape — and that is a feature to
-// decide on, not a fix to slip in here.
+// the PUT — a real reconnect inside the poll thread — and that is a feature to decide on, not a
+// fix to slip in here.
 //
 // Best-effort: a failed PUT leaves `phy_silent` alone, so the next poll tries again rather than
 // recording a change that did not happen.
@@ -573,10 +579,9 @@ fn (mut b CansubBus) reconcile_listen_only(want bool, force bool) ! {
 	// close() (which takes the same lock through forget_wire_silence) never races a round trip.
 	// THE PROBE'S READBACK HAPPENS OUTSIDE THE LOCK. The poll thread is the one caller that
 	// reaches the device every period, and its readback ran inside the seam's closure — under the
-	// per-wire lock, with the dial unbounded — so a device that resolved and then blackholed held
-	// the lock for an OS connect timeout, every sender on the wire queued behind it, and close()
-	// queued too, through forget_wire_silence: the Stop hang the detached health thread exists to
-	// prevent, put back one layer up (codex round 3 on #223). So the poll thread asks the device
+	// per-wire lock — so a device that resolved and then blackholed held the lock for the
+	// readback's whole budget, every sender on the wire queued behind it, and close() queued too,
+	// through forget_wire_silence (codex round 3 on #223). So the poll thread asks the device
 	// FIRST, on its own time, and takes the lock only to compare and — if the controller was
 	// changed behind our back — to PUT. A readback that failed reaches the lock as "not
 	// attempted": a wire we could not read is not written to, and not waited for either.
@@ -629,11 +634,11 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	// THE DEVICE IS ASKED, NOT OUR MEMORY OF IT.
 	//
 	// `phy_silent` records what THIS bus last PUT, which is only the same thing as what the
-	// controller is doing while nothing else touches it. Something else can: close() no longer
-	// waits for this thread (see there, and #214), so a PUT from a PREVIOUS run of this wire can
-	// still be in flight when a new Start has already configured the channel — and comparing our
-	// own memory against the policy, both buses agree with themselves and neither ever notices
-	// that the controller is doing something else entirely (codex round 17 on #204).
+	// controller is doing while nothing else touches it. Something else can: another tool, a
+	// device that rebooted, or a PUT from a PREVIOUS run of this wire whose thread close() gave up
+	// waiting for (cansub_health_join) — and comparing our own memory against the policy, both
+	// buses agree with themselves and neither ever notices that the controller is doing something
+	// else entirely (codex round 17 on #204).
 	//
 	// Reading it back costs one small GET per poll to a device on the end of a USB cable, and it
 	// makes this self-healing against any divergence rather than just the ones we caused: another
@@ -715,8 +720,8 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	// probe succeeded (codex round 8 on #223). Not-attempted is right only when the readback
 	// itself could not be made. This status clears the record and shows the fault; the poll
 	// thread retries.
-	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
-		data, want), cansub_health_timeout) or { return cansub_put_undelivered }
+	r := cansub_request_stoppable(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
+		data, want), cansub_health_timeout, b.closing()) or { return cansub_put_undelivered }
 	if r.status != 200 && r.status != 204 {
 		return r.status // apply_silence records it, in cansub_silence_reason's words
 	}
@@ -758,9 +763,8 @@ pub fn cansub_phy_refusal(status int) string {
 // phy_listen_only reads the controller's ACTUAL listen-only bit off the device. `/api/can/{ch}`
 // carries the fault state and not this, so it is its own small GET against `/phy`.
 fn (b &CansubBus) phy_listen_only() ?bool {
-	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}/phy', cansub_health_timeout) or {
-		return none
-	}
+	body := cansub_get_stoppable(b.host, '/api/can/${b.spec.channel}/phy', cansub_health_timeout,
+		b.closing()) or { return none }
 	return extract_json_bool(body, 'listen_only')
 }
 
@@ -768,7 +772,8 @@ fn (b &CansubBus) phy_listen_only() ?bool {
 // repo's ladder, which is the whole reason `health()` can say anything here at all.
 fn (mut b CansubBus) poll_health() {
 	// SHORT, because this thread is joined by close(): see cansub_get_within.
-	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}', cansub_health_timeout) or {
+	body := cansub_get_stoppable(b.host, '/api/can/${b.spec.channel}', cansub_health_timeout,
+		b.closing()) or {
 		b.health_miss()
 		return
 	}
@@ -1041,6 +1046,19 @@ pub fn (mut b CansubBus) send(frame CanFrame, commit fn ()) ! {
 // cansub_poll_ms is how often an idle receiver looks up from the queue to ask whether the socket
 // is still there. A CEILING on one select, never a floor.
 const cansub_poll_ms = i64(200)
+
+// cansub_health_join is the most close() waits for the health thread: above one health request's
+// budget (cansub_health_timeout), which is what a request is inside when it is asked to stop.
+const cansub_health_join = 2 * time.second
+
+// closing is the stop the health thread's requests ask: true once close() has run.
+fn (b &CansubBus) closing() fn () bool {
+	return fn [b] () bool {
+		return !rlock b.stop {
+			b.stop.running
+		}
+	}
+}
 
 // How long a health poll may wait for the device. Bounded by what Stop can tolerate rather than by
 // what the network might need: this runs on a thread close() joins.
@@ -1320,25 +1338,21 @@ pub fn (mut b CansubBus) close() {
 	// JOINED, THEN the channel closed. Closing `rx` while the reader still holds it is a panic
 	// waiting for a bus that happens to be busy at Stop.
 	b.reader.wait()
-	// THE HEALTH THREAD IS NOT WAITED FOR, and that is the point.
-	//
-	// Its requests cannot be bounded from here. `read_timeout` is the only budget vlib's SSL
-	// client offers and it starts AFTER the connection is up, so a device whose mDNS name resolves
-	// to a host that blackholes connections leaves that thread inside `dial` for however long the
-	// OS takes — and joining it made Stop wait out an OS connect timeout no matter what number
-	// this code chose (codex round 16 on #204). Shortening the budget in rounds 7 and 8 could not
-	// reach it, because the budget was never the thing in charge.
-	//
-	// So Stop does not depend on it. What it does depend on is the reader, which owns the socket
-	// and is bounded by a read timeout this code CAN set — that join stays.
-	//
-	// Safe to leave running: it touches `host`, `spec` and `stop`, all of which outlive it under
-	// the GC, and `running` is already false. Its loop exits on return, and reconcile_listen_only
-	// checks `running` BOTH before its readback and again before the PUT that follows it — the
-	// second check being what keeps this sentence true, since a network round trip sits between
-	// them and Stop can happen inside it. So the worst an abandoned thread does is finish one GET
-	// whose answer nobody reads. #214 is the missing connect timeout, and closing the last window
-	// — a PUT already in flight — waits on it.
+	// AND THE HEALTH THREAD, BOUNDED. Every request it makes is bounded — the connect and the TLS
+	// handshake by the request's budget (cansub_dial, cansub_handshake), the exchange by it again —
+	// its connects end within a stop poll of `running` going false (b.closing()), and a request
+	// sends nothing once that is asked. So it is out within one handshake's or one exchange's
+	// budget of the close. Waited for, a PUT of this run cannot land on top of the next run's
+	// configuration. The wait is still capped (cansub_health_join) for what the budgets do not
+	// cover — a name lookup's OS resolver, after a refused connect: past the cap the thread is
+	// left, and `running`, checked before its readback and again before a PUT, keeps what it can
+	// still do to one request whose answer nobody reads.
+	if b.started {
+		select {
+			_ := <-b.health_done {}
+			cansub_health_join {}
+		}
+	}
 	b.rx.close()
 }
 
