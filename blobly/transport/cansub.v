@@ -1048,7 +1048,7 @@ pub fn (mut b CansubBus) send(frame CanFrame, commit fn ()) ! {
 const cansub_poll_ms = i64(200)
 
 // cansub_health_join is the most close() waits for the health thread: above one health request's
-// budget, which is what the thread can be inside when it is asked to stop.
+// budget (cansub_health_timeout), which is what a request is inside when it is asked to stop.
 const cansub_health_join = 2 * time.second
 
 // closing is the stop the health thread's requests ask: true once close() has run.
@@ -1340,11 +1340,13 @@ pub fn (mut b CansubBus) close() {
 	b.reader.wait()
 	// AND THE HEALTH THREAD, BOUNDED. Every request it makes is bounded — the connect and the TLS
 	// handshake by the request's budget (cansub_dial, cansub_handshake), the exchange by it again —
-	// and its connects end within a stop poll of `running` going false (b.closing()), so it is
-	// out within one exchange's budget. Waited for, a PUT of this run cannot land on top of the
-	// next run's configuration. The wait is still capped (cansub_health_join): past it the thread
-	// is left, and `running`, checked before its readback and again before a PUT, keeps what it
-	// can still do to one request whose answer nobody reads.
+	// its connects end within a stop poll of `running` going false (b.closing()), and a request
+	// sends nothing once that is asked. So it is out within one handshake's or one exchange's
+	// budget of the close. Waited for, a PUT of this run cannot land on top of the next run's
+	// configuration. The wait is still capped (cansub_health_join) for what the budgets do not
+	// cover — a name lookup's OS resolver, after a refused connect: past the cap the thread is
+	// left, and `running`, checked before its readback and again before a PUT, keeps what it can
+	// still do to one request whose answer nobody reads.
 	if b.started {
 		select {
 			_ := <-b.health_done {}

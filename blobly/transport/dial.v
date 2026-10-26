@@ -76,28 +76,30 @@ fn dial_one(a net.Addr, name string, started time.Time, deadline time.Time, stop
 			dial_close(handle)
 			return error_with_code('connect to ${name} failed (${code})', code)
 		}
-		// Wait for the socket to become writable: the connect completed, or failed.
+		// Wait for the socket to become writable: the connect completed, or failed. Polled once
+		// before the deadline is judged, so a connect that has already completed is not reported
+		// as timed out.
 		for {
-			if stop != unsafe { nil } && stop() {
+			if stop_asked(stop) {
 				dial_close(handle)
 				return DialStopped{
 					addr: name
 				}
 			}
 			left := deadline - time.now()
-			if left <= 0 {
-				dial_close(handle)
-				return DialTimedOut{
-					addr: name
-					ms:   (time.now() - started).milliseconds()
-				}
-			}
-			mut ms := int((left + time.millisecond - 1) / time.millisecond)
+			mut ms := if left <= 0 { 0 } else { int((left + time.millisecond - 1) / time.millisecond) }
 			if ms > dial_stop_poll_ms {
 				ms = dial_stop_poll_ms
 			}
 			if writable_within(handle, ms) {
 				break
+			}
+			if deadline - time.now() <= 0 {
+				dial_close(handle)
+				return DialTimedOut{
+					addr: name
+					ms:   (time.now() - started).milliseconds()
+				}
 			}
 		}
 		so_err := i32(0)
@@ -123,6 +125,11 @@ fn dial_one(a net.Addr, name string, started time.Time, deadline time.Time, stop
 	}
 	conn.set_read_timeout(net.tcp_default_read_timeout)
 	return conn
+}
+
+// stop_asked is whether a stop has been asked: nil means never asked.
+pub fn stop_asked(stop fn () bool) bool {
+	return stop != unsafe { nil } && stop()
 }
 
 fn dial_close(handle int) {

@@ -84,3 +84,13 @@ fn test_close_waits_for_the_health_thread() {
 	b.health_thr.wait()
 	assert b.health_done.len == 0, 'close() returned without waiting for the health thread'
 }
+
+// A READ IS NEVER GIVEN "NO TIMEOUT": what is left of a budget, under a millisecond or spent, is a
+// millisecond, since the TLS layer reads a timeout of 0 ms as none.
+fn test_a_spent_budget_is_still_a_bounded_read() {
+	assert cansub_read_wait(-time.second) == time.millisecond
+	assert cansub_read_wait(0) == time.millisecond
+	assert cansub_read_wait(400 * time.microsecond) == time.millisecond
+	assert cansub_read_wait(1500 * time.microsecond) == 2 * time.millisecond
+	assert cansub_read_wait(700 * time.millisecond) == 700 * time.millisecond
+}
