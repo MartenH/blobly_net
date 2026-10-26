@@ -417,6 +417,36 @@ J1939_FAULTS = {0: "orphan", 1: "sequence", 2: "restarted", 3: "aborted", 4: "ti
                 6: "overflow", 7: "padding", 8: "off_spec", 9: "truncated"}
 
 
+# Network management on a row's frames (nm.py)
+BB_NM_TEXT = 256
+
+
+class BbNmView(ctypes.Structure):
+    """bb_nm_view, field for field."""
+    _fields_ = [("state", ctypes.c_int32), ("nodes", ctypes.c_int32), ("keepers", ctypes.c_int32),
+                ("woke", ctypes.c_int32), ("woke_active", ctypes.c_uint8), ("heard", ctypes.c_uint8),
+                ("timeout_default", ctypes.c_uint8), ("timeout_ms", ctypes.c_int32), ("source", ctypes.c_int32),
+                ("t_ns", ctypes.c_int64), ("woke_ns", ctypes.c_int64), ("last_ns", ctypes.c_int64),
+                ("frames", ctypes.c_uint64), ("malformed", ctypes.c_uint64), ("dropped", ctypes.c_uint64),
+                ("origin", ctypes.c_char * BB_NM_TEXT), ("frames_text", ctypes.c_char * BB_NM_TEXT),
+                ("last_error", ctypes.c_char * BB_NM_TEXT)]
+
+
+class BbNmNode(ctypes.Structure):
+    """bb_nm_node, field for field."""
+    _fields_ = [("name", ctypes.c_char * BB_NM_TEXT), ("id", ctypes.c_uint32), ("ext", ctypes.c_uint8),
+                ("has_id", ctypes.c_uint8), ("nid", ctypes.c_int32), ("missing", ctypes.c_uint8),
+                ("unknown", ctypes.c_uint8), ("live", ctypes.c_uint8), ("keeper", ctypes.c_int32),
+                ("repeater", ctypes.c_uint8), ("cbv", ctypes.c_uint8), ("has_pn", ctypes.c_uint8), ("pn", ctypes.c_uint64),
+                ("count", ctypes.c_uint64), ("last_ns", ctypes.c_int64), ("cadence_ms", ctypes.c_double),
+                ("last_interval_ms", ctypes.c_double)]
+
+
+# enum bb_nm_state and enum bb_nm_source, as blobly/nm names them
+NM_STATES = {0: "asleep", 1: "awake", 2: "releasing"}
+NM_SOURCES = {0: "system.toml", 1: "ARXML", 2: "project", 3: "script"}
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -624,6 +654,11 @@ def _declare(lib):
         "bb_j1939_address_count": ([c_int], c_int),
         "bb_j1939_address_info": ([c_int, c_int, P(BbJ1939Address)], c_int),
         "bb_j1939_function_name": ([c_int, c_char_p, c_int], c_int),
+        # network management on a row's frames (nm.py)
+        "bb_nm_attach": ([c_int, c_int], c_int),
+        "bb_nm_attach_range": ([c_int, c_int, ctypes.c_int64, ctypes.c_int64, c_int, c_int], c_int),
+        "bb_nm_read_view": ([c_int, P(BbNmView)], c_int),
+        "bb_nm_node_info": ([c_int, c_int, P(BbNmNode)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

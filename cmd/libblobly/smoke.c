@@ -164,6 +164,10 @@ static int (*bb_j1939_take_message_p)(int, bb_j1939_message *, double *, uint8_t
 static int (*bb_j1939_address_count_p)(int);
 static int (*bb_j1939_address_info_p)(int, int, bb_j1939_address *);
 static int (*bb_j1939_function_name_p)(int, char *, int);
+static int (*bb_nm_attach_p)(int, int);
+static int (*bb_nm_attach_range_p)(int, int, int64_t, int64_t, int, int);
+static int (*bb_nm_read_view_p)(int, bb_nm_view *);
+static int (*bb_nm_node_info_p)(int, int, bb_nm_node *);
 
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
@@ -331,6 +335,35 @@ static int j1939_steps(int row) {
 	bb_bus_close_p(peer);
 	bb_bus_close_p(h);
 	printf("ok   J1939 on CAN1: a BAM rejoined, an address claim in the directory\n");
+	return 0;
+}
+
+/* NM on CAN1, whose wire has no NM configuration: nothing attached unasked, a stated range read */
+static int nm_steps(int row) {
+	int h = bb_bus_open_p("inproc:CAN1"), peer = bb_bus_open_p("inproc:CAN1");
+	CHECK(h >= 0 && peer >= 0, "open for NM");
+	CHECK(bb_nm_attach_p(h, row) == 0, "CAN1 has no NM configuration: nothing attached");
+	CHECK(bb_nm_attach_range_p(h, row, 0x600, 0x500, 0, 300) == BB_ERR, "a range upside down is refused");
+	CHECK(bb_nm_attach_range_p(h, row, 0x500, 0x53F, 0, 300) == 1, "a stated range listens");
+	bb_frame f = {.id = 0x511, .len = 8, .data = {0x11, 0x11}};
+	CHECK(bb_bus_send_p(peer, &f) == 0, "send an NM frame");
+	static bb_nm_view v;
+	v.frames = 0;
+	for (int i = 0; i < 500 && v.frames == 0; i++) {
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for NM");
+		CHECK(bb_nm_read_view_p(h, &v) == 0, "the reading");
+	}
+	CHECK(v.state == BB_NM_AWAKE && v.nodes == 1 && v.keepers == 1 && v.woke == 0 && v.woke_active
+		&& v.source == BB_NM_SCRIPT && v.timeout_ms == 300 && v.t_ns > 0, "awake, woken by its one node");
+	static bb_nm_node n;
+	CHECK(bb_nm_node_info_p(h, 0, &n) == 0 && n.nid == 0x11 && n.id == 0x511 && n.has_id && n.keeper == 0 && n.live
+		&& n.cbv == 0x11 && !n.missing && !n.unknown && strcmp(n.name, "NID 0x11") == 0, "the node: %s", n.name);
+	CHECK(bb_nm_node_info_p(h, 1, &n) == BB_ERR, "no second node");
+	CHECK(bb_nm_attach_p(h, row) == 0 && bb_nm_read_view_p(h, &v) == 0 && v.nodes == 1,
+		"a refused return to the wire's configuration keeps the stated range");
+	bb_bus_close_p(peer);
+	bb_bus_close_p(h);
+	printf("ok   NM on CAN1: a stated range read, its node awake\n");
 	return 0;
 }
 
@@ -656,6 +689,10 @@ int main(int argc, char **argv) {
 	SYM(bb_record_start); SYM(bb_record_stop);
 	SYM(bb_j1939_attach); SYM(bb_j1939_take_message); SYM(bb_j1939_address_count); SYM(bb_j1939_address_info);
 	SYM(bb_j1939_function_name);
+	SYM(bb_nm_attach);
+	SYM(bb_nm_attach_range);
+	SYM(bb_nm_read_view);
+	SYM(bb_nm_node_info);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -713,6 +750,7 @@ int main(int argc, char **argv) {
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1)) return 1;
 	if (j1939_steps(can1)) return 1;
+	if (nm_steps(can1)) return 1;
 	if (doip_steps(doip)) return 1;
 	if (isotp_steps(can1, doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;

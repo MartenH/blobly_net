@@ -1617,6 +1617,8 @@ fn (mut app App) rebuild_from_proj() {
 	if reload != '' {
 		app.load_recording(reload)
 	}
+	// the NM configuration follows the project, so a script launched while stopped reads by it
+	app.nm_follow(true)
 }
 
 // same_gates says whether two per-wire J1939 declarations agree everywhere.

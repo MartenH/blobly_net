@@ -1342,6 +1342,87 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
                                                       per industry, or past the 32 global ones */
 #endif /* BB_FROM_V */
 
+/* Network management on a row's frames (cmd/libblobly/nm.v, blobly/nm): who reports in on the
+ * row's NM cluster and who keeps the network awake, read from the frames a bus handle reads — a
+ * frame is still consumed once, by whoever reads it, and what the handle sends is never in it. A
+ * LISTENER: nothing is sent.
+ *
+ * bb_nm_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start) by the row's
+ * wire's NM configuration, nm.configure's rule, the Network Management panel's: the system model's
+ * bus named like a row on the wire, else the wire's ARXML NM-PDU frames, else a row's own `nm:`.
+ * 1: listening; 0: the wire has none, and nothing guesses a frame is NM. Attaching a handle already
+ * listening in this run by that configuration keeps what it has; one reading a stated range goes
+ * back to the wire's, a new reading. bb_nm_attach_range binds it to a range the host states
+ * instead (lo..hi inclusive, 29-bit where hi > 0x7FF or ext; a timeout of 1..60000 ms), declaring no
+ * node, and begins a new reading. Every frame bb_bus_recv reads from then on is fed to it at its
+ * receive time (bb_frame.t_ns), and a receive that finds nothing queued (BB_NONE) moves the reading
+ * on to then.
+ *
+ * bb_nm_read_view takes the reading AS OF THE HANDLE'S LATEST READ (t_ns), never the wall clock's now: a
+ * handle nobody has read for a while reads as it was then, not as asleep, since what the bus
+ * carried meanwhile is still queued. bb_nm_node_info gives row k of that reading: the reporters in the
+ * order first heard, then the declared nodes never heard (missing). All on the thread that uses
+ * the handle. */
+#define BB_NM_TEXT 256      /* the texts of bb_nm_view and bb_nm_node, NUL included */
+enum bb_nm_state {
+	BB_NM_ASLEEP = 0,       /* nothing heard within the timeout (or nothing yet) */
+	BB_NM_AWAKE = 1,        /* a node heard within the timeout asks for the network */
+	BB_NM_RELEASING = 2     /* every node heard within the timeout is ready to sleep */
+};
+enum bb_nm_source {
+	BB_NM_SYSTEM = 0,       /* the system model (system.toml) */
+	BB_NM_ARXML = 1,        /* the wire's ARXML NM-PDU frames */
+	BB_NM_PROJECT = 2,      /* a row's own nm: setting */
+	BB_NM_SCRIPT = 3        /* bb_nm_attach_range */
+};
+typedef struct bb_nm_view {
+	int32_t  state;           /* an enum bb_nm_state */
+	int32_t  nodes;           /* the rows bb_nm_node_info gives */
+	int32_t  keepers;         /* how many keep the network awake (bb_nm_node.keeper >= 0) */
+	int32_t  woke;            /* the row whose frame ended the last silence, -1 none */
+	uint8_t  woke_active;     /* that frame said active wake-up */
+	uint8_t  heard;           /* an NM frame has been read */
+	uint8_t  timeout_default; /* the configuration states no timeout; timeout_ms is the default */
+	int32_t  timeout_ms;
+	int32_t  source;          /* an enum bb_nm_source */
+	int64_t  t_ns;            /* the moment the reading is of (bb_now_ns); 0 before any read */
+	int64_t  woke_ns;         /* when `woke` was read, 0 none */
+	int64_t  last_ns;         /* the last NM frame, 0 none */
+	uint64_t frames;          /* NM frames read */
+	uint64_t malformed;       /* frames in the cluster that did not parse */
+	uint64_t dropped;         /* frames from reporters past the 256 a reading keeps */
+	char     origin[BB_NM_TEXT];      /* what the configuration was read from */
+	char     frames_text[BB_NM_TEXT]; /* the cluster's frames in words: "NM ids 0x500..0x53F" */
+	char     last_error[BB_NM_TEXT];  /* why the last malformed frame did not parse */
+} bb_nm_view;
+typedef struct bb_nm_node {
+	char     name[BB_NM_TEXT]; /* its declaration's name, else "NID 0x13" */
+	uint32_t id;               /* its CAN id (has_id) */
+	uint8_t  ext;
+	uint8_t  has_id;           /* 0: a missing node declared with no id */
+	int32_t  nid;              /* -1 not known */
+	uint8_t  missing;          /* declared, never heard */
+	uint8_t  unknown;          /* heard, and the configuration declares its members and not it */
+	uint8_t  live;             /* heard within the timeout */
+	int32_t  keeper;           /* its place among those keeping the network awake (declared order,
+	                              then first heard), -1 not one */
+	uint8_t  repeater;         /* live, and its latest frame asks for a repeat message */
+	uint8_t  cbv;              /* its latest control bit vector: 0x01 repeat-message request, 0x08
+	                              ready to sleep, 0x10 active wake-up, 0x40 PN info */
+	uint8_t  has_pn;           /* its latest frame requests partial networks: pn is the mask */
+	uint64_t pn;
+	uint64_t count;            /* its frames read */
+	int64_t  last_ns;          /* when it was last heard, 0 missing */
+	double   cadence_ms;       /* the mean interval within the timeout, 0 before two */
+	double   last_interval_ms; /* the latest interval, 0 before two */
+} bb_nm_node;
+#ifndef BB_FROM_V
+int bb_nm_attach(int h, int row);  /* 1 listening, 0 the row's wire has no NM configuration */
+int bb_nm_attach_range(int h, int row, int64_t lo, int64_t hi, int ext, int timeout_ms);
+int bb_nm_read_view(int h, bb_nm_view *out);
+int bb_nm_node_info(int h, int k, bb_nm_node *out);
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

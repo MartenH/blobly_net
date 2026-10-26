@@ -210,7 +210,8 @@ pub fn (t &Tracker) state(now f64) BusState {
 }
 
 // keepers are the nodes keeping the network awake at `now`: heard within the timeout with
-// ready-to-sleep clear.
+// ready-to-sleep clear. The declared ones in the order the configuration declares them, then the
+// others in the order first heard, so the answer does not depend on when listening began.
 pub fn (t &Tracker) keepers(now f64) []int {
 	mut out := []int{}
 	for i, n in t.nodes {
@@ -218,7 +219,22 @@ pub fn (t &Tracker) keepers(now f64) []int {
 			out << i
 		}
 	}
+	out.sort_with_compare(fn [t] (a &int, b &int) int {
+		ra := t.declared_rank(*a)
+		rb := t.declared_rank(*b)
+		if ra != rb {
+			return if ra < rb { -1 } else { 1 }
+		}
+		return if *a < *b { -1 } else if *a > *b { 1 } else { 0 }
+	})
 	return out
+}
+
+// declared_rank orders node `i` by its declaration: its index there, past every declaration when
+// nothing declares it.
+fn (t &Tracker) declared_rank(i int) int {
+	d := t.nodes[i].decl
+	return if d >= 0 { d } else { t.cfg.declared.len }
 }
 
 // with_bit are the nodes heard within the timeout whose latest CBV carries `bit` — the active

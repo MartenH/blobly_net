@@ -27,6 +27,7 @@ import blobly.cyclic
 import blobly.sysview
 import blobly.replay
 import blobly.j1939
+import blobly.nm
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -67,6 +68,9 @@ pub:
 	// each of the row's databases as it was opened, the files `db` merges: what a rejoined J1939
 	// message is judged by per file (candb.pgn_message_in_catalog); empty asks `db` alone
 	sources []candb.Database
+	// the row's wire's NM configuration (nm.configure, the Network Management panel's rule, which
+	// only the host can ask: the system model and every row on the wire); none where it has none
+	nm ?nm.Config
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -155,6 +159,9 @@ mut:
 	j1939_rx map[string]&j1939.Listener
 	// the channels whose wire does not read as J1939, asked once
 	j1939_off map[string]bool
+	// per channel: the NM reading of what its handle reads (nm.v), and the channels with none
+	nm_rx  map[string]&nm.Listener
+	nm_off map[string]bool
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
 	// the replays and recordings the script started, stopped by close (replay.v)
@@ -422,6 +429,7 @@ fn (mut env Env) register_all() {
 	env.register_ifaces()
 	env.register_cyclic()
 	env.register_j1939()
+	env.register_nm()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -1374,13 +1382,13 @@ fn l_bus_recv(l lua.State) i32 {
 			return timeout_at(l) // the wait was cut
 		}
 		if err.msg() == 'timeout' {
-			env.j1939_idle(name)
+			env.read_idle(name)
 		}
 		l.push_nil()
 		return 1
 	}
 	t_ns := transport.received_now(frame)
-	env.j1939_saw(name, frame)
+	env.frame_read(name, frame, t_ns)
 	l.push_int(frame.id)
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)

@@ -41,7 +41,7 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 					time.sleep(rest * time.millisecond)
 				}
 			} else {
-				env.j1939_idle(names[0])
+				env.read_idle(names[0])
 			}
 			return none
 		}
@@ -64,7 +64,7 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 				if transport.look_was_spent(err) {
 					spent = true
 				} else if err.msg() == 'timeout' {
-					env.j1939_idle(names[i]) // nothing queued on it
+					env.read_idle(names[i]) // nothing queued on it
 				}
 				continue
 			}
@@ -102,7 +102,7 @@ fn l_wait_frame(l lua.State) i32 {
 		return 1
 	}
 	t_ns := transport.received_now(f)
-	env.j1939_saw(name, f)
+	env.frame_read(name, f, t_ns)
 	l.push_str(name)
 	l.push_int(f.id)
 	l.push_bool(f.extended)

@@ -1023,6 +1023,89 @@ function j1939.addresses(channel, window_ms)
   return __j1939_addresses(channel, jms("j1939.addresses", window_ms, 0))
 end
 
+-- nm: CAN network management on a channel, read from the frames the script reads there
+-- (bus.recv, run(), the waits here): who reports in on its NM cluster and who keeps the network
+-- awake. A channel reads it from its first frame where its wire has an NM configuration (a
+-- system.toml bus named like a row on it, the wire ARXML NM-PDU frames, or a row nm:), the
+-- Network Management panel rule; nothing guesses a frame is NM. A reading is as of the latest
+-- read on the channel, never the wall clock now. Nothing is sent.
+--   nm.listen(ch [, { lo, hi, ext, timeout_ms }])  read ch as NM from now on: by its wire
+--                                             configuration, or by the range given (a new reading)
+--   nm.reading(ch [, window_ms])              -> the reading, after reading ch for window_ms
+--                                             (0: nothing read): { state, kept_awake_by,
+--                                             woken_by, woken_active, woken_ms,
+--                                             repeat_requested_by, nodes, missing, unknown,
+--                                             heard, last_heard_ms, frames, malformed,
+--                                             last_error, dropped, timeout_ms, timeout_default,
+--                                             source, origin, cluster, t_ms }; a node is { name,
+--                                             nid, can_id, ext, missing, unknown, live,
+--                                             keeps_awake, count, last_heard_ms, cadence_ms,
+--                                             last_interval_ms, bits = { raw, repeat_request,
+--                                             ready_to_sleep, active_wakeup, pn_info }, pn }
+--   nm.state(ch)                              -> "awake" | "releasing" | "asleep"
+--   nm.expect_state(ch, state [, timeout_ms [, kept_awake_by]]) -> the reading, ch read until it
+--                                             is in state (kept awake by exactly those names, in
+--                                             any order); an error saying what it was otherwise
+--   nm.expect_asleep(ch [, timeout_ms])       -> nm.expect_state(ch, "asleep", timeout_ms)
+nm = {}
+local nm_states = { awake = true, releasing = true, asleep = true }
+function nm.listen(channel, opts)
+  if opts == nil then __nm_listen(channel, -1, 0, false, 0) return end
+  if type(opts) ~= "table" or opts.lo == nil or opts.hi == nil then
+    error("nm.listen: a range is { lo = , hi = [, ext = ] [, timeout_ms = ] }", 2)
+  end
+  jint("nm.listen", "lo", opts.lo, 0x1FFFFFFF)
+  jint("nm.listen", "hi", opts.hi, 0x1FFFFFFF)
+  local t = opts.timeout_ms or 300
+  if type(t) ~= "number" or math.tointeger(t) == nil or t < 1 or t > 60000 then
+    error("nm.listen: timeout_ms is an integer 1..60000, not " .. tostring(t), 2)
+  end
+  __nm_listen(channel, opts.lo, opts.hi, opts.ext == true, t)
+end
+function nm.reading(channel, window_ms)
+  if window_ms ~= nil and (type(window_ms) ~= "number" or window_ms < 0 or window_ms ~= window_ms or window_ms == math.huge) then
+    error("nm.reading: a window is a finite number of ms, not " .. tostring(window_ms), 2)
+  end
+  return __nm_reading(channel, window_ms or 0) -- a fraction is rounded up (ms_up)
+end
+function nm.state(channel) return __nm_reading(channel, 0).state end
+local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by)
+  if not nm_states[state] then
+    error(fname .. ": a state is awake, releasing or asleep, not " .. tostring(state), level)
+  end
+  local ms = 1000
+  if timeout_ms ~= nil then
+    if type(timeout_ms) ~= "number" or timeout_ms < 0 or timeout_ms ~= timeout_ms or timeout_ms == math.huge then
+      error(fname .. ": a wait is a finite number of ms, not " .. tostring(timeout_ms), level)
+    end
+    ms = timeout_ms -- a fraction is rounded up where it is waited (ms_up)
+  end
+  local r, ok
+  local want = ""
+  if kept_awake_by ~= nil then
+    if type(kept_awake_by) ~= "table" then error(fname .. ": kept_awake_by is a list of names", level) end
+    r, ok = __nm_wait(channel, ms, state, true, table.unpack(kept_awake_by))
+    local sorted = { table.unpack(kept_awake_by) }
+    table.sort(sorted)
+    want = ", kept awake by " .. (#sorted > 0 and table.concat(sorted, ", ") or "nobody")
+  else
+    r, ok = __nm_wait(channel, ms, state, false)
+  end
+  if ok then return r end
+  local was = "it was " .. r.state
+  if #r.kept_awake_by > 0 then was = was .. ", kept awake by " .. table.concat(r.kept_awake_by, ", ") end
+  if not r.heard then was = was .. ", no NM frame read (" .. r.cluster .. ", from " .. r.origin .. ")" end
+  error(string.format("%s: %s: no NM state %s%s within %g ms; %s", fname, channel, state, want, ms, was), level)
+end
+function nm.expect_state(channel, state, timeout_ms, kept_awake_by)
+  local r = nm_expect("nm.expect_state", 3, channel, state, timeout_ms, kept_awake_by)
+  return r -- not a tail call: the error level counts this frame
+end
+function nm.expect_asleep(channel, timeout_ms)
+  local r = nm_expect("nm.expect_asleep", 3, channel, "asleep", timeout_ms)
+  return r
+end
+
 -- ============================ the DBC catalog ============================
 -- dbc.messages(channel): every message of the channel`s databases, in their order, each
 -- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,
