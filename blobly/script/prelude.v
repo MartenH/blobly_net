@@ -847,15 +847,19 @@ function bus.recv(channel, timeout_ms)
   return __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
 end
 -- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
--- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded
+-- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
+-- opts.format as bus.send, else the format of the channel row
 function bus.send_message(channel, name, sigs, opts)
   if opts ~= nil and type(opts) ~= "table" then error("bus.send_message: opts is a table", 2) end
+  if opts ~= nil and opts.format ~= nil and type(opts.format) ~= "string" then
+    error("bus.send_message: format must be a string (classic, fd or fd_brs)", 2)
+  end
   local id, ext, data = __msg_template(channel, name)
   for k, v in pairs(sigs or {}) do
     data = __encode_signal(channel, name, k, v, data)
   end
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
-  __bus_send(channel, id, ext, data)
+  __bus_send(channel, id, ext, data, opts and opts.format)
   return { id = id, ext = ext, data = data }
 end
 -- ============================ background senders ============================

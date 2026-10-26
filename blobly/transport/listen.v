@@ -51,6 +51,9 @@ pub struct WirePolicy {
 pub:
 	silent  bool
 	framing Framing
+	// the format each FD row on the wire raises its own emitters' frames to, by row name
+	// (RowFramedBus, #384); never written once published
+	rows map[string]Framing
 }
 
 pub struct ListenTable {
@@ -95,7 +98,7 @@ pub fn set_listen_only(iface string, on bool) {
 		...p
 		silent: on
 	}
-	if p.silent || p.framing.fd {
+	if p.silent || p.framing.fd || p.rows.len > 0 {
 		listen_tbl.wires[k] = p
 	} else {
 		// An entry saying nothing is no entry. Keeping one would be a second way to spell the
@@ -119,6 +122,12 @@ pub fn wire_policy(iface string) WirePolicy {
 // The atomic publish the two-table version could not give. `silent` and `framed` are keyed the same
 // way, so a wire may appear in either, both or neither.
 pub fn replace_wire_policy(silent []string, framed map[string]Framing) {
+	replace_wire_policy_rows(silent, framed, map[string]map[string]Framing{})
+}
+
+// replace_wire_policy_rows is replace_wire_policy with each wire's FD rows too (`rows`, by wire and
+// then row name: what RowFramedBus raises a row's own frames to), in the same one swap.
+pub fn replace_wire_policy_rows(silent []string, framed map[string]Framing, rows map[string]map[string]Framing) {
 	mut next := map[string]WirePolicy{}
 	for i in silent {
 		k := wire_key(i)
@@ -137,6 +146,29 @@ pub fn replace_wire_policy(silent []string, framed map[string]Framing) {
 			framing: fr
 		}
 	}
+	for i, named in rows {
+		mut fd := map[string]Framing{}
+		for name, fr in named {
+			if fr.fd {
+				fd[name] = fr
+			}
+		}
+		if fd.len == 0 {
+			continue
+		}
+		k := wire_key(i)
+		prev := next[k] or { WirePolicy{} }
+		// two spellings of one wire are one wire: their rows merge
+		for name, fr in prev.rows {
+			if name !in fd {
+				fd[name] = fr
+			}
+		}
+		next[k] = WirePolicy{
+			...prev
+			rows: fd
+		}
+	}
 	listen_tbl.mu.lock()
 	listen_tbl.wires = next.move()
 	listen_tbl.mu.unlock()
@@ -152,7 +184,7 @@ pub fn set_wire_framing(iface string, fr Framing) {
 		...p
 		framing: fr
 	}
-	if p.silent || p.framing.fd {
+	if p.silent || p.framing.fd || p.rows.len > 0 {
 		listen_tbl.wires[k] = p
 	} else {
 		listen_tbl.wires.delete(k)
@@ -160,7 +192,7 @@ pub fn set_wire_framing(iface string, fr Framing) {
 	listen_tbl.mu.unlock()
 }
 
-// clear_wire_framing drops every format mark, leaving silence marks alone.
+// clear_wire_framing drops every format mark, a wire's and its rows', leaving silence marks alone.
 pub fn clear_wire_framing() {
 	listen_tbl.mu.lock()
 	mut next := map[string]WirePolicy{}
@@ -253,7 +285,7 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	//
 	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
 	// records, and replay reproduces a recording rather than originating anything.
-	out := if s.verbatim { frame.unstated() } else { p.framing.apply(frame) }
+	out := if s.verbatim { frame.unstated() } else { p.frame(frame) }
 	// unwatched: nothing records it, or this wire's tier refuses it (noted, its normalised form
 	// could claim somebody else's frame before the refusal came back)
 	mut unwatched := !sends_watched()

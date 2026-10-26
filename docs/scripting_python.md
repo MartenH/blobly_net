@@ -2018,7 +2018,7 @@ after `start()`.
 | `ch.name` | The row's name. |
 | `ch.kind` | `"can"`, `"doip"` or `"someip"`. Only a CAN row carries frames. |
 | `ch.iface` | The interface the row opens: as the project composes it, and while started, as the run has it. |
-| `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the wire's declared format. |
+| `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the declared format: a project channel's own (a `canfd` row's, also on a wire a `can` row shares), else the wire's. |
 | `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |

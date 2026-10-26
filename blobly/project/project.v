@@ -750,7 +750,7 @@ pub fn apply_listen_only(chs []Channel) {
 	//
 	// The name stays `apply_listen_only` because every caller means "publish this project's wire
 	// policy" and always did; what it publishes has grown.
-	transport.replace_wire_policy(quiet, wire_framings(chs))
+	transport.replace_wire_policy_rows(quiet, wire_framings(chs), row_framings(chs))
 }
 
 // apply_framing publishes what format each wire carries, so frames this app ORIGINATES on it are
@@ -790,14 +790,11 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 		// would go out FD. Neither row overrules the other: a disagreement leaves the wire
 		// undeclared, which is the format every emitter builds anyway.
 		//
-		// AND WHAT THAT COSTS, said plainly: the FD row on such a wire goes on originating CLASSIC
-		// frames, so a 64-byte generator or simulated response is truncated on SocketCAN. That is
-		// not a regression — before this change every emitter built classic on every wire — but it
-		// is the one configuration this feature does not reach, and it cannot be reached from here:
-		// the table is keyed by WIRE and the disagreement is between ROWS. Two formats on one wire
-		// is ordinary CAN-FD traffic; the per-frame answer (transport.FrameFormat, #203) reaches it
-		// from Quick Send and Lua, which state each frame's format, but not from the generators or
-		// simulated ECUs, which follow this table.
+		// Two formats on one wire is ordinary CAN-FD traffic, and this table cannot say it: it is
+		// keyed by WIRE and the disagreement is between ROWS. Each row's own emitters keep their
+		// row's format instead (Channel.emitter_framing, #384); what has no row — ISO-TP testers,
+		// flash, the shell — originates classic on such a wire, or states a format per frame
+		// (transport.FrameFormat, #203).
 		if existing := out[k] {
 			if existing.fd != fr.fd || existing.brs != fr.brs {
 				disputed[k] = true
@@ -821,6 +818,45 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 	}
 	for k in classic {
 		out.delete(k)
+	}
+	return out
+}
+
+// row_framings is, per wire, the format each FD row's own emitters raise their frames to, by row
+// name (Channel.emitter_framing; transport.row_framing reads it per send, #384). A name two rows on
+// one wire carry with different formats names neither, as a disagreement leaves a wire undeclared.
+pub fn row_framings(chs []Channel) map[string]map[string]transport.Framing {
+	mut seen := map[string]transport.Framing{} // by wire and row name
+	mut split := map[string]bool{}
+	for c in chs {
+		if !c.enabled || c.is_eth() {
+			continue
+		}
+		key := compose_key(transport.wire_key(c.iface_with_bitrate()), c.name)
+		fr := c.emitter_framing()
+		if existing := seen[key] {
+			if existing != fr {
+				split[key] = true
+			}
+			continue
+		}
+		seen[key] = fr
+	}
+	mut out := map[string]map[string]transport.Framing{}
+	for c in chs {
+		if !c.enabled || c.is_eth() {
+			continue
+		}
+		k := transport.wire_key(c.iface_with_bitrate())
+		key := compose_key(k, c.name)
+		fr := seen[key] or { continue }
+		if !fr.fd || key in split {
+			continue
+		}
+		if k !in out {
+			out[k] = map[string]transport.Framing{}
+		}
+		out[k][c.name] = fr
 	}
 	return out
 }
@@ -2123,6 +2159,19 @@ pub fn (c Channel) origination_framing() Framing {
 		fd:  true
 		brs: c.data_bitrate > 0 && c.data_bitrate != c.nominal_bitrate()
 	}
+}
+
+// emitter_framing is the format this row's OWN emitters raise a frame stating none to
+// (row_framings, transport.row_framed, #384): its generators, its simulated ECUs and their diagnostic servers, a
+// script's or a host's handle on it. An enabled CAN row's declaration — which on a wire two enabled
+// rows dispute (wire_framings leaves it undeclared) is the only one that frame has; a disabled row
+// declares nothing about the run, and an FD row whose adapter cannot carry FD is not declared FD,
+// as wire_framings rules for the wire.
+pub fn (c Channel) emitter_framing() transport.Framing {
+	if !c.enabled || c.is_eth() || !c.can_carry_fd() {
+		return transport.Framing{}
+	}
+	return c.origination_framing().to_wire()
 }
 
 // framed returns `f` as this channel would put it on the wire.

@@ -53,10 +53,18 @@ pub fn wire_framing(iface string) Framing {
 // replaced while a Lua script still holds a bus it opened, and an answer frozen at open time is one
 // that goes stale while a wire transmits.
 pub fn framed_for_wire(iface string, f CanFrame) CanFrame {
-	if f.fd || f.format_stated {
-		return f.unstated()
+	return wire_policy(iface).frame(f)
+}
+
+// frame is `f` as this policy puts it on the wire: a stated format kept, else raised — upward only
+// — to the format of the row it is sent as (`CanFrame.row`, `rows`), then to the wire's; the
+// send-side intent removed. One policy, so the row and the wire are one project's.
+pub fn (p WirePolicy) frame(f CanFrame) CanFrame {
+	if f.format_stated || f.row == '' {
+		return p.framing.apply(f)
 	}
-	return wire_framing(iface).apply(f)
+	row := p.rows[f.row] or { Framing{} }
+	return p.framing.apply(row.apply(f.unstated()))
 }
 
 // apply is the stamp itself. Idempotent: it is applied at the GUI tap (so the trace RECORDS the
@@ -82,12 +90,13 @@ pub fn (fr Framing) apply(f CanFrame) CanFrame {
 
 // unstated is the frame with the send-side intent removed, once the format has been decided.
 pub fn (f CanFrame) unstated() CanFrame {
-	if !f.format_stated {
+	if !f.format_stated && f.row == '' {
 		return f
 	}
 	return CanFrame{
 		...f
 		format_stated: false
+		row:           ''
 	}
 }
 
@@ -100,8 +109,9 @@ pub fn (f CanFrame) unstated() CanFrame {
 // and carried ON THE FRAME so it survives every wrapper between that caller and the wire: the
 // GUI's tap and `SilentBus` both frame through `Framing.apply`, which leaves a stated frame alone.
 //
-// Everything else — generators, simulated ECUs, ISO-TP, flash, replay — states nothing and is
-// framed per wire as before.
+// Everything else states nothing. A ROW'S OWN emitters — its generators, its simulated ECUs, a
+// script's or a host's handle on the row — are raised to that row's format (`RowFramedBus`,
+// #384); the rest — ISO-TP testers, flash, the shell, replay — are framed per wire.
 
 // FrameFormat is a per-frame format choice. `wire` states nothing: the wire's declaration decides.
 pub enum FrameFormat {
@@ -174,14 +184,101 @@ pub fn (ff FrameFormat) stamp(f CanFrame) !CanFrame {
 }
 
 // format_choice_offered reports whether a per-frame format choice can change anything for a frame
-// sent from a row declaring `row` (enabled or not) onto a wire declaring `wire`.
-//
-// On a classic row of an undeclared wire every frame goes out classic and the choice would be one
-// the operator has to reason about for nothing. On an FD wire it is how a classic frame gets out;
-// on an ENABLED FD row of an undeclared wire (two enabled rows disagree, `project.wire_framings`)
-// it is how an FD frame gets out. A DISABLED row declares nothing about the run — the wire table
-// ignores it — so its FD alone offers nothing: an FD frame from it would contradict the only
-// declaration the run has.
+// sent from a row declaring `row` (enabled or not) onto a wire declaring `wire`: whether that frame,
+// stating nothing, goes out FD (`row_declared`). There a classic choice is how a classic frame gets
+// out; on a classic one every frame goes out classic and the choice would be one the operator has
+// to reason about for nothing.
 pub fn format_choice_offered(row Framing, row_enabled bool, wire Framing) bool {
-	return wire.fd || (row.fd && row_enabled)
+	return row_declared(row, row_enabled, wire).fd
+}
+
+// row_declared is the format a frame stating nothing goes out in from a row's own handle (#384): the
+// row's where it is ENABLED and FD — on a wire two enabled rows dispute, which `project.wire_framings`
+// leaves undeclared, each row's emitters keep the row's format — else the wire's. A DISABLED row
+// declares nothing about the run, so its FD alone contradicts nothing the run has.
+pub fn row_declared(row Framing, row_enabled bool, wire Framing) Framing {
+	if row_enabled && row.fd && !wire.fd {
+		return row
+	}
+	return wire
+}
+
+// row_framing is the format row `row`'s own emitters on `iface` raise a frame to: the row's where
+// the published project has it as an enabled FD row of that name on that wire
+// (project.row_framings), else classic, which raises nothing. Read per send, like wire_framing.
+pub fn row_framing(iface string, row string) Framing {
+	if row == '' {
+		return Framing{}
+	}
+	return wire_policy(iface).rows[row] or { Framing{} }
+}
+
+// RowFramedBus is a bus a ROW's own emitters send through: every frame it sends is marked as that
+// row's (`CanFrame.row`), so the bus beneath, framing it for its wire (SilentBus, the GUI's tap),
+// raises one stating no format to the row's in the same policy read. On a wire whose rows agree the
+// two are one format; on a wire two enabled rows dispute, the wire is undeclared and this is what
+// keeps an FD row's generators and simulated ECUs FD (#384). Replay never goes through one.
+@[heap]
+pub struct RowFramedBus {
+	iface string
+	row   string
+mut:
+	inner Bus
+	sent  CanFrame
+}
+
+// row_framed is `b`, opened on `iface`, sending as row `row`'s own emitter; `b` itself for no row.
+pub fn row_framed(b Bus, iface string, row string) Bus {
+	if row == '' {
+		return b
+	}
+	return &RowFramedBus{
+		iface: iface
+		row:   row
+		inner: b
+	}
+}
+
+pub fn (mut r RowFramedBus) send(f CanFrame) ! {
+	out := r.as_row(f)
+	r.inner.send(out)!
+	r.sent = out
+}
+
+// as_row is `f` marked as this row's, unless its caller stated a format.
+pub fn (r &RowFramedBus) as_row(f CanFrame) CanFrame {
+	if f.format_stated {
+		return f
+	}
+	return CanFrame{
+		...f
+		row: r.row
+	}
+}
+
+// sent_frame is what the bus beneath handed on, where it says (SentFrame), else the last frame
+// as its wire frames it.
+pub fn (r &RowFramedBus) sent_frame() CanFrame {
+	inner := r.inner
+	return if inner is SentFrame { inner.sent_frame() } else { framed_for_wire(r.iface, r.sent) }
+}
+
+pub fn (mut r RowFramedBus) recv(timeout_ms int) !CanFrame {
+	return r.inner.recv(timeout_ms)!
+}
+
+pub fn (mut r RowFramedBus) close() {
+	r.inner.close()
+}
+
+pub fn (mut r RowFramedBus) health() BusHealth {
+	return r.inner.health()
+}
+
+pub fn (mut r RowFramedBus) diagnostics() BusDiagnostics {
+	return r.inner.diagnostics()
+}
+
+pub fn (mut r RowFramedBus) reconcile_silence(want bool) ! {
+	r.inner.reconcile_silence(want)!
 }

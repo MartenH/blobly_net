@@ -590,7 +590,7 @@ local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil
 --       fd, brs, esi, rtr = <bool>, t_ms = <number>, e2e = <string or nil> }
 local t = now_ms()                                  -- the clock f.t_ms is on
 
-bus.send_message(channel, "MsgName", { Sig = value, ... } [, { e2e = false }])  -- DBC-encode + send
+bus.send_message(channel, "MsgName", { Sig = value, ... } [, { e2e = false, format = "classic" }])  -- DBC-encode + send
 local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Name = value, ... }
 
 local s = bus.send_cyclic(channel, id, data, period_ms [, { ext = false, format = "classic" }])
@@ -624,9 +624,11 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   trace and Python's `Frame.t_ms` give the same frame. Elsewhere (`inproc:`, `udp:`, and the
   vendor adapters until they read their stamps) it is the receipt: when the script read it, so a
   frame left queued while the script was busy carries the time it was read.
-- `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
-  channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
-  a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
+- `format` (on `bus.send`, `bus.send_message` and `bus.send_cyclic`) states the frame's CAN
+  format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the channel's declaration decides
+  (`type: canfd` frames as FD) — the CHANNEL's, so on a wire an enabled `canfd` row and an
+  enabled `can` row share, each row's frames go out in its own format. It is how a classic frame
+  reaches a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
 - **Background senders.** `bus.send_cyclic` sends a frame every `period_ms` (1 .. 3600000),
   the first at once, and `bus.send_message_cyclic` a DBC message encoded from `sigs`, its declared
   E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — from a

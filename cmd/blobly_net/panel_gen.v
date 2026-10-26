@@ -82,24 +82,24 @@ fn draw_quick_send(mut app App) {
 	// pushed "data (hex)" off the panel edge (codex round 1 on #256).
 	vgui.set_next_item_width(260 * app.prefs.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
-	// THE FRAME'S FORMAT, only where choosing one can change it (#203): on a CAN-FD wire it is
-	// how a classic frame gets out, on the FD row of an undeclared wire how an FD one does.
-	wire_fr := transport.wire_framing(target)
-	row_fr := app.quick_send_row_framing(if matched { cur } else { -1 })
-	row_enabled := matched && cur < app.chans.len && app.chans[cur].enabled
-	offered := transport.format_choice_offered(row_fr, row_enabled, wire_fr)
 	// THE ROW SENDS, not the wire: on a wire two rows share, the anonymous tap attributes the
-	// frame to the first of them, which is not the row the format above was chosen for. A row
+	// frame to the first of them, which is not the row the format below was chosen for. A row
 	// with no tap of its own (disabled, Ethernet) falls back to the wire's, as before.
 	send_chan := if matched && cur < app.chans.len && app.chans[cur].has_named_tap() {
 		app.chans[cur].name
 	} else {
 		''
 	}
+	// THE FRAME'S FORMAT, only where choosing one can change it (#203): where a frame stating none
+	// goes out FD — an FD wire, or the FD row of an undeclared one (#384) — it is how a classic
+	// frame gets out.
+	wire_fr, row_fr := app.quick_send_framing(target, send_chan)
+	offered := transport.format_choice_offered(row_fr, send_chan != '', wire_fr)
+	declared := transport.row_declared(row_fr, send_chan != '', wire_fr)
 	on_name := if send_chan != '' { send_chan } else { app.chan_name_for(target) }
 	if offered {
 		labels := transport.frame_formats.map(if it == .wire {
-			'${it.label()} (${wire_fr.label()})'
+			'${it.label()} (${declared.label()})'
 		} else {
 			it.label()
 		})
@@ -134,17 +134,23 @@ fn draw_quick_send(mut app App) {
 	}
 }
 
-// quick_send_row_framing is the format the Quick Send row at `idx` declares; classic when it has
-// no project row.
-fn (app &App) quick_send_row_framing(idx int) transport.Framing {
-	if idx < 0 || idx >= app.chans.len {
-		return transport.Framing{}
+// quick_send_framing is what `target`'s wire declares, and what row `row` raises its frames to there
+// (transport.row_framing): the tables a run published while one runs, else what the project as
+// edited publishes at the next Start.
+fn (app &App) quick_send_framing(target string, row string) (transport.Framing, transport.Framing) {
+	if app.running {
+		return transport.wire_framing(target), transport.row_framing(target, row)
 	}
-	pi := app.chans[idx].proj_idx
-	if pi < 0 || pi >= app.proj.channels.len {
-		return transport.Framing{}
+	k := transport.wire_key(target)
+	wire := project.wire_framings(app.proj.channels)[k] or { transport.Framing{} }
+	if row == '' {
+		return wire, transport.Framing{}
 	}
-	return app.proj.channels[pi].origination_framing().to_wire()
+	rows := project.row_framings(app.proj.channels)
+	if k !in rows {
+		return wire, transport.Framing{}
+	}
+	return wire, rows[k][row] or { transport.Framing{} }
 }
 
 // ---- Generators (interactive send blocks) ----

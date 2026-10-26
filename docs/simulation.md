@@ -24,8 +24,15 @@ the choice can change the frame: on a channel whose wire is CAN-FD, and on an en
 wire is undeclared because another enabled row on it is classic. A classic channel shows no
 picker, since every frame there is classic either way. Scripts say the same with
 `bus.send(ch, id, data, { format = "classic" })`. A stated classic frame longer than eight bytes
-is refused rather than truncated. Everything else (generators, simulated ECUs, diagnostics)
-follows the wire's declaration.
+is refused rather than truncated.
+
+**Two rows, two formats, one wire** (#384). A `canfd` row and a `can` row may share a SocketCAN or
+software wire, and then the wire declares nothing. Each row's own emitters keep their row's
+format there: its generators (the row owning the generator's target), its simulated ECUs and
+their diagnostic servers, and a script's `bus.send`, `bus.send_message` and background senders
+on that channel (Python's `Channel.send`, `Message.send` and `send_cyclic` alike) go out FD from
+the `canfd` row and classic from the `can` row. Diagnostics testers, flash and the shell have no
+row and follow the wire's declaration. Quick Send's *as declared* is the selected row's format.
 
 Not every backend can carry it. SocketCAN, `inproc` and `udp` all do; Vector and Kvaser do, both
 verified on hardware — PCAN cross-vendor against a Kvaser at 1/2/4/8 Mbit/s (#217), Kvaser and

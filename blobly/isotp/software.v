@@ -129,8 +129,14 @@ fn (c &SoftChannel) pace(us int) ! {
 // open_software wraps a freshly opened bus on `iface` as an ISO-TP channel that
 // sends on tx_id and receives on rx_id.
 pub fn open_software(iface string, tx_id u32, rx_id u32, ext bool) !&SoftChannel {
+	return open_software_as(iface, '', tx_id, rx_id, ext)
+}
+
+// open_software_as is open_software for row `row`'s own emitter: its frames in the row's format
+// (transport.row_framed); '' is no row.
+pub fn open_software_as(iface string, row string, tx_id u32, rx_id u32, ext bool) !&SoftChannel {
 	check_ids(iface, tx_id, rx_id, ext)!
-	bus := transport.open(iface)!
+	bus := transport.row_framed(transport.open(iface)!, iface, row)
 	return on_bus(bus, iface, tx_id, rx_id, ext)
 }
 

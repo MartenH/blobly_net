@@ -478,12 +478,13 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 						o.err(n)
 					}
 					r.counted()
-					spawn r.diag_server_loop(ch.iface_with_bitrate(), dflt.server)
+					spawn r.diag_server_loop(ch.iface_with_bitrate(), ch.name, dflt.server)
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
 						r.counted()
-						spawn r.uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
+						own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { ch.name }
+						spawn r.uds_node_loop(ch.iface_with_bitrate(), own, u.rx, u.tx, u.ext,
 							u.functional, u.fext, u.server)
 					}
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
@@ -633,12 +634,13 @@ fn (mut r Run) done() {
 	r.mu.unlock()
 }
 
-// sim_loop runs the channel's simulated ECUs on a dedicated bus handle.
+// sim_loop runs the channel's simulated ECUs on a dedicated bus handle, sending as the row's own
+// emitter (transport.row_framed).
 fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Database, nodes []project.NodeCfg) {
 	defer {
 		r.done()
 	}
-	mut bus := transport.open(open_iface) or { return }
+	mut bus := transport.row_framed(transport.open(open_iface) or { return }, open_iface, chan_name)
 	mut engine := sim.Engine{}
 	for n in nodes {
 		engine.ecus << r.build_node(db, n)
@@ -665,12 +667,12 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 }
 
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn (mut r Run) uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server) {
+fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server) {
 	defer {
 		r.done()
 	}
 	ctl := r.ctl
-	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
+	mut ch := isotp.open_software_as(iface, row, tx, rx, ext) or { return }
 	// a run worker: Stop abandons an answer still being segmented (#347)
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
@@ -708,14 +710,14 @@ fn (mut r Run) uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fe
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software ISO-TP on the
 // channel's bus, until stopped.
-fn (mut r Run) diag_server_loop(iface string, server uds.Server) {
+fn (mut r Run) diag_server_loop(iface string, row string, server uds.Server) {
 	defer {
 		r.done()
 	}
 	ctl := r.ctl
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).
-	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { return }
+	mut ch := isotp.open_software_as(iface, row, 0x7E8, 0x7E0, false) or { return }
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
 	}

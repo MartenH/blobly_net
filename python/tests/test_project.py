@@ -1035,3 +1035,46 @@ class TestThreads:
             t.join()
             assert failures == []
             assert (ident[0], 0) in _lib.detached, "the thread was not detached on itself"
+
+
+# a canfd row and a can row on one wire, which then declares nothing (#384)
+DISPUTED = """project:
+  name: disputed
+  version: 8
+channels:
+  - name: FD
+    type: canfd
+    interface: inproc:PY_DISPUTED
+    bitrate: 500000
+    data_bitrate: 2000000
+    databases:
+      - DBC
+  - name: CL
+    type: can
+    interface: inproc:PY_DISPUTED
+    bitrate: 500000
+    databases:
+      - DBC
+"""
+
+
+class TestDisputedWire:
+    def test_each_row_sends_in_its_own_format(self, tmp_path):
+        dbc = os.path.join(REPO, "dbc", "blobly_net.dbc").replace("\\", "/")
+        path = write(tmp_path, "disputed.blobnet", DISPUTED.replace("DBC", dbc))
+        with blobly.Project(path) as net:
+            fd, cl = net.channels.FD, net.channels.CL
+            cl.recv(0)
+            fd.recv(0)  # subscribed before anything is sent
+            fd.send(0x123, b"\x01")
+            got = cl.expect(0x123, 1000)
+            assert got.fd and got.brs, "the FD row's frame stating nothing goes out FD"
+            fd.messages.Heartbeat.send()
+            got = cl.expect(cl.messages.Heartbeat, 1000)
+            assert got.fd and got.brs, "and a message it sends by name"
+            cl.send(0x124, b"\x02")
+            got = fd.expect(0x124, 1000)
+            assert not got.fd, "the classic row stays classic"
+            with fd.send_cyclic(0x125, b"\x03", 20):
+                got = cl.expect(0x125, 1000)
+            assert got.fd and got.brs, "and the FD row's background sender"

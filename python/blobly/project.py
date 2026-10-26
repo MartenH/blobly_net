@@ -225,7 +225,8 @@ class Bus:
 
     def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
              brs: bool = False) -> None:
-        """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
+        """Puts a frame on the wire. fd/brs left False let the declared format decide: a project
+        channel's own (a canfd row's FD, also on a wire a can row shares), else the wire's."""
         self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
 
     def _send_on(self, h, f):
@@ -439,6 +440,9 @@ class Channel(Bus):
                 try:  # its frames judged by this row's E2E (Frame.e2e), and read as J1939 where the
                     # row's wire says so (a j1939: tick, a database declaring it) or a listener was asked for
                     _lib.check(lib.bb_e2e_attach(h, self._index))
+                    # and what it sends stating no format in the row's own (a canfd row's FD on a
+                    # wire a can row also names, which declares nothing)
+                    _lib.check(lib.bb_framing_attach(h, self._index))
                     _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
                     # and its NM reading from its first frame: a stated range, else the wire's own
                     # (none is no reading: NM is a reader beside the channel, never a refusal of it)
@@ -901,7 +905,7 @@ class Message:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
         have is refused; a value past what the signal's width holds is clamped to the nearer end.
-        fd/brs are left unset, so a send takes the wire's declared format. Its E2E is not stamped:
+        fd/brs are left unset, so a send takes its channel's declared format. Its E2E is not stamped:
         send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
         return frame_of(self._encoded(signals))
 
@@ -931,7 +935,7 @@ class Message:
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
         the Frame sent. A declaration that cannot be applied raises Refused rather than go out
         unprotected; a send that fails after its stamp has used its counter, as a frame lost on
-        the wire does. Its fd/brs are unset, so what goes out takes the wire's declared format.
+        the wire does. Its fd/brs are unset, so what goes out takes its channel's declared format.
         To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
         channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
         under one hold of the state lock, so a stop and start on another thread cannot put this

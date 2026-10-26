@@ -52,7 +52,8 @@ fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 	}
 	spec.check() or { return fail(bb_err, '${ch.name}: ${err.msg()}') }
 	iface := ch.iface_with_bitrate()
-	bus := transport.open(iface) or { return fail(bb_err, '${iface}: ${err.msg()}') }
+	opened := transport.open(iface) or { return fail(bb_err, '${iface}: ${err.msg()}') }
+	bus := transport.row_framed(opened, iface, ch.name) // the row's format (#384)
 	s := r.start_cyclic(bus, spec) or { return fail(bb_err_state, '${ch.name}: ${err.msg()}') }
 	bb_mu.lock()
 	c := bb_cyclic_next

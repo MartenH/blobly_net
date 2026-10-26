@@ -29,7 +29,7 @@ fn (mut env Env) start_sender(name string, spec cyclic.Spec) !int {
 		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted on it')
 	}
 	spec.check() or { return error('${name}: ${err.msg()}') }
-	bus := env.opener(ch.iface, name)!
+	bus := env.row_bus(ch.iface, name)!
 	s := env.cyclic_host.start_cyclic(bus, spec) or { return error('${name}: ${err.msg()}') }
 	env.senders << s
 	return env.senders.len - 1

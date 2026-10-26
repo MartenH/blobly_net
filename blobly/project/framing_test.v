@@ -153,3 +153,45 @@ fn test_rows_that_disagree_about_one_wire_leave_it_undeclared() {
 	]
 	assert wire_framings(agree).len == 1
 }
+
+// ---- a row's own emitters on a disputed wire (#384) -------------------------------------------
+
+fn disputed_rows() []Channel {
+	return [
+		Channel{ name: 'fd', adapter: 'virtual', iface: 'inproc:W6', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: true },
+		Channel{ name: 'classic', adapter: 'virtual', iface: 'inproc:W6', bitrate: 500000, enabled: true },
+		Channel{ name: 'off', adapter: 'virtual', iface: 'inproc:W6', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: false },
+	]
+}
+
+fn test_a_row_emitter_keeps_its_row_format_on_a_disputed_wire() {
+	rows := disputed_rows()
+	assert wire_framings(rows).len == 0, 'the wire stays undeclared'
+	assert rows[0].emitter_framing() == transport.Framing{ fd: true, brs: true }
+	assert !rows[1].emitter_framing().fd
+	assert !rows[2].emitter_framing().fd, 'a disabled row declares nothing about the run'
+	eth := Channel{ name: 'd', adapter: 'doip', iface: 'doip:127.0.0.1:13400', fd: true, enabled: true }
+	assert !eth.emitter_framing().fd, 'an Ethernet row has no CAN format'
+}
+
+fn test_the_fd_rows_of_a_wire_are_published_by_name() {
+	rows := disputed_rows()
+	m := row_framings(rows)
+	assert m.len == 1
+	k := transport.wire_key('inproc:W6')
+	assert m[k].keys() == ['fd'], 'the enabled FD row only: classic and disabled rows raise nothing'
+	assert m[k]['fd'] == transport.Framing{ fd: true, brs: true }
+	// one name on one wire with two formats names neither
+	mut split := rows.clone()
+	split << Channel{ name: 'fd', adapter: 'virtual', iface: 'inproc:W6', bitrate: 500000, enabled: true }
+	assert row_framings(split).len == 0
+}
+
+// a generator sends as the row that owns its target: SenderBus.chan, none for an ambiguous bus:
+fn test_a_generator_sends_as_the_row_that_owns_its_target() {
+	rows := disputed_rows()
+	assert resolve_sender_bus('', rows[0], rows).chan == 'fd'
+	assert resolve_sender_bus('classic', rows[0], rows).chan == 'classic'
+	assert resolve_sender_bus('fd', rows[1], rows).chan == 'fd'
+	assert resolve_sender_bus('inproc:W6', rows[1], rows).chan == '', 'no row owns it: the wire decides'
+}

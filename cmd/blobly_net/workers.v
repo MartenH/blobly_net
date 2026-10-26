@@ -182,7 +182,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		release_run_worker(app)
 	}
 	a := unsafe { app }
-	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
+	tap := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		mut al := unsafe { app }
 		al.elog('sim ${sc.iface}: ${err}')
 		// consumer_failed only counts, and the count is read only by the replay gate — on a
@@ -192,6 +192,8 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		consumer_failed(a, sc.iface, gen)
 		return
 	}
+	// its frames in the row's own format, which on a wire two rows dispute the wire has not (#384)
+	mut bus := transport.row_framed(tap, sc.iface, sc.pch.name)
 	consumer_attached(a, sc.iface, gen)
 	mut engine := sim.Engine{}
 	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
@@ -469,7 +471,8 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				time.sleep(200 * time.millisecond)
 				continue
 			}
-			ch = isotp.on_bus(tapped, a.bitrate_iface(iface), tx, rx, ext) or {
+			ch = isotp.on_bus(transport.row_framed(tapped, iface, pch.name), a.bitrate_iface(iface),
+				tx, rx, ext) or {
 				if !open_err_said {
 					open_err_said = true
 					notify_gen(app, gen,
@@ -556,7 +559,8 @@ fn diag_server_loop(app &App, iface string, chan_name string, server uds.Server,
 		consumer_failed(a, iface, gen)
 		return
 	}
-	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+	mut ch := isotp.on_bus(transport.row_framed(tapped, iface, chan_name), a.bitrate_iface(iface), diag_rx_id,
+		diag_tx_id, false) or {
 		notify_gen(app, gen,
 			'${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
