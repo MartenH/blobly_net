@@ -29,10 +29,12 @@ import vgui
 // supervisor that also served could not observe a toggle while a tester held the session open —
 // the "offline" ECU went on answering. Serving happens in doip_serve(); close() from here
 // interrupts it, which is what makes switching an ECU off actually take effect.
-fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
+// `pi` is the project row the entity is hosted for: every question the watcher asks is of that
+// row (hostrule), never of a row found by its name and interface.
+fn doip_watch(app &App, pi int, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
 	// A RUN WORKER, though it takes longer to see than the others: it reads app.chans through
-	// doip_should_host -> chan_index_locked rather than touching the array by name, which is why
-	// it survived a grep for `.chans` in this function and was the last one counted.
+	// doip_should_host -> hostrule rather than touching the array by name, which is why it
+	// survived a grep for `.chans` in this function and was the last one counted.
 	defer {
 		release_run_worker(app)
 	}
@@ -48,7 +50,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 	// This RUN only. Checked with running, so a supervisor that slept through a Stop/Start pair
 	// exits instead of acting on a run that is not its own.
 	for a.running && a.run_gen == gen {
-		want := a.doip_should_host(pch, key)
+		want := a.doip_should_host(pi, pch, key)
 		if bound && !want {
 			srv.close() // interrupts an in-progress session, not just the accept
 			bound = false
@@ -59,7 +61,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 			// Generation-checked here TOO. Guarding only the bind-failure path left this one:
 			// an old watcher between its close() and this call, while a Stop/Start/re-enable
 			// published a replacement, would deregister the NEW run's live listener.
-			a.doip_forget_if_current(pch, gen)
+			a.doip_forget_if_current(pi, pch, gen)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
 			if want && !bound {
@@ -85,7 +87,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 					// socket is then inserted behind it — leaking past Stop and failing the
 					// next Start against itself. doip_publish_if_current does both under the
 					// same mutex Stop takes.
-					if !a.doip_publish_if_current(pch, ent, srv, gen, key) {
+					if !a.doip_publish_if_current(pi, pch, ent, srv, gen, key) {
 						srv.close()
 						bound = false
 					} else {
@@ -110,7 +112,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
 						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
-						a.doip_forget_if_current(pch, gen)
+						a.doip_forget_if_current(pi, pch, gen)
 						warned = true
 					}
 				}
@@ -1584,7 +1586,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		// bind failed because something else owns that endpoint, so uds.open() would dial that
 		// process and a GUI script would pass against the wrong ECU — the failure the
 		// synchronous bind exists to prevent, reached through the scripting side instead.
-		if ch.doip && a.doip_host_failed(ch.name, ch.iface) {
+		if ch.doip && a.doip_host_failed(ch.proj_idx) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}
