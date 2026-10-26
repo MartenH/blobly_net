@@ -8,6 +8,7 @@ import time
 import blobly.project
 import blobly.transport
 import txhealth
+import hostrule
 import blobly.wiretap
 import blobly.candb
 import blobly.sim
@@ -1291,20 +1292,13 @@ fn (mut app App) start() {
 	app.run_replay_spawns(replay_spawns)
 }
 
-// host_key identifies a hosted DoIP entity by its CHANNEL and interface. The supervisor uses it
-// to publish, look up and tear down servers, so a collision means one channel's entity reported —
-// or closed — under another's name.
-fn host_key(name string, iface string) string {
-	return project.compose_key(name, iface)
-}
-
 // start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 //
 // Driven from the PROJECT rather than app.sims, because a channel disabled when the project
 // loaded is excluded from app.sims entirely: there would be no supervisor, and enabling it
 // later would leave the entity permanently idle with no worker to notice.
 fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
-	for c in app.proj.channels {
+	for pi, c in app.proj.channels {
 		if !c.is_doip() {
 			continue
 		}
@@ -1336,7 +1330,7 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 		// meant unticking SUT in the shipped demos did nothing at all.
 		key := if ent.node != '' { ent.node } else { nodes[0].name }
 		app.reserve_run_worker() // released by the watcher's own defer
-		spawn doip_watch(app, c, ent, key, app.run_gen)
+		spawn doip_watch(app, pi, c, ent, key, app.run_gen)
 	}
 }
 
@@ -1414,7 +1408,7 @@ fn (mut app App) adopt_diag_sys(sy sysview.System, ok bool, key string) {
 // it — the test and the publication happen under one lock, so Stop cannot interleave between
 // them and leave a listener behind its own snapshot. Returns false when the caller should close
 // what it just bound.
-fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity, srv &doip.DoipServer, gen u64, key string) bool {
+fn (mut app App) doip_publish_if_current(pi int, pch project.Channel, ent sim.DoipEntity, srv &doip.DoipServer, gen u64, key string) bool {
 	app.mu.lock()
 	defer {
 		app.mu.unlock()
@@ -1422,18 +1416,11 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 	if !app.running || app.run_gen != gen {
 		return false
 	}
-	if ci := app.chan_index_locked(pch) {
-		if !app.chans[ci].enabled {
-			return false
-		}
+	if !app.doip_should_host_locked(pi, pch, key) {
+		return false
 	}
-	if key != '' {
-		if !(app.sim_enabled[sim_key(pch, key)] or { true }) {
-			return false
-		}
-	}
-	app.doip_hosts[host_key(pch.name, pch.iface)] = srv
-	if ci := app.chan_index_locked(pch) {
+	app.doip_hosts[hostrule.host_key(pi)] = srv
+	if ci := hostrule.row_of(app.host_rows_locked(), pi) {
 		app.chans[ci].running = true
 	}
 	car := script.carrier_of(pch)
@@ -1449,14 +1436,15 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 	return true
 }
 
-// doip_is_hosted reports whether THIS application currently has the entity listening.
-fn (app &App) doip_is_hosted(name string, iface string) bool {
+// doip_is_hosted reports whether THIS application currently has project row `pi`'s entity
+// listening.
+fn (app &App) doip_is_hosted(pi int) bool {
 	a := unsafe { app }
 	a.mu.lock()
 	defer {
 		a.mu.unlock()
 	}
-	return host_key(name, iface) in a.doip_hosts
+	return hostrule.host_key(pi) in a.doip_hosts
 }
 
 // doip_host_failed reports whether THIS channel is one we are meant to host and are not.
@@ -1465,16 +1453,11 @@ fn (app &App) doip_is_hosted(name string, iface string) bool {
 // TESTER-ONLY channel that merely shares an endpoint with a hosted peer — an alias using a
 // different tester_address to exercise another role — so scripts lost a perfectly good channel
 // that the Diagnostics panel and the headless runner both expose. Sixth defect in this change
-// from an interface string standing in for a channel; see chan_index_locked.
-fn (app &App) doip_host_failed(name string, iface string) bool {
+// from an interface string standing in for a channel; see hostrule. `pi` is the project row.
+fn (app &App) doip_host_failed(pi int) bool {
 	mut a := unsafe { app }
-	mut simulated := false
-	for c in a.proj.channels {
-		if c.name == name && c.iface == iface && c.is_doip() {
-			simulated = c.hosts_doip_entity()
-			break
-		}
-	}
+	chs := a.proj.channels // one array for the bound and the read: this is a script's thread
+	simulated := pi >= 0 && pi < chs.len && chs[pi].is_doip() && chs[pi].hosts_doip_entity()
 	if !simulated {
 		return false // tester-only: nothing for us to host, so nothing can have failed
 	}
@@ -1489,7 +1472,7 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 	// failure removed the channel from the script environment PERMANENTLY, and uds.open()
 	// reported it unknown while the listener appeared a moment later. Give the bind its window.
 	for _ in 0 .. 15 {
-		if a.doip_is_hosted(name, iface) {
+		if a.doip_is_hosted(pi) {
 			return false
 		}
 		time.sleep(50 * time.millisecond)
@@ -1515,18 +1498,24 @@ fn diag_key_can(iface string, rx u32, tx u32) string {
 	return 'can|' + project.compose_key(iface, '0x${rx:X}/0x${tx:X}')
 }
 
-fn (mut app App) doip_forget_if_current(pch project.Channel, gen u64) {
+fn (mut app App) doip_forget_if_current(pi int, pch project.Channel, gen u64) {
 	app.mu.lock()
 	if app.running && app.run_gen == gen {
-		app.forget_locked(pch)
+		app.forget_locked(pi, pch)
 	}
 	app.mu.unlock()
 }
 
-// forget_locked is the mutation itself. Caller holds app.mu.
-fn (mut app App) forget_locked(pch project.Channel) {
-	app.doip_hosts.delete(host_key(pch.name, pch.iface))
-	if ci := app.chan_index_locked(pch) {
+// forget_locked is the mutation itself, for project row `pi`. Only a row that published an
+// entity takes anything down: a row whose bind failed shares nothing with the one that holds
+// the endpoint, though both may name it and its target key. Caller holds app.mu.
+fn (mut app App) forget_locked(pi int, pch project.Channel) {
+	hk := hostrule.host_key(pi)
+	if hk !in app.doip_hosts {
+		return
+	}
+	app.doip_hosts.delete(hk)
+	if ci := hostrule.row_of(app.host_rows_locked(), pi) {
 		app.chans[ci].running = false
 	}
 	// By the target's OWN label, not by endpoint. Two simulated channels can share an endpoint
@@ -1553,51 +1542,29 @@ fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst si
 	return s
 }
 
-// chan_index_locked finds the runtime channel a project channel refers to.
-//
-// Identity is name AND interface. The interface string alone is NOT an identity — `type: doip`
-// with no `interface:` keeps the CAN default `vcan0`, so two unrelated channels can share it —
-// and substituting one for the other produced four separate defects in this change. One
-// definition, so there is one place left to get it wrong. Caller holds app.mu.
-fn (app &App) chan_index_locked(pch project.Channel) ?int {
-	for ci in 0 .. app.chans.len {
-		if app.chans[ci].name == pch.name && app.chans[ci].iface == pch.iface {
-			return ci
-		}
-	}
-	return none
+// host_rows_locked is what hostrule reads of the runtime rows. Caller holds app.mu.
+fn (app &App) host_rows_locked() []hostrule.Row {
+	return app.chans.map(hostrule.Row{
+		proj_idx: it.proj_idx
+		enabled:  it.enabled
+	})
 }
 
-// doip_should_host reports whether this entity should be listening right now: its channel
-// ticked in Buses AND its ECU ticked in Simulation.
-// chan_enabled reports a channel's LIVE tick from the Buses panel.
-fn (app &App) chan_enabled(pch project.Channel) bool {
+// doip_should_host reports whether project row `pi`'s entity should be listening right now: its
+// row ticked in Buses AND its ECU ticked in Simulation.
+fn (app &App) doip_should_host(pi int, pch project.Channel, key string) bool {
 	a := unsafe { app }
 	a.mu.lock()
 	defer {
 		a.mu.unlock()
 	}
-	if ci := a.chan_index_locked(pch) {
-		return a.chans[ci].enabled
-	}
-	return pch.enabled // not started yet: the project's own value is all there is
+	return a.doip_should_host_locked(pi, pch, key)
 }
 
-fn (app &App) doip_should_host(pch project.Channel, key string) bool {
-	a := unsafe { app }
-	a.mu.lock()
-	defer {
-		a.mu.unlock()
-	}
-	if ci := a.chan_index_locked(pch) {
-		if !a.chans[ci].enabled {
-			return false
-		}
-	}
-	if key != '' {
-		return a.sim_enabled[sim_key(pch, key)] or { true }
-	}
-	return true
+// doip_should_host_locked is doip_should_host for a caller holding app.mu.
+fn (app &App) doip_should_host_locked(pi int, pch project.Channel, key string) bool {
+	node_on := if key != '' { app.sim_enabled[sim_key(pch, key)] or { true } } else { true }
+	return hostrule.should_host(app.host_rows_locked(), pi, node_on)
 }
 
 // sim_key names one simulated ECU. The interface alone is not an identity — a CAN channel and a
