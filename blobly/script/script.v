@@ -71,6 +71,9 @@ pub:
 	// the row's wire's NM configuration (nm.configure, the Network Management panel's rule, which
 	// only the host can ask: the system model and every row on the wire); none where it has none
 	nm ?nm.Config
+	// the format the row's frames stating none are raised to (project.Channel.emitter_framing):
+	// what the script's handle on the row and its background senders send in (#384)
+	framing transport.Framing
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -359,7 +362,8 @@ fn (mut env Env) bus_for(name string) !&transport.MeteredBus {
 	}
 	ch := env.chans[ci]
 	nominal := if ch.nominal > 0 { ch.nominal } else { project.default_bitrate }
-	b := transport.metered(env.opener(ch.iface, name)!, ch.iface, nominal, ch.data_rate)
+	b := transport.metered(transport.row_framed(env.opener(ch.iface, name)!, ch.framing), ch.iface,
+		nominal, ch.data_rate)
 	env.buses[name] = b
 	return b
 }

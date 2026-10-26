@@ -834,6 +834,12 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  * after its stamp has still used its counter, as AUTOSAR's protect counts each frame it protects.
  * Any thread. */
 int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
+/* bb_framing_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start): a frame
+ * bb_bus_send sends on it from then on with fd and brs both 0 goes out in the row's format — FD
+ * (and BRS where its data rate differs) for an enabled `canfd` row, which on a wire an enabled
+ * `can` row also names is the only declaration it has; one with fd or brs set is sent as it says.
+ * Until the run stops. 1: the row raises frames to FD, 0: it is classic. Any thread. */
+int bb_framing_attach(int h, int row);
 int bb_e2e_stamp(int row, int m, bb_frame *f);
 
 /* SOME/IP, as the Lua someip.send, someip.call and someip.listen (blobly/someip). None needs a

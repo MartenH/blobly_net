@@ -492,6 +492,8 @@ mut:
 	j1939 J1939Tap
 	// the NM listener bb_nm_attach bound to the handle's frames (nm.v)
 	nm NmTap
+	// the row bb_framing_attach bound its sends' format to (framing.v)
+	framing RowFraming
 }
 
 __global (
@@ -882,7 +884,7 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	defer {
 		hd.leave()
 	}
-	hd.bus.send(frame) or { return fail(bb_err, 'send: ${err.msg()}') }
+	hd.bus.send(hd.framed(frame)) or { return fail(bb_err, 'send: ${err.msg()}') }
 	return ok()
 }
 

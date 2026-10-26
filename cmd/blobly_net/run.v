@@ -1232,7 +1232,8 @@ fn (mut app App) start() {
 			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker() // released by the loop's own defer
-			spawn diag_server_loop(app, sc.iface, sc.pch.name, dflt.server, start_gen) // the built-in default for this bus
+			spawn diag_server_loop(app, sc.iface, sc.pch.name, sc.pch.emitter_framing(), dflt.server,
+				start_gen) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
 				iface: sc.iface

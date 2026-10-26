@@ -328,7 +328,72 @@ fn test_the_choice_is_offered_only_where_it_can_change_the_frame() {
 	assert !format_choice_offered(classic, true, classic), 'every frame is classic either way'
 	assert format_choice_offered(classic, true, fd), 'an FD wire: how a classic frame gets out'
 	assert format_choice_offered(classic, false, fd), 'an FD wire, whichever row names it'
-	assert format_choice_offered(fd, true, classic), 'an FD row on a disputed wire: how an FD frame gets out'
+	assert format_choice_offered(fd, true, classic), 'an FD row on a disputed wire sends FD: how a classic frame gets out'
 	// A disabled FD alias of an enabled classic row: the wire table ignores it, so must this.
 	assert !format_choice_offered(fd, false, classic), 'a disabled row declares nothing about the run'
+}
+
+// ---- a row's own emitters (#384) --------------------------------------------------------------
+
+fn test_a_row_declares_over_an_undeclared_wire_only_while_enabled() {
+	classic := Framing{}
+	fd_brs := Framing{
+		fd:  true
+		brs: true
+	}
+	assert row_declared(fd_brs, true, classic) == fd_brs, 'the FD row of a disputed wire keeps its format'
+	assert row_declared(fd_brs, false, classic) == classic, 'a disabled row declares nothing'
+	assert row_declared(classic, true, fd_brs) == fd_brs, 'a classic row never lowers the wire'
+	assert row_declared(classic, true, classic) == classic
+}
+
+fn test_raised_is_upward_only_and_leaves_a_statement_alone() {
+	fd_brs := Framing{
+		fd:  true
+		brs: true
+	}
+	up := fd_brs.raised(CanFrame{ id: 1, data: []u8{len: 12} })
+	assert up.fd && up.brs && up.data.len == 12
+	assert !Framing{}.raised(CanFrame{ id: 1 }).fd, 'a classic row raises nothing'
+	already := fd_brs.raised(CanFrame{ id: 1, fd: true })
+	assert already.fd && !already.brs, 'a frame that says fd keeps its own brs'
+	stated := FrameFormat.classic.stamp(CanFrame{ id: 1, data: []u8{len: 8} }) or { panic(err) }
+	kept := fd_brs.raised(stated)
+	assert !kept.fd && kept.format_stated, 'the statement is the wire stage to consume'
+}
+
+// Two rows dispute the wire, so it is undeclared: each row's handle sends in its own row's format,
+// and a frame stated classic through the FD row's handle stays classic.
+fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
+	clear_listen_only()
+	clear_wire_framing()
+	fd_row := Framing{
+		fd:  true
+		brs: true
+	}
+	mut fd_raw := open('inproc:framing_rows') or { panic(err) }
+	mut fd_tx := row_framed(fd_raw, fd_row)
+	mut cl_tx := row_framed(open('inproc:framing_rows') or { panic(err) }, Framing{})
+	mut rx := open('inproc:framing_rows') or { panic(err) }
+	defer {
+		fd_tx.close()
+		cl_tx.close()
+		rx.close()
+	}
+	fd_tx.send(CanFrame{ id: 0x401, data: []u8{len: 12} }) or { panic(err) }
+	a := rx.recv(500) or { panic(err) }
+	assert a.id == 0x401 && a.fd && a.brs && a.data.len == 12, 'the FD row frames FD'
+	cl_tx.send(CanFrame{ id: 0x402, data: []u8{len: 8} }) or { panic(err) }
+	b := rx.recv(500) or { panic(err) }
+	assert b.id == 0x402 && !b.fd && !b.brs, 'the classic row frames classic'
+	stated := FrameFormat.classic.stamp(CanFrame{ id: 0x403, data: []u8{len: 8} }) or { panic(err) }
+	fd_tx.send(stated) or { panic(err) }
+	c := rx.recv(500) or { panic(err) }
+	assert c.id == 0x403 && !c.fd && !c.format_stated, 'a stated classic frame is not raised'
+	// a metered handle prices what the wrapper sent
+	if fd_tx is SentFrame {
+		assert !fd_tx.sent_frame().fd, 'the last send was the stated classic one'
+	} else {
+		assert false, 'a row-framed bus says what it sent'
+	}
 }
