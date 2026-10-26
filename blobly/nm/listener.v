@@ -8,14 +8,7 @@ pub struct Listener {
 pub mut:
 	trk   Tracker
 	at_ms f64 // the handle's latest read: a frame's receive time, or a read that found nothing
-	// what moved() last answered for: the cluster's frames (parsed, malformed, dropped) and the moment
-	asked_frames u64
-	asked_ms     f64 = -1.0
-	asked_state  BusState
 }
-
-// ask_ms is how far the reading's moment may move before a wait asks about it again.
-pub const ask_ms = 5.0
 
 pub fn new_listener(cfg Config) &Listener {
 	return &Listener{
@@ -39,23 +32,6 @@ pub fn (mut l Listener) idle(now_ms f64) {
 	if now_ms > l.at_ms {
 		l.at_ms = now_ms
 	}
-}
-
-// moved: the reading may have changed since the last moved() said so — a frame in the cluster
-// came (parsed or not), the state changed (a node timed out), or its
-// moment moved on by ask_ms. A frame of another id moves the reading only by its time, so a wait
-// on a busy wire need not build a reading per frame.
-pub fn (mut l Listener) moved() bool {
-	seen := l.trk.frames + l.trk.malformed + l.trk.dropped
-	state := l.trk.state(l.at_ms)
-	if seen == l.asked_frames && state == l.asked_state && l.asked_ms >= 0
-		&& l.at_ms - l.asked_ms < ask_ms {
-		return false
-	}
-	l.asked_frames = seen
-	l.asked_state = state
-	l.asked_ms = l.at_ms
-	return true
 }
 
 // reading is the cluster as read up to the handle's latest read, with no timeline columns.

@@ -371,29 +371,3 @@ fn test_a_script_states_a_range_as_a_row_nm_is_read() {
 		}
 	}
 }
-
-fn test_a_wait_is_asked_again_once_the_cluster_or_the_moment_moved() {
-	mut l := new_listener(cfg_declaring())
-	assert l.moved(), 'the first ask'
-	l.feed(0x511, false, false, frame(0x11, 0), 1000)
-	assert l.moved(), 'an NM frame'
-	l.feed(0x100, false, false, [u8(1)], 1001)
-	assert !l.moved(), 'another id, 1 ms on'
-	l.feed(0x512, false, false, [u8(0x12)], 1002)
-	assert l.moved(), 'a malformed frame in the cluster changes the reading too'
-	l.idle(1002 + ask_ms)
-	assert l.moved(), 'the moment moved on'
-}
-
-fn test_a_state_reached_by_a_timeout_is_asked_within_one_moment() {
-	mut l := new_listener(Config{
-		lo:         0x500
-		hi:         0x53F
-		timeout_ms: 2
-	})
-	l.feed(0x511, false, false, frame(0x11, 0), 1000)
-	assert l.moved() && l.reading().state == .awake
-	l.idle(1003) // past the 2 ms timeout, within ask_ms
-	assert l.reading().state == .asleep
-	assert l.moved(), 'the state changed, though nothing was counted and the moment barely moved'
-}

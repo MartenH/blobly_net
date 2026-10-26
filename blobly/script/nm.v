@@ -71,15 +71,24 @@ fn (mut env Env) nm_of(name string) !&nm.Listener {
 	return l
 }
 
-// read_until reads channel `name` until `deadline` (sys_mono_now) has passed or `done` holds —
-// asked before each read, and with `read_first` only after a first read that is a look (it waits
-// for nothing), so a reading is brought up to now before it is first asked; after every read, a
-// frame or one that found nothing, it is asked again at the next turn. A read waits at most
-// `slice_ms`. Every frame read goes to the
-// channel's readings (frame_read) and its E2E reader. A deadline already past is one look. A wait
-// the run's deadline cuts is an error (timeout_note). Answers whether `done` held.
-fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms int, done fn () bool) !bool {
-	mut bus := env.bus_for(name)!
+// ReadOps is what read_loop does with a channel: receive within a wait (`recv`, an error
+// 'timeout' for nothing, look_was_spent for a look stopped at its bound), hand a frame read to its
+// readings (`frame`), say a read found nothing (`idle`), and whether the run's deadline has cut the
+// wait (`expired`). Apart from the bus so a test drives the loop on synthetic events.
+struct ReadOps {
+	recv    fn (int) !transport.CanFrame @[required]
+	frame   fn (transport.CanFrame)      @[required]
+	idle    fn ()                        @[required]
+	expired fn () bool                   @[required]
+}
+
+// read_loop reads until `deadline` (sys_mono_now) has passed or `done` holds. `done` is asked
+// before every read, and so after every read, a frame or one that found nothing, and once more at
+// the end: nothing a read changed goes unasked. With `read_first` the first read comes before the
+// first ask and is a look (it waits for nothing), so a reading is brought up to now before it is
+// asked. A read waits at most `slice_ms`; a deadline already past is one look. Answers whether
+// `done` held; a wait the run's deadline cut is an error (timeout_note).
+fn read_loop(ops ReadOps, deadline u64, read_first bool, slice_ms int, done fn () bool) !bool {
 	mut first := true
 	for {
 		if !(first && read_first) && done() {
@@ -92,17 +101,17 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms
 		look := first && read_first
 		first = false
 		left := if now >= deadline || look { 0 } else { int((deadline - now) / 1_000_000) }
-		f := bus.recv(if left < slice_ms { left } else { slice_ms }) or {
-			if env.expired() {
+		f := ops.recv(if left < slice_ms { left } else { slice_ms }) or {
+			if ops.expired() {
 				return error(timeout_note)
 			}
 			if transport.look_was_spent(err) {
 				continue
 			}
 			if err.msg() != 'timeout' {
-				return error('${name}: ${err.msg()}')
+				return err
 			}
-			env.read_idle(name)
+			ops.idle()
 			if left == 0 && !look {
 				// what a whole-millisecond wait cannot ask for is slept, not skipped
 				rest := i64(deadline) - i64(time.sys_mono_now())
@@ -113,27 +122,55 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms
 			}
 			continue
 		}
-		env.frame_read(name, f, transport.received_now(f))
-		_ = env.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
+		ops.frame(f)
 	}
 	return false
 }
 
-// nm_read reads channel `name` into `lis` until `deadline` or `done` holds for its reading, asked
-// once a frame in the cluster came or the reading's moment moved on (nm.Listener.moved), and once
-// more at the end whatever moved; each read waits at most the cluster's timeout, so a node going
-// silent is read as soon as it can be. Answers whether it held.
-fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (nm.View) bool) !bool {
-	mut fresh := unsafe { lis }
-	fresh.asked_ms = -1.0 // a new wait asks at its first turn
-	slice := if lis.trk.cfg.timeout_ms < 100 { lis.trk.cfg.timeout_ms } else { 100 }
-	if env.read_until(name, deadline, true, slice, fn [lis, done] () bool {
-		mut l := unsafe { lis }
-		return l.moved() && done(l.reading())
-	})! {
-		return true
+// read_until is read_loop on channel `name`: every frame read goes to the channel's readings
+// (frame_read) and its E2E reader.
+fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms int, done fn () bool) !bool {
+	mut bus := env.bus_for(name)!
+	ep := unsafe { &env }
+	ops := ReadOps{
+		recv:    fn [mut bus] (ms int) !transport.CanFrame {
+			return bus.recv(ms)
+		}
+		frame:   fn [ep, name] (f transport.CanFrame) {
+			mut e := unsafe { ep }
+			e.frame_read(name, f, transport.received_now(f))
+			_ = e.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
+		}
+		idle:    fn [ep, name] () {
+			mut e := unsafe { ep }
+			e.read_idle(name)
+		}
+		expired: fn [ep] () bool {
+			return ep.expired()
+		}
 	}
-	return done(lis.reading())
+	return read_loop(ops, deadline, read_first, slice_ms, done) or {
+		if err.msg() == timeout_note {
+			return err
+		}
+		return error('${name}: ${err.msg()}')
+	}
+}
+
+// nm_read reads channel `name` into `lis` until `deadline` or `done` holds for its reading, which
+// is asked after every read (read_loop); each read waits at most the cluster's timeout, so a node
+// going silent is read as soon as it can be. Answers whether it held.
+fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (nm.View) bool) !bool {
+	slice := if lis.trk.cfg.timeout_ms < 100 { lis.trk.cfg.timeout_ms } else { 100 }
+	return env.read_until(name, deadline, true, slice, nm_asks(lis, done))!
+}
+
+// nm_asks is a wait's question of `lis`, for read_loop: `done` of its reading as it is now, at
+// every turn — nothing about the reading is cached, so nothing it changed goes unasked.
+fn nm_asks(lis &nm.Listener, done fn (nm.View) bool) fn () bool {
+	return fn [lis, done] () bool {
+		return done(lis.reading())
+	}
 }
 
 // __nm_listen(channel, lo, hi, ext, timeout_ms): read the channel as NM from now on, by its own

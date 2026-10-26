@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from .project import Channel
 
 STATES = ("awake", "releasing", "asleep")
-_ASK_NS = 5_000_000  # how far a wait lets the reading's moment move before it asks again
 
 
 @dataclass(frozen=True)
@@ -241,9 +240,12 @@ class NmListener:
         that found nothing, so a state reached by silence is seen. blobly.Timeout otherwise, its
         message saying what the reading was. Every frame read is consumed."""
         __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
-        return self._until("expect", predicate, timeout_ms, what, False)
+        return self._until("expect", predicate, timeout_ms, what)
 
-    def _until(self, who, predicate, timeout_ms, what, state_only):
+    def _until(self, who, predicate, timeout_ms, what):
+        """The first reading `predicate` holds for, asked after every read the wait makes (a frame,
+        or a read that found nothing) and nothing cached between: a reading costs about 15 us,
+        far below a busy bus's frame interval, so nothing it could see goes unasked."""
         __tracebackhide__ = True
         from .project import _deadline
         deadline = _deadline(who, timeout_ms)
@@ -253,23 +255,15 @@ class NmListener:
         # each read waits at most the cluster's timeout, so a node going silent is read at once;
         # the first is a look, so a reading already true is not waited past
         slice_ms = max(1, min(SLICE_MS, self._view(h).timeout_ms))
-        asked = None
+        last = None
         for _ in self.channel._frames_until(deadline, run, idle=True, slice_ms=slice_ms, look_first=True):
-            v = self._view(h)
-            # asked again once the state changed, a frame in the cluster came or time moved on: a
-            # frame of another id moves the reading only by its time
-            mark = (v.state, v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
-            if mark == asked:
-                continue
-            asked = mark
-            if state_only is not False and _lib.NM_STATES.get(v.state) != state_only:
-                continue
-            last = self._reading(h, v)
+            last = self._reading(h)
             if predicate(last):
                 return last
-        last = self._reading(h)
-        if predicate(last):
-            return last
+        if last is None:  # no read the wait made brought anything: the reading as it is, asked once
+            last = self._reading(h)
+            if predicate(last):
+                return last
         raise Timeout(f"{self.channel.name}: expected {what} within {timeout_ms:g} ms; " + _said(last),
                       _lib.BB_ERR_TIMEOUT)
 
@@ -283,7 +277,7 @@ class NmListener:
         want = None if kept_awake_by is None else sorted(kept_awake_by)
         what = f"NM state {state}" + ("" if want is None else f", kept awake by {', '.join(want) or 'nobody'}")
         return self._until("expect_state", lambda r: r.state == state and (want is None or sorted(r.kept_awake_by) == want),
-                           timeout_ms, what, state)
+                           timeout_ms, what)
 
     def expect_asleep(self, timeout_ms: float = 1000) -> NmReading:
         """expect_state("asleep", timeout_ms): nothing heard within the cluster's timeout."""
