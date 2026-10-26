@@ -563,8 +563,8 @@ fn test_whitespace_in_an_address_does_not_make_a_second_wire() {
 // THE PROBE DOES NOT DIAL UNDER THE LOCK. The poll thread reads the device BEFORE it takes the
 // wire lock and hands the answer in; a readback that failed reaches the closure as none, and the
 // closure answers "not attempted" without touching the network. Decisive: the host here is one
-// nothing answers on, and a dial to it would take net.dial_tcp's five seconds (codex round 3 on
-// #223, where the dial under the lock was the OS connect timeout, unbounded).
+// nothing answers on, and a dial to it would take the request's whole budget (codex round 3 on
+// #223).
 fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
 	iface := 'cansub:AAAA0003/1@500000'
 	// The policy the probe sampled still holds, so the probe is current, not stale.
@@ -589,7 +589,7 @@ fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
 // A PROBE WHOSE POLICY MOVED DURING ITS READBACK ATTEMPTS NOTHING. The poll thread sampled
 // "silent" and read the device outside the lock; the row was unticked meanwhile. Under the lock
 // the policy says normal, so the stale pair must not be applied — and decisively not: the host
-// here answers nothing, so a PUT would cost net.dial_tcp's five seconds (codex round 6 on #223).
+// here answers nothing, so a PUT would cost the request's whole budget (codex round 6 on #223).
 fn test_a_probe_whose_policy_changed_meanwhile_attempts_nothing() {
 	iface := 'cansub:AAAA0004/1@500000'
 	clear_listen_only()
