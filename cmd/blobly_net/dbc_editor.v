@@ -280,6 +280,15 @@ fn (mut app App) dbc_refresh() {
 	app.mu.lock()
 	app.replay_scans.clear()
 	app.mu.unlock()
+	// A dirty database whose file has gone would not be found again: the rebuild resolves its
+	// entry afresh, and a relative path to a missing file resolves to another key, so its
+	// unsaved copy would be dropped. Keep the runtime view as it is until it is saved again.
+	for pth, d in app.dbc_ed.dirty {
+		if d && !os.exists(pth) {
+			app.notify('${os.file_name(pth)} has unsaved edits and is no longer on disk: save it before the simulation picks up this change')
+			return
+		}
+	}
 	sel_path := if app.dbc_ed.db >= 0 && app.dbc_ed.db < app.dbs_paths.len {
 		app.dbs_paths[app.dbc_ed.db]
 	} else {
