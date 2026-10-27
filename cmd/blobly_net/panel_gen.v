@@ -315,7 +315,7 @@ fn draw_gen(mut app App) {
 				}
 				// several rows answer to `bus:`: the chips lit are every one it could be
 				if sr.bus_note != '' {
-					vgui.text_dim(sr.bus_note)
+					vgui.text_dim_wrapped(sr.bus_note)
 				}
 			}
 			// message picker: build the frame from a DBC message (→ per-signal values) or send a

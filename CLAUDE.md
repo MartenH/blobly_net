@@ -305,6 +305,12 @@ and `cmd/blobly_net/hostrule/`, WHICH ROW A HOSTED DoIP ENTITY'S WATCHER ASKS â€
 it was started for, by index (`Chan.proj_idx`), for its tick, its `running` mark and its entry in
 the hosted-entity table; never a row found by name and interface, which two rows may share (#408:
 a disabled row listed first kept its enabled copy's entity down);
+and `cmd/blobly_net/rowrule/`, THE OTHER KEYS A ROW IS KNOWN BY, by its index too (#575): the
+Simulation panel's node tick (`sim_key`, read by `sim_loop`, `uds_node_loop` and the DoIP watcher,
+restacked when a row is deleted), how a Log line names a row whose name another row shares
+(`label`), and which generator bus chips light (`chip_lit`: the resolved row alone, or every row
+on the wire for a `bus:` several rows answer to, with the resolver's note under the chips); the
+transmit tap is keyed the same way (`taprule.tap_key`, `SenderRT.chan_idx`);
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to â€” where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
