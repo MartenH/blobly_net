@@ -18,7 +18,7 @@ rules=(
 	cmd/blobly_net/cyclerule cmd/blobly_net/drainrule cmd/blobly_net/genhome cmd/blobly_net/pickrule
 	cmd/blobly_net/watchrule cmd/blobly_net/prefs cmd/blobly_net/panerule cmd/blobly_net/endrule
 	cmd/blobly_net/gaterule cmd/blobly_net/txhealth cmd/blobly_net/diaghold cmd/blobly_net/foldrule
-	cmd/blobly_net/assets cmd/blobly_net/perfrule cmd/blobly_net/tickrule cmd/blobly_net/hostrule
+	cmd/blobly_net/assets cmd/blobly_net/perfrule cmd/blobly_net/tickrule cmd/blobly_net/hostrule cmd/blobly_net/rowrule
 	cmd/vectorcheck/restorerule
 )
 repo=$(pwd -P)

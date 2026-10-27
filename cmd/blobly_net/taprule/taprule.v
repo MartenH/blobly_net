@@ -26,9 +26,16 @@ pub fn file_decision(run Run, opened_for u64, present bool) bool {
 	return run.running && run.gen == opened_for && !present
 }
 
+// tap_key names a transmit tap: the project row it is filed for and the interface it opens, or
+// `row` -1 for the wire's shared tap. By ROW, not by channel name (#575): nothing makes a
+// row's name and interface unique, and two rows sharing both shared one tap, so a send was filed
+// under whichever of them opened it first. Injective, since a row number contains no `|`.
+pub fn tap_key(row int, iface string) string {
+	return if row < 0 { '|${iface}' } else { '${row}|${iface}' }
+}
+
 // Taps is what a sender's readiness is decided from: which keys are filed, and which named
-// opens have FAILED for good this run. A key is `project.compose_key(chan, iface)`; the
-// shared tap of a wire is the key with an empty channel.
+// opens have FAILED for good this run. A key is tap_key's.
 pub struct Taps {
 pub:
 	filed  []string
@@ -74,11 +81,12 @@ pub fn fallback(taps Taps, named string, wire_tap string, has_chan bool) Fallbac
 	return .none_open
 }
 
-// Wants is who still wants a tap once a slow open comes back: which (chan, iface) pairs the
-// generators fire on, and which wires an enabled CAN row or a generator uses.
+// Wants is who still wants a tap once a slow open comes back: which (row, iface) pairs the
+// generators fire on or a row opens its own tap for, and which wires an enabled CAN row or a
+// generator uses.
 pub struct Wants {
 pub:
-	pairs []string // named keys the generators fire on
+	pairs []string // named keys the generators fire on, and the rows' own
 	wires []string // destination keys some row or generator uses
 }
 
