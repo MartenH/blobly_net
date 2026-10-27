@@ -802,3 +802,24 @@ fn test_sender_target_rows_are_identities() {
 	bare := resolve_sender_bus('vcan9', chs[0], chs)
 	assert bare.kind == .bare && sender_target_rows(bare, 0, chs) == []
 }
+
+// THE ROW A VALUE NAMES (#575): its position, which a name is not.
+fn test_a_resolved_value_names_its_row_by_position() {
+	chs := [Channel{
+		name:  'A'
+		iface: 'inproc:X'
+	}, Channel{
+		name:  'B'
+		iface: 'inproc:Y'
+	}, Channel{
+		name:  'B'
+		iface: 'inproc:Y'
+	}]
+	assert resolve_sender_bus('A', chs[1], chs).row == 0
+	assert resolve_sender_bus('inproc:X', chs[1], chs).row == 0
+	// own, ambiguous and bare name no row the resolver can give
+	assert resolve_sender_bus('', chs[1], chs).row == -1
+	assert resolve_sender_bus('B', chs[0], chs).row == -1
+	assert resolve_sender_bus('inproc:Y', chs[0], chs).row == -1
+	assert resolve_sender_bus('vcan9', chs[0], chs).row == -1
+}

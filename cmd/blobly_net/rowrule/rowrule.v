@@ -5,8 +5,9 @@ module rowrule
 // the Simulation panel's node tick (unticking a node on one row switched it off on the other),
 // its tree's ImGui id, and a DoIP entity's Log lines, which could not say which of two rows had
 // failed to bind. The index is what app.chans is built 1:1 from (Chan.proj_idx), and a run's
-// rows do not change (#120), so it holds for every worker that reads one. Rows are only appended
-// or deleted, never reordered; a deletion restacks what is keyed by index (restack_sim).
+// rows do not change (#120), so it holds for every worker that reads one. Between runs a row may
+// be deleted (restack_sim) or the whole set replaced — a project loaded, the File tab applied —
+// and a tick then follows its row by name and interface where only one row has them (rekey_sim).
 
 // sim_key names one simulated ECU's tick: project row `row`, and the node by name. The row's
 // name and interface are kept in the key, so a tick does not follow a row renamed or
@@ -40,6 +41,70 @@ pub fn restack_sim(ticks map[string]bool, removed int) map[string]bool {
 		out[if row > removed { '${row - 1}|${tail}' } else { k }] = v
 	}
 	return out
+}
+
+// rekey_sim is the tick table for a new set of rows (`names`, `ifaces`, by index): a tick whose
+// row still has its name and interface stays, one whose row moved follows it to the ONE row that
+// has them, and the rest are dropped — a tick cannot follow one of two rows that share both, and
+// a dropped tick is the default (on), never another row's. A key not spelled by sim_key is kept.
+pub fn rekey_sim(ticks map[string]bool, names []string, ifaces []string) map[string]bool {
+	mut out := map[string]bool{}
+	mut moved := map[string]bool{}
+	for k, v in ticks {
+		row, name, iface, node := parse_sim(k) or {
+			out[k] = v
+			continue
+		}
+		if row < names.len && row < ifaces.len && names[row] == name && ifaces[row] == iface {
+			out[k] = v
+			continue
+		}
+		mut at := -1
+		for j in 0 .. names.len {
+			if j < ifaces.len && names[j] == name && ifaces[j] == iface {
+				if at >= 0 {
+					at = -2
+					break
+				}
+				at = j
+			}
+		}
+		if at >= 0 {
+			moved[sim_key(at, name, iface, node)] = v
+		}
+	}
+	// a row's own tick wins over one that moved onto it
+	for k, v in moved {
+		if k !in out {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// parse_sim reads a key sim_key spelled, or none.
+fn parse_sim(k string) ?(int, string, string, string) {
+	row_s := k.all_before('|')
+	if row_s.len == k.len || row_s.len == 0 || !row_s.bytes().all(it.is_digit()) {
+		return none
+	}
+	name, after_name := take_counted(k[row_s.len + 1..])?
+	iface, node := take_counted(after_name)?
+	return row_s.int(), name, iface, node
+}
+
+// take_counted reads `<len>:<text>|` off the front of `rest`: the text, and what follows.
+fn take_counted(rest string) ?(string, string) {
+	n_s := rest.all_before(':')
+	if n_s.len == rest.len || n_s.len == 0 || !n_s.bytes().all(it.is_digit()) {
+		return none
+	}
+	n := n_s.int()
+	from := n_s.len + 1
+	if from + n >= rest.len || rest[from + n] != `|` {
+		return none
+	}
+	return rest[from..from + n], rest[from + n + 1..]
 }
 
 // label is how a Log line names project row `i` of rows named `names`: its name, and its row

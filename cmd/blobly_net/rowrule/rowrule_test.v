@@ -51,3 +51,34 @@ fn test_a_chip_agrees_with_the_resolved_row() {
 	// resolved to nothing at all: no chip
 	assert !chip_lit(0, 'vcan0', -1, '')
 }
+
+fn test_a_tick_follows_its_row_into_a_new_set_of_rows() {
+	mut t := map[string]bool{}
+	t[sim_key(0, 'CAN1', 'vcan0', 'ECU')] = false
+	t[sim_key(2, 'CAN2', 'vcan1', 'GW')] = false
+	t['legacy'] = false
+	// row 0 deleted in the File tab: CAN2 is row 1 now, and its tick goes with it
+	r := rekey_sim(t, ['CAN2'], ['vcan1'])
+	assert r[sim_key(0, 'CAN2', 'vcan1', 'GW')] or { true } == false
+	assert sim_key(0, 'CAN1', 'vcan0', 'ECU') !in r
+	assert r['legacy'] or { true } == false
+	assert r.len == 2
+	// rows that kept their place keep their ticks
+	same := rekey_sim(t, ['CAN1', 'X', 'CAN2'], ['vcan0', 'vcany', 'vcan1'])
+	assert same.len == 3
+	// a moved tick cannot pick one of two rows sharing a name and an interface: dropped
+	two := rekey_sim(t, ['CAN2', 'CAN2'], ['vcan1', 'vcan1'])
+	assert two.len == 1
+	// nor overwrite the tick a row already has
+	mut u := map[string]bool{}
+	u[sim_key(0, 'A', 'v', 'N')] = true
+	u[sim_key(3, 'A', 'v', 'N')] = false
+	k := rekey_sim(u, ['A'], ['v'])
+	assert k[sim_key(0, 'A', 'v', 'N')] or { false } == true
+	assert k.len == 1
+	// names and interfaces holding the separators parse back
+	mut w := map[string]bool{}
+	w[sim_key(1, 'a|1:b', 'c:|d', 'n|o')] = false
+	moved := rekey_sim(w, ['a|1:b'], ['c:|d'])
+	assert moved[sim_key(0, 'a|1:b', 'c:|d', 'n|o')] or { true } == false
+}

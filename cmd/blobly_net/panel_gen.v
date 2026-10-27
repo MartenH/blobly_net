@@ -304,6 +304,11 @@ fn draw_gen(mut app App) {
 								app.notify('${c.name} on ${c.iface}: row ${got + 1} has the same name and interface, and `bus:` can name only one of them — rename one in Configuration ▸ Buses to target it')
 							} else {
 								app.set_sender_bus(i, v)
+								// a value several rows answer to is stored as what it is,
+								// and said: the click picked a row the file cannot name
+								if app.senders[i].bus_note != '' {
+									app.notify('generator ${s.name}: ${app.senders[i].bus_note}')
+								}
 							}
 						} else {
 							// No spelling reaches it: an unnamed row whose interface is another

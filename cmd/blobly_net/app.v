@@ -24,6 +24,7 @@ import blobly.canlog
 import blobly.doip
 import blobly.j1939
 import blobly.nm
+import rowrule
 import vgui
 import blobly.uds
 
@@ -802,6 +803,7 @@ struct SimCfg {
 	// The project row this entry came from: its identity, which the node ticks are keyed by
 	// (rowrule.sim_key). Its name and interface are not one — two rows may share both.
 	proj_idx int
+	who      string // how the panel names the row: rowrule.label, its number where its name is shared
 	// The channel this entry came FROM, whole. Recovering it by interface picks the first
 	// match, and two channels can share one interface string — a `type: doip` channel with no
 	// `interface:` keeps the CAN default `vcan0`, so a lookup could hand the DoIP entity a CAN
@@ -1366,7 +1368,12 @@ fn (mut app App) rebuild_from_proj() {
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
 	app.sel_db = -1
+	// the Simulation ticks are keyed by row index: each follows its row into the new set where
+	// one row has its name and interface (rowrule.rekey_sim)
+	app.sim_enabled = rowrule.rekey_sim(app.sim_enabled, proj.channels.map(it.name),
+		proj.channels.map(it.iface))
 	app.mu.unlock()
+	row_names := proj.channels.map(it.name)
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
@@ -1520,6 +1527,7 @@ fn (mut app App) rebuild_from_proj() {
 			app.sims << SimCfg{
 				iface:    ch.iface
 				proj_idx: ci
+				who:      rowrule.label(row_names, ci)
 				pch:      ch
 				db:       sim_db
 				nodes:    nodes
@@ -1694,8 +1702,8 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 }
 
 // sender_row is the project row a resolved `bus:` names, or -1 where it names none. `.own` is the
-// row the generator is nested under (`own_idx`, which genhome keeps), the other kinds the ONE row
-// their name or interface matched — the resolver answered them only because exactly one does.
+// row the generator is nested under (`own_idx`, which genhome keeps; else the one row with its
+// owner's name and interface), the other kinds the row the resolver answered with.
 fn sender_row(r project.SenderBus, own_idx int, own project.Channel, rows []project.Channel) int {
 	return match r.kind {
 		.own {
@@ -1703,14 +1711,11 @@ fn sender_row(r project.SenderBus, own_idx int, own project.Channel, rows []proj
 				&& rows[own_idx].iface == own.iface {
 				own_idx
 			} else {
-				-1
+				project.only_row_named(rows, own.name, own.iface) or { -1 }
 			}
 		}
-		.named {
-			project.only_row_named(rows, r.chan, r.iface) or { -1 }
-		}
-		.iface {
-			project.only_row_on_iface(rows, r.iface) or { -1 }
+		.named, .iface {
+			r.row
 		}
 		else {
 			-1

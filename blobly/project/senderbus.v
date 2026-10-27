@@ -55,6 +55,10 @@ pub:
 	kind  SenderBusKind
 	chan  string // the owning channel's NAME; '' when no single channel owns the target
 	iface string // the interface to transmit on; '' only when nothing could be resolved
+	// the position in `chs` of the one channel a `.named` or `.iface` value answered to, else -1
+	// (`.own` is the caller's row, which the resolver is not told). The row's identity, which its
+	// name is not: two channels may share a name and an interface (#575).
+	row int = -1
 	note  string // '' unless there is something worth saying at Start
 }
 
@@ -70,9 +74,11 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 	}
 	// BY NAME FIRST: that is what the key means now.
 	mut named := []Channel{}
-	for c in chs {
+	mut named_at := -1
+	for j, c in chs {
 		if c.name == bus {
 			named << c
+			named_at = j
 		}
 	}
 	if named.len == 1 {
@@ -80,6 +86,7 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 			kind: .named
 			chan: named[0].name
 			iface: named[0].iface
+			row: named_at
 		}
 	}
 	if named.len > 1 {
@@ -103,9 +110,11 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 	}
 	// THEN AS AN INTERFACE, the form every file written before #97 uses.
 	mut by_iface := []Channel{}
-	for c in chs {
+	mut iface_at := -1
+	for j, c in chs {
 		if c.iface == bus {
 			by_iface << c
+			iface_at = j
 		}
 	}
 	if by_iface.len == 1 {
@@ -113,6 +122,7 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 			kind: .iface
 			chan: by_iface[0].name
 			iface: bus
+			row: iface_at
 		}
 	}
 	if by_iface.len > 1 {

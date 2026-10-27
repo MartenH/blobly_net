@@ -28,8 +28,8 @@ pub fn file_decision(run Run, opened_for u64, present bool) bool {
 
 // tap_key names a transmit tap: the project row it is filed for and the interface it opens, or
 // `row` -1 for the wire's shared tap. By ROW, not by channel name (#575): nothing makes a
-// row's name and interface unique, and two rows sharing both shared one tap, so a send was filed
-// under whichever of them opened it first. Injective, since a row number contains no `|`.
+// row's name and interface unique, and two rows sharing both shared one tap — one open, one
+// failure mark, one drop for both. Injective, since a row number contains no `|`.
 pub fn tap_key(row int, iface string) string {
 	return if row < 0 { '|${iface}' } else { '${row}|${iface}' }
 }
