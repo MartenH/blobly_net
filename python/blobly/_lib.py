@@ -152,13 +152,16 @@ BB_HEALTH_SOURCE_NEEDS_READER = 2
 # bb_health, as transport.health_name spells it (the Lua prelude's bus.health strings)
 HEALTH_NAMES = {0: "", 1: "ok", 2: "error warning", 3: "ERROR-PASSIVE", 4: "BUS-OFF"}
 
+# bb_format: a sent frame's stated format, by the name the Lua bus.send's `format =` takes
+FORMATS = {"classic": 1, "fd": 2, "fd_brs": 3}
+
 
 class BbFrame(ctypes.Structure):
     """bb_frame, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
                 ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("e2e", ctypes.c_uint8),
-                ("t_ns", ctypes.c_int64)]
+                ("format", ctypes.c_uint8), ("t_ns", ctypes.c_int64)]
 
 
 class BbMessage(ctypes.Structure):
