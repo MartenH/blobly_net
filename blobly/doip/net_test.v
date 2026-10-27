@@ -1,6 +1,7 @@
 module doip
 
 import net
+import blobly.transport
 import blobly.testports
 import time
 import blobly.uds
@@ -903,22 +904,114 @@ fn test_a_stop_ends_a_routing_activation_wait() {
 	ln.close() or {}
 }
 
-// ...and in the TCP connect, which has no slice of its own to ask in (the dial is a stand-in for
-// one blocked on an unreachable host)
-fn test_a_stop_ends_a_blocked_connect() {
-	slow := fn (addr string) !&net.TcpConn {
-		time.sleep(2 * time.second)
-		return error('connect timed out')
+// blackholed is a local listener whose accept queue is full, so a further connect to it is never
+// answered (Linux drops the SYN), and the connections that filled it; none where the platform
+// answers such a connect some other way.
+fn blackholed() ?(&net.TcpListener, int, []&net.TcpConn) {
+	mut l := net.listen_tcp(.ip, '127.0.0.1:0', backlog: 0) or { return none }
+	lp := (l.addr() or { return none }).port() or { return none }
+	mut held := []&net.TcpConn{}
+	for _ in 0 .. 16 {
+		c := dial_doip('127.0.0.1:${lp}', time.now().add(200 * time.millisecond), unsafe { nil }) or {
+			if err is transport.DialTimedOut {
+				return l, int(lp), held
+			}
+			break
+		}
+		held << c
+	}
+	unblackhole(mut l, mut held)
+	return none
+}
+
+fn unblackhole(mut l net.TcpListener, mut held []&net.TcpConn) {
+	for mut c in held {
+		c.close() or {}
+	}
+	l.close() or {}
+}
+
+// ...and in the TCP connect, to an entity that never answers it
+fn test_a_stop_ends_a_connect_nothing_answers() {
+	mut l, bport, mut held := blackholed() or {
+		eprintln('skipped: this platform answers a connect to a full accept queue')
+		return
+	}
+	defer {
+		unblackhole(mut l, mut held)
 	}
 	at := time.ticks() + 50
 	stop := fn [at] () bool {
 		return time.ticks() >= at
 	}
 	sw := time.new_stopwatch()
-	mut why := 'dialed'
-	dial_stoppable(slow, '192.0.2.1:13400', stop) or { why = err.msg() }
+	mut why := 'opened'
+	open_doip_stoppable('127.0.0.1', bport, 0x0E80, 0x1000, stop) or { why = err.msg() }
 	assert why == stopped_note, why
 	assert sw.elapsed().milliseconds() < 500
+}
+
+// a connect nothing answers ends at its deadline, unstopped
+fn test_a_connect_nothing_answers_ends_at_its_deadline() {
+	mut l, bport, mut held := blackholed() or {
+		eprintln('skipped: this platform answers a connect to a full accept queue')
+		return
+	}
+	defer {
+		unblackhole(mut l, mut held)
+	}
+	sw := time.new_stopwatch()
+	mut why := 'dialed'
+	dial_doip('127.0.0.1:${bport}', time.now().add(150 * time.millisecond), unsafe { nil }) or {
+		why = err.msg()
+	}
+	took := sw.elapsed().milliseconds()
+	assert why.contains('timed out'), why
+	assert took >= 140 && took < 600, 'took ${took} ms'
+}
+
+// a refused connect says so, in the OS's words, over IPv4 and IPv6 alike
+fn test_a_refused_connect_says_why() {
+	for host in ['127.0.0.1', '::1'] {
+		fam := addr_family(host)
+		mut l := net.listen_tcp(fam, join_host_port(host, 0)) or {
+			eprintln('skipped ${host}: ${err}')
+			continue
+		}
+		lp := (l.addr() or { panic(err) }).port() or { panic(err) }
+		l.close() or {}
+		mut why := 'opened'
+		open_doip(host, int(lp), 0x0E80, 0x1000) or { why = err.msg() }
+		assert why.contains('failed'), why
+		assert why.to_lower().contains('refused'), why
+	}
+}
+
+// a host name and an IPv6 literal dial as they did through net.dial_tcp
+fn test_a_name_and_an_ipv6_literal_connect() {
+	for host in ['localhost', '::1'] {
+		fam := addr_family(host)
+		bind := if host == 'localhost' { '127.0.0.1' } else { host }
+		mut ln := net.listen_tcp(fam, join_host_port(bind, 0)) or {
+			eprintln('skipped ${host}: ${err}')
+			continue
+		}
+		lp := (ln.addr() or { panic(err) }).port() or { panic(err) }
+		spawn fn (mut ln net.TcpListener) {
+			mut c := ln.accept() or { return }
+			_ := read_message(mut c, 2000) or { return }
+			c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+			_ := read_message(mut c, 2000) or { Message{} }
+			c.close() or {}
+		}(mut ln)
+		mut ch := open_doip(host, int(lp), 0x0E80, 0x1000) or {
+			assert false, '${host}: ${err}'
+			return
+		}
+		assert ch.iface == join_host_port(host, int(lp))
+		ch.close()
+		ln.close() or {}
+	}
 }
 
 // unstopped, a stoppable client still answers and still times out

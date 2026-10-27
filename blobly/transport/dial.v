@@ -1,6 +1,7 @@
 module transport
 
 import net
+import os
 import time
 
 // dial_stop_poll_ms is how often a bounded dial asks its stop: the bound on how long it outlives
@@ -31,14 +32,17 @@ pub fn (e DialStopped) msg() string {
 	return 'connect to ${e.addr} abandoned: stop requested'
 }
 
-// dial_tcp_within connects to `addr` (`host:port`) and gives up at `deadline`, or within
+// dial_tcp_within connects to `dest` (`host:port`) and gives up at `deadline`, or within
 // dial_stop_poll_ms of `stop` answering true (nil: never asked). The connect is non-blocking and
 // waited for with poll / WSAPoll, so nothing is left running when it gives up; the connection it
-// returns is an ordinary blocking one. A name in `addr` is resolved by the OS first, which this
-// does not bound — callers here pass an address. Each address the name resolves to is tried in
-// turn within the one deadline, the last one's error returned.
-pub fn dial_tcp_within(addr string, deadline time.Time, stop fn () bool) !&net.TcpConn {
+// returns is an ordinary blocking one. `dest` is what net.dial_tcp takes — an IPv4 or bracketed
+// IPv6 literal, or a name — and a wildcard dials the local host on Windows too, as there. A name
+// is resolved by the OS first, which this does not bound (CANsub passes an address; a DoIP row
+// may name a host). Each address the name resolves to is tried in turn within the one deadline,
+// the last one's error returned.
+pub fn dial_tcp_within(dest string, deadline time.Time, stop fn () bool) !&net.TcpConn {
 	started := time.now()
+	addr := dial_target(dest)
 	addrs := net.resolve_addrs_fuzzy(addr, .tcp) or {
 		return error('${err.msg()}; could not resolve ${addr}')
 	}
@@ -54,6 +58,20 @@ pub fn dial_tcp_within(addr string, deadline time.Time, stop fn () bool) !&net.T
 		return c
 	}
 	return last
+}
+
+// dial_target is the address a dial resolves: net.dial_tcp's, which on Windows reads a wildcard
+// host as the local one, since connecting to it works on Linux and macOS but not there.
+fn dial_target(addr string) string {
+	$if windows {
+		if addr.starts_with(':::') {
+			return addr.replace_once(':::', 'localhost:')
+		}
+		if addr.starts_with('0.0.0.0:') {
+			return addr.replace_once('0.0.0.0:', 'localhost:')
+		}
+	}
+	return addr
 }
 
 // dial_one is one non-blocking connect to one resolved address.
@@ -74,7 +92,7 @@ fn dial_one(a net.Addr, name string, started time.Time, deadline time.Time, stop
 		}
 		if !in_progress {
 			dial_close(handle)
-			return error_with_code('connect to ${name} failed (${code})', code)
+			return connect_failed(name, code)
 		}
 		// Wait for the socket to become writable: the connect completed, or failed. Polled once
 		// before the deadline is judged, so a connect that has already completed is not reported
@@ -107,11 +125,11 @@ fn dial_one(a net.Addr, name string, started time.Time, deadline time.Time, stop
 		if C.getsockopt(i32(handle), C.SOL_SOCKET, C.SO_ERROR, &so_err, &len) != 0 {
 			code2 := net.error_code()
 			dial_close(handle)
-			return error_with_code('connect to ${name} failed (${code2})', code2)
+			return connect_failed(name, code2)
 		}
 		if so_err != 0 {
 			dial_close(handle)
-			return error_with_code('connect to ${name} failed (${so_err})', int(so_err))
+			return connect_failed(name, int(so_err))
 		}
 	}
 	net.set_blocking(handle, true) or {
@@ -130,6 +148,15 @@ fn dial_one(a net.Addr, name string, started time.Time, deadline time.Time, stop
 // stop_asked is whether a stop has been asked: nil means never asked.
 pub fn stop_asked(stop fn () bool) bool {
 	return stop != unsafe { nil } && stop()
+}
+
+// connect_failed is a connect the peer or the OS refused, in the OS's words and code.
+fn connect_failed(name string, code int) IError {
+	why := os.get_error_msg(code).trim_space()
+	if why == '' {
+		return error_with_code('connect to ${name} failed (${code})', code)
+	}
+	return error_with_code('connect to ${name} failed: ${why} (${code})', code)
 }
 
 fn dial_close(handle int) {
