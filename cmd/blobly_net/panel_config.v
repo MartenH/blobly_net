@@ -1625,7 +1625,7 @@ fn (mut app App) start_replay_scan(i int, rp string) {
 	paths := app.proj.channels[i].databases.map(candb.canonical_database_ref(app.resolve_asset(it)))
 	app.mu.lock()
 	app.replay_scans[i] = mine
-	db := merge_dbs_from(app.loaded_dbs_for(paths))
+	db := candb.merge_dbs(app.loaded_dbs_for(paths))
 	app.mu.unlock()
 	spawn scan_replay_source(app, i, rp, db, mine)
 }

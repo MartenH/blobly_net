@@ -32,3 +32,30 @@ fn test_merge_files_keeps_both_frame_formats_and_drops_exact_duplicates() {
 	assert db.messages.len == 2, 'the exact duplicate must be dropped, got ${db.messages.len}'
 	assert db.nodes == ['N1'], 'node lists must dedupe too, got ${db.nodes}'
 }
+
+// merge_dbs is the rule merge_files opens through, for a caller that holds loaded databases:
+// the first definition of an id and format wins, and nodes are listed once.
+fn test_merge_dbs_is_the_merge_of_loaded_databases() {
+	a := Database{
+		messages: [Message{
+			id:   0x100
+			name: 'First'
+		}]
+		nodes:    ['N1', 'N2']
+	}
+	b := Database{
+		messages: [Message{
+			id:   0x100
+			name: 'Second'
+		}, Message{
+			id:   0x100
+			ext:  true
+			name: 'Ext'
+		}]
+		nodes:    ['N2', 'N3']
+	}
+	db := merge_dbs([a, b])
+	assert db.messages.map(it.name) == ['First', 'Ext']
+	assert db.nodes == ['N1', 'N2', 'N3']
+	assert merge_dbs([]).messages.len == 0
+}

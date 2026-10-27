@@ -857,9 +857,10 @@ fn (mut app App) start() {
 		// should become the running configuration is the wrong default. Say so instead.
 		app.notify('note: the Configuration ▸ File tab has unsaved text — it is not part of this run')
 	}
-	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
-	// per-channel generator databases still hold the on-disk definitions, so a
-	// measurement would encode with one schema and decode with another.
+	// unsaved DBC-editor edits live in app.dbs; the simulation's and the generators'
+	// databases are built from app.dbs at a rebuild (#445), so an edit made since is
+	// not certain to be in them and a run would encode with one schema and decode
+	// with another.
 	// (Ghost entries for paths a project swap detached are pruned first —
 	// the panel may be closed, and a ghost would wedge Start forever.)
 	for pth, _ in app.dbc_ed.dirty.clone() {

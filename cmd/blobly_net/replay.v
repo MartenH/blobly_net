@@ -137,7 +137,7 @@ fn (mut app App) load_recording(path string) {
 		// a neighbour's database win, leaving this entry's id unchecked after reopening a
 		// capture that was checked live), and unsaved editor changes must be reflected, since
 		// app.dbs already drives naming and decoding everywhere else in the UI.
-		live := merge_dbs_from(app.loaded_dbs_for(sc.db_paths))
+		live := candb.merge_dbs(app.loaded_dbs_for(sc.db_paths))
 		// KEYED ON THE DESTINATION. Two rows spelling one wire differently kept separate
 		// verifier sets, so an imported recording was checked against whichever row's rules
 		// happened to be found — and rules split across the aliases silently stopped applying.
@@ -1284,7 +1284,7 @@ fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 fn replay_db(app &App, ch Chan) candb.Database {
 	mut a := unsafe { app }
 	a.mu.lock()
-	db := merge_dbs_from(app.loaded_dbs_for(app.current_db_paths_locked(ch).map(candb.canonical_database_ref(it))))
+	db := candb.merge_dbs(app.loaded_dbs_for(app.current_db_paths_locked(ch).map(candb.canonical_database_ref(it))))
 	a.mu.unlock()
 	return db
 }

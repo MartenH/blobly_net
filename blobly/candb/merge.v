@@ -41,10 +41,6 @@ pub fn merge_files_report_with(paths []string, open DatabaseOpener) (Database, [
 // opened, in order: what a lookup judging definitions per file asks (pgn_message_in_catalog).
 pub fn merge_with_sources(paths []string, open DatabaseOpener) (Database, []Database, []string) {
 	mut sources := []Database{}
-	mut msgs := []Message{}
-	mut nodes := []string{}
-	mut seen := map[string]bool{}
-	mut seen_node := map[string]bool{}
 	mut notes := []string{}
 	for p in paths {
 		loaded := open(p) or {
@@ -52,8 +48,21 @@ pub fn merge_with_sources(paths []string, open DatabaseOpener) (Database, []Data
 			continue
 		}
 		notes << loaded.notes
-		db := loaded.db
-		sources << db
+		sources << loaded.db
+	}
+	return merge_dbs(sources), sources, notes
+}
+
+// merge_dbs is the ONE merge of databases already loaded: the first definition of an id AND
+// frame format wins, and a node two files declare is listed once. merge_files opens through it,
+// and a caller holding loaded databases (the GUI's simulation, replay and verify views, which
+// must see the editor's in-memory copy rather than reparse the file) merges through it too.
+pub fn merge_dbs(dbs []Database) Database {
+	mut msgs := []Message{}
+	mut nodes := []string{}
+	mut seen := map[string]bool{}
+	mut seen_node := map[string]bool{}
+	for db in dbs {
 		for m in db.messages {
 			key := '${m.id}|${m.ext}'
 			if key in seen {
@@ -73,5 +82,5 @@ pub fn merge_with_sources(paths []string, open DatabaseOpener) (Database, []Data
 	return Database{
 		messages: msgs
 		nodes:    nodes
-	}, sources, notes
+	}
 }
