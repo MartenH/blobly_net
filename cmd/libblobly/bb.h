@@ -48,8 +48,11 @@ extern "C" {
 
 /* A CAN frame on the wire. `len` is the payload length (0..8 classic, up to 64 with fd); `ext`
  * a 29-bit identifier; `fd`/`brs` CAN-FD and its bit-rate switch; `rtr` a remote frame (its
- * `len` the requested DLC, no payload); `esi` CAN-FD's error-state indicator. On a send, fd and
- * brs unset mean "not stated": the frame takes the wire's declared format; a frame no controller
+ * `len` the requested DLC, no payload); `esi` CAN-FD's error-state indicator. On a send, `format`
+ * (an enum bb_format) states the frame's format as the Lua bus.send's `format =` does:
+ * BB_FORMAT_WIRE (0, what a zero-initialised frame says) states nothing, and fd and brs unset then
+ * mean "not stated": the frame takes the wire's declared format; a stated one goes out as stated
+ * whatever the wire declares (see enum bb_format). A frame no controller
  * could send (brs or esi without fd, an id past its width) and a remote frame are refused by the
  * transport, as for every sender in this app. A received frame that does not fit is refused, not
  * truncated. `t_ns` is when a received frame arrived, on the host's monotonic clock (bb_now_ns), in
@@ -70,8 +73,21 @@ typedef struct bb_frame {
 	uint8_t  esi;
 	uint8_t  data[64];
 	uint8_t  e2e;
+	uint8_t  format;   /* an enum bb_format, on a send; 0 on a received or encoded frame */
 	int64_t  t_ns;
 } bb_frame;
+
+/* A frame's stated format (bb_frame.format, transport.FrameFormat, #203): what a frame sent on a
+ * CAN-FD wire goes out as, where "fd and brs unset" can only say "as declared". A stated format is
+ * the host's decision and no declaration raises it; a flag it contradicts (fd or brs on a classic
+ * frame, brs on BB_FORMAT_FD) is refused, and so is a classic frame of more than 8 bytes, at the
+ * send rather than by the backend. */
+enum bb_format {
+	BB_FORMAT_WIRE = 0,     /* not stated: the row's or wire's declared format (fd/brs raise it) */
+	BB_FORMAT_CLASSIC = 1,  /* classic CAN, at most 8 bytes, on an FD wire too */
+	BB_FORMAT_FD = 2,       /* CAN-FD without the bit-rate switch */
+	BB_FORMAT_FD_BRS = 3    /* CAN-FD with it */
+};
 
 /* A received frame's E2E verdict (bb_frame.e2e, "E2E on a row's frames" below). */
 enum bb_e2e {
@@ -589,8 +605,8 @@ int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
  * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;
  * a value past what the signal's width holds is clamped to the nearer end, NaN encodes as raw 0.
- * out gets the message's id, ext and dlc as len; fd and brs are left unset, so a send takes the
- * wire's declared format. */
+ * out gets the message's id, ext and dlc as len; fd, brs and format are left unset, so a send takes
+ * the wire's declared format unless the host states one in `format`. */
 int bb_encode(int row, int m, int n, const char *const *signals, const double *values,
               bb_frame *out);
 
@@ -836,9 +852,10 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
 int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
 /* bb_framing_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start; BB_ERR
  * for a row of another wire than the handle's): a frame bb_bus_send sends on it from then on with
- * fd 0 goes out in that row's format, as the loaded project declares it at the send — FD (BRS
- * where its data rate differs) for an enabled `canfd` row, which on a wire an enabled `can` row
- * also names is the only declaration it has; one with fd set is sent as it says. 1: the row
+ * fd 0 and no format stated goes out in that row's format, as the loaded project declares it at
+ * the send — FD (BRS where its data rate differs) for an enabled `canfd` row, which on a wire an
+ * enabled `can` row also names is the only declaration it has; one with fd set, or a format
+ * stated, is sent as it says. 1: the row
  * raises frames to FD now, 0: it is classic. On the handle's own thread. */
 int bb_framing_attach(int h, int row);
 int bb_e2e_stamp(int row, int m, bb_frame *f);
@@ -1211,7 +1228,7 @@ int bb_vector_assign(int app, int hw_type, int hw_index, int hw_channel, int cre
  * E2E is stamped per frame, its counter the sender's own from 0. Its frames are counted by the
  * row's handles only as they receive them (a second handle's traffic), not as their own sends.
  *
- * bb_cyclic_start sends frame `f` (its fd/brs as bb_bus_send reads them) every `period_ms`
+ * bb_cyclic_start sends frame `f` (its fd/brs/format as bb_bus_send reads them) every `period_ms`
  * (1 .. 3600000), the first at once; bb_cyclic_start_message sends message m of the row's
  * databases with signals[i] at values[i] (the rest at raw 0), its E2E stamped unless `e2e` is 0.
  * bb_cyclic_data replaces a raw sender's payload, bb_cyclic_signals sets a message sender's

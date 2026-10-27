@@ -430,12 +430,16 @@ else:
 
 ## 5. Raw frames
 
-- `ch.send(id, data=b"", ext=False, fd=False, brs=False)` puts one frame on the wire. `data` is
+- `ch.send(id, data=b"", ext=False, fd=False, brs=False, *, format=None)` puts one frame on the wire. `data` is
   any bytes-like value or iterable of byte values, at most 64 bytes. `ext` asks for a 29-bit id.
   `fd` and `brs` left `False` let the wire decide: a row the project declares CAN-FD frames it
   as FD. The transport refuses what no controller could send (`brs` without `fd`, an id past its
   width, such as 0x800 as an 11-bit id) and remote frames, as it refuses them for every sender in
-  the app. A classic frame cannot yet be stated on a CAN-FD wire.
+  the app. `format` STATES the frame's format, as the Lua `bus.send`'s `format =` does:
+  `"classic"` sends a classic frame on a CAN-FD wire (at most 8 bytes — a longer one is refused
+  with `blobly.Refused`), `"fd"` and `"fd_brs"` CAN-FD without and with the bit-rate switch,
+  whatever the wire declares. A flag the statement contradicts (`fd` or `brs` with `"classic"`,
+  `brs` with `"fd"`) is refused; `None` states nothing.
 - `ch.recv(timeout_ms=1000)` returns the next frame another node sent, or `None` when nothing
   came within `timeout_ms`. The timeout is rounded down to whole milliseconds; `0` only looks at
   what is queued; `None` waits for ever (Ctrl-C ends it: see above).
@@ -481,6 +485,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     print(answer, answer.data.hex(), answer.length, answer.ext, answer.fd)
     can1.send(0x18DAF110, b"\x02\x10\x01", ext=True)          # a 29-bit id
     can1.send(0x123, bytes(range(12)), fd=True, brs=True)      # a CAN-FD frame, 12 bytes
+    can1.send(0x124, b"\x01", format="classic")                # classic, on a CAN-FD wire too
     frame, spent = can1.look()                                 # what is queued now, no wait
     try:
         can1.expect(0x102, timeout_ms=200)                     # nobody asked again: nothing comes
@@ -515,7 +520,8 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   send an out-of-range value on purpose. `fd`/`brs` are left unset. Its E2E is not stamped.
 - `msg.send(**signals)` encodes, stamps the E2E the message's database declares (its counter and
   CRC: [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)), sends on
-  the message's channel, and returns the `Frame` sent.
+  the message's channel, and returns the `Frame` sent. `msg.send(format="classic", **signals)`
+  states its format as `ch.send`'s `format` does (a signal named `format` cannot be set this way).
 - `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`
   whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
   `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
@@ -559,9 +565,9 @@ A frame a script must keep sending — a heartbeat, a request the SUT polices th
 goes to a **background sender**, which sends it on a period from a thread of the engine's while
 the script does something else: waits in an `expect`, blocks in a UDS request, sleeps.
 
-- `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` sends a raw
+- `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` sends a raw
   frame every `period_ms` (1 .. 3600000), the first at once, and returns a **`CyclicSender`**.
-  `fd`/`brs` are read as `send` reads them.
+  `fd`/`brs` and `format` are read as `send` reads them.
 - `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` sends a DBC message encoded from the
   named signals (`encode`'s rule: the rest at raw 0), with the E2E its database declares stamped
   on every frame — the counter the sender's own, from 0 — unless `e2e=False`.
@@ -2018,8 +2024,8 @@ after `start()`.
 | `ch.name` | The row's name. |
 | `ch.kind` | `"can"`, `"doip"` or `"someip"`. Only a CAN row carries frames. |
 | `ch.iface` | The interface the row opens: as the project composes it, and while started, as the run has it. |
-| `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the declared format: a project channel's own (a `canfd` row's, also on a wire a `can` row shares), else the wire's. |
-| `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
+| `ch.send(id, data=b"", ext=False, fd=False, brs=False, *, format=None)` | Puts a frame on the wire. `fd`/`brs` left `False` take the declared format: a project channel's own (a `canfd` row's, also on a wire a `can` row shares), else the wire's. `format` (`"classic"`, `"fd"`, `"fd_brs"`) states it instead, whatever the wire declares: a classic frame of more than 8 bytes, or a flag the statement contradicts, is `Refused`. |
+| `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
 | `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. With `e2e=True` it must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
@@ -2140,7 +2146,7 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
 | `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
-| `msg.send(**signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. |
+| `msg.send(*, format=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s. |
 | `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`: a `CyclicSender`. |
 
 ### `CyclicSender`, `CyclicStatus`
@@ -2454,7 +2460,8 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen are here ([SOME/IP](#12-someip)), and so is `flash.program`
   ([Flashing](#13-flashing)), with a simulated bootloader to rehearse it against.
-- Stating a frame's format (a classic frame on a CAN-FD wire).
+- Stating a frame's format is here (`format=` on `ch.send`, `ch.send_cyclic` and `msg.send`;
+  [Raw frames](#5-raw-frames)).
 - Generator control is here ([Generators](#generators)): fire, start, stop, the cycle, a signal's
   value or source.
 - Replay control and recording to a file are here ([Replay and recording](#14-replay-and-recording)).

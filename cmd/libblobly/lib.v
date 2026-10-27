@@ -83,9 +83,10 @@ pub mut:
 	brs  u8
 	rtr  u8
 	esi  u8
-	data [64]u8
-	e2e  u8
-	t_ns i64
+	data   [64]u8
+	e2e    u8
+	format u8
+	t_ns   i64
 }
 
 pub struct C.bb_message {
@@ -860,6 +861,31 @@ fn (mut hd BusHandle) leave() {
 	stdatomic.add_i64(&hd.users, -1)
 }
 
+// frame_format is the format `f` states (bb.h's enum bb_format, transport.FrameFormat — the
+// Lua bus.send's `format =`), refusing a value bb.h does not name and a flag the statement
+// contradicts, so nothing goes out in a format other than the one the host set.
+fn frame_format(f &C.bb_frame) !transport.FrameFormat {
+	v := int(f.format)
+	ff := if v == int(C.BB_FORMAT_WIRE) {
+		transport.FrameFormat.wire
+	} else if v == int(C.BB_FORMAT_CLASSIC) {
+		transport.FrameFormat.classic
+	} else if v == int(C.BB_FORMAT_FD) {
+		transport.FrameFormat.fd
+	} else if v == int(C.BB_FORMAT_FD_BRS) {
+		transport.FrameFormat.fd_brs
+	} else {
+		return error('format ${v} is not an enum bb_format')
+	}
+	if ff == .classic && (f.fd != 0 || f.brs != 0) {
+		return error('a frame stated classic sets neither fd nor brs')
+	}
+	if ff == .fd && f.brs != 0 {
+		return error('a frame stated BB_FORMAT_FD has no bit-rate switch: brs is BB_FORMAT_FD_BRS')
+	}
+	return ff
+}
+
 @[export: 'bb_bus_send']
 pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	if isnil(f) {
@@ -873,8 +899,9 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	for i in 0 .. n {
 		data[i] = f.data[i]
 	}
+	ff := frame_format(f) or { return fail(bb_err, 'send: ${err.msg()}') }
 	// the flags as stated; which frames a controller could send is the transport's to refuse
-	frame := transport.CanFrame{
+	frame := ff.stamp(transport.CanFrame{
 		id:       f.id
 		extended: f.ext != 0
 		fd:       f.fd != 0
@@ -882,7 +909,7 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 		rtr:      f.rtr != 0
 		esi:      f.esi != 0
 		data:     data
-	}
+	}) or { return fail(bb_err, 'send: ${err.msg()}') }
 	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
 	defer {
 		hd.leave()
@@ -933,6 +960,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		for i in 0 .. 64 {
 			out.data[i] = if i < fr.data.len { fr.data[i] } else { u8(0) }
 		}
+		out.format = 0
 		out.t_ns = transport.received_now(fr)
 		out.e2e = hd.e2e_verdict(fr)
 	}
@@ -1180,6 +1208,7 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 			out.data[i] = if i < data.len { data[i] } else { u8(0) }
 		}
 		out.e2e = 0
+		out.format = 0
 		out.t_ns = 0
 	}
 	return ok()

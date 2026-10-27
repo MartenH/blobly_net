@@ -1078,3 +1078,70 @@ class TestDisputedWire:
             with fd.send_cyclic(0x125, b"\x03", 20):
                 got = cl.expect(0x125, 1000)
             assert got.fd and got.brs, "and the FD row's background sender"
+
+
+# two canfd rows on one wire, which then declares FD for every frame stating nothing (#203)
+FD_WIRE = """project:
+  name: fdwire
+  version: 8
+channels:
+  - name: A
+    type: canfd
+    interface: inproc:PY_FDWIRE
+    bitrate: 500000
+    data_bitrate: 2000000
+    databases:
+      - DBC
+  - name: B
+    type: canfd
+    interface: inproc:PY_FDWIRE
+    bitrate: 500000
+    data_bitrate: 2000000
+    databases:
+      - DBC
+"""
+
+
+class TestStatedFormat:
+    def test_a_stated_format_goes_out_as_stated(self, tmp_path):
+        dbc = os.path.join(REPO, "dbc", "blobly_net.dbc").replace("\\", "/")
+        path = write(tmp_path, "fdwire.blobnet", FD_WIRE.replace("DBC", dbc))
+        with blobly.Project(path) as net:
+            a, b = net.channels.A, net.channels.B
+            b.recv(0)
+            a.recv(0)  # subscribed before anything is sent
+            a.send(0x201, b"\x01")
+            got = b.expect(0x201, 1000)
+            assert got.fd and got.brs, "a frame stating nothing follows the FD wire"
+            a.send(0x202, b"\x02", format="classic")
+            got = b.expect(0x202, 1000)
+            assert not got.fd and not got.brs, "a frame stated classic goes out classic"
+            a.send(0x203, b"\x03", format="fd")
+            got = b.expect(0x203, 1000)
+            assert got.fd and not got.brs, "a frame stated fd goes out without the rate switch"
+            sent = a.messages.Heartbeat.send(format="classic")
+            assert not sent.fd and not sent.brs, "the Frame returned says what was stated"
+            got = b.expect(b.messages.Heartbeat, 1000)
+            assert not got.fd, "a message sent by name, stated classic"
+            with a.send_cyclic(0x204, b"\x04", 20, format="classic"):
+                got = b.expect(0x204, 1000)
+            assert not got.fd, "and a background sender stated classic"
+            with pytest.raises(blobly.Refused, match="at most 8 bytes"):
+                a.send(0x205, bytes(9), format="classic")
+            with pytest.raises(blobly.Refused, match="stated classic"):
+                a.send(0x206, b"\x06", fd=True, format="classic")
+            with pytest.raises(ValueError, match="format is"):
+                a.send(0x207, b"\x07", format="CAN")  # type: ignore[arg-type]
+            heard = []
+            while (f := b.recv(50)) is not None:
+                heard.append(f.id)
+            assert not {0x205, 0x206, 0x207} & set(heard), "nothing refused reached the wire"
+
+    def test_a_long_message_stated_classic_is_refused_before_it_goes(self, tmp_path):
+        dbc = write(tmp_path, "long.dbc", 'VERSION ""\n\nBU_: N\n\nBO_ 768 Long: 12 N\n'
+                    ' SG_ Value : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n')
+        path = write(tmp_path, "fdwire.blobnet", FD_WIRE.replace("DBC", dbc.replace("\\", "/")))
+        with blobly.Project(path) as net:
+            with pytest.raises(blobly.Refused, match="at most 8 bytes"):
+                net.channels.A.messages.Long.send(format="classic", Value=1)
+            assert net.channels.A.messages.Long.send(Value=1).length == 12, "unstated, it goes out FD"

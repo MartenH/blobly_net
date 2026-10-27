@@ -10,6 +10,7 @@
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
  *
  * Exit 0 only when every step held; each failure names the step and bb_last_error. */
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -527,6 +528,36 @@ static int gen_steps(void) {
 	return 0;
 }
 
+/* a frame's stated format (bb_frame.format): what it states goes out, zero states nothing, and a
+ * statement the frame contradicts is refused at the send; the struct's size is what it was */
+static int format_steps(void) {
+	CHECK(sizeof(bb_frame) == 88 && offsetof(bb_frame, format) == 75 && offsetof(bb_frame, t_ns) == 80,
+		"bb_frame's layout: %zu bytes", sizeof(bb_frame));
+	int tx = bb_bus_open_p("inproc:BB_SMOKE_FMT"), rx = bb_bus_open_p("inproc:BB_SMOKE_FMT");
+	CHECK(tx >= 0 && rx >= 0, "open the format wire");
+	bb_frame r;
+	bb_frame fd = {.id = 0x321, .len = 2, .data = {1, 2}, .format = BB_FORMAT_FD_BRS};
+	CHECK(bb_bus_send_p(tx, &fd) == 0 && bb_bus_recv_p(rx, 1000, &r) == 0 && r.id == 0x321 && r.fd && r.brs
+		&& r.format == 0, "a frame stated FD_BRS arrives FD with BRS on a wire declaring nothing");
+	bb_frame plain = {.id = 0x322, .len = 2};
+	CHECK(bb_bus_send_p(tx, &plain) == 0 && bb_bus_recv_p(rx, 1000, &r) == 0 && r.id == 0x322 && !r.fd,
+		"a zero format states nothing: classic on a classic wire");
+	bb_frame wide = {.id = 0x323, .len = 9, .format = BB_FORMAT_CLASSIC};
+	CHECK(bb_bus_send_p(tx, &wide) == BB_ERR && strstr(bb_last_error_p(), "at most 8 bytes"),
+		"a classic frame of 9 bytes must refuse at the statement");
+	bb_frame both = {.id = 0x324, .len = 1, .fd = 1, .format = BB_FORMAT_CLASSIC};
+	CHECK(bb_bus_send_p(tx, &both) == BB_ERR && strstr(bb_last_error_p(), "stated classic"),
+		"fd on a frame stated classic must refuse");
+	bb_frame odd = {.id = 0x325, .len = 1, .format = 9};
+	CHECK(bb_bus_send_p(tx, &odd) == BB_ERR && strstr(bb_last_error_p(), "enum bb_format"),
+		"a format bb.h does not name must refuse");
+	CHECK(bb_bus_recv_p(rx, 0, &r) == BB_NONE, "nothing refused reached the wire");
+	bb_bus_close_p(tx);
+	bb_bus_close_p(rx);
+	printf("ok   a stated format goes out as stated, an unstated one as declared; contradictions refused\n");
+	return 0;
+}
+
 /* a background sender on CAN1, heard by a bus handle of the host's own at its period */
 static int cyclic_steps(int can1) {
 	int h = bb_bus_open_p("inproc:CAN1");
@@ -757,6 +788,7 @@ int main(int argc, char **argv) {
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;
 	if (cyclic_steps(can1)) return 1;
+	if (format_steps()) return 1;
 	if (node_steps()) return 1;
 	if (replay_steps(can1, argv[2])) return 1;
 	can1_row = can1;

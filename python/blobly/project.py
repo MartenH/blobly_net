@@ -9,7 +9,7 @@ import sys
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Sequence
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeAlias, TypeVar
 
 from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
@@ -28,6 +28,9 @@ from .cyclic import CyclicSender, _period, _start_message, _start_raw
 
 if TYPE_CHECKING:
     from .nodes import Nodes
+
+# a frame's stated format (bb.h's enum bb_format, the Lua bus.send's `format =`); None states none
+FrameFormat: TypeAlias = Literal["classic", "fd", "fd_brs"]
 
 
 class Frame:
@@ -103,7 +106,17 @@ def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
                  _lib.ms_of(f.t_ns) if received else None, status_of(f.e2e) if received else None)
 
 
-def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
+def _format(who, format):
+    """bb_frame.format for a stated format: None states nothing, else "classic", "fd" or "fd_brs"."""
+    if format is None:
+        return 0
+    code = _lib.FORMATS.get(format) if isinstance(format, str) else None
+    if code is None:
+        raise ValueError(f"{who}: format is \"classic\", \"fd\", \"fd_brs\" or None, not {format!r}")
+    return code
+
+
+def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False, format=None):
     """A bb_frame from a frame's parts, refusing what no CAN frame is."""
     if isinstance(id, bool) or not isinstance(id, int) or not 0 <= id <= 0x1FFF_FFFF:
         raise ValueError(f"{who}: a CAN id is an integer of at most 29 bits, not {id!r}")
@@ -111,7 +124,7 @@ def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
     if len(data) > 64:
         raise ValueError(f"{who}: {len(data)} bytes is more than a CAN-FD frame carries")
     f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)),
-                     rtr=int(bool(rtr)))
+                     rtr=int(bool(rtr)), format=_format(who, format))
     ctypes.memmove(f.data, data, len(data))
     return f
 
@@ -224,10 +237,14 @@ class Bus:
         return ""
 
     def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
-             brs: bool = False) -> None:
+             brs: bool = False, *, format: FrameFormat | None = None) -> None:
         """Puts a frame on the wire. fd/brs left False let the declared format decide: a project
-        channel's own (a canfd row's FD, also on a wire a can row shares), else the wire's."""
-        self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
+        channel's own (a canfd row's FD, also on a wire a can row shares), else the wire's.
+        `format` STATES the frame's format, as the Lua bus.send's `format =` does: "classic" sends
+        a classic frame on a CAN-FD wire (at most 8 bytes, refused otherwise), "fd" and "fd_brs"
+        CAN-FD without and with the bit-rate switch whatever the wire declares; a flag it
+        contradicts (fd or brs with "classic", brs with "fd") is refused. None states nothing."""
+        self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs, format=format))
 
     def _send_on(self, h, f):
         lib = _lib.lib()
@@ -459,12 +476,13 @@ class Channel(Bus):
             return self._h
 
     def send_cyclic(self, id: int, data: ByteData = b"", period_ms: int = 100, *, ext: bool = False,
-                    fd: bool = False, brs: bool = False) -> CyclicSender:
+                    fd: bool = False, brs: bool = False,
+                    format: FrameFormat | None = None) -> CyclicSender:
         """Sends a frame every period_ms in the background, the first at once, until the sender's
         stop() or the project's (a CyclicSender; `with` stops it at the end of the block). It goes
         out on a bus handle of the sender's own, so this channel's handle hears it as another
-        node's frame. fd/brs as send() reads them. While the project is started."""
-        f = _bb_frame(self.name, id, data, ext, fd, brs)
+        node's frame. fd/brs/format as send() reads them. While the project is started."""
+        f = _bb_frame(self.name, id, data, ext, fd, brs, format=format)
         with _lib.state_lock:
             return _start_raw(self, f, _period(period_ms))
 
@@ -929,13 +947,15 @@ class Message:
                                      (ctypes.c_double * n)(*values), ctypes.byref(f)))
         return f
 
-    def send(self, /, **signals: float) -> Frame:
+    def send(self, /, *, format: FrameFormat | None = None, **signals: float) -> Frame:
         """Encodes this message (encode), stamps the E2E its database declares — the counter its
         next of this run's sends by name on the channel, from 0, then the CRC, over what the
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
         the Frame sent. A declaration that cannot be applied raises Refused rather than go out
         unprotected; a send that fails after its stamp has used its counter, as a frame lost on
-        the wire does. Its fd/brs are unset, so what goes out takes its channel's declared format.
+        the wire does. Its fd/brs are unset, so what goes out takes its channel's declared format,
+        unless `format` states one as Channel.send's does ("classic", "fd", "fd_brs"; a classic
+        frame of more than 8 bytes refused) — the returned Frame's fd/brs are then what was stated.
         To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
         channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
         under one hold of the state lock, so a stop and start on another thread cannot put this
@@ -943,6 +963,12 @@ class Message:
         lib = _lib.lib()
         with _lib.state_lock:
             f = self._encoded(signals)
+            f.format = _format(f"{self.name}.send", format)
+            if format == "classic" and f.len > 8:  # refused before the stamp uses a counter
+                raise _lib.Refused(f"{self.channel.name}: a classic frame carries at most 8 bytes, "
+                                   f"{self.name} has {f.len} — choose FD")
+            if format is not None:  # the Frame returned says what was stated
+                f.fd, f.brs = int(format != "classic"), int(format == "fd_brs")
             h = self.channel._handle()  # first: a channel that will not open uses no counter
             _lib.check(lib.bb_e2e_stamp(self.channel._index, self._index, ctypes.byref(f)))
         self.channel._send_on(h, f)

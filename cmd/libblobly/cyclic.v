@@ -83,12 +83,14 @@ pub fn bb_cyclic_start(row i32, f &C.bb_frame, period_ms i32) i32 {
 	for i in 0 .. n {
 		data[i] = f.data[i]
 	}
-	// the flags as bb_bus_send reads them: unstated, so the wire's declaration may raise them
+	// the flags and format as bb_bus_send reads them: unstated, the wire's declaration may raise them
+	ff := frame_format(f) or { return fail(bb_err, 'cyclic_start: ${err.msg()}') }
 	return cyclic_start(row, cyclic.Spec{
 		id:        f.id
 		ext:       f.ext != 0
 		fd:        f.fd != 0
 		brs:       f.brs != 0
+		format:    ff
 		data:      data
 		period_ms: int(period_ms)
 	}, 0)
