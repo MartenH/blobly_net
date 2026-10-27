@@ -59,7 +59,7 @@ A dockable blobly_net panel, the Shell-panel precedent:
 - **one database per rebuild** (#445): the simulated ECUs and `verify:` are built from the
   same in-memory databases the trace decodes with, the editor's unsaved copy included, never
   from a second read of the file. They take an edit when the runtime view is next rebuilt — a
-  Save (once no database has unsaved edits), a configuration change or a project load. Start
+  Save or Revert of any database, a configuration change or a project load. Start
   still refuses while edits are unsaved, so a run never encodes with a schema that is not in
   the file.
 

@@ -858,9 +858,9 @@ fn (mut app App) start() {
 		app.notify('note: the Configuration ▸ File tab has unsaved text — it is not part of this run')
 	}
 	// unsaved DBC-editor edits live in app.dbs; the simulation's and the generators'
-	// databases are built from app.dbs at a rebuild (#445), so an edit made since is
-	// not certain to be in them and a run would encode with one schema and decode
-	// with another.
+	// databases are built from app.dbs at a rebuild (#445) and share its signal arrays,
+	// so an edit made since reaches them only in part (a signal edited in place, not a
+	// message's own fields) and a run would encode with a mixture of two schemas.
 	// (Ghost entries for paths a project swap detached are pruned first —
 	// the panel may be closed, and a ghost would wedge Start forever.)
 	for pth, _ in app.dbc_ed.dirty.clone() {

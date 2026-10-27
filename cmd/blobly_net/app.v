@@ -854,7 +854,7 @@ fn (app &App) wires_of_db(di int) []string {
 			continue
 		}
 		for raw in c.databases {
-			if candb.canonical_database_ref(app.resolve_asset(raw)) == path {
+			if app.db_ref(raw) == path {
 				seen[gate] = true
 				out << gate
 				break
@@ -1159,6 +1159,13 @@ fn (app &App) resolve_asset(path string) string {
 	return project.resolve_asset(os.dir(app.proj_path), path)
 }
 
+// db_ref is the key a project's database entry is loaded under in app.dbs_paths — resolved
+// against the project, then canonical — so every lookup of a loaded database asks the rule the
+// load did (loaded_dbs_for).
+fn (app &App) db_ref(raw string) string {
+	return candb.canonical_database_ref(app.resolve_asset(raw))
+}
+
 fn (mut app App) set_project(proj project.Project, path string) {
 	// A capture belongs to the project it was recorded IN. Neither stop() nor the reset below
 	// touches `recording`, so a Record left running across File > Open/New kept appending the
@@ -1373,6 +1380,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.sim_rows = now_rows
 	app.mu.unlock()
 	row_names := proj.channels.map(it.name)
+	mut said_missing := map[string]bool{}
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
@@ -1404,7 +1412,7 @@ fn (mut app App) rebuild_from_proj() {
 		for dbpath in ch.databases {
 			// canonical: two spellings of one file are ONE db (and an ARXML's `#Cluster`
 			// rides along — every lookup keys through the same function)
-			rp := candb.canonical_database_ref(app.resolve_asset(dbpath))
+			rp := app.db_ref(dbpath)
 			// a DBC attached to several channels loads ONCE — duplicate dbs
 			// entries would let the editor mutate one copy while decode reads
 			// another
@@ -1510,14 +1518,17 @@ fn (mut app App) rebuild_from_proj() {
 			// THE DATABASES THIS REBUILD LOADED, not a second parse of the files (#445): one
 			// file read twice in one rebuild could give the trace and the simulation two
 			// databases, and the editor's unsaved copy (dbc_keep) is what app.dbs holds, so what
-			// the trace decodes is what the simulated ECUs transmit. Keyed like the load loop
-			// above (resolve_asset, then the canonical reference), merged by candb's one rule.
-			// The reader's notes were said by that loop; a file it could not load is said again
-			// here, since the simulated ECUs then run with that file's messages missing.
-			db_paths := ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))
-			for rp in db_paths {
-				if app.dbs_paths.index(rp) < 0 {
-					app.elog('sim ${ch.name}: ${rp} is not loaded; its messages are not simulated')
+			// the trace decodes is what the simulated ECUs transmit. Keyed as the load loop
+			// above keys them (db_ref), merged by candb's one rule. The reader's notes and a
+			// file's failure to load were said by that loop; an enabled row simulating without
+			// that file is said once per file and row.
+			db_paths := ch.databases.map(app.db_ref(it))
+			if ch.enabled {
+				for rp in db_paths {
+					if app.dbs_paths.index(rp) < 0 && '${ci}|${rp}' !in said_missing {
+						said_missing['${ci}|${rp}'] = true
+						app.elog('sim ${ch.name}: ${rp} did not load; its messages are not simulated')
+					}
 				}
 			}
 			sim_db := candb.merge_dbs(app.loaded_dbs_for(db_paths))

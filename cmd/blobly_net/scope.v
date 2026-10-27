@@ -52,7 +52,7 @@ fn (app &App) build_wire_dbs() map[string][]int {
 			keys << live
 		}
 		for raw in c.databases {
-			idx := app.dbs_paths.index(candb.canonical_database_ref(app.resolve_asset(raw)))
+			idx := app.dbs_paths.index(app.db_ref(raw))
 			for k in keys {
 				mut list := out[k] or { []int{} }
 				if idx >= 0 && idx !in list {

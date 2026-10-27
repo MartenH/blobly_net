@@ -271,20 +271,15 @@ fn (mut app App) dbc_ed_load_bufs() {
 	}
 }
 
-// dbc_refresh_if_all_clean re-reads sims/dbs_by_iface/generator caches from
-// disk once NO database holds unsaved edits (the rebuild re-reads every
-// file). Preserves the editor's selected database across the index shuffle.
-fn (mut app App) dbc_refresh_if_all_clean() {
+// dbc_refresh rebuilds the runtime view after a Save or a Revert, so the simulation's and the
+// generators' databases are rebuilt from app.dbs (#445): what was saved or reverted, plus every
+// other database's unsaved copy, which the rebuild keeps. Preserves the editor's selected
+// database across the index shuffle.
+fn (mut app App) dbc_refresh() {
 	// save or revert lands content whose attribution any displayed census predates
 	app.mu.lock()
 	app.replay_scans.clear()
 	app.mu.unlock()
-	for _, d in app.dbc_ed.dirty {
-		if d {
-			app.notify('sim/generator databases refresh after ALL DBCs are saved')
-			return
-		}
-	}
 	sel_path := if app.dbc_ed.db >= 0 && app.dbc_ed.db < app.dbs_paths.len {
 		app.dbs_paths[app.dbc_ed.db]
 	} else {
@@ -501,7 +496,7 @@ fn draw_dbc_editor(mut app App) {
 				app.mu.unlock()
 			}
 			app.dbc_refresh_trace_names()
-			app.dbc_refresh_if_all_clean()
+			app.dbc_refresh()
 		}
 	}
 	vgui.same_line()
@@ -546,7 +541,7 @@ fn draw_dbc_editor(mut app App) {
 				app.notify('${app.watch.len - kept.len} plotted signal(s) removed: not in the reverted DBC')
 			}
 			app.watch = kept
-			app.dbc_refresh_if_all_clean()
+			app.dbc_refresh()
 		} else {
 			app.notify('dbc revert failed: ${err}')
 		}
