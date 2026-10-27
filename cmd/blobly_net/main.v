@@ -266,6 +266,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_GEN') != '' {
 		app.show_gen = true
 	}
+	// And the Simulation panel, whose rows a screenshot tells apart (#575).
+	if os.getenv('BLOBLY_SHOW_SIM') != '' {
+		app.show_sim = true
+	}
 	// And the Trace Chart panel, whose target line names what Record / Dump address.
 	if os.getenv('BLOBLY_SHOW_TCHART') != '' {
 		app.show_tchart = true

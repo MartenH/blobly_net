@@ -24,6 +24,7 @@ import blobly.canlog
 import blobly.doip
 import blobly.j1939
 import blobly.nm
+import rowrule
 import vgui
 import blobly.uds
 
@@ -610,6 +611,7 @@ mut:
 	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
+	sim_rows    rowrule.Rows    // the rows sim_enabled is keyed against (rowrule.rekey_sim)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
 	// The Diagnostics panel's response table: one entry per request, and the connection events
@@ -727,7 +729,15 @@ mut:
 	// channel list per sender per tick (codex round 1 on #261).
 	tgt    string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
 	chan   string // the channel whose frames these are ('' = no single channel owns the target)
-	sender project.Sender
+	// …and its project ROW, -1 exactly when `chan` is '': the row's identity, which its transmit
+	// tap is keyed by (tx_bus_key) and its bus chip lit by. The name is what the frames carry,
+	// and two rows may share it with their interface (#575).
+	chan_idx int = -1
+	// what resolve_sender_bus had to say about `bus:` ('' when it settled on one row or a bare
+	// wire): the Generators panel shows it beside the chips, which then light every row it
+	// could be (rowrule.chip_lit)
+	bus_note string
+	sender   project.Sender
 }
 
 // target is the interface this generator transmits on — the RESOLVED answer, not a re-derivation
@@ -791,6 +801,10 @@ mut:
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
 struct SimCfg {
 	iface string
+	// The project row this entry came from: its identity, which the node ticks are keyed by
+	// (rowrule.sim_key). Its name and interface are not one — two rows may share both.
+	proj_idx int
+	who      string // how the panel names the row: rowrule.label, its number where its name is shared
 	// The channel this entry came FROM, whole. Recovering it by interface picks the first
 	// match, and two channels can share one interface string — a `type: doip` channel with no
 	// `interface:` keeps the CAN default `vcan0`, so a lookup could hand the DoIP entity a CAN
@@ -1355,7 +1369,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
 	app.sel_db = -1
+	// the Simulation ticks are keyed by row index: each follows its row into the new set where
+	// one row has its name and interface (rowrule.rekey_sim)
+	now_rows := sim_rows_of(proj.channels)
+	app.sim_enabled = rowrule.rekey_sim(app.sim_enabled, app.sim_rows, now_rows)
+	app.sim_rows = now_rows
 	app.mu.unlock()
+	row_names := proj.channels.map(it.name)
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
@@ -1508,6 +1528,8 @@ fn (mut app App) rebuild_from_proj() {
 			}
 			app.sims << SimCfg{
 				iface:    ch.iface
+				proj_idx: ci
+				who:      rowrule.label(row_names, ci)
 				pch:      ch
 				db:       sim_db
 				nodes:    nodes
@@ -1677,6 +1699,38 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
 	app.senders[i].tgt = r.iface
 	app.senders[i].chan = r.chan
+	app.senders[i].chan_idx = sender_row(r, app.senders[i].own_idx, own, rows)
+	app.senders[i].bus_note = if r.kind == .ambiguous { r.note } else { '' }
+}
+
+// sim_rows_of is a project's rows as the Simulation ticks are keyed against them.
+fn sim_rows_of(chs []project.Channel) rowrule.Rows {
+	return rowrule.Rows{
+		names:  chs.map(it.name)
+		ifaces: chs.map(it.iface)
+	}
+}
+
+// sender_row is the project row a resolved `bus:` names, or -1 where it names none. `.own` is the
+// row the generator is nested under (`own_idx`, which genhome keeps; else the one row with its
+// owner's name and interface), the other kinds the row the resolver answered with.
+fn sender_row(r project.SenderBus, own_idx int, own project.Channel, rows []project.Channel) int {
+	return match r.kind {
+		.own {
+			if own_idx >= 0 && own_idx < rows.len && rows[own_idx].name == own.name
+				&& rows[own_idx].iface == own.iface {
+				own_idx
+			} else {
+				project.only_row_named(rows, own.name, own.iface) or { -1 }
+			}
+		}
+		.named, .iface {
+			r.row
+		}
+		else {
+			-1
+		}
+	}
 }
 
 // sender_rows_locked is the channel list the resolver is asked against — name and interface only,

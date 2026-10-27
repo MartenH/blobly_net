@@ -1,8 +1,7 @@
 module taprule
 
 // THE TEN ROUNDS OF #257, AS A TABLE. Each block is one round's scenario; the rule that
-// answers it is named. Keys are spelled the way project.compose_key spells them, but the
-// rules treat them as opaque strings.
+// answers it is named. Keys are tap_key's, but the other rules treat them as opaque strings.
 
 const on = Run{
 	running: true
@@ -25,8 +24,8 @@ fn test_a_tap_is_filed_only_into_the_run_it_was_opened_for_while_that_run_is_on(
 // the shared one only once its own is known to have failed, and an existing named tap wins
 // whatever an earlier failure said. A sender with no channel wants the shared tap.
 fn test_a_cyclic_sender_waits_for_its_own_tap_and_falls_back_only_on_a_terminal_failure() {
-	named := 'Gen1|inproc:CAN1'
-	wire_tap := '|inproc:CAN1'
+	named := tap_key(0, 'inproc:CAN1')
+	wire_tap := tap_key(-1, 'inproc:CAN1')
 	// Round 3: the shared tap is up, the named one still opening — not ready, unstamped.
 	assert !ready(Taps{ filed: [wire_tap] }, named, wire_tap, true)
 	// Its own tap lands: ready.
@@ -45,8 +44,8 @@ fn test_a_cyclic_sender_waits_for_its_own_tap_and_falls_back_only_on_a_terminal_
 // THE MANUAL SIDE (round 8): Fire and its hotkey follow the same rule — wait rather than
 // misattribute — and a send with no channel takes the shared tap or reports no bus.
 fn test_a_manual_send_waits_rather_than_borrow_another_channels_identity() {
-	named := 'Gen1|inproc:CAN1'
-	wire_tap := '|inproc:CAN1'
+	named := tap_key(0, 'inproc:CAN1')
+	wire_tap := tap_key(-1, 'inproc:CAN1')
 	assert fallback(Taps{ filed: [wire_tap] }, named, wire_tap, true) == .wait
 	assert fallback(Taps{ filed: [wire_tap], failed: [named] }, named, wire_tap, true) == .via_wire
 	assert fallback(Taps{ failed: [named] }, named, wire_tap, true) == .none_open
@@ -58,7 +57,7 @@ fn test_a_manual_send_waits_rather_than_borrow_another_channels_identity() {
 // fires on the pair any more, and the wire's shared tap goes too if nothing uses the wire.
 // One decision from one snapshot.
 fn test_an_abandoned_tap_is_dropped_and_an_abandoned_wire_loses_its_shared_tap_too() {
-	named := 'Gen1|inproc:CAN1'
+	named := tap_key(0, 'inproc:CAN1')
 	wire := 'inproc:can1'
 	// Still wanted on both counts: nothing dropped.
 	d := drop_decision(Wants{ pairs: [named], wires: [wire] }, named, wire)
@@ -74,4 +73,20 @@ fn test_an_abandoned_tap_is_dropped_and_an_abandoned_wire_loses_its_shared_tap_t
 	// two-step decide-then-delete got wrong.
 	d4 := drop_decision(Wants{ pairs: [named], wires: [wire] }, named, wire)
 	assert !d4.named && !d4.wire
+}
+
+// ONE TAP PER ROW (#575): two rows with one name on one wire are two taps, and neither is the
+// wire's shared tap.
+fn test_two_rows_sharing_a_name_and_a_wire_have_a_tap_each() {
+	a := tap_key(0, 'vcan0')
+	b := tap_key(1, 'vcan0')
+	wire_tap := tap_key(-1, 'vcan0')
+	assert a != b
+	assert a != wire_tap && b != wire_tap
+	// a sender of row 1 waits for row 1's tap, not row 0's
+	assert !ready(Taps{ filed: [wire_tap, a] }, b, wire_tap, true)
+	assert ready(Taps{ filed: [wire_tap, b] }, b, wire_tap, true)
+	// the interface is never read as a row: `|` in it changes nothing
+	assert tap_key(1, '2|x') != tap_key(12, 'x')
+	assert tap_key(-1, '1|x') != tap_key(1, 'x')
 }

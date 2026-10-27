@@ -21,17 +21,22 @@ fn draw_sim(mut app App) {
 	for sc in app.sims {
 		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
 		// label changes)
-		// id by channel, not interface: two channels on one interface collapsed into a single
-		// imgui id, so expanding one expanded the other. Same substitution as sim_key.
-		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.pch.name}|${sc.iface}') {
+		// id by project row, not interface or name: two channels on one interface — or two rows
+		// sharing a name too — collapsed into a single imgui id, so expanding one expanded the
+		// other. Same substitution as sim_key, name and interface in it too so a deleted row's
+		// open state does not pass to the row that takes its index. The label names the row
+		// where its name is shared.
+		hdr_bus := if sc.who != sc.pch.name { '${sc.iface}  ${sc.who}' } else { sc.iface }
+		if !vgui.tree_node('${hdr_bus}   (${sc.nodes.len})###simbus_${sc.proj_idx}|${sc.pch.name}|${sc.iface}') {
 			continue
 		}
 		for node in sc.nodes {
 			// sim_key, not '<iface>:<node>': the panel writes what the CAN loop and the DoIP
 			// supervisor read, so all three move together or a tick lands on a key nobody
 			// consults. Channel identity is in the key because two channels can share an
-			// interface string and a node name.
-			key := sim_key(sc.pch, node.name)
+			// interface string and a node name — and the row INDEX, because two rows may share
+			// both (#575).
+			key := sim_key(sc.proj_idx, sc.pch, node.name)
 			en := app.sim_enabled[key] or { true }
 			nen := vgui.checkbox('##simen_${key}', en)
 			if nen != en {

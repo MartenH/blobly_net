@@ -99,7 +99,7 @@ pub fn reportable(from Rung, to Rung) bool {
 
 // Gate is ONE WIRE's state, shared by every tap on it.
 //
-// PER WIRE, NOT PER TAP. `tx_bus_key(chan_name, iface)` means several taps can be open on one
+// PER WIRE, NOT PER TAP. `tx_bus_key(row, iface)` means several taps can be open on one
 // wire — a channel's own, the shared one, a replay group's — and a controller's fault ladder
 // belongs to the CONTROLLER. Held per tap, each would keep its own cadence and its own idea of
 // what had been said, so one transition would be narrated once per tap; that is the same

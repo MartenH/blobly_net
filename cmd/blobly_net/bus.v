@@ -508,29 +508,30 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 	return app.tx_on(app.send_iface, f)
 }
 
-// tx_bus_key identifies a tester bus by the CHANNEL that owns it as well as its interface: two
-// channels can share one wire, and a tap opened without the name attributes every frame to
-// whichever channel happens to be listed first.
 // has_named_tap reports whether a run opens this row its own transmit tap (tap_plan_locked), so a
 // manual send can be attributed to the row rather than to the first row on its wire.
 fn (c Chan) has_named_tap() bool {
 	return c.enabled && !c.eth()
 }
 
-fn tx_bus_key(chan_name string, iface string) string {
-	// project.compose_key is injective — see its comment for why a plain 'a|b' is not, and
-	// blobly/project/key_test.v for the property under inputs that contain the separator.
-	return project.compose_key(chan_name, iface)
+// tx_bus_key identifies a tester bus by the project ROW that owns it as well as its interface
+// (taprule.tap_key; `row` -1 is the wire's shared tap): two channels can share one wire, and a
+// tap opened without its row attributes every frame to whichever channel is listed first. Not by
+// the row's name, which two rows may share with their interface (#575).
+fn tx_bus_key(row int, iface string) string {
+	return taprule.tap_key(row, iface)
 }
 
 // tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
 // that bus. Generators use this to fire on their own target bus rather than a single
-// global send bus; `chan_name` is the owning channel, '' where the caller has no particular one.
+// global send bus.
 fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
-	return app.tx_on_chan('', iface, f)
+	return app.tx_on_chan(-1, '', iface, f)
 }
 
-fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
+// tx_on_chan is tx_on from project row `row` (named `chan_name`); -1 and '' where the caller has
+// no particular one. The row picks the tap, the name is what the frame and the Log carry.
+fn (mut app App) tx_on_chan(row int, chan_name string, iface string, f transport.CanFrame) bool {
 	// The LOOKUP is under app.mu; the send is not. Taps are opened ON A WORKER and filed as they
 	// land (#257, file_tap) — for a generator added or retargeted mid-run, long after Start — so
 	// tx_buses is written while a cyclic generator may be reading it from gen_loop, and a V map is
@@ -539,7 +540,7 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 	// released before sending: b.send takes the interface's send lock and then app.mu inside
 	// note_emit, so holding app.mu across it would deadlock.
 	app.mu.lock()
-	named := tx_bus_key(chan_name, iface)
+	named := tx_bus_key(row, iface)
 	mut b := app.tx_buses[named] or {
 		// THE SHARED TAP STANDS IN FOR A CHANNEL'S ONLY WHEN THAT CHANNEL'S IS KNOWN NOT TO
 		// COME. The taps open on a worker (#257), so for a moment after Start or a retarget a
@@ -547,8 +548,8 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		// carries no channel identity and the trace files it under the first channel on the
 		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
 		// path has no owning channel and takes the shared tap as before.
-		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface),
-			chan_name != '') {
+		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key(-1, iface),
+			row >= 0) {
 			.wait {
 				app.mu.unlock()
 				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
@@ -560,7 +561,7 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 				return false
 			}
 			.via_wire {
-				app.tx_buses[tx_bus_key('', iface)] or {
+				app.tx_buses[tx_bus_key(-1, iface)] or {
 					app.mu.unlock()
 					app.notify('TX failed: no open bus for ${iface}')
 					return false
@@ -571,7 +572,7 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 	app.mu.unlock()
 	// a channel's frames in its own format, which on a wire two rows dispute the wire has not
 	// (#384): the tap frames it for its row and its wire in one policy read
-	sent := if chan_name == '' || f.format_stated { f } else { transport.CanFrame{
+	sent := if row < 0 || chan_name == '' || f.format_stated { f } else { transport.CanFrame{
 			...f
 			row: chan_name
 		} }
