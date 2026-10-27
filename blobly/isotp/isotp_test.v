@@ -820,11 +820,19 @@ fn (mut s Sender) outcome() ?string {
 	return if s.ended { s.msg } else { none }
 }
 
-// wait is what the send returned, once it has.
+// wait is what the send returned, once it has -- or, past `tx_hang_ms`, that it has not, which
+// no assertion on the outcome accepts.
 fn (mut s Sender) wait() string {
 	if !s.ended {
-		s.msg = <-s.done
-		s.ended = true
+		select {
+			msg := <-s.done {
+				s.ended = true
+				s.msg = msg
+			}
+			i64(tx_hang_ms) * time.millisecond {
+				return 'the send was still running after ${tx_hang_ms} ms'
+			}
+		}
 	}
 	return s.msg
 }
@@ -1007,9 +1015,12 @@ fn test_endless_waits_are_given_up_on() {
 			assert false, err.msg()
 		}
 	}
-	mut s := start_send(mut ch, 20)
-	msg := s.wait()
-	assert msg.contains('N_WFTmax'), msg
+	// every answer is already queued, so the send runs on this thread
+	if _ := ch.send([]u8{len: 20, init: u8(index)}) {
+		assert false, 'the send completed on WAITs alone'
+	} else {
+		assert err.msg().contains('N_WFTmax'), err.msg()
+	}
 	ch.close()
 	peer.close()
 }
@@ -1316,7 +1327,8 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 	// the send went, a runner that stalled this thread past 150 ms spent the whole allowance
 	// before the first block and the test read "never advanced a block" -- the precondition
 	// failing, not the bound under test. Every later block is paid for in real time, where a
-	// stall only spends the allowance sooner.
+	// stall only spends the allowance sooner; normally three of them spend it, so an allowance
+	// that restarted per block would see the send complete.
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or { assert false, err.msg() }
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 0] }) or { assert false, err.msg() }
 	// 62 bytes = 6 + eight Consecutive Frames, so at BS=1 there are eight blocks to spread over
@@ -1348,8 +1360,14 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 			assert false, 'the peer could not send: ${err}'
 			break
 		}
-		// the send may end here, on the allowance: that is the outcome under test
-		must_read_tx(mut peer, mut s, 0x7E0) or { break }
+		must_read_tx(mut peer, mut s, 0x7E0) or {
+			// the send ending here, on the allowance, is the outcome under test
+			if _ := s.outcome() {
+				break
+			}
+			assert false, err.msg()
+			return
+		}
 	}
 	msg := s.wait()
 	assert msg.contains('fc_total_wait_ms'), msg
@@ -1386,9 +1404,8 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 		}
 	}
 	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice: 200 ms of pacing
-	mut s := start_send(mut ch, 27)
-	msg := s.wait()
-	assert msg == 'sent', msg
+	// every Flow Control is already queued, so the send runs on this thread
+	ch.send([]u8{len: 27, init: u8(index)}) or { assert false, err.msg() }
 	ch.close()
 	peer.close()
 }
