@@ -63,7 +63,7 @@ pub mut:
 	// stop_requested, when set, is asked while this client waits — for the TCP connect, the
 	// routing activation answer and every recv — every `stop_poll_ms`; a true answer ends the
 	// wait with `stopped_note`. For a worker that must leave when told (the GUI's panel holder);
-	// unset, every wait is the plain blocking one.
+	// unset, every wait is the plain blocking one but the connect, which ends at `connect_ms`.
 	stop_requested fn () bool = unsafe { nil }
 mut:
 	conn   &net.TcpConn = unsafe { nil }
@@ -252,10 +252,6 @@ pub const stopped_note = 'DoIP: stopped — stop requested'
 // stop_poll_ms is how often a stoppable wait asks its stop: the bound on how long it outlives one.
 pub const stop_poll_ms = 20
 
-fn asked_to_stop(stop fn () bool) bool {
-	return stop != unsafe { nil } && stop()
-}
-
 // open_doip_stoppable is open_doip whose TCP connect and routing activation both end when `stop`
 // answers true; the client keeps `stop` for its recvs. The connect gives up after connect_ms.
 pub fn open_doip_stoppable(host string, port int, source u16, target u16, stop fn () bool) !&DoipClient {
@@ -280,8 +276,9 @@ pub fn open_doip_stoppable(host string, port int, source u16, target u16, stop f
 	return c
 }
 
-// connect_ms bounds a DoIP TCP connect: an entity that drops the attempt is given up on after
-// it, as vlib's own dial gives up after its connect timeout.
+// connect_ms bounds a DoIP TCP connect: an entity that drops the attempt is given up on after it,
+// where the blocking net.dial_tcp waited out the OS's connect timeout (about two minutes on
+// Linux). Three SYN retransmissions fit within it.
 pub const connect_ms = 5000
 
 // dial_doip connects to `addr` by `deadline`, or within transport.dial_stop_poll_ms of `stop`
@@ -301,7 +298,7 @@ fn dial_doip(addr string, deadline time.Time, stop fn () bool) !&net.TcpConn {
 fn (mut c DoipClient) await_readable(ms int) !bool {
 	deadline := time.ticks() + i64(ms)
 	for {
-		if asked_to_stop(c.stop_requested) {
+		if transport.stop_asked(c.stop_requested) {
 			return error(stopped_note)
 		}
 		left := deadline - time.ticks()
@@ -387,7 +384,7 @@ fn (mut c DoipClient) write(msg []u8) ! {
 	for sent < msg.len {
 		deadline := time.ticks() + write_timeout_ms
 		for {
-			if asked_to_stop(c.stop_requested) {
+			if transport.stop_asked(c.stop_requested) {
 				return error(stopped_note)
 			}
 			if transport.writable_within(c.conn.sock.handle, stop_poll_ms) {

@@ -156,9 +156,9 @@ pub fn open(t Target, name string, iface string, car Carrier, opener fn (string,
 	}
 }
 
-// doip_open_ms bounds a DoIP row's open, the TCP connect and the routing activation together: a
-// connect has no bound of its own where the entity drops the attempt, and a routing activation
-// answer may trickle in.
+// doip_open_ms bounds a DoIP row's open, the TCP connect and the routing activation together: the
+// connect's own bound (doip.connect_ms) leaves no time for the activation, and a routing
+// activation answer may trickle in.
 pub const doip_open_ms = 7000
 
 // open_doip is a DoIP row's connection: to its entity's endpoint, from its tester address to its

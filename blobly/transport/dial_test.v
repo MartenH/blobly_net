@@ -111,3 +111,25 @@ fn test_a_refused_connect_is_an_error_not_a_wait() {
 	}
 	assert false, 'a connect to a closed port completed'
 }
+
+fn test_a_literal_host_is_resolved_in_place() {
+	assert is_literal_host('127.0.0.1:13400')
+	assert is_literal_host('[::1]:13400')
+	assert is_literal_host('[fe80::1%eth0]:13400')
+	assert is_literal_host(':13400')
+	assert !is_literal_host('localhost:13400')
+	assert !is_literal_host('ecu-1.local:13400')
+}
+
+// a stop asked before a name's lookup ends the dial without waiting for it
+fn test_a_stop_ends_a_dial_by_name_before_its_lookup() {
+	t0 := time.now()
+	dial_tcp_within('localhost:1', t0.add(5 * time.second), fn () bool {
+		return true
+	}) or {
+		assert err is DialStopped, err.msg()
+		assert (time.now() - t0).milliseconds() < 200
+		return
+	}
+	assert false, 'a stopped dial connected'
+}

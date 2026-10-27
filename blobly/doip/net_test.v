@@ -983,16 +983,22 @@ fn test_a_refused_connect_says_why() {
 		mut why := 'opened'
 		open_doip(host, int(lp), 0x0E80, 0x1000) or { why = err.msg() }
 		assert why.contains('failed'), why
-		assert why.to_lower().contains('refused'), why
+		$if linux {
+			assert why.to_lower().contains('refused'), why // Windows words it in the system's language
+		}
 	}
 }
 
 // a host name and an IPv6 literal dial as they did through net.dial_tcp
 fn test_a_name_and_an_ipv6_literal_connect() {
 	for host in ['localhost', '::1'] {
-		fam := addr_family(host)
-		bind := if host == 'localhost' { '127.0.0.1' } else { host }
-		mut ln := net.listen_tcp(fam, join_host_port(bind, 0)) or {
+		// the address the name is dialed at first, so nothing else on that port answers instead
+		first := net.resolve_addrs_fuzzy(join_host_port(host, 0), .tcp) or {
+			eprintln('skipped ${host}: ${err}')
+			continue
+		}
+		bind := first[0].str().all_before_last(':').trim('[]')
+		mut ln := net.listen_tcp(addr_family(bind), join_host_port(bind, 0)) or {
 			eprintln('skipped ${host}: ${err}')
 			continue
 		}
