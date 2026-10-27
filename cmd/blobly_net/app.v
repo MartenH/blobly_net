@@ -611,6 +611,7 @@ mut:
 	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
+	sim_rows    rowrule.Rows    // the rows sim_enabled is keyed against (rowrule.rekey_sim)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
 	// The Diagnostics panel's response table: one entry per request, and the connection events
@@ -1370,8 +1371,9 @@ fn (mut app App) rebuild_from_proj() {
 	app.sel_db = -1
 	// the Simulation ticks are keyed by row index: each follows its row into the new set where
 	// one row has its name and interface (rowrule.rekey_sim)
-	app.sim_enabled = rowrule.rekey_sim(app.sim_enabled, proj.channels.map(it.name),
-		proj.channels.map(it.iface))
+	now_rows := sim_rows_of(proj.channels)
+	app.sim_enabled = rowrule.rekey_sim(app.sim_enabled, app.sim_rows, now_rows)
+	app.sim_rows = now_rows
 	app.mu.unlock()
 	row_names := proj.channels.map(it.name)
 	for ci, ch in proj.channels {
@@ -1699,6 +1701,14 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	app.senders[i].chan = r.chan
 	app.senders[i].chan_idx = sender_row(r, app.senders[i].own_idx, own, rows)
 	app.senders[i].bus_note = if r.kind == .ambiguous { r.note } else { '' }
+}
+
+// sim_rows_of is a project's rows as the Simulation ticks are keyed against them.
+fn sim_rows_of(chs []project.Channel) rowrule.Rows {
+	return rowrule.Rows{
+		names:  chs.map(it.name)
+		ifaces: chs.map(it.iface)
+	}
 }
 
 // sender_row is the project row a resolved `bus:` names, or -1 where it names none. `.own` is the

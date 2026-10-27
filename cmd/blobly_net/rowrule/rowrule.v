@@ -8,6 +8,8 @@ module rowrule
 // rows do not change (#120), so it holds for every worker that reads one. Between runs a row may
 // be deleted (restack_sim) or the whole set replaced — a project loaded, the File tab applied —
 // and a tick then follows its row by name and interface where only one row has them (rekey_sim).
+// A restacked table is keyed against the rows after the deletion, which is what rekey_sim is
+// then told it was keyed against.
 
 // sim_key names one simulated ECU's tick: project row `row`, and the node by name. The row's
 // name and interface are kept in the key, so a tick does not follow a row renamed or
@@ -43,11 +45,38 @@ pub fn restack_sim(ticks map[string]bool, removed int) map[string]bool {
 	return out
 }
 
-// rekey_sim is the tick table for a new set of rows (`names`, `ifaces`, by index): a tick whose
-// row still has its name and interface stays, one whose row moved follows it to the ONE row that
-// has them, and the rest are dropped — a tick cannot follow one of two rows that share both, and
-// a dropped tick is the default (on), never another row's. A key not spelled by sim_key is kept.
-pub fn rekey_sim(ticks map[string]bool, names []string, ifaces []string) map[string]bool {
+// Rows is a set of project rows as the tick keys see them: each row's name and interface.
+pub struct Rows {
+pub:
+	names  []string
+	ifaces []string
+}
+
+// pair_count is how many rows have this name and interface.
+fn (r Rows) pair_count(name string, iface string) (int, int) {
+	mut n := 0
+	mut at := -1
+	for j in 0 .. r.names.len {
+		if j < r.ifaces.len && r.names[j] == name && r.ifaces[j] == iface {
+			n++
+			at = j
+		}
+	}
+	return n, at
+}
+
+// rekey_sim is the tick table once the rows the ticks were keyed against (`was`) become `now`.
+// The SAME rows keep every tick, and as many rows as before keep the tick of every row whose name
+// and interface did not change (a row edited in Configuration ▸ Buses). A different set — a project loaded, the File tab applied, rows
+// deleted, inserted or reordered there — keeps a tick only where one row of `was` and ONE row of
+// `now` have its name and interface, moved to that row's index; a tick of rows that share both,
+// before or after, is dropped, because
+// which of them it belonged to is exactly what a replaced set cannot say, and a dropped tick is
+// the default (on), never another row's. A key not spelled by sim_key is kept.
+pub fn rekey_sim(ticks map[string]bool, was Rows, now Rows) map[string]bool {
+	if was.names == now.names && was.ifaces == now.ifaces {
+		return ticks.clone()
+	}
 	mut out := map[string]bool{}
 	mut moved := map[string]bool{}
 	for k, v in ticks {
@@ -55,21 +84,21 @@ pub fn rekey_sim(ticks map[string]bool, names []string, ifaces []string) map[str
 			out[k] = v
 			continue
 		}
-		if row < names.len && row < ifaces.len && names[row] == name && ifaces[row] == iface {
+		// as many rows as before: an edit to rows, not to the set, and a row that kept its name
+		// and interface is the row it was
+		if was.names.len == now.names.len && row < now.names.len && row < now.ifaces.len
+			&& now.names[row] == name && now.ifaces[row] == iface {
 			out[k] = v
 			continue
 		}
-		mut at := -1
-		for j in 0 .. names.len {
-			if j < ifaces.len && names[j] == name && ifaces[j] == iface {
-				if at >= 0 {
-					at = -2
-					break
-				}
-				at = j
-			}
+		n_was, _ := was.pair_count(name, iface)
+		n, at := now.pair_count(name, iface)
+		if n_was > 1 || n != 1 {
+			continue
 		}
-		if at >= 0 {
+		if at == row {
+			out[k] = v
+		} else {
 			moved[sim_key(at, name, iface, node)] = v
 		}
 	}
@@ -109,18 +138,28 @@ fn take_counted(rest string) ?(string, string) {
 
 // label is how a Log line names project row `i` of rows named `names`: its name, and its row
 // number (counted from 1, as the Configuration panel lists them) when another row has that name
-// too — of two such rows, the one whose entity failed to bind could not be told apart.
+// too — of two such rows, the one whose entity failed to bind could not be told apart. A number
+// is added again while the label is still another row's literal name, so no two rows' labels are
+// one string.
 pub fn label(names []string, i int) string {
 	if i < 0 || i >= names.len {
 		return ''
 	}
-	mut n := 0
-	for x in names {
-		if x == names[i] {
-			n++
+	mut l := names[i]
+	for {
+		mut taken := false
+		for j, x in names {
+			if j != i && x == l {
+				taken = true
+				break
+			}
 		}
+		if !taken {
+			return l
+		}
+		l = '${l} (row ${i + 1})'
 	}
-	return if n > 1 { '${names[i]} (row ${i + 1})' } else { names[i] }
+	return l
 }
 
 // chip_lit says whether a generator's bus chip for row `ci` (on `iface`) is lit. A generator
