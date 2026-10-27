@@ -565,9 +565,9 @@ A frame a script must keep sending — a heartbeat, a request the SUT polices th
 goes to a **background sender**, which sends it on a period from a thread of the engine's while
 the script does something else: waits in an `expect`, blocks in a UDS request, sleeps.
 
-- `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` sends a raw
+- `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` sends a raw
   frame every `period_ms` (1 .. 3600000), the first at once, and returns a **`CyclicSender`**.
-  `fd`/`brs` and a keyword `format` are read as `send` reads them.
+  `fd`/`brs` and `format` are read as `send` reads them.
 - `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` sends a DBC message encoded from the
   named signals (`encode`'s rule: the rest at raw 0), with the E2E its database declares stamped
   on every frame — the counter the sender's own, from 0 — unless `e2e=False`.

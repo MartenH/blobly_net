@@ -1136,3 +1136,12 @@ class TestStatedFormat:
             while (f := b.recv(50)) is not None:
                 heard.append(f.id)
             assert not {0x205, 0x206, 0x207} & set(heard), "nothing refused reached the wire"
+
+    def test_a_long_message_stated_classic_is_refused_before_it_goes(self, tmp_path):
+        dbc = write(tmp_path, "long.dbc", 'VERSION ""\n\nBU_: N\n\nBO_ 768 Long: 12 N\n'
+                    ' SG_ Value : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n')
+        path = write(tmp_path, "fdwire.blobnet", FD_WIRE.replace("DBC", dbc.replace("\\", "/")))
+        with blobly.Project(path) as net:
+            with pytest.raises(blobly.Refused, match="at most 8 bytes"):
+                net.channels.A.messages.Long.send(format="classic", Value=1)
+            assert net.channels.A.messages.Long.send(Value=1).length == 12, "unstated, it goes out FD"

@@ -528,7 +528,6 @@ static int gen_steps(void) {
 	return 0;
 }
 
-/* a background sender on CAN1, heard by a bus handle of the host's own at its period */
 /* a frame's stated format (bb_frame.format): what it states goes out, zero states nothing, and a
  * statement the frame contradicts is refused at the send; the struct's size is what it was */
 static int format_steps(void) {
@@ -559,6 +558,7 @@ static int format_steps(void) {
 	return 0;
 }
 
+/* a background sender on CAN1, heard by a bus handle of the host's own at its period */
 static int cyclic_steps(int can1) {
 	int h = bb_bus_open_p("inproc:CAN1");
 	CHECK(h >= 0, "open a handle to hear the sender on");

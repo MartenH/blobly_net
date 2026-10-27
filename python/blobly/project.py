@@ -964,6 +964,9 @@ class Message:
         with _lib.state_lock:
             f = self._encoded(signals)
             f.format = _format(f"{self.name}.send", format)
+            if format == "classic" and f.len > 8:  # refused before the stamp uses a counter
+                raise _lib.Refused(f"{self.channel.name}: a classic frame carries at most 8 bytes, "
+                                   f"{self.name} has {f.len} — choose FD")
             if format is not None:  # the Frame returned says what was stated
                 f.fd, f.brs = int(format != "classic"), int(format == "fd_brs")
             h = self.channel._handle()  # first: a channel that will not open uses no counter
