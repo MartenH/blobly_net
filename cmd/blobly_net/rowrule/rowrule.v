@@ -69,18 +69,3 @@ pub fn chip_lit(ci int, iface string, owner int, target string) bool {
 	}
 	return target != '' && iface == target
 }
-
-// twin_of is another row with row `i`'s name AND interface, or none. A `bus:` value cannot name
-// one of such rows apart from the other (the file has nothing but the name and the interface),
-// so a chip of one cannot be picked for a generator of the other.
-pub fn twin_of(names []string, ifaces []string, i int) ?int {
-	if i < 0 || i >= names.len || i >= ifaces.len {
-		return none
-	}
-	for j in 0 .. names.len {
-		if j != i && j < ifaces.len && names[j] == names[i] && ifaces[j] == ifaces[i] {
-			return j
-		}
-	}
-	return none
-}

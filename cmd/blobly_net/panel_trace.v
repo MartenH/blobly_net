@@ -554,7 +554,7 @@ mut:
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-// gkey is the grouped view's identity. Length-prefixed for the same reason as tx_bus_key: a
+// gkey is the grouped view's identity. Length-prefixed: a
 // channel name may contain '|', and a key two different channels can produce merges their rows
 // — with a count that silently adds them together, the very thing this column exists to stop.
 // fd/brs belong here for the same reason ext does (#90: a CAN-FD frame and a classic frame with

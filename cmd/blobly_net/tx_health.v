@@ -59,7 +59,7 @@ fn health_of(r txhealth.Rung) transport.BusHealth {
 //
 // PER WIRE, keyed the way tx_mutex and wiretap's matching are: a fault belongs to the
 // CONTROLLER, and `vector:1` and `vector:ch1` are one transceiver. Several taps share a wire
-// (`tx_bus_key` includes the channel), so keyed per TAP each would keep its own cadence and its
+// (`tx_bus_key` includes the row), so keyed per TAP each would keep its own cadence and its
 // own idea of what had been said, and one transition would be narrated once per tap.
 fn (mut app App) tx_health_gate_locked(wire string) &txhealth.Gate {
 	if g := app.tx_health[wire] {

@@ -7,6 +7,7 @@ import blobly.sim
 import time
 import blobly.transport
 import blobly.candb
+import rowrule
 import vgui
 
 // ---- Send ----
@@ -85,11 +86,12 @@ fn draw_quick_send(mut app App) {
 	// THE ROW SENDS, not the wire: on a wire two rows share, the anonymous tap attributes the
 	// frame to the first of them, which is not the row the format below was chosen for. A row
 	// with no tap of its own (disabled, Ethernet) falls back to the wire's, as before.
-	send_chan := if matched && cur < app.chans.len && app.chans[cur].has_named_tap() {
-		app.chans[cur].name
+	send_row := if matched && cur < app.chans.len && app.chans[cur].has_named_tap() {
+		cur
 	} else {
-		''
+		-1
 	}
+	send_chan := if send_row >= 0 { app.chans[send_row].name } else { '' }
 	// THE FRAME'S FORMAT, only where choosing one can change it (#203): where a frame stating none
 	// goes out FD — an FD wire, or the FD row of an undeclared one (#384) — it is how a classic
 	// frame gets out.
@@ -120,7 +122,7 @@ fn draw_quick_send(mut app App) {
 				data: data
 			})
 			{
-				app.tx_on_chan(send_chan, target, frame)
+				app.tx_on_chan(send_row, send_chan, target, frame)
 			} else {
 				app.notify('TX not sent: ${err}')
 			}
@@ -261,15 +263,11 @@ fn draw_gen(mut app App) {
 				vgui.text('bus:')
 				for ci, c in app.chans {
 					vgui.same_line()
-					// selected by NAME, not by interface: with two channels on one wire an
-					// interface comparison lights BOTH buttons and cannot say which is current
-					// with no owner resolved, fall back to the interface — otherwise NO chip
-					// lights and the picker looks broken
-					sel := if sr.chan != '' {
-						c.name == sr.chan && c.iface == cur
-					} else {
-						c.iface == cur
-					}
+					// selected by ROW, not by interface or name: with two channels on one wire an
+					// interface comparison lights BOTH buttons, and two rows may share a name
+					// too (#575). With no owner resolved every row on the wire it sends on
+					// lights — the verdict, said under the chips (rowrule.chip_lit)
+					sel := rowrule.chip_lit(ci, c.iface, sr.chan_idx, cur)
 					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
 						// ASKED, NOT GUESSED. `bus:` is a channel NAME since #97, an interface
 						// for the files written before it, and '' for the generator's own
@@ -297,7 +295,16 @@ fn draw_gen(mut app App) {
 							iface: sr.iface
 						}
 						if v := project.sender_bus_value(target, own, rows) {
-							app.set_sender_bus(i, v, c.name)
+							// …and a spelling that reaches ANOTHER row is refused too: only a row
+							// with this one's name AND interface can be that, and `bus:` has
+							// nothing else to tell the two apart by
+							got := sender_row(project.resolve_sender_bus(v, own, rows),
+								sr.own_idx, own, rows)
+							if got >= 0 && got != ci {
+								app.notify('${c.name} on ${c.iface}: row ${got + 1} has the same name and interface, and `bus:` can name only one of them — rename one in Configuration ▸ Buses to target it')
+							} else {
+								app.set_sender_bus(i, v)
+							}
 						} else {
 							// No spelling reaches it: an unnamed row whose interface is another
 							// channel's name. Refused rather than stored, because the value that
@@ -305,6 +312,10 @@ fn draw_gen(mut app App) {
 							app.notify('${c.iface}: this bus has no name, and \'${c.iface}\' is already another channel\'s name — give it a name in Configuration ▸ Buses to target it')
 						}
 					}
+				}
+				// several rows answer to `bus:`: the chips lit are every one it could be
+				if sr.bus_note != '' {
+					vgui.text_dim(sr.bus_note)
 				}
 			}
 			// message picker: build the frame from a DBC message (→ per-signal values) or send a
@@ -378,9 +389,10 @@ fn (mut app App) add_generator() {
 		iface:   iface
 		// Its own channel, so the resolved answer is that channel and needs no lookup. The next
 		// rebuild recomputes it like every other generator's.
-		tgt:     iface
-		chan:    cname
-		sender:  project.Sender{
+		tgt:      iface
+		chan:     cname
+		chan_idx: if app.chans.len > 0 { 0 } else { -1 }
+		sender:   project.Sender{
 			name:    'New generator'
 			id:      0x100
 			trigger: 'manual'
@@ -396,7 +408,7 @@ fn (mut app App) add_generator() {
 	app.mu.unlock()
 	// The tap for a generator added mid-run opens on a worker (spawn_tap_for): opened here it
 	// ran on the GUI thread, and read tx_buses without the lock (codex round 4 on #257).
-	app.spawn_tap_for(cname, iface)
+	app.spawn_tap_for(if app.chans.len > 0 { 0 } else { -1 }, cname, iface)
 }
 
 // remove_generator drops generator `i` from the session.
@@ -821,16 +833,17 @@ fn (mut app App) set_cycle(i int, ms int) {
 // targeted bus is opened if the measurement is running and it isn't open yet.
 //
 // `bus` is a channel NAME since #97 — what the picker shows, and the only form that survives two
-// channels sharing a wire. `chan_name` is redundant with it for a picked channel and is kept
-// because '' (the generator's own channel) still names an owner the value itself cannot.
+// channels sharing a wire. A value several rows answer to owns no row (#575): its frames go
+// through the wire's shared tap, as they do after a reload, and the panel says so.
 //
 // The resolved target is recomputed rather than taken from the argument: `bus:` has two accepted
 // forms, and project.resolve_sender_bus is the one place that decides between them.
-fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
+fn (mut app App) set_sender_bus(i int, bus string) {
 	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
 	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
 	mut want_tgt := ''
 	mut want_own := ''
+	mut want_row := -1
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
@@ -838,24 +851,20 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 		// nobody edited, racing the cyclic fire path (codex round 2 on #97).
 		app.resolve_one_sender_locked(i, app.sender_rows_locked())
 		tgt := app.senders[i].target()
-		if chan_name != '' && app.senders[i].chan == '' {
-			// The resolver could not name one — an ambiguous reference — and the operator just
-			// pointed at a specific row, which is a better answer than none for the trace's `ch=`
-			// column. It does not survive a reload; the warning at Start says why.
-			app.senders[i].chan = chan_name
-		}
 		own := app.senders[i].chan
-		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
+		row := app.senders[i].chan_idx
+		if app.running && tgt != '' && tx_bus_key(row, tgt) !in app.tx_buses {
 			// NOT HERE: this is the GUI thread with app.mu held, and a CANsub tap open is
 			// seconds. Opened on a worker and filed under the lock when it comes up — the
 			// same rule as Start's (open_taps_for_run), for the same freeze (2026-08-29).
 			want_tgt = tgt
 			want_own = own
+			want_row = row
 		}
 	}
 	app.mu.unlock()
 	if want_tgt != '' {
-		app.spawn_tap_for(want_own, want_tgt)
+		app.spawn_tap_for(want_row, want_own, want_tgt)
 	}
 }
 
@@ -924,6 +933,7 @@ fn (mut app App) fire_index(i int) {
 	// different targets (codex round 2 on #97, P1).
 	tgt := app.senders[i].tgt
 	own := app.senders[i].chan
+	own_row := app.senders[i].chan_idx
 	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
@@ -950,7 +960,7 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(own, tgt, transport.CanFrame{
+	if app.tx_on_chan(own_row, own, tgt, transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data

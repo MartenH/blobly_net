@@ -9,6 +9,7 @@ import blobly.project
 import blobly.transport
 import txhealth
 import hostrule
+import rowrule
 import blobly.wiretap
 import blobly.candb
 import blobly.sim
@@ -418,10 +419,12 @@ fn open_taps_for_run(app &App, plan []TapWant, gen u64) {
 	}
 }
 
-// TapWant is one transmit tap a run needs: the channel (empty for the shared tap), the
-// logical interface the keys are made of, and the physical one to open — resolved by the
-// caller under app.mu, because bitrate_iface walks app.chans (codex round 6 on #257).
+// TapWant is one transmit tap a run needs: the project row it is filed for (-1 for none, which
+// opens the shared tap alone) and that row's name, the logical interface the keys are made of,
+// and the physical one to open — resolved by the caller under app.mu, because bitrate_iface
+// walks app.chans (codex round 6 on #257).
 struct TapWant {
+	row       int
 	chan_name string
 	iface     string
 	phys      string
@@ -438,7 +441,8 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 		if !a.run_live(gen) {
 			return
 		}
-		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut named_tap_failed, mut anon_tap_failed)
+		a.install_tap(w.row, w.chan_name, w.iface, w.phys, gen, mut named_tap_failed, mut
+			anon_tap_failed)
 	}
 }
 
@@ -446,7 +450,7 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 // named one — on a worker, for the run on now. The one path for a tap wanted after Start:
 // Add generator and a retargeted generator both used to open inline on the GUI thread (codex
 // round 4 on #257), which is the freeze Start was cured of.
-fn (mut app App) spawn_tap_for(chan_name string, iface string) {
+fn (mut app App) spawn_tap_for(row int, chan_name string, iface string) {
 	if iface == '' {
 		return
 	}
@@ -457,7 +461,7 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 	// A RETRY IS NOT A FAILURE: with the marker left standing, every send during the retry
 	// took the shared tap and was filed under the wrong channel (codex round 9 on #257). The
 	// marker comes back only if this attempt fails too (install_tap).
-	app.tap_failed.delete(tx_bus_key(chan_name, iface))
+	app.tap_failed.delete(tx_bus_key(row, iface))
 	app.mu.unlock()
 	if !live {
 		return
@@ -469,35 +473,36 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 		}
 		mut nf := map[string]bool{}
 		mut af := map[string]bool{}
-		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
+		a.install_tap(w.row, w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
 		// AND ONLY IF STILL WANTED: retargeted again, or removed, while this open ran, the
 		// generator no longer points here, and a tap filed anyway holds the wire until Stop —
 		// on a CANsub that is the channel's one WebSocket client (codex round 8 on #257).
-		a.drop_unwanted_taps(w.chan_name, w.iface)
-	}(app, TapWant{chan_name, iface, phys}, gen)
+		a.drop_unwanted_taps(w.row, w.iface)
+	}(app, TapWant{row, chan_name, iface, phys}, gen)
 }
 
-// drop_unwanted_taps closes the named tap of (chan_name, iface) if no generator fires on it
-// any more, and the wire's shared tap too if no enabled row and no generator uses the wire —
+// drop_unwanted_taps closes the named tap of (row, iface) if no generator fires on it any more
+// and it is not the row's own, and the wire's shared tap too if no enabled row and no generator uses the wire —
 // otherwise it holds the device (a CANsub's one WebSocket client) until Stop. Decided and
 // done under ONE take of app.mu: decided in one and done in another, a generator retargeted
 // back in between found its fresh tap deleted (codex round 9 on #257). The closes happen
 // after the unlock, because a close can wait on a driver.
-fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
+fn (mut app App) drop_unwanted_taps(row int, iface string) {
 	mut doomed := []transport.Bus{}
 	app.mu.lock()
-	d := taprule.drop_decision(app.taprule_wants_locked(), tx_bus_key(chan_name, iface),
-		transport.destination_key(iface))
-	if d.named {
-		if mut b := app.tx_buses[tx_bus_key(chan_name, iface)] {
+	named := tx_bus_key(row, iface)
+	wire_tap := tx_bus_key(-1, iface)
+	d := taprule.drop_decision(app.taprule_wants_locked(), named, transport.destination_key(iface))
+	if d.named && row >= 0 {
+		if mut b := app.tx_buses[named] {
 			doomed << b
-			app.tx_buses.delete(tx_bus_key(chan_name, iface))
+			app.tx_buses.delete(named)
 		}
 	}
 	if d.wire {
-		if mut b := app.tx_buses[tx_bus_key('', iface)] {
+		if mut b := app.tx_buses[wire_tap] {
 			doomed << b
-			app.tx_buses.delete(tx_bus_key('', iface))
+			app.tx_buses.delete(wire_tap)
 		}
 	}
 	app.mu.unlock()
@@ -528,7 +533,7 @@ fn (app &App) tap_plan_locked() []TapWant {
 	mut plan := []TapWant{}
 	for ch in app.chans {
 		if ch.has_named_tap() {
-			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
+			plan << TapWant{ch.proj_idx, ch.name, ch.iface, app.phys_for_locked(ch.iface)}
 		}
 	}
 	for sr in app.senders {
@@ -539,7 +544,7 @@ fn (app &App) tap_plan_locked() []TapWant {
 		// transmit tap on `someip:0.0.0.0:30490`. Start then opens that string as a device name
 		// and reports a driver failure for a row the UI calls passive.
 		if tgt != '' && !project.iface_is_eth(tgt) {
-			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
+			plan << TapWant{sr.chan_idx, sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}
 	return plan
@@ -570,12 +575,16 @@ fn (app &App) taprule_wants_locked() taprule.Wants {
 		if tgt == '' {
 			continue
 		}
-		pairs << tx_bus_key(sr.chan, tgt)
+		pairs << tx_bus_key(sr.chan_idx, tgt)
 		wires << transport.destination_key(tgt)
 	}
 	for ch in app.chans {
 		if ch.enabled && !ch.eth() {
 			wires << transport.destination_key(ch.iface)
+		}
+		// a row's own tap is the row's, whichever generator stops firing on it
+		if ch.has_named_tap() {
+			pairs << tx_bus_key(ch.proj_idx, ch.iface)
 		}
 	}
 	return taprule.Wants{
@@ -593,13 +602,13 @@ fn (mut app App) run_live(gen u64) bool {
 	return app.running && app.run_gen == gen
 }
 
-// install_tap opens the shared tap for iface and the named one for (chan_name, iface), and
+// install_tap opens the shared tap for iface and the named one for (row, iface), and
 // files each into tx_buses if the run is still the one it was opened for. The shared tap
 // FIRST: tx_on falls back to it for the paths with no owning channel — Quick Send,
 // diagnostics, shell. Failures are remembered per key so one dead wire is reported once, not
 // once per row or per generator (codex #141 r3).
-fn (mut app App) install_tap(chan_name string, iface string, phys string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
-	anon := tx_bus_key('', iface)
+fn (mut app App) install_tap(row int, chan_name string, iface string, phys string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
+	anon := tx_bus_key(-1, iface)
 	dest := transport.destination_key(iface)
 	if dest !in anon_failed && !app.has_tap(anon) {
 		if mut b := app.open_tap_phys(iface, phys, org_tx, '', 0, false) {
@@ -611,8 +620,8 @@ fn (mut app App) install_tap(chan_name string, iface string, phys string, gen u6
 			notify_gen(app, gen, '${iface}: shared transmit tap failed to open — ${err}')
 		}
 	}
-	named := tx_bus_key(chan_name, iface)
-	if chan_name != '' && named !in named_failed && !app.has_tap(named) && app.run_live(gen) {
+	named := tx_bus_key(row, iface)
+	if row >= 0 && named !in named_failed && !app.has_tap(named) && app.run_live(gen) {
 		if mut b := app.open_tap_phys(iface, phys, org_tx, chan_name, gen, false) {
 			app.file_tap(named, mut b, gen)
 		} else {
@@ -1202,6 +1211,7 @@ fn (mut app App) start() {
 		// by node NAME this went wrong again: names are not unique across a bus, so two "SUT"s
 		// collapsed onto one owner. UdsNode.src indexes back into `peers`, which is exact.
 		mut owners := []project.Channel{}
+		mut owner_rows := []int{} // each owner's project row, beside it
 		for other in app.sims {
 			// A DoIP entry is here only so the Simulation panel can show its ECU. Its nodes are
 			// not CAN peers: a disabled `type: doip` channel with no `interface:` inherits
@@ -1214,6 +1224,7 @@ fn (mut app App) start() {
 				peers << other.nodes
 				for _ in other.nodes {
 					owners << other.pch
+					owner_rows << other.proj_idx
 				}
 			}
 		}
@@ -1247,9 +1258,14 @@ fn (mut app App) start() {
 		// also run, or the two would both answer whenever their ids overlapped.
 		for mut u in diag_nodes {
 			own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { sc.pch }
+			own_row := if u.src >= 0 && u.src < owner_rows.len {
+				owner_rows[u.src]
+			} else {
+				sc.proj_idx
+			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker() // released by the loop's own defer
-			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.functional,
+			spawn uds_node_loop(app, own_row, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.functional,
 				u.fext, u.server, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
@@ -1298,31 +1314,34 @@ fn (mut app App) start() {
 // loaded is excluded from app.sims entirely: there would be no supervisor, and enabling it
 // later would leave the entity permanently idle with no worker to notice.
 fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
+	// a row is named in the Log by its name, and its row number where another row has the name
+	names := app.proj.channels.map(it.name)
 	for pi, c in app.proj.channels {
 		if !c.is_doip() {
 			continue
 		}
+		who := rowrule.label(names, pi)
 		nodes := c.all_nodes()
 		for w in sim.validate_uds_doip(nodes) {
-			app.notify('${c.name}: ${w}')
+			app.notify('${who}: ${w}')
 		}
 		if !c.hosts_doip_entity() {
 			// Tester-only, as the headless runner treats it: a channel that simulates no ECU
 			// exists to address an EXTERNAL one. Hosting would bind the endpoint and answer
 			// with stock data, so a bench would read results from an ECU nobody asked for.
-			app.notify('${c.name}: DoIP tester only (no simulated entity)')
+			app.notify('${who}: DoIP tester only (no simulated entity)')
 			continue
 		}
 		ent := sim.doip_entity_described(c, nodes, &desc_sys, app.can_sims()) or {
-			app.notify('${c.name}: ${err}')
-			app.notify('${c.name}: DoIP entity NOT started')
+			app.notify('${who}: ${err}')
+			app.notify('${who}: DoIP entity NOT started')
 			continue
 		}
 		for n in ent.notes {
-			app.notify('${c.name}: ${n}')
+			app.notify('${who}: ${n}')
 		}
 		if ent.extra > 0 {
-			app.notify('${c.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${c.ecu_addr:04X})')
+			app.notify('${who}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${c.ecu_addr:04X})')
 		}
 		// Which node's tick in the Simulation panel switches this entity on and off. The
 		// shorthand `simulate: [SUT]` configures no `uds:` block, so doip_entity() serves the
@@ -1330,7 +1349,7 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 		// meant unticking SUT in the shipped demos did nothing at all.
 		key := if ent.node != '' { ent.node } else { nodes[0].name }
 		app.reserve_run_worker() // released by the watcher's own defer
-		spawn doip_watch(app, pi, c, ent, key, app.run_gen)
+		spawn doip_watch(app, pi, who, c, ent, key, app.run_gen)
 	}
 }
 
@@ -1563,16 +1582,15 @@ fn (app &App) doip_should_host(pi int, pch project.Channel, key string) bool {
 
 // doip_should_host_locked is doip_should_host for a caller holding app.mu.
 fn (app &App) doip_should_host_locked(pi int, pch project.Channel, key string) bool {
-	node_on := if key != '' { app.sim_enabled[sim_key(pch, key)] or { true } } else { true }
+	node_on := if key != '' { app.sim_enabled[sim_key(pi, pch, key)] or { true } } else { true }
 	return hostrule.should_host(app.host_rows_locked(), pi, node_on)
 }
 
-// sim_key names one simulated ECU. The interface alone is not an identity — a CAN channel and a
-// `type: doip` channel can resolve to the same string and simulate the same node name, and the
-// shared `<iface>:<node>` entry then made unticking one close the other. Seventh defect in this
-// change from that substitution.
-fn sim_key(pch project.Channel, node string) string {
-	return '${pch.name}|${pch.iface}:${node}'
+// sim_key names one simulated ECU: the node on project row `pi` (rowrule.sim_key). Neither the
+// interface nor the row's name and interface are an identity — two rows may share both, and a
+// shared entry made unticking a node on one switch it off on the other (#575).
+fn sim_key(pi int, pch project.Channel, node string) string {
+	return rowrule.sim_key(pi, pch.name, pch.iface, node)
 }
 
 // stop signals the RX threads to exit (they re-check on the recv timeout) and tears down the

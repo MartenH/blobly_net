@@ -1,8 +1,7 @@
 module rowrule
 
-// two rows with one name and one interface, and a third row
+// two rows with one name, and a third row
 const names = ['CAN1', 'CAN1', 'CAN2']
-const ifaces = ['vcan0', 'vcan0', 'vcan1']
 
 fn test_twin_rows_tick_their_nodes_apart() {
 	assert sim_key(0, 'CAN1', 'vcan0', 'ECU') != sim_key(1, 'CAN1', 'vcan0', 'ECU')
@@ -51,12 +50,4 @@ fn test_a_chip_agrees_with_the_resolved_row() {
 	assert !chip_lit(2, 'vcan1', -1, 'vcan0')
 	// resolved to nothing at all: no chip
 	assert !chip_lit(0, 'vcan0', -1, '')
-}
-
-fn test_a_twin_is_the_other_row_with_both_name_and_interface() {
-	assert twin_of(names, ifaces, 0)? == 1
-	assert twin_of(names, ifaces, 1)? == 0
-	assert twin_of(names, ifaces, 2) == none
-	// one name on two wires is not a twin: the interface tells those apart
-	assert twin_of(['A', 'A'], ['vcan0', 'vcan1'], 0) == none
 }

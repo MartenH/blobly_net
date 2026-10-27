@@ -5,6 +5,7 @@ import blobly.doip
 import os
 import time
 import genhome
+import rowrule
 import blobly.project
 import saverule
 import blobly.transport
@@ -594,6 +595,10 @@ fn (mut app App) remove_bus(i int) {
 	rows_before := app.proj.channels.clone()
 	app.proj.channels.delete(i)
 	app.mu.lock()
+	// The Simulation panel's node ticks are keyed by row index too: the deleted row's go with it
+	// and the rows behind it keep their own (rowrule.restack_sim).
+	app.sim_enabled = rowrule.restack_sim(app.sim_enabled, i)
+	app.sim_gen++
 	// THE REMOVED ROW'S OWN GENERATORS GO WITH IT, and the indices behind it restack —
 	// `genhome.restack`, tested. Deleting a bus has always taken its generators (they simply
 	// matched no channel on the next Save); doing it explicitly is what lets genhome.homes treat

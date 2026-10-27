@@ -30,8 +30,9 @@ import vgui
 // the "offline" ECU went on answering. Serving happens in doip_serve(); close() from here
 // interrupts it, which is what makes switching an ECU off actually take effect.
 // `pi` is the project row the entity is hosted for: every question the watcher asks is of that
-// row (hostrule), never of a row found by its name and interface.
-fn doip_watch(app &App, pi int, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
+// row (hostrule), never of a row found by its name and interface. `who` is how its Log lines name
+// the row (rowrule.label): of two rows sharing a name, which one failed to bind.
+fn doip_watch(app &App, pi int, who string, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
 	// A RUN WORKER, though it takes longer to see than the others: it reads app.chans through
 	// doip_should_host -> hostrule rather than touching the array by name, which is why it
 	// survived a grep for `.chans` in this function and was the last one counted.
@@ -62,7 +63,7 @@ fn doip_watch(app &App, pi int, pch project.Channel, ent sim.DoipEntity, key str
 			// an old watcher between its close() and this call, while a Stop/Start/re-enable
 			// published a replacement, would deregister the NEW run's live listener.
 			a.doip_forget_if_current(pi, pch, gen)
-			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
+			a.notify('${who}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
 			if want && !bound {
 				// Rebuild the announcement from what the server SERVES now: a tester may have
@@ -95,12 +96,12 @@ fn doip_watch(app &App, pi int, pch project.Channel, ent sim.DoipEntity, key str
 						spawn doip_udp_worker(app, mut srv)
 						// Power-on announcements, in the background: count × interval is 1.5s
 						// by default and Start must not block on it.
-						spawn doip_announce_worker(app, mut srv, pch.name)
+						spawn doip_announce_worker(app, mut srv, who)
 						// cur.vin, not ent.announce: a tester may have written 0xF190 since
 						// Start, and naming the startup VIN here would report an identity the
 						// entity neither announces nor serves — the split this PR exists to
 						// prevent, in the surface an operator actually reads.
-						a.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${cur.vin}')
+						a.notify('${who}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${cur.vin}')
 					}
 				} else {
 					// The generation again — an old supervisor that lost the bind race to a
@@ -111,7 +112,7 @@ fn doip_watch(app &App, pi int, pch project.Channel, ent sim.DoipEntity, key str
 						// Once, not every tick. And DROP the target: whatever the cause, we are
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
-						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
+						a.notify('${who}: cannot bind ${host}:${port} — ${err}')
 						a.doip_forget_if_current(pi, pch, gen)
 						warned = true
 					}
@@ -208,17 +209,12 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
 		// ECU went on transmitting into a port that had gone, discarding every failure.
 		a.mu.lock()
-		// BY NAME AND WIRE. A hand-edited project can carry the same channel name on two buses,
-		// and matching on the name alone let an unrelated enabled row keep this simulation alive
-		// after its own channel was switched off — transmitting onto a bus nobody had asked for.
-		mut still_on := false
-		sim_dest := transport.destination_key(sc.iface)
-		for c in a.chans {
-			if c.enabled && c.name == sc.pch.name && transport.destination_key(c.iface) == sim_dest {
-				still_on = true
-				break
-			}
-		}
+		// BY ROW. A hand-edited project can carry the same channel name on two buses — or on one
+		// (#575) — and matching on the name let an unrelated enabled row keep this simulation
+		// alive after its own channel was switched off, transmitting onto a bus nobody had asked
+		// for. app.chans is built 1:1 from the project rows, so the row is at its own index.
+		still_on := sc.proj_idx >= 0 && sc.proj_idx < a.chans.len
+			&& a.chans[sc.proj_idx].proj_idx == sc.proj_idx && a.chans[sc.proj_idx].enabled
 		a.mu.unlock()
 		if !still_on {
 			// PARKED, not finished. Leaving outright stopped the transmission — which was the
@@ -251,7 +247,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 			engine.save_counters(mut counters) // fold the outgoing engine's counts in first
 			engine = sim.Engine{}
 			for n in sc.nodes {
-				if enabled[sim_key(sc.pch, n.name)] or { true } {
+				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
@@ -323,7 +319,7 @@ fn gen_loop(app &App) {
 				// An existing named tap wins outright; the shared one only stands in while the
 				// named one is known to have failed (codex round 7 on #257).
 				if tgt != ''
-					&& !taprule.ready(taps, tx_bus_key(sr.chan, tgt), tx_bus_key('', tgt), sr.chan != '') {
+					&& !taprule.ready(taps, tx_bus_key(sr.chan_idx, tgt), tx_bus_key(-1, tgt), sr.chan_idx >= 0) {
 					continue
 				}
 				// on its grid, from the time its last send returned (sim.next_due)
@@ -410,7 +406,7 @@ fn consumer_expected(mut app App, iface string, gen u64) {
 	app.mu.unlock()
 }
 
-fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, gen u64) {
+fn uds_node_loop(app &App, pi int, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, gen u64) {
 	// A RUN WORKER LIKE ANY OTHER. It resolves its tap with open_tap_on, whose bitrate_iface
 	// walks app.chans unlocked — the exact thing open_tap_phys's comment (bus.v) forbids a
 	// worker from doing — so a rebuild after Stop could replace that array under it.
@@ -419,7 +415,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	}
 	a := unsafe { app }
 	mut s := srv
-	key := sim_key(pch, name)
+	key := sim_key(pi, pch, name)
 	mut ch := &isotp.SoftChannel(unsafe { nil })
 	// the node's physical channel and, when it answers one, its functional listener: opened,
 	// closed and answered TOGETHER, so a node switched off answers neither
