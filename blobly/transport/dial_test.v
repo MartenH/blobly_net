@@ -119,6 +119,10 @@ fn test_a_literal_host_is_resolved_in_place() {
 	assert is_literal_host(':13400')
 	assert !is_literal_host('localhost:13400')
 	assert !is_literal_host('ecu-1.local:13400')
+	assert !is_literal_host('127.0.0.1.:13400')
+	assert !is_literal_host('127.1:13400')
+	assert !is_literal_host('300.0.0.1:13400')
+	assert !is_literal_host('[ecu]:13400')
 }
 
 // a stop asked before a name's lookup ends the dial without waiting for it

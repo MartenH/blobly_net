@@ -51,6 +51,9 @@ pub fn dial_tcp_within(dest string, deadline time.Time, stop fn () bool) !&net.T
 	mut last := IError(error('no address for ${addr}'))
 	for i, a in addrs {
 		now := time.sys_mono_now()
+		if i > 0 && now >= end {
+			break // the deadline is spent: no further address is begun
+		}
 		left := if end > now { end - now } else { u64(0) }
 		c := dial_one(a, addr, started, now + left / u64(addrs.len - i), stop) or {
 			if err is DialStopped {
@@ -123,18 +126,27 @@ fn resolve_within(addr string, started u64, end u64, stop fn () bool) ![]net.Add
 	return error('unreachable')
 }
 
-// is_literal_host is whether the host of `addr` (`host:port`) is an address rather than a name:
-// a bracketed IPv6 literal, a dotted IPv4 one, or none at all.
+// is_literal_host is whether the host of `addr` (`host:port`) is an address getaddrinfo reads
+// without a lookup: a bracketed IPv6 literal (a zone after `%` allowed), a dotted-quad IPv4 one,
+// or none at all. Anything else — a name, or digits that are not a whole IPv4 address such as
+// `127.0.0.1.` — may reach a resolver.
 fn is_literal_host(addr string) bool {
 	if addr.starts_with('[') {
+		inner := addr.all_after('[').all_before(']')
+		ip := inner.all_before('%')
+		return addr.contains(']') && ip.contains(':')
+			&& ip.bytes().all(it.is_hex_digit() || it == `:` || it == `.`)
+	}
+	host := addr.all_before_last(':')
+	if host == '' {
 		return true
 	}
-	host := if addr.contains(':') { addr.all_before_last(':') } else { addr }
-	if host.contains(':') {
-		return true // an unbracketed IPv6 literal
+	parts := host.split('.')
+	if parts.len != 4 {
+		return false
 	}
-	for c in host {
-		if !(c.is_digit() || c == `.`) {
+	for p in parts {
+		if p.len == 0 || p.len > 3 || !p.bytes().all(it.is_digit()) || p.int() > 255 {
 			return false
 		}
 	}
