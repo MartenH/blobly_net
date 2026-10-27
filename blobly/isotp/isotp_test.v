@@ -100,17 +100,12 @@ fn test_an_empty_frame_in_place_of_flow_control_is_an_error() {
 		assert false, 'software channel: ${err}'
 		return
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
+	// the empty frame follows a sleep, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
+	mut s := start_send(mut ch, 20)
 	time.sleep(50 * time.millisecond)
 	peer.send(transport.CanFrame{ id: 0x7E8 }) or { assert false, err.msg() }
-	msg := <-done
+	msg := s.wait()
 	assert msg.contains('empty frame'), msg
 	ch.close()
 	peer.close()
@@ -551,17 +546,12 @@ fn test_a_stale_cf_ahead_of_flow_control_is_skipped() {
 		assert false, err.msg()
 	}
 	time.sleep(20 * time.millisecond)
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
+	// the Flow Control follows a sleep, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
+	mut s := start_send(mut ch, 20)
 	time.sleep(80 * time.millisecond) // the FF is out; the stale CF was the first thing queued
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
-	msg := <-done
+	msg := s.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
@@ -764,17 +754,14 @@ fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
 	peer.close()
 }
 
-// read_tx returns the next frame the channel under test put on its tx id, skipping the peer's
-// own traffic (the in-process bus delivers to every subscriber, this test's injections included).
-// THE DEADLINE ON A READ IS NOT A MEASUREMENT, and which kind of read it is decides its budget.
-//
-// A read that MUST produce a frame can only be failed by its deadline if the implementation was
-// CORRECT and something else was slow -- so that budget is a hang-breaker and nothing more, and
-// it is generous. A runner compiling V in parallel stalls a thread for hundreds of milliseconds
-// routinely, which is what took `test_block_size_stops_the_sender_until_the_next_flow_control`
-// down on `main` at a 500 ms budget: "Consecutive Frame 4 did not arrive". #291 removed the same
-// class of fragility from two sibling tests (and could not reproduce the flake either); this was
-// the third instance, so the budget stops being a per-call-site guess.
+// A FRAME THE SENDER OWES IS WAITED FOR UNTIL IT ARRIVES OR THE SEND ENDS, never against a clock.
+// A wall-clock budget on a hand-off between two threads is failed by a correct implementation
+// whenever either thread is descheduled past it, which on a loaded runner happens: the block-size
+// test lost a frame at a 500 ms budget, then twice at 5 s on the Windows job (#448), where the
+// sender's Flow Control window was already 10 s and the test could not say what the send was
+// doing. What does end, and says why, is the send itself: every send these tests wait on is
+// bounded by its Flow Control window or its stop, so `must_read_tx` reads until the frame comes
+// or the send returns, and its clock is a hang-breaker for a send that neither sends nor ends.
 //
 // A read that must produce NOTHING is the opposite. A stall there makes it pass when it should
 // have failed, so its budget stays SHORT: late is the safe direction, and a long one only costs
@@ -782,8 +769,13 @@ fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
 //
 // Neither helper takes a timeout from its call site, which is what stops the two being confused
 // again -- the name says which promise is being tested.
-const tx_arrive_ms = 5000 // hang-breaker for a frame the implementation owes us
+const tx_hang_ms = 60_000 // hang-breaker for a send that neither sends nor ends
+const tx_slice_ms = 50 // how often a wait for a frame asks whether the send has ended
 const tx_silence_ms = 250 // how long "nothing may be sent" is actually observed
+
+// The bound on how soon a requested stop ends a send: well under the Flow Control window below,
+// so a send the stop did not end fails the test rather than being ended by the window.
+const stop_seen_ms = 5000
 
 // The per-block Flow Control window for a channel whose peer answers ON THE TEST'S SCHEDULE --
 // after a silence check, a sleep or a stop. At the 1 s default a stalled test thread reads as a
@@ -791,9 +783,72 @@ const tx_silence_ms = 250 // how long "nothing may be sent" is actually observed
 // any stall, and short enough that a send nothing ends still fails within the suite.
 const test_fc_window_ms = 10_000
 
-// must_read_tx: the implementation is required to send this. Returns none only if it never did.
-fn must_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
-	return read_tx(mut peer, tx_id, tx_arrive_ms)
+// Sender is a send running on its own thread, and what it returned once it has.
+struct Sender {
+	done chan string
+mut:
+	ended bool
+	msg   string
+}
+
+// start_send sends a `len`-byte PDU on `ch` from a thread of its own.
+fn start_send(mut ch SoftChannel, len int) &Sender {
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done, len] () {
+		ch.send([]u8{len: len, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	return &Sender{
+		done: done
+	}
+}
+
+// outcome is what the send returned, if it has returned; it never waits.
+fn (mut s Sender) outcome() ?string {
+	if !s.ended {
+		select {
+			msg := <-s.done {
+				s.ended = true
+				s.msg = msg
+			}
+			else {}
+		}
+	}
+	return if s.ended { s.msg } else { none }
+}
+
+// wait is what the send returned, once it has.
+fn (mut s Sender) wait() string {
+	if !s.ended {
+		s.msg = <-s.done
+		s.ended = true
+	}
+	return s.msg
+}
+
+// must_read_tx: the send is required to put this on the wire. It fails only if the send ended
+// without it -- saying what the send returned -- or neither sent nor ended within `tx_hang_ms`.
+fn must_read_tx(mut peer transport.Bus, mut s Sender, tx_id u32) !transport.CanFrame {
+	deadline := time.ticks() + tx_hang_ms
+	for {
+		if f := read_tx(mut peer, tx_id, tx_slice_ms) {
+			return f
+		}
+		if msg := s.outcome() {
+			// whatever the send put on the wire was queued before it returned
+			if f := read_tx(mut peer, tx_id, 0) {
+				return f
+			}
+			return error('the send ended without it: ${msg} (${peer.diagnostics().dropped} dropped)')
+		}
+		if time.ticks() >= deadline {
+			return error('the send neither sent it nor ended in ${tx_hang_ms} ms (${peer.diagnostics().dropped} dropped)')
+		}
+	}
+	return error('unreachable')
 }
 
 // no_read_tx: nothing may be sent. A frame coming back IS the failure.
@@ -801,32 +856,15 @@ fn no_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
 	return read_tx(mut peer, tx_id, tx_silence_ms)
 }
 
-// missing_tx says why a frame `must_read_tx` waited for did not come: what the sender thread's
-// `send` returned, if it has, and whether a frame was queued on the peer after the deadline.
-fn missing_tx(mut peer transport.Bus, done chan string, what string) string {
-	mut sender := 'the send is still running'
-	select {
-		msg := <-done {
-			sender = 'the send ended: ${msg}'
-		}
-		else {}
-	}
-	late := if f := peer.recv(0) {
-		'a frame 0x${f.id:03X} [${f.data.hex()}] was queued after the deadline'
-	} else {
-		'nothing queued after the deadline'
-	}
-	return '${what} (${sender}; ${late}; ${peer.diagnostics().dropped} dropped)'
-}
-
+// read_tx returns the next frame the channel under test put on its tx id within `timeout_ms`,
+// skipping the peer's own traffic (the in-process bus delivers to every subscriber, this test's
+// injections included). It LOOKS before it judges the deadline, so a frame queued while this
+// thread was descheduled past it is returned, and a zero timeout is one look.
 fn read_tx(mut peer transport.Bus, tx_id u32, timeout_ms int) ?transport.CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
-		rem := int(deadline - time.ticks())
-		if rem <= 0 {
-			return none
-		}
-		f := peer.recv(rem) or { return none }
+		rem := deadline - time.ticks()
+		f := peer.recv(int(if rem > 0 { rem } else { i64(0) })) or { return none }
 		if f.id == tx_id {
 			return f
 		}
@@ -848,25 +886,18 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 	}
 	// the second Flow Control follows a silence check, on the test's schedule
 	ch.fc_window_ms = test_fc_window_ms
-	done := chan string{cap: 1}
 	// 34 bytes = 6 in the First Frame + four Consecutive Frames of 7.
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 34, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	ff := must_read_tx(mut peer, 0x7E0) or {
-		assert false, missing_tx(mut peer, done, 'no First Frame')
+	mut s := start_send(mut ch, 34)
+	ff := must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
 		return
 	}
 	assert (ff.data[0] & 0xF0) == 0x10, 'expected a First Frame'
 
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 2, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
-		cf := must_read_tx(mut peer, 0x7E0) or {
-			assert false, missing_tx(mut peer, done, 'Consecutive Frame ${i + 1} of the first block did not arrive')
+		cf := must_read_tx(mut peer, mut s, 0x7E0) or {
+			assert false, 'Consecutive Frame ${i + 1} of the first block did not arrive: ${err}'
 			return
 		}
 		assert (cf.data[0] & 0xF0) == 0x20
@@ -878,13 +909,13 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
-		cf := must_read_tx(mut peer, 0x7E0) or {
-			assert false, missing_tx(mut peer, done, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control')
+		cf := must_read_tx(mut peer, mut s, 0x7E0) or {
+			assert false, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control: ${err}'
 			return
 		}
 		assert (cf.data[0] & 0xF0) == 0x20
 	}
-	msg := <-done
+	msg := s.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
@@ -904,16 +935,9 @@ fn test_a_wait_is_honoured_and_the_transfer_resumes() {
 	}
 	// the CTS follows a silence check, on the test's schedule
 	ch.fc_window_ms = test_fc_window_ms
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
 		return
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or { assert false, err.msg() }
@@ -922,7 +946,7 @@ fn test_a_wait_is_honoured_and_the_transfer_resumes() {
 		assert false, 'sent on a WAIT: 0x${extra.data[0]:02X}'
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
-	msg := <-done
+	msg := s.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
@@ -939,20 +963,15 @@ fn test_an_overflow_aborts_the_transfer_with_the_reason() {
 		assert false, 'software channel: ${err}'
 		return
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+	// the OVERFLOW follows the First Frame, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
 		return
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x32), 0, 0] }) or { assert false, err.msg() }
-	msg := <-done
+	msg := s.wait()
 	assert msg.contains('overflow'), msg
 	// and nothing went out after it
 	if extra := no_read_tx(mut peer, 0x7E0) {
@@ -988,15 +1007,8 @@ fn test_endless_waits_are_given_up_on() {
 			assert false, err.msg()
 		}
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	msg := <-done
+	mut s := start_send(mut ch, 20)
+	msg := s.wait()
 	assert msg.contains('N_WFTmax'), msg
 	ch.close()
 	peer.close()
@@ -1141,16 +1153,11 @@ fn test_a_leftover_flow_control_does_not_desync_the_next_receive() {
 		assert false, 'software channel: ${err}'
 		return
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+	// the WAITs follow the First Frame, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
 		return
 	}
 	// Enough WAITs to abort, and two more behind them that nothing will consume.
@@ -1159,7 +1166,7 @@ fn test_a_leftover_flow_control_does_not_desync_the_next_receive() {
 			assert false, err.msg()
 		}
 	}
-	msg := <-done
+	msg := s.wait()
 	assert msg.contains('N_WFTmax'), msg
 
 	// The channel is reused, as a persistent UDS or script connection is. The next reply must be
@@ -1191,16 +1198,9 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	}
 	// the retry's CTS follows a silence check, on the test's schedule
 	ch.fc_window_ms = test_fc_window_ms
-	first := chan string{cap: 1}
-	spawn fn [mut ch, first] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			first <- err.msg()
-			return
-		}
-		first <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+	mut first := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut first, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
 		return
 	}
 	// ABORTED WITH ONE FRAME. What this test is about is the RETRY, not how the first send
@@ -1213,7 +1213,7 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	// job it printed only the expression, so what the send ACTUALLY returned — the one fact that
 	// would have identified the cause — was not in the log. Every assert here that reads a
 	// worker's result names it now.
-	aborted := <-first
+	aborted := first.wait()
 	assert aborted.contains('overflow'), aborted
 	// THE STALE CTS ARRIVES LATE — after the retry has begun, which is the case a snapshot drain
 	// cannot see: the peer was mid-burst when N_WFTmax gave up, so the last of it is still in
@@ -1226,16 +1226,9 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	}()
 
 	// THE RETRY. The stranded CTS must not authorise anything: this transfer has had no answer.
-	second := chan string{cap: 1}
-	spawn fn [mut ch, second] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			second <- err.msg()
-			return
-		}
-		second <- 'sent'
-	}()
-	ff := must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'the retry sent no First Frame'
+	mut second := start_send(mut ch, 20)
+	ff := must_read_tx(mut peer, mut second, 0x7E0) or {
+		assert false, 'the retry sent no First Frame: ${err}'
 		return
 	}
 	assert (ff.data[0] & 0xF0) == 0x10, 'expected the retry First Frame'
@@ -1244,7 +1237,7 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	}
 	// and it completes normally once THIS transfer is answered
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
-	msg := <-second
+	msg := second.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
@@ -1318,26 +1311,30 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 		return
 	}
 	ch.total_wait_ms = 150
-	done := chan string{cap: 1}
+	// THE FIRST BLOCK IS ANSWERED BEFORE THE SEND BEGINS -- its WAIT and its CTS queued, so the
+	// sender reads them without blocking and spends none of the allowance on them. Answered as
+	// the send went, a runner that stalled this thread past 150 ms spent the whole allowance
+	// before the first block and the test read "never advanced a block" -- the precondition
+	// failing, not the bound under test. Every later block is paid for in real time, where a
+	// stall only spends the allowance sooner.
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or { assert false, err.msg() }
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 0] }) or { assert false, err.msg() }
 	// 62 bytes = 6 + eight Consecutive Frames, so at BS=1 there are eight blocks to spread over
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 62, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+	mut s := start_send(mut ch, 62)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
+		return
+	}
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'the first block, answered up front, sent no Consecutive Frame: ${err}'
 		return
 	}
 	// AND THE PEER'S OWN QUEUE IS DRAINED, by reading the Consecutive Frame each block. The
 	// in-process bus delivers a sender its own frames too, so a peer that only sends fills its
 	// own queue, `try_push` starts refusing, and the stall under test stops being fed -- the
 	// sender then dies on the per-block timeout and the test reads a plausible wrong answer.
-	mut blocks := 0
-	for _ in 0 .. 8 {
-		if done.len > 0 {
+	for _ in 1 .. 8 {
+		if _ := s.outcome() {
 			break
 		}
 		// one WAIT, paid for in real time, then the CTS that ends the block
@@ -1351,14 +1348,12 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 			assert false, 'the peer could not send: ${err}'
 			break
 		}
-		if _ := must_read_tx(mut peer, 0x7E0) {
-			blocks++
-		}
+		// the send may end here, on the allowance: that is the outcome under test
+		must_read_tx(mut peer, mut s, 0x7E0) or { break }
 	}
-	msg := <-done
+	msg := s.wait()
 	assert msg.contains('fc_total_wait_ms'), msg
 	assert !msg.contains('N_WFTmax'), 'one wait per block must not trip the per-block count: ${msg}'
-	assert blocks >= 1, 'the transfer never advanced a block, so nothing was tested across them'
 	ch.close()
 	peer.close()
 }
@@ -1390,16 +1385,9 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 			assert false, err.msg()
 		}
 	}
-	done := chan string{cap: 1}
 	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice: 200 ms of pacing
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 27, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	msg := <-done
+	mut s := start_send(mut ch, 27)
+	msg := s.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
@@ -1426,15 +1414,8 @@ fn abandon_after(iface string, peer_fc []u8, stop_ms int) !(string, i64) {
 	ch.stop_requested = fn [stop] () bool {
 		return stop.closed
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or { return error('no First Frame') }
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or { return error('no First Frame: ${err}') }
 	t_stop := time.ticks() + stop_ms
 	for time.ticks() < t_stop {
 		if peer_fc.len > 0 {
@@ -1444,7 +1425,7 @@ fn abandon_after(iface string, peer_fc []u8, stop_ms int) !(string, i64) {
 	}
 	t0 := time.ticks()
 	stop.close()
-	msg := <-done
+	msg := s.wait()
 	return msg, time.ticks() - t0
 }
 
@@ -1456,7 +1437,7 @@ fn test_a_stop_abandons_the_wait_for_a_silent_peer() {
 		return
 	}
 	assert msg == abandoned_note, msg
-	assert took < tx_arrive_ms, 'abandoned ${took} ms after the stop request'
+	assert took < stop_seen_ms, 'abandoned ${took} ms after the stop request'
 }
 
 // ...and a peer that only ever WAITs, which keeps a frame arriving so no timeout ever fires.
@@ -1466,7 +1447,7 @@ fn test_a_stop_abandons_a_peer_that_only_waits() {
 		return
 	}
 	assert msg == abandoned_note, msg
-	assert took < tx_arrive_ms, 'abandoned ${took} ms after the stop request'
+	assert took < stop_seen_ms, 'abandoned ${took} ms after the stop request'
 }
 
 // ...and our own STmin pacing, which at 127 ms a frame is the receiver's to ask for. The stop
@@ -1545,19 +1526,12 @@ fn test_a_stoppable_send_that_is_not_stopped_completes() {
 	ch.stop_requested = fn [stop] () bool {
 		return stop.closed
 	}
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or { panic('no First Frame') }
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or { panic('no First Frame: ${err}') }
 	// answered after several stop slices have gone by, at an STmin longer than one
 	time.sleep(70 * time.millisecond)
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 45] }) or { panic(err) }
-	msg := <-done
+	msg := s.wait()
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()
