@@ -56,6 +56,12 @@ A dockable blobly_net panel, the Shell-panel precedent:
 - save = `to_dbc` to the loaded path; the trace panel re-decodes against the
   edited database immediately (same in-memory `dbs` — no reload step);
 - unsaved-changes marker + revert; no autosave (the file is git-tracked).
+- **one database per rebuild** (#445): the simulated ECUs and `verify:` are built from the
+  same in-memory databases the trace decodes with, the editor's unsaved copy included, never
+  from a second read of the file. They take an edit when the runtime view is next rebuilt — a
+  Save or Revert of any database, a configuration change or a project load. Start
+  still refuses while edits are unsaved, so a run never encodes with a schema that is not in
+  the file.
 
 The editor is READ-ONLY while a measurement runs: rx/sim/generator workers
 read the databases lock-free, and saving rebuilds runtime caches — both are

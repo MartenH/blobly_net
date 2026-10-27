@@ -1622,10 +1622,10 @@ fn (mut app App) start_replay_scan(i int, rp string) {
 	// stopped-only state, while app.chans[i] is still being written by a winding-down
 	// rx_loop under app.mu right after Stop — copying it here was an unlocked read of a
 	// worker-mutated element, the exact class CLAUDE.md names (codex #135 r3).
-	paths := app.proj.channels[i].databases.map(candb.canonical_database_ref(app.resolve_asset(it)))
+	paths := app.proj.channels[i].databases.map(app.db_ref(it))
 	app.mu.lock()
 	app.replay_scans[i] = mine
-	db := merge_dbs_from(app.loaded_dbs_for(paths))
+	db := candb.merge_dbs(app.loaded_dbs_for(paths))
 	app.mu.unlock()
 	spawn scan_replay_source(app, i, rp, db, mine)
 }

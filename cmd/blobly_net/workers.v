@@ -639,8 +639,9 @@ fn (a &App) current_db_paths_locked(ch Chan) []string {
 
 // script_db is one channel's merged database for a script: the channel's files, RESOLVED against
 // the project (round 13 — the raw project-relative strings opened against the process working
-// directory), read through the same loader the simulation uses. From the FILES, not from
-// app.dbs: a script launched while stopped runs beside an editable Configuration panel whose
+// directory), read through candb's loader. From the FILES, not from app.dbs — so unlike the
+// simulation, which is built from app.dbs (#445), a script does not see the DBC editor's unsaved
+// copy: a script launched while stopped runs beside an editable Configuration panel whose
 // structural edits rebuild app.dbs, and rebuild_from_proj repopulates that array outside app.mu,
 // so no reader-side lock can make a snapshot of it whole (codex on #273 rounds 22–23). A loader
 // that needs no shared array needs no lock; the script sees the saved file, as the headless

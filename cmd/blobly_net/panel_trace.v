@@ -395,29 +395,6 @@ fn (app &App) loaded_dbs_for(paths []string) []candb.Database {
 	return out
 }
 
-// merge_dbs_from flattens several loaded databases into one, for callers that already hold
-// Database values rather than paths.
-fn merge_dbs_from(dbs []candb.Database) candb.Database {
-	mut msgs := []candb.Message{}
-	mut nodes := []string{}
-	mut seen := map[string]bool{}
-	for d in dbs {
-		for m in d.messages {
-			k := '${m.id}|${m.ext}'
-			if k in seen {
-				continue
-			}
-			seen[k] = true
-			msgs << m
-		}
-		nodes << d.nodes
-	}
-	return candb.Database{
-		messages: msgs
-		nodes:    nodes
-	}
-}
-
 // trace_name_cell is the name column, with any end-to-end verdict appended.
 //
 // Shared by the flat and GROUPED views because grouped is the default: a violation rendered

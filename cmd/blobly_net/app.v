@@ -854,7 +854,7 @@ fn (app &App) wires_of_db(di int) []string {
 			continue
 		}
 		for raw in c.databases {
-			if candb.canonical_database_ref(app.resolve_asset(raw)) == path {
+			if app.db_ref(raw) == path {
 				seen[gate] = true
 				out << gate
 				break
@@ -1159,6 +1159,13 @@ fn (app &App) resolve_asset(path string) string {
 	return project.resolve_asset(os.dir(app.proj_path), path)
 }
 
+// db_ref is the key a project's database entry is loaded under in app.dbs_paths — resolved
+// against the project, then canonical — so every lookup of a loaded database asks the rule the
+// load did (loaded_dbs_for).
+fn (app &App) db_ref(raw string) string {
+	return candb.canonical_database_ref(app.resolve_asset(raw))
+}
+
 fn (mut app App) set_project(proj project.Project, path string) {
 	// A capture belongs to the project it was recorded IN. Neither stop() nor the reset below
 	// touches `recording`, so a Record left running across File > Open/New kept appending the
@@ -1259,9 +1266,6 @@ fn (mut app App) reset_gen_state() {
 
 fn (mut app App) rebuild_from_proj() {
 	app.diag_sys_key = '' // which system.toml applies follows the project's databases
-	// a reader's note is said once per rebuild: the trace's load and the simulation's merge open
-	// the same files, and several simulated channels may share one
-	mut said_notes := map[string]bool{}
 	// THE PRECONDITION ABOVE IS NOW TRUE, AND SAYS SO IF IT IS NOT. Every caller here has always
 	// asked `app.running` before rebuilding, and until #107 that flag was false for the whole
 	// window in which stop()'s workers were still leaving — so "stopped" meant "still being
@@ -1376,6 +1380,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.sim_rows = now_rows
 	app.mu.unlock()
 	row_names := proj.channels.map(it.name)
+	mut said_missing := map[string]bool{}
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
@@ -1407,7 +1412,7 @@ fn (mut app App) rebuild_from_proj() {
 		for dbpath in ch.databases {
 			// canonical: two spellings of one file are ONE db (and an ARXML's `#Cluster`
 			// rides along — every lookup keys through the same function)
-			rp := candb.canonical_database_ref(app.resolve_asset(dbpath))
+			rp := app.db_ref(dbpath)
 			// a DBC attached to several channels loads ONCE — duplicate dbs
 			// entries would let the editor mutate one copy while decode reads
 			// another
@@ -1427,7 +1432,6 @@ fn (mut app App) rebuild_from_proj() {
 				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
 				app.dbs_by_iface[ch.iface] << loaded.db // scoped to this channel (generator picker)
 				for n in loaded.notes {
-					said_notes[n] = true
 					app.elog('dbc ${n}') // the reader's honesty report: never dropped in silence
 				}
 			} else {
@@ -1511,21 +1515,23 @@ fn (mut app App) rebuild_from_proj() {
 			continue
 		}
 		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {
-			// resolve_asset like the database list above: raw paths here re-based the
-			// simulator's DBCs onto the launch/bundle cwd, so an external project's
-			// relative DBC fed the sim nothing (codex #63 r4)
-			// the merge's own skips are narrated too: a refused ARXML (a cluster to name)
-			// otherwise gives the simulated ECUs an empty catalogue with the reason only in
-			// the load loop above, and a missing file none at all
-			sim_paths := ch.databases.map(app.resolve_asset(it))
-			sim_db, sim_notes := candb.merge_files_report(sim_paths)
-			for n in sim_notes {
-				if n in said_notes {
-					continue
+			// THE DATABASES THIS REBUILD LOADED, not a second parse of the files (#445): one
+			// file read twice in one rebuild could give the trace and the simulation two
+			// databases, and the editor's unsaved copy (dbc_keep) is what app.dbs holds, so what
+			// the trace decodes is what the simulated ECUs transmit. Keyed as the load loop
+			// above keys them (db_ref), merged by candb's one rule. The reader's notes and a
+			// file's failure to load were said by that loop; an enabled row simulating without
+			// that file is said once per file and row.
+			db_paths := ch.databases.map(app.db_ref(it))
+			if ch.enabled {
+				for rp in db_paths {
+					if app.dbs_paths.index(rp) < 0 && '${ci}|${rp}' !in said_missing {
+						said_missing['${ci}|${rp}'] = true
+						app.elog('sim ${ch.name}: ${rp} did not load; its messages are not simulated')
+					}
 				}
-				said_notes[n] = true
-				app.elog('sim ${ch.name}: ${n}')
 			}
+			sim_db := candb.merge_dbs(app.loaded_dbs_for(db_paths))
 			app.sims << SimCfg{
 				iface:    ch.iface
 				proj_idx: ci
@@ -1534,7 +1540,7 @@ fn (mut app App) rebuild_from_proj() {
 				db:       sim_db
 				nodes:    nodes
 				verify:   ch.verify
-				db_paths: sim_paths.map(candb.canonical_database_ref(it))
+				db_paths: db_paths
 			}
 		}
 	}
