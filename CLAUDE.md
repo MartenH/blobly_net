@@ -384,7 +384,7 @@ rounds on before it had a test (#278); and `cmd/blobly_net/assets/`, the GUI's P
 as bytes by `gen.vsh` — re-run it after changing a PNG, and the test fails until you do — because
 V3 reads a `$embed_file` from the BUILD tree at run time outside `-prod`, which killed the
 Windows bundle before its first frame (#455)), `scripts/runtests.sh`,
-`scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
+`scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for EVERY `-os` target — linux, windows and macos —, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
 refuses `&int` in a `fn C.` declaration, since C's `int*` is `&i32` under V3, and `$embed_file`
 in `cmd`/`blobly`/`libs`, #455, and `ap := app` inside a `mut` receiver or parameter — a COPY
@@ -709,7 +709,7 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   `v -os linux -enable-globals -path "@vlib|libs|@vmodules" -check cmd/blobly_net`, and the same
   `-check` on every `_test.v` you touched — `scripts/check_cmds.sh` covers entry points, not tests,
   and a test's `$if linux` block is code Windows never compiles (an import only it uses reads as
-  unused there; removing the import broke the Linux job, #460). The per-platform backends (`vector_windows.v` / `vector_linux.v`, the `discover_*` pair, and
+  unused there; removing the import broke the Linux job, #460). The per-platform backends (`vector_windows.v` / `vector_nix.v`, the `discover_*` and `open_*` sets (Linux, Windows, macOS), and
   the GUI's `roots_windows.v` / `roots_nix.v` — the picker's drive roots)
   are two files that must offer the SAME symbols, and a Windows bench compiles only one of them —
   so a helper added beside the driver and called from the cross-platform GUI builds perfectly

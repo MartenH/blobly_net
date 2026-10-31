@@ -179,7 +179,7 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 		s.udp_canon = ''
 		return err
 	}
-	s.udp = net.listen_udp(transport.udp_bind_addr(s.udp_canon, port)) or {
+	s.udp = transport.listen_udp_shared(transport.udp_bind_addr(s.udp_canon, port)) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
 		// AND THE CLAIM GOES WITH IT. A caller that treats a failed listen() as a finished

@@ -23,7 +23,7 @@ fn is_wsl() bool {
 }
 
 // system_open opens `path` with whatever the desktop associates with it. Under WSL that is the
-// Windows side, through wslview (wslu) or explorer.exe with a wslpath UNC; elsewhere xdg-open.
+// Windows side, through wslview (wslu) or explorer.exe with a wslpath UNC; elsewhere xdg-open, or `open` on macOS.
 // Nothing here WAITS on the GUI thread: xdg-open's generic fallback returns only when the
 // application it launched exits, which for a text editor is the whole edit. A later failure
 // (a nonzero exit) reaches `report` from the reaper thread.
@@ -60,6 +60,11 @@ fn system_open(path string, report fn (string)) (bool, string) {
 			}
 		}
 		return false, 'no way to open ${path} from WSL — install wslu for wslview, or set an editor in Settings ▸ Preferences…'
+	}
+	$if macos {
+		// macOS has no xdg-open; `open` hands the file to its default application
+		launch_detached(['open', path], report) or { return false, err.msg() }
+		return true, 'opened ${path} (open)'
 	}
 	launch_detached(['xdg-open', path], report) or { return false, err.msg() }
 	return true, 'opened ${path} (xdg-open)'

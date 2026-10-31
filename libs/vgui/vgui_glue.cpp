@@ -1,6 +1,12 @@
 // vgui_glue — the C-ABI glue for the V `vgui` module. Lifecycle (GLFW + multi-viewport,
 // event-driven) and the higher-level composites (the ImPlot swimlane) live here in C++
 // where the ImGui/ImPlot C++ API is ergonomic; V binds cimgui directly for plain widgets.
+#ifdef __APPLE__
+// macOS's GL driver deprecated the fixed-function/compatibility API in 10.14 but still ships
+// it; silence the warning noise from vgui_glue's plain gl* calls rather than rewrite them onto
+// a second, VAO-based path this module has no other reason to carry.
+#define GL_SILENCE_DEPRECATION
+#endif
 #include "imgui.h"
 #include "imgui_internal.h" // DockBuilder* (initial docked layout)
 #include "implot.h"
@@ -153,7 +159,17 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     g_event_driven = event_driven != 0;
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+#ifdef __APPLE__
+    // macOS's Cocoa GLFW backend offers only the legacy context (<3.2, no hints) or a 3.2+
+    // CORE, FORWARD-COMPATIBLE one — it refuses a bare "3.0" request outright (glfwCreateWindow
+    // returns NULL), unlike Linux/Windows where 3.0 quietly hands back whatever the driver's
+    // compatibility profile supports. imgui's GL3 backend runs equally well on the core profile.
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#else
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#endif
     // A FIXED size, exactly as asked — no maximize, no clamping. Both were tried and both
     // created failures worse than the one they solved: the maximized first frame scrambled
     // dock layouts persisted at the old size (panels in a corner, the rest black), and a
@@ -177,7 +193,13 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
 #endif
     vgui_set_theme(1);
     ImGui_ImplGlfw_InitForOpenGL(g_win, true);
+#ifdef __APPLE__
+    // Matches the 3.2 core context requested above — GLSL 1.30 (used elsewhere) is a GL 3.0
+    // compatibility-profile shading language version and macOS's core-profile driver refuses it.
+    ImGui_ImplOpenGL3_Init("#version 150");
+#else
     ImGui_ImplOpenGL3_Init("#version 130");
+#endif
     return 0;
 }
 

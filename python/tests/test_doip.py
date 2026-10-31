@@ -8,6 +8,7 @@ import contextlib
 import os
 import socket
 import struct
+import sys
 import threading
 import time
 
@@ -178,6 +179,7 @@ def announcing():
 class TestAnnouncements:
     """doip_announce.lua, from Python."""
 
+    @pytest.mark.skipif(sys.platform == "darwin", reason="loopback has no broadcast on macOS (docs/known_issues.md)")
     def test_a_listening_tester_hears_an_entity_announce_itself(self, announcing):
         talker = announcing.channels.Talker
         seen = blobly.doip_listen(1200, channel=talker)
@@ -186,6 +188,7 @@ class TestAnnouncements:
         assert mine[0].logical_address == 0x1000
         assert mine[0].source.startswith("127.0.0.1:"), mine[0].source
 
+    @pytest.mark.skipif(sys.platform == "darwin", reason="loopback has no broadcast on macOS (docs/known_issues.md)")
     def test_announcements_arrive_on_the_entitys_own_port(self, announcing):
         seen = blobly.doip_listen(1200, channel=announcing.channels.AltPort)
         assert ("ALTPORTVIN0000001", 0x4000) in {(a.vin, a.logical_address) for a in seen}

@@ -425,7 +425,7 @@ pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
 	defer {
 		release_endpoint(canon, cansub_mdns_port, 'an mDNS resolve window')
 	}
-	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or { return none }
+	mut conn := listen_udp_shared('0.0.0.0:${cansub_mdns_port}') or { return none }
 	defer {
 		conn.close() or {}
 	}
@@ -484,7 +484,7 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	defer {
 		release_endpoint(canon, cansub_mdns_port, 'an mDNS browse window')
 	}
-	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or {
+	mut conn := listen_udp_shared('0.0.0.0:${cansub_mdns_port}') or {
 		return error('mDNS port ${cansub_mdns_port} could not be shared: ${err.msg()}')
 	}
 	defer {
@@ -492,7 +492,7 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	}
 	addrs := local_ipv4_addrs_until(until) or { return error(cansub_setup_spent) }
 	if addrs.len == 0 {
-		return error('no IPv4 interface could be enumerated (is `ip` / `ipconfig` available?)')
+		return error('no IPv4 interface could be enumerated (is `ip` / `ipconfig` / `ifconfig` available?)')
 	}
 	mut joined := []string{}
 	mut refused := []string{}
