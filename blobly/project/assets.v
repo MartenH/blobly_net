@@ -51,6 +51,28 @@ pub fn asset_ref(dir string, path string) string {
 // spelling. Made absolute by concatenation, not os.abs_path, which collapses `..` on paper before
 // real_path can walk it: `link/../x` through a symlink names the file beside the link's TARGET.
 fn physical(p string) string {
+	return unprivate(physical_path(p))
+}
+
+// unprivate spells a macOS path the way its user does: `/etc`, `/tmp` and `/var` are links into
+// `/private`, so `real_path` turns `/etc/hosts` into `/private/etc/hosts` and every temporary
+// directory into `/private/var/...`. Left that way, two paths whose only shared component is the
+// system root share `/private` too and get a `../../..` climb between them, and an absolute
+// reference comes back in a spelling nobody wrote. Elsewhere the identity.
+fn unprivate(p string) string {
+	$if macos {
+		if p.starts_with('/private/') {
+			rest := p['/private'.len..]
+			top := '/' + rest.all_after('/').all_before('/')
+			if os.is_link(top) && os.real_path(top) == '/private' + top {
+				return rest
+			}
+		}
+	}
+	return p
+}
+
+fn physical_path(p string) string {
 	abs := if os.is_abs_path(p) { p } else { os.getwd() + os.path_separator + p }
 	if os.is_dir(abs) {
 		return os.real_path(abs)
@@ -219,13 +241,14 @@ pub fn cwd_only_note(dir string, ref string) ?string {
 	rel := asset_ref(dir, target)
 	// a spelling the project-relative lookup cannot read back (a `\\` in a Unix name, which
 	// os.join_path rewrites) is given absolute instead
+	cwd := unprivate(os.getwd()) // getcwd answers the physical path; said as its user spells it
 	fix := if resolve_asset(dir, rel) != rel || absolute_anywhere(rel) {
 		rel
 	} else {
-		os.getwd() + os.path_separator + target
+		cwd + os.path_separator + target
 	}
 	how := if absolute_anywhere(fix) { 'write it as' } else { 'write it relative to the project file' }
-	return '`${ref}` resolves only from the folder the program was started in (${os.getwd()}); ${how} (`${fix}`)'
+	return '`${ref}` resolves only from the folder the program was started in (${cwd}); ${how} (`${fix}`)'
 }
 
 // references is every file reference in the project, in order: each channel's databases, its
