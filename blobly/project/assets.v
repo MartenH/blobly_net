@@ -241,13 +241,14 @@ pub fn cwd_only_note(dir string, ref string) ?string {
 	rel := asset_ref(dir, target)
 	// a spelling the project-relative lookup cannot read back (a `\\` in a Unix name, which
 	// os.join_path rewrites) is given absolute instead
+	cwd := unprivate(os.getwd()) // getcwd answers the physical path; said as its user spells it
 	fix := if resolve_asset(dir, rel) != rel || absolute_anywhere(rel) {
 		rel
 	} else {
-		os.getwd() + os.path_separator + target
+		cwd + os.path_separator + target
 	}
 	how := if absolute_anywhere(fix) { 'write it as' } else { 'write it relative to the project file' }
-	return '`${ref}` resolves only from the folder the program was started in (${os.getwd()}); ${how} (`${fix}`)'
+	return '`${ref}` resolves only from the folder the program was started in (${cwd}); ${how} (`${fix}`)'
 }
 
 // references is every file reference in the project, in order: each channel's databases, its
