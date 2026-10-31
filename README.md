@@ -92,7 +92,7 @@ everything in one folder, take a release.
 
 **Linux / WSL2 from source** — it's two commands, see [Build & run](#build--run) below.
 
-**macOS** — not built or tested.
+**macOS (Apple Silicon)** — from source, see [macOS](#macos) under Build & run. No prebuilt bundle and no CI job yet.
 
 ## What it does
 
@@ -235,7 +235,7 @@ renders through **WSLg**, so there's no X server to set up, but hardware GL want
 (25.x is known good; older Mesa crashed the GPU path). **Native Windows is a different
 toolchain** — MSYS2/mingw, not these scripts. The recipe is
 [`windows.yml`](.github/workflows/windows.yml), which CI runs on every push; or just take the
-[prebuilt bundle](#get-it). macOS is not built or tested.
+[prebuilt bundle](#get-it). **macOS** has its own steps, [below](#macos).
 
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
@@ -270,9 +270,41 @@ rasterizer and text stack are not system libraries there:
 pacman -S git mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
 ```
 
-Plus the V compiler on both. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)
+**macOS** — Homebrew: `brew install glfw freetype pkg-config`; the steps are under [macOS](#macos).
+
+Plus the V compiler on all of them. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)
 is the full recipe — it runs on every push, so unlike a hand-written walkthrough it cannot quietly
 drift. Or skip building entirely and take the [prebuilt bundle](#get-it).
+
+### macOS
+
+Apple Silicon, built from source; `scripts/setup_env.sh` is Linux-only, so the toolchain is set
+up by hand. The GUI, the engine and the CAN-free transports work: `inproc:`, `udp:` (pinned to
+loopback on macOS), `bridge:` and a CANsub. There is no SocketCAN and no PCAN/Kvaser/Vector driver
+on macOS, so an address of theirs is refused by name.
+
+```sh
+xcode-select --install                     # clang, make, git
+brew install glfw freetype pkg-config      # the GUI's native dependencies
+
+# the V this repository pins (.v-version) and its bootstrap (.vc-version), fetched by commit:
+git clone https://github.com/vlang/v ~/v && cd ~/v
+git checkout --detach "$(cat /path/to/blobly_net/.v-version)"
+git clone https://github.com/vlang/vc vc
+git -C vc checkout --detach "$(cat /path/to/blobly_net/.vc-version)"
+make local=1                               # local=1: do not pull a newer bootstrap
+./v version                                # must name the commit in .v-version
+
+cd /path/to/blobly_net
+export V=~/v/v V_MACOS_V3_NO_FALLBACK=1    # the pinned V, and no silent fallback to another
+scripts/run_gui.sh                         # builds libs/vgui once, then the GUI
+```
+
+A V that names another commit is the usual failure: it builds the dependencies and then crashes
+in the compiler. An existing V checkout without an `origin` remote is moved with
+`git fetch https://github.com/vlang/v <commit> && git checkout --detach FETCH_HEAD`.
+`v -enable-globals test blobly/` passes on macOS except `blobly/doip/net_test.v`'s
+loopback announcement test (passive discovery over loopback; DoIP over TCP is unaffected).
 
 ## Headless / scripted (no GUI)
 

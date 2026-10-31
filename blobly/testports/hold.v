@@ -33,6 +33,7 @@ pub:
 	udp  bool
 mut:
 	handle int = -1
+	extra  []int // macOS: the loopback binds beside the wildcard one (see the head of this file)
 }
 
 // hold_udp holds `port` over UDP: refused while any other socket has the UDP port on any address
@@ -87,6 +88,29 @@ fn hold_port(port int, v6 bool, udp bool) !PortHold {
 		h.close()
 		return error('${if udp { 'UDP' } else { 'TCP' }} port ${port} is held (${code})')
 	}
+	$if macos {
+		mut loops := [net.new_ip(u16(port), [u8(127), 0, 0, 1]!)]
+		if v6 {
+			mut lo6 := [16]u8{}
+			lo6[15] = 1
+			loops << net.new_ip6(u16(port), lo6)
+		}
+		for a in loops {
+			lfd := int(C.socket(i32(a.family()), typ, 0))
+			if lfd < 0 {
+				h.close()
+				return error('socket: ${net.error_code()}')
+			}
+			h.extra << lfd
+			if C.setsockopt(i32(lfd), i32(C.SOL_SOCKET), i32(C.SO_REUSEADDR), &one, sizeof(one)) != 0
+				|| C.bind(i32(lfd), voidptr(&a), a.len()) != 0
+				|| (!udp && C.listen(i32(lfd), 1) != 0) {
+				code := net.error_code()
+				h.close()
+				return error('${if udp { 'UDP' } else { 'TCP' }} port ${port} is held on loopback (${code})')
+			}
+		}
+	}
 	return h
 }
 
@@ -96,6 +120,10 @@ pub fn (mut h PortHold) close() {
 		net.close(h.handle) or {}
 		h.handle = -1
 	}
+	for fd in h.extra {
+		net.close(fd) or {}
+	}
+	h.extra = []
 }
 
 // Holder holds candidate ports for a server that binds TCP AND UDP on one number — a DoIP entity
