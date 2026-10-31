@@ -51,6 +51,28 @@ pub fn asset_ref(dir string, path string) string {
 // spelling. Made absolute by concatenation, not os.abs_path, which collapses `..` on paper before
 // real_path can walk it: `link/../x` through a symlink names the file beside the link's TARGET.
 fn physical(p string) string {
+	return unprivate(physical_path(p))
+}
+
+// unprivate spells a macOS path the way its user does: `/etc`, `/tmp` and `/var` are links into
+// `/private`, so `real_path` turns `/etc/hosts` into `/private/etc/hosts` and every temporary
+// directory into `/private/var/...`. Left that way, two paths whose only shared component is the
+// system root share `/private` too and get a `../../..` climb between them, and an absolute
+// reference comes back in a spelling nobody wrote. Elsewhere the identity.
+fn unprivate(p string) string {
+	$if macos {
+		if p.starts_with('/private/') {
+			rest := p['/private'.len..]
+			top := '/' + rest.all_after('/').all_before('/')
+			if os.is_link(top) && os.real_path(top) == '/private' + top {
+				return rest
+			}
+		}
+	}
+	return p
+}
+
+fn physical_path(p string) string {
 	abs := if os.is_abs_path(p) { p } else { os.getwd() + os.path_separator + p }
 	if os.is_dir(abs) {
 		return os.real_path(abs)
