@@ -2,7 +2,7 @@ module transport
 
 // physical_wire_key — the PHYSICAL channel an address reaches, where this machine can tell.
 //
-// The Windows half, and the one that can answer. See alias_linux.v for why the other returns
+// The Windows half, and the one that can answer. See alias_nix.v (Linux and macOS) for why the other returns
 // none, and issue #167 for what this exists to catch: `vector:1` and `vector:2` are two
 // application channels and two wires to every part of this app, and Vector Hardware Manager will
 // happily assign both to ONE physical VN channel. To the driver they are then one channel — the

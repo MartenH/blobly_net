@@ -24,6 +24,27 @@ fn test_ipconfig_is_read_in_any_locale() {
 	assert ipv4_addrs_from_ipconfig(text) == ['10.165.125.100', '192.168.0.190']
 }
 
+// macOS `ifconfig`: every `inet` line's address on any interface, loopback and `inet6` excluded,
+// an address once however many interfaces carry it (a bridge and its member).
+fn test_ifconfig_yields_every_inet_address_but_loopback() {
+	text := 'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n' +
+		'\tinet 127.0.0.1 netmask 0xff000000\n' +
+		'\tinet6 ::1 prefixlen 128\n' +
+		'en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n' +
+		'\tether a4:83:e7:00:00:01\n' +
+		'\tinet6 fe80::1c2b:3a4d:5e6f:7081%en0 prefixlen 64 secured scopeid 0xb\n' +
+		'\tinet 192.168.0.190 netmask 0xffffff00 broadcast 192.168.0.255\n' +
+		'en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n' +
+		'\tinet 10.215.129.2 netmask 0xffffff00 broadcast 10.215.129.255\n' +
+		'bridge0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n' +
+		'\tinet 10.215.129.2 netmask 0xffffff00 broadcast 10.215.129.255\n' +
+		'utun3: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280\n' +
+		'\tinet 100.64.0.7 --> 100.64.0.7 netmask 0xffffffff\n'
+	assert ipv4_addrs_from_ifconfig(text) == ['192.168.0.190', '10.215.129.2', '100.64.0.7']
+	assert ipv4_addrs_from_ifconfig('') == []
+	assert ipv4_addrs_from_ifconfig('\tinet not.an.address netmask 0x0\n') == []
+}
+
 fn test_the_interface_enumeration_keeps_to_its_deadline() {
 	assert ipv4_enum_skipped(1000, 1000)
 	assert !ipv4_enum_skipped(999, 1000)

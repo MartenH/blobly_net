@@ -48,81 +48,10 @@ fn parse_udp_iface(iface string) ?UdpTarget {
 	return UdpTarget{group, port}
 }
 
-// RxSock is the receiving half's platform seam (see udpbus_macos.v for why it needs one).
-// Everywhere but macOS this just holds vlib's net.UdpConn; on macOS it holds a raw fd instead.
-struct RxSock {
-mut:
-	conn &net.UdpConn = unsafe { nil }
-	fd   int = -1
-}
-
-// open_rx binds the receiving socket for `group:port` and joins the multicast group.
-fn open_rx(group string, port int) !RxSock {
-	$if macos {
-		fd := C.ct_udp_listen_reuseport(port)
-		if fd < 0 {
-			return error('udp: listen 0.0.0.0:${port}: ${cerr(-fd)}')
-		}
-		jr := C.ct_udp_join_multicast(fd, group.str, '127.0.0.1'.str)
-		if jr < 0 {
-			C.ct_udp_close(fd)
-			return error('udp: join multicast ${group}: ${cerr(-jr)}')
-		}
-		return RxSock{
-			fd: fd
-		}
-	} $else {
-		mut conn := net.listen_udp('0.0.0.0:${port}')!
-		conn.join_multicast_group(group, '0.0.0.0')!
-		return RxSock{
-			conn: conn
-		}
-	}
-}
-
-// rx_read blocks up to timeout_ns, returning the datagram length or an error. On a timeout it
-// returns an error carrying `net.err_timed_out_code` on EVERY platform, so recv()'s retry logic
-// below does not need to know which backend it is talking to.
-fn (mut r RxSock) rx_read(mut buf []u8, timeout_ns i64) !int {
-	$if macos {
-		ms := int(timeout_ns / 1_000_000)
-		C.ct_udp_set_recv_timeout_ms(r.fd, ms)
-		n := C.ct_udp_recv(r.fd, buf.data, buf.len)
-		if n < 0 {
-			if -n == C.EAGAIN || -n == C.EWOULDBLOCK {
-				return error_with_code('timeout', net.err_timed_out_code)
-			}
-			return error(cerr(-n))
-		}
-		return n
-	} $else {
-		r.conn.set_read_timeout(time.Duration(timeout_ns))
-		n, _ := r.conn.read(mut buf)!
-		return n
-	}
-}
-
-// rx_handle is the descriptor a zero-timeout look polls (`readable_now`), on either path.
-fn (r RxSock) rx_handle() int {
-	$if macos {
-		return r.fd
-	} $else {
-		return r.conn.sock.handle
-	}
-}
-
-fn (mut r RxSock) rx_close() {
-	$if macos {
-		C.ct_udp_close(r.fd)
-	} $else {
-		r.conn.close() or {}
-	}
-}
-
 pub struct UdpBus {
 mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
-	rx  RxSock // bound to port + joined group — receives
+	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
 	// The endpoint claim this bus holds, released with its sockets (transport/udpclaims.v).
 	claim_host  string
@@ -160,14 +89,13 @@ pub fn open_udp(group string, port int) !&UdpBus {
 	// against a bad group leaked a descriptor per attempt. Tracked as it is acquired instead,
 	// and released in one place.
 	mut tx := net.dial_udp('${group}:${port}')!
-	mut rx := RxSock{}
-	mut have_rx := false
+	mut rx := &net.UdpConn(unsafe { nil })
 	mut canon := ''
 	mut ok := false
 	defer {
 		if !ok {
-			if have_rx {
-				rx.rx_close()
+			if !isnil(rx) {
+				rx.close() or {}
 			}
 			tx.close() or {}
 			if canon != '' {
@@ -176,23 +104,21 @@ pub fn open_udp(group string, port int) !&UdpBus {
 		}
 	}
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
+	// THE GROUP'S INTERFACE. Linux leaves both sides to the routing table. macOS pins them to
+	// loopback: this bus is LOCALHOST multicast, and a multi-homed Mac (several NICs, a VPN utun,
+	// Docker/VM bridges) can have several routes claiming "default" with none of them agreeing
+	// to carry a 239.x destination — send() then failed EHOSTUNREACH with every participant on
+	// one machine (measured: two bridge interfaces and a Tailscale utun beside the Wi-Fi
+	// default). The receiving side joins on the same interface the sends now leave through.
+	mut iface := '0.0.0.0'
 	$if macos {
-		// Pinned to loopback, not left to the routing table: this bus is documented as
-		// LOCALHOST multicast, never a real network one, and a multi-homed Mac (several NICs,
-		// a VPN utun, Docker/VM bridges) can have several routes claiming "default" with none
-		// of them agreeing to carry a 239.x destination — send() then failed EHOSTUNREACH
-		// despite every participant being on the one machine outgoing packets never needed to
-		// leave. Measured on this bench (two bridge interfaces and a Tailscale utun beside the
-		// Wi-Fi default route). open_rx's macOS branch joins the group on this SAME interface
-		// (127.0.0.1, not INADDR_ANY) so the receiving side's membership matches where sends
-		// now actually go out; Linux's default routing has not shown this failure, so it is
-		// left on its existing (INADDR_ANY-joined, un-pinned-egress) path rather than changing
-		// behaviour nothing here has verified needs it.
 		tx.set_multicast_interface('127.0.0.1')!
+		iface = '127.0.0.1'
 	}
 	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium(group))!
-	rx = open_rx(group, port)!
-	have_rx = true
+	// shared: several buses, in this process or others, bind one port (udpshared.v)
+	rx = listen_udp_shared('0.0.0.0:${port}')!
+	rx.join_multicast_group(group, iface)!
 	ok = true
 	return &UdpBus{
 		tx:         tx
@@ -258,7 +184,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 			if stdatomic.load_i64(&b.closed_flag) != 0 {
 				return carrier_gone('bus is closed')
 			}
-			if !readable_now(b.rx.rx_handle()) {
+			if !readable_now(b.rx.sock.handle) {
 				return error('timeout')
 			}
 		}
@@ -281,8 +207,8 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 				remaining = 1
 			}
 		}
-		// ms → ns
-		n := b.rx.rx_read(mut buf, remaining * 1_000_000) or {
+		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
+		n, _ := b.rx.read(mut buf) or {
 			if stdatomic.load_i64(&b.closed_flag) != 0 {
 				return carrier_gone('bus is closed')
 			}
@@ -343,7 +269,7 @@ pub fn (mut b UdpBus) reconcile_silence(want bool) ! {
 pub fn (mut b UdpBus) close() {
 	stdatomic.store_i64(&b.closed_flag, 1)
 	b.tx.close() or {}
-	b.rx.rx_close()
+	b.rx.close() or {}
 	// RELEASED WITH THE SOCKETS. A claim left behind reports the endpoint as occupied for the
 	// rest of the process, so a SOME/IP row started after a Stop would be refused by a bus that
 	// no longer exists — and nothing would ever clear it.

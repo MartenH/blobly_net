@@ -1,5 +1,5 @@
 #!/bin/sh
-# check_cmds.sh — type-check EVERY cmd/ entry point, for BOTH OS targets, from one machine.
+# check_cmds.sh — type-check EVERY cmd/ entry point, for EVERY OS target, from one machine.
 #
 # Nothing else in CI compiles a CLI tool: `v test blobly/` covers the engine and runtests.sh
 # runs the Lua suites through the headless runner. So a rename in blobly/ could break any of
@@ -9,10 +9,10 @@
 # targets run from either runner in under a minute.
 #
 #   V=/path/to/v             the compiler (default: `v` on PATH)
-#   CHECK_OS="linux windows" targets to check (default: both)
+#   CHECK_OS="linux windows macos" targets to check (default: all three)
 set -u
 V="${V:-v}"
-targets="${CHECK_OS:-linux windows}"
+targets="${CHECK_OS:-linux windows macos}"
 cd "$(dirname "$0")/.." || exit 2
 fail=0
 n=0

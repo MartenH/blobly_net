@@ -300,6 +300,8 @@ export V=~/v/v V_MACOS_V3_NO_FALLBACK=1    # the pinned V, and no silent fallbac
 scripts/run_gui.sh                         # builds libs/vgui once, then the GUI
 ```
 
+Homebrew in another place than `/opt/homebrew` or `/usr/local` (a custom `HOMEBREW_PREFIX`) needs its
+`lib` folder on the linker path: `export LIBRARY_PATH=<prefix>/lib`.
 A V that names another commit is the usual failure: it builds the dependencies and then crashes
 in the compiler. An existing V checkout without an `origin` remote is moved with
 `git fetch https://github.com/vlang/v <commit> && git checkout --detach FETCH_HEAD`.
