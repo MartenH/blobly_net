@@ -305,8 +305,11 @@ Homebrew in another place than `/opt/homebrew` or `/usr/local` (a custom `HOMEBR
 A V that names another commit is the usual failure: it builds the dependencies and then crashes
 in the compiler. An existing V checkout without an `origin` remote is moved with
 `git fetch https://github.com/vlang/v <commit> && git checkout --detach FETCH_HEAD`.
-`v -enable-globals test blobly/` passes on macOS except `blobly/doip/net_test.v`'s
-loopback announcement test (passive discovery over loopback; DoIP over TCP is unaffected).
+`v -enable-globals test blobly/` passes on macOS. The loopback DoIP announcement test skips:
+macOS's loopback has no broadcast, so a loopback entity's announcements cannot be heard
+([known issues](docs/known_issues.md)); DoIP over TCP and asking an entity are unaffected.
+**CANsub discovery on macOS is untested with a real device.** Its mDNS browse shares port 5353
+with mDNSResponder through `SO_REUSEPORT`, which works only if mDNSResponder set it too.
 
 ## Headless / scripted (no GUI)
 

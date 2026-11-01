@@ -11,6 +11,11 @@ import net
 // SO_EXCLUSIVEADDRUSE. So the kernel refuses a hold while anything else, on any address, has the
 // port, and refuses everything else while the hold lasts. Bound on the WILDCARD of its family
 // (the IPv6 one dual-stack), the widest claim a later bind can conflict with.
+//
+// macOS needs more. A BSD kernel lets a socket with SO_REUSEADDR bind a SPECIFIC address beside a
+// wildcard bind of the same port, so the wildcard hold alone does not keep a loopback entity off
+// it. There the hold also binds the port on 127.0.0.1 (and ::1 for IPv6), each with SO_REUSEADDR,
+// kept in `extra` and closed with the hold.
 
 #flag windows -lws2_32
 
