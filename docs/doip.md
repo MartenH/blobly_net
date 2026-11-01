@@ -106,6 +106,9 @@ arriving late can still find it. Blobly Net does both sides of that:
   default, configured per DoIP channel — one channel is one entity — (`announce_count`,
   `announce_interval_ms`, `announce_to`); `announce_count: 0` is a silent ECU, which is a
   fault worth injecting at a tester that relies on discovery.
+  **On macOS a loopback entity cannot be heard announcing**: lo0 has no broadcast, so a
+  datagram to 127.255.255.255 is dropped (see [known_issues.md](known_issues.md)). Asking it
+  (`doip.discover`, Discover → Find) works, and so does an entity on a real interface.
 
 What is still missing is a **scan** beyond the local segment: a broadcast does not cross a router,
 so an entity on a routed subnet that did not announce while you were listening still needs an

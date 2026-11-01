@@ -19,7 +19,7 @@ pub fn call(port int, to string, mut cli RpcClient, payload []u8, owner string) 
 		transport.release_endpoint(canon, port, owner)
 	}
 	// bound on what was claimed, the IPv4 wildcard — so the peer is resolved as IPv4 too
-	mut sock := net.listen_udp(bind_addr(canon, port)) or {
+	mut sock := transport.listen_udp_shared(bind_addr(canon, port)) or {
 		return error('bind :${port}: ${err} — the node answers only its configured peer endpoint')
 	}
 	defer {

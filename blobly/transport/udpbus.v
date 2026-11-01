@@ -104,9 +104,21 @@ pub fn open_udp(group string, port int) !&UdpBus {
 		}
 	}
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
+	// THE GROUP'S INTERFACE. Linux leaves both sides to the routing table. macOS pins them to
+	// loopback: this bus is LOCALHOST multicast, and a multi-homed Mac (several NICs, a VPN utun,
+	// Docker/VM bridges) can have several routes claiming "default" with none of them agreeing
+	// to carry a 239.x destination — send() then failed EHOSTUNREACH with every participant on
+	// one machine (measured: two bridge interfaces and a Tailscale utun beside the Wi-Fi
+	// default). The receiving side joins on the same interface the sends now leave through.
+	mut iface := '0.0.0.0'
+	$if macos {
+		tx.set_multicast_interface('127.0.0.1')!
+		iface = '127.0.0.1'
+	}
 	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium(group))!
-	rx = net.listen_udp('0.0.0.0:${port}')!
-	rx.join_multicast_group(group, '0.0.0.0')!
+	// shared: several buses, in this process or others, bind one port (udpshared.v)
+	rx = listen_udp_shared('0.0.0.0:${port}')!
+	rx.join_multicast_group(group, iface)!
 	ok = true
 	return &UdpBus{
 		tx:         tx

@@ -503,6 +503,13 @@ fn test_identify_asks_every_resolved_address_in_one_window() {
 // hears it. This is the half of discovery a real vehicle performs and the simulator did not —
 // a tester that waits for announcements saw nothing at all before this.
 fn test_entity_announces_itself_unasked() {
+	$if macos {
+		// macOS's lo0 has no broadcast: a datagram to 127.255.255.255 is dropped without an
+		// error, and a unicast to 127.0.0.1 reaches the entity's own socket (the closer bind),
+		// not the listener. A loopback entity cannot be heard announcing there (known_issues.md).
+		eprintln('skipped: loopback has no broadcast on macOS')
+		return
+	}
 	handler := fn (req []u8) []u8 {
 		return []
 	}

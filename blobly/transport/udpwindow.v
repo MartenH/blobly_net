@@ -29,7 +29,7 @@ pub:
 // means it is A reader. Callers that need "nobody else has this endpoint" have to arrange it
 // themselves, and callers that document their behaviour must not promise a refusal.
 pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
-	mut c := net.listen_udp(addr) or { return error('cannot listen on ${addr}: ${err}') }
+	mut c := listen_udp_shared(addr) or { return error('cannot listen on ${addr}: ${err}') }
 	if group != '' {
 		// THE SELECTOR'S FORM FOLLOWS THE GROUP'S FAMILY. V parses the IPv6 argument as a numeric
 		// interface INDEX, not an address, so `0.0.0.0` fails there with "must be a numeric

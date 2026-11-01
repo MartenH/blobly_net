@@ -238,7 +238,7 @@ fn vector_timing_error(s VectorSpec) ?string {
 // exists for, and its own header says why: written beside the driver, a rule compiles only on
 // Windows, where nothing runs these tests.
 // WireReach is what `physical_wire` could establish about the hardware behind an address. Here
-// rather than beside either resolver, because alias_windows.v and alias_linux.v must both return
+// rather than beside either resolver, because alias_windows.v and alias_nix.v must both return
 // it and only one of them compiles on any given machine.
 //
 // THE SAME LESSON AS AppSlot, one layer up: `physical_wire_key` had two very different failures

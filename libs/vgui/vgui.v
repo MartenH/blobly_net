@@ -15,8 +15,21 @@ module vgui
 #flag linux @VMODROOT/libvgui_c.a
 #flag windows -L@VMODROOT
 #flag windows -l:libvgui_c.a
+#flag macos @VMODROOT/libvgui_c.a
 // Linux/WSL: GLFW (X11) + GL + the C++ runtime the imgui/implot objects need.
 #flag linux -lglfw -lGL -lstdc++ -ldl -lm -lfreetype
+// macOS: GLFW + FreeType come from Homebrew, which is not on the default linker search path the
+// way apt's libglfw3-dev/libfreetype6-dev are on Linux, so this line names its library folders:
+// /opt/homebrew (Apple Silicon) and /usr/local (Intel). A `#flag` cannot run `brew --prefix`, so a
+// Homebrew installed elsewhere (a custom HOMEBREW_PREFIX) is not found here; add its lib folder
+// with `-ldflags -L<prefix>/lib` or `LIBRARY_PATH=<prefix>/lib`. The headers come from
+// pkg-config in build_deps.sh, which does follow the prefix.
+// No -lGL: macOS has no libGL; GL lives in OpenGL.framework. -lstdc++ is libc++'s alias, for the
+// imgui/implot C++ objects. The frameworks are what Cocoa GLFW needs: Cocoa (windows), IOKit
+// (input), CoreVideo (the display link for vsync), OpenGL (the GL entry points).
+#flag macos -L/opt/homebrew/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/lib -L/usr/local/opt/freetype/lib
+#flag macos -lglfw -lstdc++ -lfreetype
+#flag macos -framework Cocoa -framework OpenGL -framework IOKit -framework CoreVideo
 // Windows (mingw): link GLFW3 *statically* (-l:libglfw3.a, so no glfw3.dll/winpthread
 // to ship) + its Win32 deps (gdi32/imm32/shell32/user32) + opengl32; -lstdc++ for the
 // imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime

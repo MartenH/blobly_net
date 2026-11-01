@@ -245,6 +245,18 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   setup an evening in 2026-08. The in-process (`inproc:`) and UDP buses need none of this, which
   is why the unit tests and the headless runner pass on a machine where SocketCAN cannot work.
 
+## Environment (macOS)
+
+- 🔴 **A loopback DoIP entity's announcements are never heard.** macOS's `lo0` has no broadcast:
+  a datagram to `127.255.255.255` is dropped without an error (measured: a listener on
+  `0.0.0.0` heard nothing, while the same datagram to `127.0.0.1` arrived). Unicast to
+  `127.0.0.1` is no way round it either, because BSD delivers a unicast datagram to the ONE
+  socket with the closest bind, and that is the entity's own `127.0.0.1` socket, not a
+  listener's wildcard one. So `test_entity_announces_itself_unasked`, the two Python
+  announcement tests and `tests/doip_announce.lua` cannot pass there; the first three skip.
+  A vehicle identification request still works on loopback, and an entity on a real interface
+  announces to `255.255.255.255`, which macOS delivers.
+
 ## Environment (native Windows)
 
 - 🟢 **Build with `-cc gcc` and MSYS2's mingw, not V's bundled tcc.** tcc cannot resolve Win32
