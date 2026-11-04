@@ -16,7 +16,8 @@
  *     the loading thread for the main one — loaded from a worker, its collector scans the wrong
  *     stack and the real main thread is unknown to it; nothing inside can detect or repair that.
  *     bb_init is where a host-side requirement would go, and a host that calls it is not broken
- *     by one.
+ *     by one. It starts the CAN bridge listener when BLOBLY_BRIDGE_LISTEN asks for one, and fails
+ *     with the reason when that setting or BLOBLY_BRIDGE_TOKEN cannot be used.
  *   - a thread the HOST created calls bb_thread_attach() before its first other call and
  *     bb_thread_detach() before it ends: the library's collector scans the stacks of the threads
  *     it knows, and an allocation on an unknown one aborts the process at the next collection
@@ -921,8 +922,11 @@ int bb_boot_sim_stop(int sim, bb_boot_report *out);
 /* The CAN bridge (docs/wsl_bridge.md): on Windows, `canbridge` run inside a WSL distribution
  * carries that distribution's CAN interfaces to this process, as `bridge:<distribution>/<interface>`
  * rows. Opening such a row (bb_bus_open, bb_start) starts its bridge and waits for it; these calls
- * do it explicitly, as the GUI's Discover dialog does. A bridge is Windows-to-WSL: elsewhere there
- * are no distributions and bb_bridge_start is refused, saying so. Lists are one string, an entry per
+ * do it explicitly, as the GUI's Discover dialog does. A bridge on another machine dials in to the
+ * listener BLOBLY_BRIDGE_LISTEN asks for at bb_init (docs/wsl_bridge.md, "A bridge on the LAN"),
+ * as `bridge:<its name>/<interface>`, on any platform; opening one waits up to 20 s for it to dial
+ * in. STARTING a bridge is Windows-to-WSL: elsewhere there are no distributions and
+ * bb_bridge_start is refused, saying so. Lists are one string, an entry per
  * line, into the caller's buffer as bb_message_name's. Every call but bb_bridge_stop may come from
  * any (attached) thread.
  *

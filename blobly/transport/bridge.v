@@ -1,8 +1,9 @@
 // The app's side of a CAN bridge: the listener bridges dial in to, one session per connected
 // bridge, and the `bridge:<name>/<channel>` backend that opens a channel on one (#451).
 //
-// The listener is process-wide and bound to loopback. `bridge_listen` starts it once and hands
-// back the port and a token; whatever launches a bridge passes both on its command line, and a
+// The listener is process-wide, on loopback unless BLOBLY_BRIDGE_LISTEN binds it elsewhere
+// (bridge_listen.v). `bridge_listen` starts it once and hands back where a bridge on this machine
+// dials and the token; whatever launches a bridge passes both on its command line, and a
 // connection whose hello does not carry the token is told so and closed. A bridge's name is the
 // session's identity — `bridge:Ubuntu-24.04/vcan0` survives the port changing on every launch —
 // and a bridge that dials in under a name already connected REPLACES that session: a bridge
@@ -22,6 +23,7 @@
 // stream marked as a TX ack, which is how the hub tells this process's frames from the bus's.
 module transport
 
+import crypto.hmac
 import crypto.rand as crypto_rand
 import io
 import net
@@ -31,6 +33,10 @@ import time
 
 // How long a new connection may take to say hello before it is dropped.
 const bridge_hello_ms = 5000
+
+// How many connections may be saying hello at once; one past it is closed as it is accepted. A
+// listener on the LAN accepts whoever connects, and each costs a thread until its hello.
+const bridge_max_handshakes = 16
 
 // How long a channel open waits for the bridge's answer.
 const bridge_open_ms = 3000
@@ -103,9 +109,10 @@ pub fn bridge_domain(name string, session u64) string {
 	return 'bridge:${name}#${session}'
 }
 
-// BridgeEndpoint is what a bridge needs to dial in.
+// BridgeEndpoint is what a bridge on this machine needs to dial in.
 pub struct BridgeEndpoint {
 pub:
+	host  string = '127.0.0.1' // the address it dials, IPv6 without brackets
 	port  int
 	token string
 }
@@ -162,7 +169,8 @@ mut:
 @[heap]
 struct BridgeSession {
 	name     string
-	channels []string
+	channels []string // every channel offered, by its place in the hello
+	buses    []u8     // each one's bus
 	domain   string
 mut:
 	conn   &net.TcpConn
@@ -174,8 +182,13 @@ mut:
 
 struct BridgeRegistry {
 mut:
+	host     string // where a bridge on this machine dials
+	// Started as BLOBLY_BRIDGE_LISTEN asks, so bridges on other machines may dial in.
+	configured bool
 	port     int
 	token    string
+	// Connections accepted and not yet past their hello.
+	handshakes int
 	sessions map[string]&BridgeSession
 	// Sessions accepted so far: each gets its own clock domain.
 	session_count u64
@@ -197,21 +210,61 @@ __global (
 	bridge_reg shared BridgeRegistry
 )
 
-// bridge_listen starts the process's bridge listener on loopback, once, and returns where a
-// bridge dials and the token it must present.
+// bridge_listen starts the process's bridge listener, once, where BLOBLY_BRIDGE_LISTEN says or on
+// loopback, and returns where a bridge on this machine dials and the token it must present.
 pub fn bridge_listen() !BridgeEndpoint {
+	if ep := bridge_listening() {
+		return ep
+	}
+	return bridge_listen_on(bridge_listen_cfg(os.getenv(bridge_listen_env), os.getenv(bridge_token_env))!)
+}
+
+// bridge_listen_configured starts the listener when BLOBLY_BRIDGE_LISTEN asks for one, for a
+// program to call at startup: the address it listens on, '' when it was not asked, or why the
+// settings cannot be used.
+pub fn bridge_listen_configured() !string {
+	cfg := bridge_listen_cfg(os.getenv(bridge_listen_env), os.getenv(bridge_token_env))!
+	if !cfg.configured {
+		return ''
+	}
+	bridge_listen_on(cfg) or {
+		return error('${bridge_listen_env}=${os.getenv(bridge_listen_env)}: ${err.msg()} — one program at a time can listen on a port, so set it only for the one the bridges should reach')
+	}
+	return bridge_host_port(cfg.host, cfg.port)
+}
+
+// bridge_listening is the listener's endpoint once it has started.
+fn bridge_listening() ?BridgeEndpoint {
+	return rlock bridge_reg {
+		if bridge_reg.port == 0 {
+			?BridgeEndpoint(none)
+		} else {
+			BridgeEndpoint{
+				host:  bridge_reg.host
+				port:  bridge_reg.port
+				token: bridge_reg.token
+			}
+		}
+	}
+}
+
+// bridge_listen_on starts the listener as `cfg` says, unless it has started already.
+fn bridge_listen_on(cfg BridgeListenCfg) !BridgeEndpoint {
 	mut ep := BridgeEndpoint{}
 	lock bridge_reg {
 		if bridge_reg.port == 0 {
 			// Everything that can fail first, so a failure leaves nothing half-published.
-			token := (crypto_rand.bytes(16)!).hex()
-			mut l := net.listen_tcp(.ip, '127.0.0.1:0')!
+			token := if cfg.token != '' { cfg.token } else { (crypto_rand.bytes(16)!).hex() }
+			mut l := bridge_bind(cfg.host, cfg.port)!
 			port := int(l.addr()!.port()!)
 			spawn bridge_accept_loop(mut l, token)
+			bridge_reg.configured = cfg.configured
+			bridge_reg.host = bridge_dial_host(cfg.host)
 			bridge_reg.token = token
 			bridge_reg.port = port
 		}
 		ep = BridgeEndpoint{
+			host:  bridge_reg.host
 			port:  bridge_reg.port
 			token: bridge_reg.token
 		}
@@ -225,8 +278,26 @@ fn bridge_accept_loop(mut l net.TcpListener, token string) {
 			time.sleep(50 * time.millisecond)
 			continue
 		}
+		admitted := lock bridge_reg {
+			if bridge_reg.handshakes < bridge_max_handshakes {
+				bridge_reg.handshakes++
+				true
+			} else {
+				false
+			}
+		}
+		if !admitted {
+			c.close() or {}
+			continue
+		}
 		spawn bridge_session_run(mut c, token)
 	}
+}
+
+// bridge_token_is is whether a hello's token is the listener's, in a time that does not depend on
+// where they differ.
+fn bridge_token_is(got string, token string) bool {
+	return hmac.equal(got.bytes(), token.bytes())
 }
 
 // bridge_session reports the connected bridge of that name.
@@ -245,11 +316,22 @@ pub fn bridge_names() []string {
 	return out
 }
 
-// bridge_channels is the channels the connected bridge of that name offers; [] when it is not
+// bridge_channels is the CAN channels the connected bridge of that name offers; [] when it is not
 // connected.
 pub fn bridge_channels(name string) []string {
 	s := bridge_session(name) or { return [] }
-	return s.channels.clone()
+	return s.can_channels()
+}
+
+// can_channels is the channels this side can open: those on a CAN bus.
+fn (s &BridgeSession) can_channels() []string {
+	mut out := []string{}
+	for k, ch in s.channels {
+		if s.buses[k] == bridge_bus_can {
+			out << ch
+		}
+	}
+	return out
 }
 
 // bridge_rows is one Discover row per channel of every connected bridge.
@@ -257,7 +339,7 @@ pub fn bridge_rows() []Iface {
 	mut out := []Iface{}
 	for name in bridge_names() {
 		s := bridge_session(name) or { continue }
-		for ch in s.channels {
+		for ch in s.can_channels() {
 			out << Iface{
 				name:  '${ch} (${name})'
 				iface: 'bridge:${name}/${ch}'
@@ -292,22 +374,28 @@ pub fn bridge_state(name string) (BridgeState, string) {
 				st = .starting
 			} else {
 				st = .failed
-				why = bridge_silence_note(name)
+				why = bridge_silence_note(name, bridge_reg.host)
 			}
 		}
 	}
 	return st, why
 }
 
-// bridge_silence_note is what a started bridge that never dialled in is reported as.
-fn bridge_silence_note(name string) string {
-	return 'started in WSL "${name}" but it did not dial in within ${bridge_launch_ms / 1000} s — WSL must run with networkingMode=mirrored for it to reach this app on 127.0.0.1; run the canbridge command by hand in the distribution to see why'
+// bridge_silence_note is what a started bridge that never dialled in is reported as, `at` being
+// where it dials. Takes it rather than reading the registry: the caller holds its lock.
+fn bridge_silence_note(name string, at string) string {
+	need := if at == '127.0.0.1' {
+		'WSL must run with networkingMode=mirrored for it to reach this app on 127.0.0.1'
+	} else {
+		'mirrored WSL reaches this app on ${at} only with hostAddressLoopback=true under [experimental] in .wslconfig (IPv4 only) — or listen on 0.0.0.0, which a WSL bridge reaches on 127.0.0.1'
+	}
+	return 'started in WSL "${name}" but it did not dial in within ${bridge_launch_ms / 1000} s — ${need}; run the canbridge command by hand in the distribution to see why'
 }
 
 // bridge_launch_args are canbridge's arguments for a bridge started in WSL distribution `distro`.
 pub fn bridge_launch_args(distro string, ep BridgeEndpoint) []string {
-	return ['--vcan', '${bridge_wsl_vcans}', '--connect', '127.0.0.1:${ep.port}', '--token', ep.token,
-		'--name', distro]
+	return ['--vcan', '${bridge_wsl_vcans}', '--connect', bridge_host_port(ep.host, ep.port),
+		'--token', ep.token, '--name', distro]
 }
 
 // canbridge_in is the `canbridge` a bridge started from here runs: the first of `dirs` that holds
@@ -414,7 +502,7 @@ fn bridge_await(name string) !&BridgeSession {
 	}
 	bridge_start(name) or {
 		if name !in wsl_distros() {
-			return error('no bridge named "${name}" is connected')
+			return bridge_await_dial(name)
 		}
 		return err
 	}
@@ -435,6 +523,93 @@ fn bridge_await(name string) !&BridgeSession {
 	return error('unreachable')
 }
 
+// bridge_await_dial waits for a bridge this side does not start, on another machine, to dial in:
+// one started with the app may not have reached it yet. Only where BLOBLY_BRIDGE_LISTEN let such a
+// bridge in at all; a run worker opens through transport.open_stoppable, so its Stop does not
+// wait this out.
+fn bridge_await_dial(name string) !&BridgeSession {
+	lan := rlock bridge_reg {
+		bridge_reg.configured
+	}
+	if !lan {
+		return error('no bridge named "${name}" is connected')
+	}
+	// what an earlier attempt said is not this one's answer
+	lock bridge_reg {
+		bridge_reg.failed.delete(name)
+	}
+	deadline := time.ticks() + bridge_launch_ms
+	for time.ticks() < deadline {
+		if s := bridge_session(name) {
+			return s
+		}
+		// a bridge that could not start says why in its hello
+		why := rlock bridge_reg {
+			bridge_reg.failed[name] or { '' }
+		}
+		if why != '' {
+			return error('bridge "${name}": ${why}')
+		}
+		time.sleep(50 * time.millisecond)
+	}
+	return error('no bridge named "${name}" dialled in within ${bridge_launch_ms / 1000} s')
+}
+
+// bridge_hello reads a new connection's hello and the records that came with it, or [] when the
+// connection is refused, failed or said why its bridge could not start; it is closed then.
+fn bridge_hello(mut c net.TcpConn, token string, mut dec BridgeDecoder, mut buf []u8) []BridgeRecord {
+	c.set_write_timeout(bridge_send_ms * time.millisecond)
+	// The first record must be a hello carrying the token, and must arrive in time.
+	deadline := time.ticks() + bridge_hello_ms
+	mut recs := []BridgeRecord{}
+	for recs.len == 0 {
+		left := deadline - time.ticks()
+		if left <= 0 {
+			c.close() or {}
+			return []
+		}
+		c.set_read_timeout(left * time.millisecond)
+		recs = bridge_read(mut c, mut dec, mut buf) or {
+			// Bytes that are not a record this side can read are most likely a canbridge of
+			// another version: say so, rather than leave it to time out unexplained.
+			if !bridge_is_timeout(err) && err !is io.Eof {
+				c.write(bridge_encode_refused('cannot read the hello (${err.msg()}) — is canbridge the same version as this app?')) or {}
+			}
+			c.close() or {}
+			return []
+		}
+	}
+	hello := recs[0]
+	// A bridge that could not start says why in place of offering channels.
+	// Not recorded while that bridge is connected: a duplicate that failed is no news about it.
+	if hello.kind == .hello && bridge_speaks(hello) && bridge_token_is(hello.token, token)
+		&& hello.error != '' && hello.name != '' {
+		lock bridge_reg {
+			if hello.name !in bridge_reg.sessions {
+				bridge_reg.launching.delete(hello.name)
+				bridge_reg.failed[hello.name] = hello.error
+			}
+		}
+		c.close() or {}
+		return []
+	}
+	if why := bridge_refusal(hello, token) {
+		c.write(bridge_encode_refused(why)) or {}
+		c.close() or {}
+		return []
+	}
+	c.write(bridge_encode_welcome(bridge_version)) or {
+		c.close() or {}
+		return []
+	}
+	return recs
+}
+
+// bridge_speaks is whether a hello's versions include the one this side speaks.
+fn bridge_speaks(hello BridgeRecord) bool {
+	return hello.oldest <= bridge_version && bridge_version <= hello.version
+}
+
 // bridge_read reads once from the connection and returns the records it completed.
 fn bridge_read(mut c net.TcpConn, mut dec BridgeDecoder, mut buf []u8) ![]BridgeRecord {
 	n := c.read(mut buf)!
@@ -450,10 +625,15 @@ fn bridge_refusal(hello BridgeRecord, token string) ?string {
 	if hello.kind != .hello {
 		return 'the first record was ${hello.kind}, not a hello'
 	}
-	if hello.version != bridge_version {
-		return 'protocol version ${hello.version}; this app speaks ${bridge_version}'
+	if !bridge_speaks(hello) {
+		versions := if hello.oldest == hello.version {
+			'${hello.version}'
+		} else {
+			'${hello.oldest} to ${hello.version}'
+		}
+		return 'protocol version ${versions}; this app speaks ${bridge_version}'
 	}
-	if hello.token != token {
+	if !bridge_token_is(hello.token, token) {
 		return 'wrong token'
 	}
 	if hello.channels.len == 0 {
@@ -495,46 +675,14 @@ pub fn bridge_label_error(name string, channels []string) ?string {
 fn bridge_session_run(mut c net.TcpConn, token string) {
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 65536}
-	c.set_write_timeout(bridge_send_ms * time.millisecond)
-	// The first record must be a hello carrying the token, and must arrive in time.
-	deadline := time.ticks() + bridge_hello_ms
-	mut recs := []BridgeRecord{}
-	for recs.len == 0 {
-		left := deadline - time.ticks()
-		if left <= 0 {
-			c.close() or {}
-			return
-		}
-		c.set_read_timeout(left * time.millisecond)
-		recs = bridge_read(mut c, mut dec, mut buf) or {
-			// Bytes that are not a record this side can read are most likely a canbridge of
-			// another version: say so, rather than leave it to time out unexplained.
-			if !bridge_is_timeout(err) && err !is io.Eof {
-				c.write(bridge_encode_refused('cannot read the hello (${err.msg()}) — is canbridge the same version as this app?')) or {}
-			}
-			c.close() or {}
-			return
-		}
+	recs := bridge_hello(mut c, token, mut dec, mut buf)
+	lock bridge_reg {
+		bridge_reg.handshakes--
+	}
+	if recs.len == 0 {
+		return
 	}
 	hello := recs[0]
-	// A bridge that could not start says why in place of offering channels.
-	// Not recorded while that bridge is connected: a duplicate that failed is no news about it.
-	if hello.kind == .hello && hello.version == bridge_version && hello.token == token
-		&& hello.error != '' && hello.name != '' {
-		lock bridge_reg {
-			if hello.name !in bridge_reg.sessions {
-				bridge_reg.launching.delete(hello.name)
-				bridge_reg.failed[hello.name] = hello.error
-			}
-		}
-		c.close() or {}
-		return
-	}
-	if why := bridge_refusal(hello, token) {
-		c.write(bridge_encode_refused(why)) or {}
-		c.close() or {}
-		return
-	}
 	session := lock bridge_reg {
 		bridge_reg.session_count++
 		bridge_reg.session_count
@@ -542,6 +690,7 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 	mut s := &BridgeSession{
 		name:     hello.name
 		channels: hello.channels
+		buses:    hello.buses
 		domain:   bridge_domain(hello.name, session)
 		conn:     c
 	}
@@ -585,7 +734,10 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 
 // dispatch files one record from the bridge.
 fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
-	if rec.kind in [.hello, .open, .close] {
+	if rec.kind == .unknown {
+		return
+	}
+	if rec.kind in [.hello, .open, .close, .welcome] {
 		return error('the bridge sent a ${rec.kind} record')
 	}
 	ch := rlock s.st {
@@ -774,7 +926,10 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	mut s := bridge_await(spec.name) or { return error('${iface}: ${err}') }
 	idx := s.channels.index(spec.channel)
 	if idx < 0 {
-		return error('${iface}: bridge "${spec.name}" offers ${s.channels.join(', ')}, not ${spec.channel}')
+		return error('${iface}: bridge "${spec.name}" offers ${s.can_channels().join(', ')}, not ${spec.channel}')
+	}
+	if s.buses[idx] != bridge_bus_can {
+		return error('${iface}: bridge "${spec.name}" offers ${spec.channel} on a bus this app does not open (bus ${s.buses[idx]}), not CAN')
 	}
 	ch := u8(idx)
 	mut c := &BridgeChan{

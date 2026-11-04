@@ -1,11 +1,12 @@
 // canbridge — offer this host's CAN interfaces to a blobly_net running elsewhere (#451).
 //
-//   canbridge --connect 127.0.0.1:<port> --token <token> [--name <name>] [--vcan <n>] [iface ...]
+//   canbridge --connect <address>:<port> --token <token> [--name <name>] [--vcan <n>] [iface ...]
 //
 // It dials the app, offers the named interfaces (every CAN and vcan interface `ip link` lists,
 // when none are named), and carries frames both ways until the app closes the connection; then it
-// exits. The port and token are those of the app's listener (`transport.bridge_listen`); the
-// Windows build is to start this in WSL through `wsl.exe` with both (#451's next step). The name is
+// exits. The address, port and token are those of the app's listener (`transport.bridge_listen`):
+// the Windows build starts this in WSL through `wsl.exe` with all three, and a machine on the LAN
+// is given those BLOBLY_BRIDGE_LISTEN and BLOBLY_BRIDGE_TOKEN fix (docs/wsl_bridge.md). The name is
 // what the channels are called on the app's side, `bridge:<name>/vcan0`: the WSL distribution by
 // default, else the host. A bridge the app refuses exits 1 with the app's reason.
 //

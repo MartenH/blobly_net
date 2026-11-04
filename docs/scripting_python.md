@@ -338,6 +338,11 @@ if sys.platform == "win32" and "Ubuntu-24.04" in bridge.distributions():
     bridge.stop("Ubuntu-24.04")
 ```
 
+- **A bridge on the LAN** (a board, or `canbridge` on another Linux machine) dials a listener
+  that `BLOBLY_BRIDGE_LISTEN` and `BLOBLY_BRIDGE_TOKEN` fix. With them set in the environment, the
+  library starts listening as it loads (`blobly.init()`, or the first call into the engine), and
+  a setting it cannot use makes that call raise `BloblyError` with the reason ([wsl_bridge.md](wsl_bridge.md#a-bridge-on-the-lan)). Its
+  channels are then `bridge:<its name>/<interface>`, opened like any other address.
 - **`start` waits** until the bridge has dialled in and returns its channels, or raises
   `BloblyError` with the bridge's own reason (no vcan module, WSL not in mirrored networking, a
   bridge that did not dial in within 20 s). `start(distro, wait=False)` returns once it is

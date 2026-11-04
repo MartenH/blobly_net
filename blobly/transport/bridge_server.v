@@ -55,6 +55,8 @@ mut:
 	conn  &net.TcpConn
 	wmu   &sync.Mutex = sync.new_mutex()
 	chans map[u8]&BridgeServed
+	// The app has answered the hello with a version this bridge speaks; nothing is opened before.
+	welcomed bool
 	// When the write in progress began, or 0; read by the reader, which ends a connection whose
 	// write has stalled (an app that stopped reading without closing). Atomic: written by every
 	// writer, read by the reader.
@@ -165,6 +167,19 @@ fn (mut srv BridgeServer) write_locked(rec []u8) ! {
 
 // handle acts on one record from the app.
 fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
+	if rec.kind == .unknown {
+		return
+	}
+	if rec.kind == .welcome {
+		if rec.version != bridge_version {
+			return error('the app chose protocol version ${rec.version}; this bridge speaks ${bridge_version}')
+		}
+		srv.welcomed = true
+		return
+	}
+	if rec.kind in [.open, .close, .frame] && !srv.welcomed {
+		return error('the app sent a ${rec.kind} record before its welcome')
+	}
 	if rec.kind != .refused && int(rec.channel) >= srv.cfg.channels.len {
 		return error('the app named channel ${rec.channel}; this bridge offers ${srv.cfg.channels.len}')
 	}

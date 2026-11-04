@@ -1,9 +1,9 @@
 // What a CAN bridge and this app say to each other, in bytes.
 //
 // A bridge is a small program beside a CAN interface this process cannot open itself — a vcan in
-// WSL seen from the Windows build, later a Linux box with real CAN on the LAN. It holds the
-// interfaces; this process holds the TCP listener, and the bridge DIALS IN (WSL's firewall blocks
-// inbound connections by default and lets outbound ones through, #451).
+// WSL seen from the Windows build, or a board on the LAN (BLOBLY_BRIDGE_LISTEN, bridge_listen.v).
+// It holds the interfaces; this process holds the TCP listener, and the bridge DIALS IN (WSL's
+// firewall blocks inbound connections by default and lets outbound ones through, #451).
 //
 // One TCP connection per bridge carries every channel it offers. TCP is already an ordered,
 // reliable byte stream, so a record needs a length and nothing else: no framing bytes, no CRC.
@@ -12,8 +12,12 @@
 //     body    = u8 kind, then the kind's fields
 //     str     = u16 LE length, then UTF-8 bytes
 //
-//     hello   (bridge -> app)  u16 version, str token, str name, u8 count, count x str channel,
-//                              str error — set when the bridge could not start, with no channels
+//     hello   (bridge -> app)  u16 newest version, u16 oldest version, str token, str name,
+//                              u8 count, count x channel, str error — set when the bridge could not
+//                              start, with no channels
+//     channel = u16 LE length, then str name, u8 bus (1 = CAN)
+//     welcome (app -> bridge)  u16 version — the hello was accepted; the session speaks this one
+//     refused (app -> bridge)  str reason — the hello was not accepted; the app then closes
 //     open    (app -> bridge)  u8 channel, u32 gen
 //     opened  (bridge -> app)  u8 channel, u32 gen, str error ('' when the channel opened)
 //     close   (app -> bridge)  u8 channel
@@ -25,10 +29,24 @@
 //                              u64 decode errors
 //     lost    (bridge -> app)  u8 channel, u32 gen, str error — the channel failed on the bridge
 //
+// Integers are little-endian. A frame's `id` is the bare identifier, at most 0x7FF, or 0x1FFFFFFF
+// when extended, never SocketCAN's can_id with its flag bits. Its `flags` are bits: 0x01 extended
+// id, 0x02 remote, 0x04 FD, 0x08 bit-rate switch, 0x10 error-state indicator, 0x20 tx (below); its
+// `len` is the payload's, at most 64, a remote frame's payload zeroes of its requested length. A
+// status's `health` is 0 unknown, 1 ok, 2 warning, 3 error-passive, 4 bus-off. A channel is named
+// by its place in the hello's list.
+//
 // `gen` is the app's number for one OPEN of a channel, carried by every record about that open, so
 // a record still in the stream from a previous open of the same channel is told apart by value
 // rather than by where it falls in the stream.
-//     refused (app -> bridge)  str reason — the hello was not accepted; the app then closes
+//
+// The format grows without a new version by four rules, which every reader keeps: a record kind it
+// does not know is skipped; bytes after the fields it knows, at the end of a record or of a
+// channel entry, are skipped; a flag bit or a health it does not know is ignored, read as
+// unknown; a channel of a bus it does not know is never opened. Anything else is a new version:
+// the hello says which a bridge speaks, and the welcome which one the session uses.
+// `bridge_codec_test.v` pins every record's bytes, so a bridge written elsewhere — a board on the
+// LAN (#587) — has a fixed target. docs/bridge_protocol.md is the same, for its author.
 //
 // A `frame` from the bridge with the `tx` flag is the acknowledgement of one the app sent: the
 // bridge puts it on its interface and returns it stamped, so this side can tell its own traffic
@@ -41,7 +59,11 @@
 // other end.
 module transport
 
-pub const bridge_version = u16(2) // 2: the hello carries a startup failure
+// bridge_version is the one version this side speaks.
+pub const bridge_version = u16(3) // 3: version range and welcome, a channel's bus, room to grow
+
+// bridge_bus_can is the bus of a CAN channel, the one bus this side opens.
+pub const bridge_bus_can = u8(1)
 
 // bridge_max_record bounds one record's body. The largest legitimate one is a hello naming many
 // channels; a length past this is a stream that is not ours (or has lost sync), and nothing is
@@ -56,6 +78,7 @@ const bridge_max_str = 1024
 pub const bridge_max_channels = 255
 
 pub enum BridgeKind as u8 {
+	unknown = 0 // a kind this side does not know, skipped
 	hello   = 1
 	open    = 2
 	opened  = 3
@@ -65,6 +88,7 @@ pub enum BridgeKind as u8 {
 	status  = 7
 	lost    = 8
 	refused = 9
+	welcome = 10
 }
 
 const bridge_flag_ext = u8(0x01)
@@ -79,11 +103,14 @@ pub struct BridgeRecord {
 pub:
 	kind    BridgeKind
 	channel u8
+	// hello: the newest version the bridge speaks; welcome: the version the session speaks
+	version u16
 	// hello
-	version  u16
+	oldest   u16 // the oldest version the bridge speaks
 	token    string
 	name     string
 	channels []string
+	buses    []u8 // each channel's bus
 	// opened (empty = success), senderr, lost, refused; a hello's is why the bridge could not start
 	error string
 	// open, opened, frame, status, lost: which open of the channel the record is about
@@ -134,16 +161,34 @@ fn bridge_wrap(body []u8) []u8 {
 // channels when the bridge could not start — the app has no other way to hear why, since a bridge
 // it launched has no console anyone sees.
 pub fn bridge_encode_hello(token string, name string, channels []string, failure string) []u8 {
+	return bridge_encode_offer(token, name, channels, []u8{len: channels.len, init: bridge_bus_can},
+		failure)
+}
+
+// bridge_encode_offer is a hello offering channels of the buses given, one per channel.
+fn bridge_encode_offer(token string, name string, channels []string, buses []u8, failure string) []u8 {
 	mut b := [u8(BridgeKind.hello)]
+	bridge_put_u16(mut b, bridge_version)
 	bridge_put_u16(mut b, bridge_version)
 	bridge_put_str(mut b, token)
 	bridge_put_str(mut b, name)
 	n := if channels.len > bridge_max_channels { bridge_max_channels } else { channels.len }
 	b << u8(n)
-	for c in channels[..n] {
-		bridge_put_str(mut b, c)
+	for k, c in channels[..n] {
+		mut e := []u8{}
+		bridge_put_str(mut e, c)
+		e << buses[k]
+		bridge_put_u16(mut b, u16(e.len))
+		b << e
 	}
 	bridge_put_str(mut b, failure)
+	return bridge_wrap(b)
+}
+
+// bridge_encode_welcome is the app's answer to a hello it accepted.
+pub fn bridge_encode_welcome(version u16) []u8 {
+	mut b := [u8(BridgeKind.welcome)]
+	bridge_put_u16(mut b, version)
 	return bridge_wrap(b)
 }
 
@@ -311,20 +356,38 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 	rec := match kind {
 		u8(BridgeKind.hello) {
 			version := r.u16()
+			oldest := r.u16()
 			token := r.str()
 			name := r.str()
 			n := int(r.u8())
 			mut chans := []string{cap: n}
+			mut buses := []u8{cap: n}
 			for _ in 0 .. n {
-				chans << r.str()
+				// an entry's fields this side does not know are past the ones it reads
+				mut e := BridgeReader{
+					b: r.bytes(int(r.u16()))
+				}
+				chans << e.str()
+				buses << e.u8()
+				if e.short {
+					r.short = true
+				}
 			}
 			BridgeRecord{
 				kind:     .hello
 				version:  version
+				oldest:   oldest
 				token:    token
 				name:     name
 				channels: chans
+				buses:    buses
 				error:    r.str()
+			}
+		}
+		u8(BridgeKind.welcome) {
+			BridgeRecord{
+				kind:    .welcome
+				version: r.u16()
 			}
 		}
 		u8(BridgeKind.open) {
@@ -380,6 +443,15 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 			if n > 64 {
 				return error('frame record: ${n} payload bytes, at most 64')
 			}
+			// the bare identifier, never SocketCAN's can_id with its flag bits
+			widest := if flags & bridge_flag_ext != 0 { u32(0x1FFFFFFF) } else { u32(0x7FF) }
+			if id > widest {
+				return error('frame record: id 0x${id:X} is wider than ${if widest == 0x7FF {
+					'a standard'
+				} else {
+					'an extended'
+				}} id')
+			}
 			data := r.bytes(n)
 			BridgeRecord{
 				kind:     .frame
@@ -402,9 +474,9 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 		u8(BridgeKind.status) {
 			ch := r.u8()
 			gen := r.u32()
-			h := r.u8()
+			mut h := r.u8()
 			if h > u8(BusHealth.bus_off) {
-				return error('status record: health ${h} is not a rung this decoder knows')
+				h = u8(BusHealth.unknown)
 			}
 			d := BusDiagnostics{
 				dropped:       r.u64()
@@ -420,7 +492,9 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 			}
 		}
 		else {
-			return error('unknown record kind ${kind}')
+			BridgeRecord{
+				kind: .unknown
+			}
 		}
 	}
 	if r.short {
