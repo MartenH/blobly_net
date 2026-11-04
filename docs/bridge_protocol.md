@@ -25,7 +25,8 @@ is `cmd/canbridge`, over `blobly/transport/bridge_server.v`.
   connected, it replaces that session. This lets a bridge that lost its connection without a FIN
   (its host rebooted) reconnect at once. Every handle open on the old session fails.
 - When the connection closes, every channel open on it closes too. A board should then reconnect.
-  `canbridge` exits instead, because whatever started it will start it again.
+  `canbridge` exits instead: in WSL the app starts it again when a channel needs it, and anywhere
+  else it is run under something that restarts it.
 
 ## Encoding
 
@@ -110,6 +111,11 @@ The version the session speaks: the app's version, which is inside the hello's r
 
 ### frame
 
+`id` is the bare identifier: at most 0x7FF, or 0x1FFFFFFF with flag 0x01. It never carries
+SocketCAN's `can_id` flag bits (0x80000000 extended, 0x40000000 remote, 0x20000000 error); those
+go in `flags`. A frame whose id is wider than its kind ends the connection, so a bridge that
+copies `struct can_frame.can_id` is caught at its first frame.
+
 `flags` are bits:
 
 | bit | meaning |
@@ -151,14 +157,16 @@ The app never sends a remote frame, or one no controller could send. That rules 
 ### status
 
 A status carries the channel's controller state and running counts. The bridge sends one whenever
-any of them changes; the app reads none of them any other way.
+any of them changes; the app reads none of them any other way. Where the controller's driver
+reports its error state, pass that on; the counter thresholds below are for a bridge that has only
+the counters.
 
 | health | meaning |
 |---|---|
 | 0 | unknown |
 | 1 | ok |
-| 2 | warning (error counters above 96) |
-| 3 | error-passive (above 128) |
+| 2 | warning (an error counter at 96 or more) |
+| 3 | error-passive (an error counter at 128 or more) |
 | 4 | bus-off |
 
 All three counts run from the open:

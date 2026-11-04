@@ -183,6 +183,8 @@ mut:
 struct BridgeRegistry {
 mut:
 	host     string // where a bridge on this machine dials
+	// Started as BLOBLY_BRIDGE_LISTEN asks, so bridges on other machines may dial in.
+	configured bool
 	port     int
 	token    string
 	// Connections accepted and not yet past their hello.
@@ -225,7 +227,9 @@ pub fn bridge_listen_configured() !string {
 	if !cfg.configured {
 		return ''
 	}
-	bridge_listen_on(cfg)!
+	bridge_listen_on(cfg) or {
+		return error('${bridge_listen_env}=${os.getenv(bridge_listen_env)}: ${err.msg()} — one program at a time can listen on a port, so set it only for the one the bridges should reach')
+	}
 	return bridge_host_port(cfg.host, cfg.port)
 }
 
@@ -251,10 +255,10 @@ fn bridge_listen_on(cfg BridgeListenCfg) !BridgeEndpoint {
 		if bridge_reg.port == 0 {
 			// Everything that can fail first, so a failure leaves nothing half-published.
 			token := if cfg.token != '' { cfg.token } else { (crypto_rand.bytes(16)!).hex() }
-			family := if cfg.host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
-			mut l := net.listen_tcp(family, bridge_host_port(cfg.host, cfg.port))!
+			mut l := bridge_bind(cfg.host, cfg.port)!
 			port := int(l.addr()!.port()!)
 			spawn bridge_accept_loop(mut l, token)
+			bridge_reg.configured = cfg.configured
 			bridge_reg.host = bridge_dial_host(cfg.host)
 			bridge_reg.token = token
 			bridge_reg.port = port
@@ -370,19 +374,22 @@ pub fn bridge_state(name string) (BridgeState, string) {
 				st = .starting
 			} else {
 				st = .failed
-				why = bridge_silence_note(name)
+				why = bridge_silence_note(name, bridge_reg.host)
 			}
 		}
 	}
 	return st, why
 }
 
-// bridge_silence_note is what a started bridge that never dialled in is reported as.
-fn bridge_silence_note(name string) string {
-	at := (bridge_listening() or { BridgeEndpoint{
-		host: '127.0.0.1'
-	} }).host
-	return 'started in WSL "${name}" but it did not dial in within ${bridge_launch_ms / 1000} s — WSL must run with networkingMode=mirrored for it to reach this app on ${at}; run the canbridge command by hand in the distribution to see why'
+// bridge_silence_note is what a started bridge that never dialled in is reported as, `at` being
+// where it dials. Takes it rather than reading the registry: the caller holds its lock.
+fn bridge_silence_note(name string, at string) string {
+	need := if at == '127.0.0.1' {
+		'WSL must run with networkingMode=mirrored for it to reach this app on 127.0.0.1'
+	} else {
+		'mirrored WSL reaches this app on ${at} only with hostAddressLoopback=true under [experimental] in .wslconfig (IPv4 only) — or listen on 0.0.0.0, which a WSL bridge reaches on 127.0.0.1'
+	}
+	return 'started in WSL "${name}" but it did not dial in within ${bridge_launch_ms / 1000} s — ${need}; run the canbridge command by hand in the distribution to see why'
 }
 
 // bridge_launch_args are canbridge's arguments for a bridge started in WSL distribution `distro`.
@@ -495,7 +502,7 @@ fn bridge_await(name string) !&BridgeSession {
 	}
 	bridge_start(name) or {
 		if name !in wsl_distros() {
-			return error('no bridge named "${name}" is connected')
+			return bridge_await_dial(name)
 		}
 		return err
 	}
@@ -514,6 +521,27 @@ fn bridge_await(name string) !&BridgeSession {
 		time.sleep(50 * time.millisecond)
 	}
 	return error('unreachable')
+}
+
+// bridge_await_dial waits for a bridge this side does not start, on another machine, to dial in:
+// one started with the app may not have reached it yet. Only where BLOBLY_BRIDGE_LISTEN let such a
+// bridge in at all; a run worker opens through transport.open_stoppable, so its Stop does not
+// wait this out.
+fn bridge_await_dial(name string) !&BridgeSession {
+	lan := rlock bridge_reg {
+		bridge_reg.configured
+	}
+	if !lan {
+		return error('no bridge named "${name}" is connected')
+	}
+	deadline := time.ticks() + bridge_launch_ms
+	for time.ticks() < deadline {
+		if s := bridge_session(name) {
+			return s
+		}
+		time.sleep(50 * time.millisecond)
+	}
+	return error('no bridge named "${name}" dialled in within ${bridge_launch_ms / 1000} s')
 }
 
 // bridge_hello reads a new connection's hello and the records that came with it, or [] when the

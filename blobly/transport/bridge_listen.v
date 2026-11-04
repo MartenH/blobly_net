@@ -8,7 +8,7 @@
 //     BLOBLY_BRIDGE_LISTEN=<address>:<port>   the address and port to bind: 0.0.0.0:29500,
 //                                             192.168.1.5:29500, [::]:29500, 127.0.0.1:29500
 //     BLOBLY_BRIDGE_TOKEN=<token>             a fixed token, required off loopback, 16 characters
-//                                             at least there
+//                                             at least there; letters, digits and -_.+=:,@%/
 //
 // With the first set, the GUI, cmd/script and libblobly start the listener at startup, and a bad
 // setting stops them with the reason. The address is numeric, because a name may resolve to
@@ -21,6 +21,9 @@ pub const bridge_token_env = 'BLOBLY_BRIDGE_TOKEN'
 
 // bridge_min_lan_token is the shortest token a listener off loopback accepts.
 pub const bridge_min_lan_token = 16
+
+// bridge_token_marks are the characters besides letters and digits a token may hold.
+const bridge_token_marks = '-_.+=:,@%/'.bytes()
 
 // BridgeListenCfg is where the listener binds and the token it holds bridges to.
 pub struct BridgeListenCfg {
@@ -100,9 +103,10 @@ fn bridge_token_refusal(token string, loopback bool) ?string {
 	if token.len > bridge_max_str {
 		return 'at most ${bridge_max_str} characters, not ${token.len}'
 	}
-	// A bridge started in WSL is given it on a command line, where a space or a quote splits it.
-	if !token.bytes().all(it > 0x20 && it < 0x7f && it != `"`) {
-		return 'printable ASCII only, without spaces or double quotes'
+	// A bridge started in WSL is given it on a command line that the distribution's shell reads,
+	// so only what no shell expands or splits.
+	if !token.bytes().all(it.is_alnum() || it in bridge_token_marks) {
+		return 'letters, digits and ${bridge_token_marks.bytestr()} only'
 	}
 	return none
 }
@@ -123,14 +127,15 @@ fn bridge_is_loopback(host string) bool {
 	return false
 }
 
-// bridge_dial_host is the address a bridge on this machine dials: the bound one, or the
-// loopback of its family when the listener is bound to every address.
+// bridge_dial_host is the address a bridge on this machine dials: the bound one, or 127.0.0.1 when
+// the listener is bound to every address. IPv4's for `[::]` too, which takes both families: WSL's
+// mirrored networking forwards 127.0.0.1 to the host and not ::1.
 fn bridge_dial_host(host string) string {
 	if b := bridge_ip4_bytes(host) {
 		return if b.all(it == 0) { '127.0.0.1' } else { host }
 	}
 	if b := bridge_ip6_bytes(host) {
-		return if b.all(it == 0) { '::1' } else { host }
+		return if b.all(it == 0) { '127.0.0.1' } else { host }
 	}
 	return host
 }

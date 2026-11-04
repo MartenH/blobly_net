@@ -206,3 +206,31 @@ fn test_a_bridge_that_does_not_speak_this_version_is_told_so() {
 	assert rec.error == 'protocol version 4 to 5; this app speaks ${bridge_version}'
 	assert 'future' !in bridge_names()
 }
+
+fn test_a_second_listener_on_the_port_is_refused() {
+	ep := lan_listener()!
+	bridge_bind('0.0.0.0', ep.port) or {
+		assert err.msg().contains('cannot listen on 0.0.0.0:${ep.port}')
+		return
+	}
+	assert false, 'a second listener took the port'
+}
+
+fn test_a_bridge_on_the_lan_that_dials_in_after_the_open_began_is_waited_for() {
+	ep := lan_listener()!
+	spawn fn [ep] () {
+		time.sleep(300 * time.millisecond)
+		mut c := net.dial_tcp('127.0.0.1:${ep.port}') or { return }
+		lan_serve(mut c, BridgeServeCfg{
+			token:    fixed_token
+			name:     'late'
+			channels: ['can0']
+			opener:   fn (name string) !Bus {
+				return open_inproc('late-' + name)!
+			}
+		})
+	}()
+	mut b := open('bridge:late/can0')!
+	b.close()
+	bridge_drop('late')
+}

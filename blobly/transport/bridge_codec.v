@@ -29,11 +29,12 @@
 //                              u64 decode errors
 //     lost    (bridge -> app)  u8 channel, u32 gen, str error — the channel failed on the bridge
 //
-// Integers are little-endian. A frame's `flags` are bits: 0x01 extended id, 0x02 remote, 0x04 FD,
-// 0x08 bit-rate switch, 0x10 error-state indicator, 0x20 tx (below); its `len` is the payload's,
-// at most 64, a remote frame's payload zeroes of its requested length. A status's `health` is
-// 0 unknown, 1 ok, 2 warning, 3 error-passive, 4 bus-off. A channel is named by its place in the
-// hello's list.
+// Integers are little-endian. A frame's `id` is the bare identifier, at most 0x7FF, or 0x1FFFFFFF
+// when extended, never SocketCAN's can_id with its flag bits. Its `flags` are bits: 0x01 extended
+// id, 0x02 remote, 0x04 FD, 0x08 bit-rate switch, 0x10 error-state indicator, 0x20 tx (below); its
+// `len` is the payload's, at most 64, a remote frame's payload zeroes of its requested length. A
+// status's `health` is 0 unknown, 1 ok, 2 warning, 3 error-passive, 4 bus-off. A channel is named
+// by its place in the hello's list.
 //
 // `gen` is the app's number for one OPEN of a channel, carried by every record about that open, so
 // a record still in the stream from a previous open of the same channel is told apart by value
@@ -441,6 +442,15 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 			n := int(r.u8())
 			if n > 64 {
 				return error('frame record: ${n} payload bytes, at most 64')
+			}
+			// the bare identifier, never SocketCAN's can_id with its flag bits
+			widest := if flags & bridge_flag_ext != 0 { u32(0x1FFFFFFF) } else { u32(0x7FF) }
+			if id > widest {
+				return error('frame record: id 0x${id:X} is wider than ${if widest == 0x7FF {
+					'a standard'
+				} else {
+					'an extended'
+				}} id')
 			}
 			data := r.bytes(n)
 			BridgeRecord{

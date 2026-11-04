@@ -924,8 +924,9 @@ int bb_boot_sim_stop(int sim, bb_boot_report *out);
  * rows. Opening such a row (bb_bus_open, bb_start) starts its bridge and waits for it; these calls
  * do it explicitly, as the GUI's Discover dialog does. A bridge on another machine dials in to the
  * listener BLOBLY_BRIDGE_LISTEN asks for at bb_init (docs/wsl_bridge.md, "A bridge on the LAN"),
- * as `bridge:<its name>/<interface>`. A bridge is Windows-to-WSL: elsewhere there
- * are no distributions and bb_bridge_start is refused, saying so. Lists are one string, an entry per
+ * as `bridge:<its name>/<interface>`, on any platform; opening one waits up to 20 s for it to dial
+ * in. STARTING a bridge is Windows-to-WSL: elsewhere there are no distributions and
+ * bb_bridge_start is refused, saying so. Lists are one string, an entry per
  * line, into the caller's buffer as bb_message_name's. Every call but bb_bridge_stop may come from
  * any (attached) thread.
  *

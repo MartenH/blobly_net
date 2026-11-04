@@ -51,10 +51,12 @@ fn test_tokens() {
 			assert false, '${listen} took "${bad}"'
 		}
 		assert bridge_listen_cfg(listen, 'x'.repeat(bridge_min_lan_token))!.configured
+		assert bridge_listen_cfg(listen, 'Ab9-_.+=:,@%/0123')!.configured
 	}
 	// what a command line or the hello cannot carry
 	for bad in ['with space 0123456', 'quote"0123456789', 'tab\t0123456789ab', 'é0123456789abcde',
-		'x'.repeat(bridge_max_str + 1)] {
+		'bench\$ecret-2026xx', 'k7Qx9vR2;echo-0123', '~0123456789abcdef', 'a*0123456789abcdef',
+		"it's-0123456789abc", 'x'.repeat(bridge_max_str + 1)] {
 		bridge_listen_cfg('0.0.0.0:1', bad) or { continue }
 		assert false, '"${bad}" was accepted'
 	}
@@ -68,8 +70,10 @@ fn test_loopback_and_dial_host() {
 		assert !bridge_is_loopback(h), h
 	}
 	assert bridge_dial_host('0.0.0.0') == '127.0.0.1'
-	assert bridge_dial_host('::') == '::1'
-	assert bridge_dial_host('0:0::0') == '::1'
+	// mirrored WSL forwards 127.0.0.1 to the host, not ::1, and [::] takes both families
+	assert bridge_dial_host('::') == '127.0.0.1'
+	assert bridge_dial_host('0:0::0') == '127.0.0.1'
+	assert bridge_dial_host('::1') == '::1'
 	assert bridge_dial_host('192.168.1.5') == '192.168.1.5'
 	assert bridge_host_port('::1', 5) == '[::1]:5'
 	assert bridge_host_port('127.0.0.1', 5) == '127.0.0.1:5'

@@ -127,7 +127,7 @@ Two settings fix those:
 | variable | value |
 |---|---|
 | `BLOBLY_BRIDGE_LISTEN` | `<address>:<port>` to listen on: `0.0.0.0:29500` for every IPv4 address, `[::]:29500` for every address, or one address such as `192.168.1.5:29500` |
-| `BLOBLY_BRIDGE_TOKEN` | the token a bridge must present: printable ASCII without spaces or `"`, at least 16 characters on any address but loopback |
+| `BLOBLY_BRIDGE_TOKEN` | the token a bridge must present: letters, digits and `-_.+=:,@%/`, at least 16 characters on any address but loopback |
 
 With `BLOBLY_BRIDGE_LISTEN` set, the app (GUI, `cmd/script` and the Python package alike)
 starts listening when it starts:
@@ -136,7 +136,10 @@ starts listening when it starts:
   without the listener;
 - the address must be numeric, because a name may resolve to several addresses;
 - `BLOBLY_BRIDGE_TOKEN` alone, without an address, is refused, since its port would still change
-  at every launch.
+  at every launch;
+- **one program at a time** can listen on a port. A second one started with the same setting, such
+  as a Python script beside the GUI, refuses to start and says so. Set the variables only for the
+  program the bridges should reach.
 
 Unset, nothing changes: loopback, a new port and a random token at every launch.
 
@@ -146,9 +149,18 @@ A Linux machine with CAN interfaces runs:
 canbridge --connect 192.168.1.5:29500 --token <the token> --name bench can0 can1
 ```
 
-Its channels appear as `bridge:bench/can0` and `bridge:bench/can1` in **Discover…**, and a project
-row with that address opens at **▶ Start** once the bridge has dialled in. A board runs its own
-implementation of the protocol, described byte for byte in [bridge_protocol.md](bridge_protocol.md).
+Its channels appear as `bridge:bench/can0` and `bridge:bench/can1` in **Discover…**. A project row
+with that address opens once the bridge has dialled in; an open that comes first waits up to 20 s
+for it. A board runs its own implementation of the protocol, described byte for byte in
+[bridge_protocol.md](bridge_protocol.md).
+
+`canbridge` gives up when the app is not listening within 10 s, and exits when its connection
+closes (the app quits, **Disconnect**, the network drops). To keep the interfaces offered, run it
+in a loop or under a service manager:
+
+```
+while :; do canbridge --connect 192.168.1.5:29500 --token <the token> --name bench can0 can1; sleep 2; done
+```
 
 - **Trusted networks only.** The token travels in the clear and nothing is encrypted. It keeps
   out stray connections, not someone who can read the network's traffic. Use it on a bench
@@ -156,7 +168,10 @@ implementation of the protocol, described byte for byte in [bridge_protocol.md](
 - **Windows asks once** whether to allow the app through its firewall when it first listens on an
   address other than loopback. Allow it on the network the bridge is on.
 - **A WSL bridge still works** with the listener on `0.0.0.0` or `[::]`: the app starts it with
-  `127.0.0.1` or `::1`. With the listener on one address, the WSL bridge dials that address.
+  `127.0.0.1` (mirrored WSL forwards that address to Windows, and not `::1`). With the listener on
+  one address, the WSL bridge dials that address, which mirrored WSL reaches only with
+  `hostAddressLoopback=true` under `[experimental]` in `.wslconfig` (IPv4 only). To use WSL
+  bridges too, listen on `0.0.0.0` or `[::]`.
 
 ## When it does not start
 

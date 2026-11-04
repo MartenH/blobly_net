@@ -123,6 +123,21 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 	if _ := bridge_decode_body(big) {
 		assert false
 	}
+	// An id wider than its kind: SocketCAN's can_id, its flag bits and all.
+	for id, ext in {
+		u32(0x800): false
+		0x8000_0123: true
+		0x2000_0000: true
+	} {
+		mut wide := bridge_encode_frame(0, 1, CanFrame{ id: 0x1, extended: ext }, 0, false, 0)[4..].clone()
+		// the id, after kind, channel, gen, flags and seq
+		for k in 0 .. 4 {
+			wide[11 + k] = u8(id >> (8 * k))
+		}
+		if _ := bridge_decode_body(wide) {
+			assert false, '${id:x} was read'
+		}
+	}
 	// A channel entry cut short.
 	mut hello := bridge_encode_hello('t', 'b', ['can0'], '')[4..].clone()
 	assert hello[11] == 1 && hello[12] == 7 // one entry, of 7 bytes
