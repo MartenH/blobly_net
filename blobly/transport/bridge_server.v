@@ -165,6 +165,15 @@ fn (mut srv BridgeServer) write_locked(rec []u8) ! {
 
 // handle acts on one record from the app.
 fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
+	if rec.kind == .unknown {
+		return
+	}
+	if rec.kind == .welcome {
+		if rec.version != bridge_version {
+			return error('the app chose protocol version ${rec.version}; this bridge speaks ${bridge_version}')
+		}
+		return
+	}
 	if rec.kind != .refused && int(rec.channel) >= srv.cfg.channels.len {
 		return error('the app named channel ${rec.channel}; this bridge offers ${srv.cfg.channels.len}')
 	}

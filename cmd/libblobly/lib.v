@@ -555,6 +555,8 @@ pub fn bb_now_ns() i64 {
 pub fn bb_init() i32 {
 	// a replay paces itself by sleeps below a millisecond: on Windows they need the 1 ms period
 	player.raise_timer_resolution()
+	// a CAN bridge on the LAN dials in to the listener BLOBLY_BRIDGE_LISTEN asks for (#587)
+	transport.bridge_listen_configured() or { return fail(bb_err, err.msg()) }
 	return ok()
 }
 

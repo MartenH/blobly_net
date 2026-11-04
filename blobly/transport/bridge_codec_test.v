@@ -112,9 +112,6 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 		}
 	}
 	assert bridge_decode_body([]u8{}) or { BridgeRecord{} }.kind != .frame
-	if _ := bridge_decode_body([u8(99)]) {
-		assert false
-	}
 	// A frame body cut short.
 	full := bridge_encode_frame(0, 1, CanFrame{ id: 1, data: [u8(1), 2] }, 1, false, 0)
 	if _ := bridge_decode_body(full[4..full.len - 1]) {
@@ -126,12 +123,47 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 	if _ := bridge_decode_body(big) {
 		assert false
 	}
-	// A health rung this decoder does not know.
-	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{})[4..].clone()
-	st[6] = 9 // the health byte, after kind, channel and gen
-	if _ := bridge_decode_body(st) {
+	// A channel entry cut short.
+	mut hello := bridge_encode_hello('t', 'b', ['can0'], '')[4..].clone()
+	assert hello[11] == 1 && hello[12] == 7 // one entry, of 7 bytes
+	hello[12] = 3 // shorter than the name it carries
+	if _ := bridge_decode_body(hello) {
 		assert false
 	}
+}
+
+// The four rules the format grows by without a new version.
+fn test_what_a_reader_does_not_know_is_skipped() {
+	// a record kind
+	assert bridge_decode_body([u8(99), 1, 2, 3])!.kind == .unknown
+	mut stream := bridge_encode_close(1)
+	stream << [u8(3), 0, 0, 0, 200, 1, 2]
+	stream << bridge_encode_close(2)
+	mut d := BridgeDecoder{}
+	recs := d.feed(stream)!
+	assert recs.map(it.kind) == [BridgeKind.close, .unknown, .close]
+	assert recs[2].channel == 2
+	// fields after the known ones, of a record and of a channel entry
+	mut frame := bridge_encode_frame(1, 7, CanFrame{ id: 0x55, data: [u8(9)] }, 0, false, 5)[4..].clone()
+	frame << [u8(0xee), 0xee]
+	f := bridge_decode_body(frame)!
+	assert f.frame.id == 0x55 && f.frame.data == [u8(9)] && f.stamp_ns == 5
+	mut entry := []u8{}
+	bridge_put_str(mut entry, 'lin0')
+	entry << [u8(2), 0xee, 0xee, 0xee]
+	mut hello := [u8(BridgeKind.hello), 3, 0, 3, 0, 1, 0, `t`, 1, 0, `b`, 1]
+	bridge_put_u16(mut hello, u16(entry.len))
+	hello << entry
+	hello << [u8(0), 0, 0xee]
+	h := bridge_decode_body(hello)!
+	assert h.channels == ['lin0'] && h.buses == [u8(2)] && h.error == '' && h.name == 'b'
+	// a flag bit and a health
+	frame[7] |= 0x80 // the flags, after kind, channel and gen
+	assert bridge_decode_body(frame)!.frame == f.frame
+	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{ dropped: 4 })[4..].clone()
+	st[6] = 9 // the health byte, after kind, channel and gen
+	s := bridge_decode_body(st)!
+	assert s.health == .unknown && s.diag.dropped == 4
 }
 
 fn test_parse_bridge_iface() {
@@ -144,4 +176,45 @@ fn test_parse_bridge_iface() {
 	}
 	assert health_source('bridge:x/vcan0') == .polled
 	assert echoes_own_sends('bridge:x/vcan0')
+}
+
+// The format is what a bridge on another machine is written against (#587), so its bytes are
+// pinned here, spelled out from the header's description rather than from the encoder.
+fn test_records_are_the_documented_bytes() {
+	assert bridge_version == 3
+	tok := '0123456789abcdef'
+	mut hello := [u8(42), 0, 0, 0, 1, 3, 0, 3, 0, 16, 0]
+	hello << tok.bytes()
+	hello << [u8(5), 0]
+	hello << 'board'.bytes()
+	hello << [u8(1), 7, 0, 4, 0]
+	hello << 'can0'.bytes()
+	hello << [u8(1), 0, 0]
+	assert bridge_encode_hello(tok, 'board', ['can0'], '') == hello
+	h := one(hello)
+	assert h.name == 'board' && h.version == 3 && h.oldest == 3 && h.buses == [bridge_bus_can]
+	assert bridge_encode_welcome(3) == [u8(3), 0, 0, 0, 10, 3, 0]
+	assert one(bridge_encode_welcome(3)).version == 3
+
+	frame := [u8(26), 0, 0, 0, 5, 1, 7, 0, 0, 0, 0x21, 9, 0, 0, 0, 0x23, 0x01, 0, 0, 0xe8, 0x03,
+		0, 0, 0, 0, 0, 0, 2, 0xaa, 0xbb]
+	got := bridge_encode_frame(1, 7, CanFrame{ id: 0x123, extended: true, data: [u8(0xaa), 0xbb] },
+		9, true, 1000)
+	assert got == frame
+	r := one(frame)
+	assert r.frame.id == 0x123 && r.frame.extended && r.tx && r.seq == 9 && r.stamp_ns == 1000
+
+	assert bridge_encode_open(3, 0x01020304) == [u8(6), 0, 0, 0, 2, 3, 4, 3, 2, 1]
+	assert bridge_encode_close(3) == [u8(2), 0, 0, 0, 4, 3]
+	assert bridge_encode_opened(3, 1, 'x') == [u8(9), 0, 0, 0, 3, 3, 1, 0, 0, 0, 1, 0, `x`]
+	assert bridge_encode_senderr(3, 2, true, '') == [u8(9), 0, 0, 0, 6, 3, 2, 0, 0, 0, 1, 0, 0]
+	assert bridge_encode_lost(3, 1, '') == [u8(8), 0, 0, 0, 8, 3, 1, 0, 0, 0, 0, 0]
+	assert bridge_encode_refused('no') == [u8(5), 0, 0, 0, 9, 2, 0, `n`, `o`]
+	mut status := [u8(31), 0, 0, 0, 7, 3, 1, 0, 0, 0, 3]
+	status << [u8(4), 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0]
+	assert bridge_encode_status(3, 1, .error_passive, BusDiagnostics{
+		dropped:       4
+		bus_errors:    5
+		decode_errors: 6
+	}) == status
 }

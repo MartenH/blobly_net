@@ -17,6 +17,7 @@ module main
 
 import os
 import blobly.player
+import blobly.transport
 import blobly.wiretap
 import time
 import sync.stdatomic
@@ -129,6 +130,19 @@ fn main() {
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
 	app.open_session_log(proj_path)
+	// A CAN bridge on the LAN dials in to the listener BLOBLY_BRIDGE_LISTEN asks for (#587). A
+	// setting that cannot be used stops the app, where the operator sees it.
+	bridge_at := transport.bridge_listen_configured() or {
+		msg := 'blobly_net cannot start: ${err.msg()}'
+		app.elog(msg)
+		alert(msg)
+		exit(1)
+	}
+	if bridge_at != '' {
+		app.mu.lock()
+		app.log_append_locked('listening for CAN bridges on ${bridge_at}')
+		app.mu.unlock()
+	}
 	app.load_project(proj_path)
 
 	// Replay stutter probe (probe.v): inert unless BLOBLY_PROBE_LOG is set. Diagnostic only.

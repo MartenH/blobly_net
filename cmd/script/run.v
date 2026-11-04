@@ -19,6 +19,7 @@ import blobly.headless
 import blobly.player
 import blobly.project
 import blobly.script
+import blobly.transport
 import blobly.udsconn
 
 const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
@@ -171,6 +172,16 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		proj_path = chosen
 	}
 	o.project = proj_path
+
+	// A CAN bridge on the LAN dials in to the listener BLOBLY_BRIDGE_LISTEN asks for (#587), before
+	// the project opens its channels.
+	bridge_at := transport.bridge_listen_configured() or {
+		o.refused = err.msg()
+		return report_path
+	}
+	if bridge_at != '' {
+		eprintln('listening for CAN bridges on ${bridge_at}')
+	}
 
 	proj := headless.load(proj_path, headless.Options{}) or {
 		o.refused = err.msg()
