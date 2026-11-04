@@ -100,7 +100,12 @@ def test_a_lan_listener_setting_that_cannot_be_used_is_refused_as_the_engine_loa
 
 
 def test_a_lan_listener_is_listening_once_the_engine_has_loaded():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    assert loads_with(f"0.0.0.0:{port}", "0123456789abcdef", port) == "listening\n"
+    # a free port, which something else may take before the child binds it: then another
+    for _ in range(5):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        out = loads_with(f"0.0.0.0:{port}", "0123456789abcdef", port)
+        if "cannot listen" not in out:
+            break
+    assert out == "listening\n"

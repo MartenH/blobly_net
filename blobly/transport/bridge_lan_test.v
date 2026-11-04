@@ -234,3 +234,56 @@ fn test_a_bridge_on_the_lan_that_dials_in_after_the_open_began_is_waited_for() {
 	b.close()
 	bridge_drop('late')
 }
+
+fn test_a_bridge_on_the_lan_that_cannot_start_says_why_to_the_open_waiting_for_it() {
+	ep := lan_listener()!
+	spawn fn [ep] () {
+		time.sleep(200 * time.millisecond)
+		mut c := net.dial_tcp('127.0.0.1:${ep.port}') or { return }
+		bridge_report_failure(mut c, fixed_token, 'broken', 'interface can0 is down') or {}
+		c.close() or {}
+	}()
+	t0 := time.ticks()
+	open('bridge:broken/can0') or {
+		assert err.msg().contains('interface can0 is down')
+		assert time.ticks() - t0 < 5000
+		return
+	}
+	assert false, 'a bridge that could not start opened'
+}
+
+fn test_a_bridge_opens_nothing_before_the_welcome() {
+	mut l := net.listen_tcp(.ip, '127.0.0.1:0')!
+	port := l.addr()!.port()!
+	done := chan string{cap: 1}
+	spawn fn [port, done] () {
+		mut c := net.dial_tcp('127.0.0.1:${port}') or {
+			done <- err.msg()
+			return
+		}
+		bridge_serve(mut c, BridgeServeCfg{
+			token:    't'
+			name:     'eager'
+			channels: ['can0']
+			opener:   fn (name string) !Bus {
+				return open_inproc('eager-' + name)!
+			}
+		}) or {
+			done <- err.msg()
+			return
+		}
+		done <- ''
+	}()
+	mut app := l.accept()!
+	app.write(bridge_encode_open(0, 1))!
+	select {
+		why := <-done {
+			assert why.contains('before its welcome')
+		}
+		3 * time.second {
+			assert false, 'the bridge kept a connection that opened a channel before its welcome'
+		}
+	}
+	app.close() or {}
+	l.close() or {}
+}

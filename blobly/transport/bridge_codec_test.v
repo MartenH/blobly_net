@@ -173,7 +173,7 @@ fn test_what_a_reader_does_not_know_is_skipped() {
 	h := bridge_decode_body(hello)!
 	assert h.channels == ['lin0'] && h.buses == [u8(2)] && h.error == '' && h.name == 'b'
 	// a flag bit and a health
-	frame[7] |= 0x80 // the flags, after kind, channel and gen
+	frame[6] |= 0x80 // the flags, after kind, channel and gen
 	assert bridge_decode_body(frame)!.frame == f.frame
 	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{ dropped: 4 })[4..].clone()
 	st[6] = 9 // the health byte, after kind, channel and gen

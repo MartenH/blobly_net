@@ -534,10 +534,21 @@ fn bridge_await_dial(name string) !&BridgeSession {
 	if !lan {
 		return error('no bridge named "${name}" is connected')
 	}
+	// what an earlier attempt said is not this one's answer
+	lock bridge_reg {
+		bridge_reg.failed.delete(name)
+	}
 	deadline := time.ticks() + bridge_launch_ms
 	for time.ticks() < deadline {
 		if s := bridge_session(name) {
 			return s
+		}
+		// a bridge that could not start says why in its hello
+		why := rlock bridge_reg {
+			bridge_reg.failed[name] or { '' }
+		}
+		if why != '' {
+			return error('bridge "${name}": ${why}')
 		}
 		time.sleep(50 * time.millisecond)
 	}
