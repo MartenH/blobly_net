@@ -75,6 +75,13 @@ fn with_cs(model Model, id u8, data []u8) []u8 {
 	return out
 }
 
+// ended is the frames a chunk completes, then what the idle after it ends.
+fn ended(mut d Decoder, chunk []u8, t i64) []Frame {
+	mut out := d.feed(chunk, t)
+	out << d.idle(t)
+	return out
+}
+
 fn table() map[u8]Expect {
 	return {
 		u8(0x21): Expect{
@@ -90,7 +97,7 @@ fn table() map[u8]Expect {
 
 fn test_decode_good_frame_by_length() {
 	mut d := new_decoder(table(), 19200)
-	fs := d.feed(wire(0x21, with_cs(.enhanced, 0x21, [u8(1), 2, 3, 4])), 100)
+	fs := ended(mut d, wire(0x21, with_cs(.enhanced, 0x21, [u8(1), 2, 3, 4])), 100)
 	assert fs.len == 1
 	f := fs[0]
 	assert f.id == 0x21 && f.pid == 0x61
@@ -110,6 +117,7 @@ fn test_decode_split_across_chunks() {
 	for i, b in w {
 		all << d.feed([b], i64(i))
 	}
+	all << d.idle(99)
 	assert all.len == 1
 	assert all[0].data == [u8(0xFF), 0x10]
 	assert all[0].errs == Errs.zero()
@@ -119,7 +127,7 @@ fn test_decode_split_across_chunks() {
 fn test_decode_escaped_ff_data() {
 	mut d := new_decoder(table(), 19200)
 	data := [u8(0xFF), 0xFF, 0x00, 0xFF]
-	fs := d.feed(wire(0x21, with_cs(.enhanced, 0x21, data)), 0)
+	fs := ended(mut d, wire(0x21, with_cs(.enhanced, 0x21, data)), 0)
 	assert fs.len == 1
 	assert fs[0].data == data
 	assert fs[0].errs == Errs.zero()
@@ -131,7 +139,7 @@ fn test_decode_framing_error() {
 	w << [u8(0xFF), 0x00, 0x12] // 0x12 read with a framing error
 	w << 0x34
 	w << checksum(.classic, pid(0x22), [u8(0x12), 0x34])
-	fs := d.feed(w, 0)
+	fs := ended(mut d, w, 0)
 	assert fs.len == 1
 	assert fs[0].errs.has(.framing)
 	assert !fs[0].errs.has(.checksum)
@@ -159,7 +167,7 @@ fn test_decode_parity_error() {
 
 fn test_decode_checksum_error() {
 	mut d := new_decoder(table(), 19200)
-	fs := d.feed(wire(0x21, [u8(1), 2, 3, 4, 0x95]), 0)
+	fs := ended(mut d, wire(0x21, [u8(1), 2, 3, 4, 0x95]), 0)
 	assert fs.len == 1
 	assert fs[0].errs == Errs.checksum
 	assert fs[0].checksum == 0x95
@@ -169,7 +177,7 @@ fn test_decode_short_then_break() {
 	mut d := new_decoder(table(), 19200)
 	mut w := wire(0x21, [u8(1), 2])
 	w << wire(0x22, with_cs(.classic, 0x22, [u8(5), 6]))
-	fs := d.feed(w, 7)
+	fs := ended(mut d, w, 7)
 	assert fs.len == 2
 	assert fs[0].id == 0x21
 	assert fs[0].errs == Errs.short
@@ -197,7 +205,7 @@ fn test_decode_header_only() {
 	// A header followed by another header is no response too.
 	mut w := wire(0x21, [])
 	w << wire(0x22, with_cs(.classic, 0x22, [u8(5), 6]))
-	gs := d.feed(w, 0)
+	gs := ended(mut d, w, 0)
 	assert gs.len == 2
 	assert gs[0].errs == Errs.no_response
 }
@@ -210,7 +218,7 @@ fn test_decode_lone_break_is_wakeup() {
 	assert fs[0].event == .wakeup
 	assert fs[0].errs == Errs.zero()
 	// A break then another break: the first was a wakeup.
-	gs := d.feed([u8(0xFF), 0x00, 0x00, 0xFF, 0x00, 0x00, 0x55, pid(0x22), 5, 6,
+	gs := ended(mut d, [u8(0xFF), 0x00, 0x00, 0xFF, 0x00, 0x00, 0x55, pid(0x22), 5, 6,
 		checksum(.classic, pid(0x22), [u8(5), 6])], 30)
 	assert gs.len == 2
 	assert gs[0].event == .wakeup
@@ -262,7 +270,7 @@ fn test_decode_short_pulse_is_wakeup() {
 	// 0x00 confirmed by a break; the frame after it reads as ever.
 	mut w := [u8(0x00)]
 	w << wire(0x22, with_cs(.classic, 0x22, [u8(5), 6]))
-	gs := d.feed(w, 50)
+	gs := ended(mut d, w, 50)
 	assert gs.len == 2
 	assert gs[0].event == .wakeup
 	assert gs[1].id == 0x22 && gs[1].errs == Errs.zero()
@@ -360,4 +368,34 @@ fn test_bytes_after_a_rejected_header_are_no_wakeup() {
 	// A wakeup after the idle is one again.
 	d.feed([u8(0x00)], 6)
 	assert d.idle(7).len == 1
+}
+
+fn test_decode_a_response_past_its_length_is_long() {
+	mut d := new_decoder(table(), 19200)
+	data := [u8(1), 2, 3, 4]
+	mut w := wire(0x22, with_cs(.classic, 0x22, data))
+	// 0x22 is expected with 2 data bytes: what follows the checksum position is the frame's too
+	assert d.feed(w, 3).len == 0
+	fs := d.idle(4)
+	assert fs.len == 1 && fs[0].errs.has(.long) && fs[0].data == [u8(1), 2]
+	// a byte shaped like a wakeup pulse after a frame's length is not one
+	mut v := wire(0x22, with_cs(.classic, 0x22, [u8(5), 6]))
+	v << 0xF0
+	gs := ended(mut d, v, 5)
+	assert gs.len == 1 && gs[0].event == .frame && gs[0].errs.has(.long)
+}
+
+fn test_decode_an_open_frame_keeps_the_expectation_it_began_with() {
+	mut d := new_decoder({
+		u8(0x10): Expect{
+			len: 1
+		}
+	}, 19200)
+	// enhanced 0x10 [D7] with its checksum inverted, which happens to be D7's classic checksum
+	cs := checksum(.enhanced, pid(0x10), [u8(0xD7)]) ^ 0xFF
+	assert d.feed(wire(0x10, [u8(0xD7), cs]), 1).len == 0
+	// the entry that stated the length goes before the frame is finished
+	d.lengths = map[u8]Expect{}
+	fs := d.idle(2)
+	assert fs.len == 1 && fs[0].errs == Errs.checksum && fs[0].model == .enhanced
 }

@@ -15,7 +15,8 @@ pub struct RowSpec {
 pub:
 	name    string
 	address string
-	// baud is the bus's rate; 0 takes the LDF's LIN_speed, else 19200.
+	// baud is the bus's rate; 0 takes the rate a serial address states, else the LDF's LIN_speed,
+	// else 19200. A rate the address contradicts is refused.
 	baud int
 	// ldf is the description file's path; '' for none, which allows no simulate or schedule.
 	ldf  string
@@ -129,6 +130,8 @@ mut:
 // Simulated is a node this row plays: its handle and the values its frames carry now.
 struct Simulated {
 	node string
+	// shared: the node answers through the row's own handle, which the row reads and closes.
+	shared bool
 mut:
 	bus    Bus
 	values map[string]map[string]lindb.Value // frame name -> signal -> value set by set_signal
@@ -185,9 +188,12 @@ pub fn start_row(spec RowSpec, opts RowOpts) !&Row {
 	check_row(spec, ldf)!
 	mut baud := spec.baud
 	if baud == 0 {
-		baud = 19200
-		if l := ldf {
-			baud = l.speed_bps or { 19200 }
+		baud = address_baud(spec.address) or {
+			mut speed := default_baud
+			if l := ldf {
+				speed = l.speed_bps or { default_baud }
+			}
+			speed
 		}
 	}
 	mut notes := []string{}
@@ -226,6 +232,10 @@ pub fn start_row(spec RowSpec, opts RowOpts) !&Row {
 			}
 		}
 	}
+	// On a bus that takes one handle per device the row's own handle answers for every node it
+	// simulates: their entries say their responses are the simulation's, and a single simulated
+	// slave's NAD is the handle's.
+	shared_handle := one_handle_per_device(spec.address)
 	src := if spec.role == .monitor {
 		Src.remote
 	} else if master_sim {
@@ -233,10 +243,19 @@ pub fn start_row(spec RowSpec, opts RowOpts) !&Row {
 	} else {
 		Src.tester
 	}
+	mut nad := u8(0)
+	if shared_handle && slaves.len == 1 {
+		if l := ldf {
+			if node := l.node(slaves[0]) {
+				nad = node.configured_nad or { u8(0) }
+			}
+		}
+	}
 	bus := open(spec.address, Config{
 		role:  spec.role
 		baud:  baud
 		src:   src
+		nad:   nad
 		clock: opts.clock
 	}) or { return error('lin ${spec.name}: ${err.msg()}') }
 	mut r := &Row{
@@ -301,6 +320,37 @@ fn (mut r Row) bring_up(master_entries []Entry, slaves []string, slave_entries [
 	for e in master_entries {
 		r.bus.set_entry(e)!
 	}
+	// The frames the row does not publish, by their LDF length and model, so a backend that
+	// times a response window by length (serial) does not wait out eight bytes for each.
+	if r.spec.role != .monitor {
+		mut published := master_entries.map(it.id)
+		for es in slave_entries {
+			published << es.map(it.id)
+		}
+		for id, exp in r.expects {
+			if id !in published {
+				r.bus.set_entry(Entry{
+					id:    id
+					dir:   .subscribe
+					len:   exp.len
+					model: exp.model
+				})!
+			}
+		}
+	}
+	if one_handle_per_device(r.spec.address) {
+		for k, n in slaves {
+			for e in slave_entries[k] {
+				r.bus.set_entry(Entry{ ...e, sim: true })!
+			}
+			r.sims << Simulated{
+				node:   n
+				shared: true
+				bus:    r.bus
+			}
+		}
+		return
+	}
 	for k, n in slaves {
 		node := l.node(n) or { lindb.Node{} }
 		mut b := open(r.spec.address, Config{
@@ -344,6 +394,9 @@ fn (mut r Row) read_loop() {
 
 fn (mut r Row) drain_sims() {
 	for mut s in r.sims {
+		if s.shared {
+			continue
+		}
 		for {
 			s.bus.recv(0) or { break }
 		}
@@ -670,7 +723,9 @@ pub fn (mut r Row) stop() bool {
 
 fn (mut r Row) close_handles() {
 	for mut s in r.sims {
-		s.bus.close()
+		if !s.shared {
+			s.bus.close()
+		}
 	}
 	r.bus.close()
 }

@@ -4,7 +4,6 @@
 module lin
 
 import sync.stdatomic
-import time
 import blobly.transport
 
 const inproc_queue_cap = 4096 // frames buffered per handle before drops
@@ -56,14 +55,14 @@ pub fn open_inproc(name string, cfg Config) !&InprocBus {
 	lock lin_inproc_reg {
 		mut hub := lin_inproc_reg.hubs[name] or {
 			h := &LinHub{
-				baud:  cfg.baud
+				baud:  cfg.rate()
 				clock: cfg.clock
 			}
 			lin_inproc_reg.hubs[name] = h
 			h
 		}
-		if hub.baud != cfg.baud {
-			return error('lin inproc:${name} runs at ${hub.baud} baud, not ${cfg.baud}')
+		if hub.baud != cfg.rate() {
+			return error('lin inproc:${name} runs at ${hub.baud} baud, not ${cfg.rate()}')
 		}
 		if cfg.role == .master && hub.master != 0 {
 			return error('lin inproc:${name} already has a master')
@@ -239,9 +238,9 @@ fn (mut hub LinHub) resolve(master &InprocBus, id u8, pubs []Publisher) {
 		e := pubs[win].entry
 		f = interpret(id, wire, Expect{ len: e.len, model: e.model })
 		// The survivors' source when they share one; survivors of mixed sources are no one's.
-		f.src = pubs[win].h.cfg.src
+		f.src = e.src_on(pubs[win].h.cfg.src)
 		for k, p in pubs {
-			if !lost[k] && p.h.cfg.src != f.src {
+			if !lost[k] && p.entry.src_on(p.h.cfg.src) != f.src {
 				f.src = .remote
 			}
 		}
@@ -250,8 +249,7 @@ fn (mut hub LinHub) resolve(master &InprocBus, id u8, pubs []Publisher) {
 	hub.state = if f.event == .sleep { State.sleep } else { State.active }
 	if id == master_req {
 		for mut h in hub.handles {
-			h.armed = f.errs == Errs.zero() && f.event == .frame && h.cfg.nad != 0
-				&& (f.data[0] == h.cfg.nad || f.data[0] == broadcast_nad)
+			h.armed = f.errs == Errs.zero() && f.event == .frame && names_nad(h.cfg.nad, f.data)
 		}
 	}
 	f.t_ns = hub.clock.now_ns()
@@ -343,36 +341,12 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !Frame {
 }
 
 fn (mut b InprocBus) pop(timeout_ms int) !Frame {
-	if timeout_ms == 0 {
-		mut f := Frame{}
-		return match b.queue.try_pop(mut f) {
-			.success { f }
-			.closed { b.gone() }
-			.not_ready { Timeout{} }
+	return queue_pop(b.queue, timeout_ms) or {
+		if err is QueueClosed {
+			return b.gone()
 		}
+		return err
 	}
-	if timeout_ms < 0 {
-		f := <-b.queue or { return b.gone() }
-		return f
-	}
-	// The select is an expression: its false is the closed channel.
-	mut got := false
-	mut frame := Frame{}
-	chan_open := select {
-		f := <-b.queue {
-			got = true
-			frame = f
-		}
-		(i64(timeout_ms) * time.millisecond) {
-		}
-	}
-	if got {
-		return frame
-	}
-	if !chan_open {
-		return b.gone()
-	}
-	return Timeout{}
 }
 
 pub fn (mut b InprocBus) status() Status {

@@ -223,11 +223,13 @@ enum DecState {
 	after_brk // a break seen, the sync byte awaited
 	want_pid  // the sync seen, the PID awaited
 	response  // the PID seen, response bytes being read
+	tail      // the response has its expected length; bytes after it make the frame long
 }
 
-// Decoder turns PARMRK chunks into frames. With an expectation for an id it ends the frame by
-// length; without one it ends the response at the next break, at idle, or at the most a frame
-// can hold. A frame is stamped with the time of the chunk its last byte came in.
+// Decoder turns PARMRK chunks into frames. A response is ended at the next break or at idle;
+// with an expectation for an id, bytes past its length are kept, so the frame reads `long`, and
+// without one, at the most a frame can hold. A frame is stamped with the time of the chunk its
+// last byte came in.
 //
 // A wakeup is a break with no sync after it, or a pulse too short for a break: a lone byte between
 // frames whose bits are one dominant run from the start bit (0x00, 0x80, 0xC0 .. 0xFE) lasting at
@@ -245,9 +247,12 @@ mut:
 	esc     int  // 1: FF seen, 2: FF 00 seen
 	st      DecState
 	id      u8
-	buf     []u8
-	errs    Errs
-	last_t  i64
+	// exp is what the open frame is read by, taken from lengths when its PID came in, so a
+	// change to lengths does not change how a frame already open is read.
+	exp    ?Expect
+	buf    []u8
+	errs   Errs
+	last_t i64
 }
 
 pub fn new_decoder(lengths map[u8]Expect, baud int) Decoder {
@@ -306,6 +311,25 @@ pub fn (mut d Decoder) feed(chunk []u8, t_ns i64) []Frame {
 		}
 	}
 	return out
+}
+
+// response_begun is whether a response has begun and can only end at a break or idle: it has
+// reached its expected length, or none is stated for its id.
+pub fn (d &Decoder) response_begun() bool {
+	if d.st == .tail {
+		return true
+	}
+	if d.st != .response || d.buf.len == 0 {
+		return false
+	}
+	_ := d.exp or { return true }
+	return false
+}
+
+// wants_idle is whether the decoder is waiting on the line going quiet: a frame or a wakeup pulse
+// is open, or a stray byte keeps the next lone pulse from reading as a wakeup.
+pub fn (d &Decoder) wants_idle() bool {
+	return d.st != .idle || d.garbage
 }
 
 // idle tells the decoder the line has been idle since its last byte: what is open ends now.
@@ -372,6 +396,7 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 				return
 			}
 			d.id = id
+			d.exp = if e := d.lengths[id] { ?Expect(e) } else { ?Expect(none) }
 			d.st = .response
 		}
 		.response {
@@ -380,9 +405,24 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 			if s == .ferr {
 				d.errs.set(.framing)
 			}
-			want := if e := d.lengths[d.id] { e.len + 1 } else { max_data + 1 }
-			if d.buf.len >= want {
+			if e := d.exp {
+				if d.buf.len >= e.len + 1 {
+					d.st = .tail
+				}
+			} else if d.buf.len >= max_data + 1 {
 				d.end_open(mut out)
+			}
+		}
+		.tail {
+			d.last_t = t_ns
+			d.buf << b
+			if s == .ferr {
+				d.errs.set(.framing)
+			}
+			// past anything a frame carries: the frame ends, long, and what follows is stray
+			if d.buf.len > max_data + 1 {
+				d.end_open(mut out)
+				d.garbage = true
 			}
 		}
 	}
@@ -402,9 +442,8 @@ fn (mut d Decoder) end_open(mut out []Frame) {
 			errs.set(.short)
 			d.emit(Frame{ errs: errs }, mut out)
 		}
-		.response {
-			exp := if e := d.lengths[d.id] { ?Expect(e) } else { ?Expect(none) }
-			mut f := interpret(d.id, d.buf, exp)
+		.response, .tail {
+			mut f := interpret(d.id, d.buf, d.exp)
 			if d.errs.has(.framing) {
 				f.errs.set(.framing)
 				if f.event == .sleep {
