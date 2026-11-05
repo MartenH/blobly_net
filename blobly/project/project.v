@@ -26,7 +26,7 @@ import blobly.player
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 11
+pub const schema_version = 12
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -40,9 +40,10 @@ pub const schema_version = 11
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
-	// v11 — a `lin:` section, which an older build drops on its next structured save.
-	if p.lin.len > 0 {
-		return 11
+	// v12 — a LIN bus as a row of `buses:` (`adapter: lin`), which an older build reads as a CAN
+	// channel. (v11's top-level `lin:` list is read into such rows.)
+	if p.channels.any(it.kind() == .lin) {
+		return 12
 	}
 	// v10 — a channel's own NM cluster (`nm:`). An older build drops the unknown key on its next
 	// structured save, and the wire loses its network-management reading with nothing said.
@@ -481,6 +482,11 @@ pub mut:
 	// group joined on that socket ('' = unicast only). What arrives is shown as trace rows
 	// (message id, type, raw payload); nothing is sent. See docs/ethernet_architecture.md.
 	group string
+	// A LIN row (kind .lin, lin.v): its LDF, role (master | slave | monitor) and the schedule its
+	// master runs from the start; `simulate` is the LDF nodes it plays.
+	ldf      string
+	lin_role string
+	schedule string
 }
 
 // iface_scheme_is reports whether an interface string carries EXACTLY this scheme: the bare
@@ -617,8 +623,6 @@ pub mut:
 	name     string = 'untitled'
 	version  int    = 1
 	channels []Channel
-	// the LIN buses, a list of their own and never rows of `channels` (lin.v)
-	lin []LinBus
 	// What reading the file had to say about it — currently the pre-v4 `bus:` migration (#97).
 	// NOT serialised: it describes this read, not the project, and `to_yaml` names its fields
 	// explicitly so nothing here reaches the file.
@@ -902,10 +906,11 @@ pub fn parse(text string) !Project {
 			if c is yaml.Null {
 				continue
 			}
-			p.channels << parse_channel(c)!
+			p.channels << if is_lin_row(c) { parse_lin_row(c, p.version)! } else { parse_channel(c)! }
 		}
 	}
-	p.lin = parse_lin(doc.value('lin'), p.channels, p.version)!
+	p.channels << parse_lin(doc.value('lin'), p.version)!
+	check_lin_names(p)!
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
@@ -1908,6 +1913,9 @@ pub fn split_vector_mode(address string) (string, bool, bool) {
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()
 	return match adapter {
+		'lin' {
+			'lin:${a}'
+		}
 		'virtual' {
 			if a == '' {
 				'inproc'
@@ -1963,6 +1971,12 @@ pub fn compose_iface(adapter string, address string) string {
 // to the `vcan` adapter; anything else raw is treated as `socketcan` (real `canN`).
 pub fn decompose_iface(iface string) (string, string) {
 	s := iface.trim_space()
+	if s == 'lin' {
+		return 'lin', ''
+	}
+	if s.starts_with('lin:') {
+		return 'lin', s['lin:'.len..]
+	}
 	if s == 'inproc' {
 		return 'virtual', ''
 	}

@@ -113,11 +113,12 @@ buses:
     simulate: [Engine]
 ```
 
-LIN buses are a top-level list of their own, `lin:`, after `buses:` — never rows of it. Each is
-`name`, `address` (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`), and optionally
-`bitrate`, `ldf`, `role` (master | slave | monitor), `simulate`, `schedule` and `enabled`; a
-project that has one is written as v11. The fields and what runs them are in
-[lin.md](lin.md#in-a-project).
+A LIN bus is a row of `buses:` with `adapter: lin`: `name`, `address` (`inproc:<name>`,
+`tty:<path>[@baud]`, `pty:<path>[@baud][,plain]`), and optionally `bitrate`, `ldf`, `role`
+(master | slave | monitor), `simulate`, `schedule` and `enabled`; a project that has one is written
+as v12, and a v11 file's top-level `lin:` list is read as such rows. In the Configuration panel
+its row edits the address and rate; the rest is edited in the File tab. The fields and what runs
+them are in [lin.md](lin.md#in-a-project).
 
 ## Example configurations
 

@@ -396,7 +396,7 @@ fn test_a_fault_that_cannot_take_effect_is_refused() {
 	assert refusal(t, 'ECU', 'Plain', 'freeze_counter', '') == '"Plain" on "ECU" has no E2E counter — freeze_counter would change nothing'
 	eth := FaultTarget{
 		...t
-		eth_kind: 'DoIP'
+		not_can: 'DoIP'
 	}
 	assert refusal(eth, 'ECU', 'Protected', 'drop', '') == '"CAN1" is a DoIP channel — nothing simulates on it, so a fault there could never take effect'
 	assert !injected_fault('inproc:ARM', 'ECU', 'Protected').active()

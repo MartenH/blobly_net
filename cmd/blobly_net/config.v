@@ -18,6 +18,10 @@ import vgui
 // truncates it.
 const cfg_address_cap = 64
 
+// cfg_lin_address_cap is a LIN row's address field: a serial device's stable path
+// (/dev/serial/by-id/...) is longer than a CAN address.
+const cfg_lin_address_cap = 512
+
 // asset_ref is how this project names a file a picker chose: relative to the project's own
 // directory (project.asset_ref), so it resolves wherever the program is started (#440). It was
 // relative to the working directory, which named the file only from there.
@@ -82,7 +86,7 @@ fn (mut app App) sync_cfg_bufs() {
 		app.cfg_bufs << CfgBuf{
 			name_buf:         mkbuf(ch.name, 48)
 			network_buf:      mkbuf(ch.network, 48)
-			address_buf:      mkbuf(ch.address, cfg_address_cap)
+			address_buf:      mkbuf(ch.address, if ch.kind() == .lin { cfg_lin_address_cap } else { cfg_address_cap })
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
 			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' }, 12)
 			manifest_buf:     mkbuf(ch.manifest, path_cap(ch.manifest))
@@ -135,7 +139,18 @@ fn (mut app App) commit_cfg() {
 		ch.iface = project.compose_iface(ch.adapter, ch.address)
 		ch.manifest = vgui.buf_str(b.manifest_buf)
 		br := vgui.buf_str(b.bitrate_buf).int()
-		if br > 0 {
+		if ch.kind() == .lin {
+			// the rules the file is read by (project.lin_fields), so a Save writes a project that opens
+			if why := project.lin_row_refusal(ch.address, vgui.buf_str(b.bitrate_buf)) {
+				app.cfg_invalid << CfgInvalid{
+					idx:  i
+					name: ch.name
+					why:  why
+				}
+			} else {
+				ch.bitrate = br // 0 states no rate
+			}
+		} else if br > 0 {
 			ch.bitrate = br
 		}
 		// EMPTY IS A VALUE HERE, unlike the nominal rate above, which keeps its old figure rather

@@ -994,6 +994,44 @@ fn cfg_field(label string, help string, sc f32) {
 	vgui.same_line_at(cfg_label_w * sc)
 }
 
+// draw_lin_row_fields is the rest of a LIN row's form: its address and rate here, and what the
+// File tab edits — the LDF, the role, the nodes it plays and the schedule — shown as they are.
+// None of the CAN fields: an adapter button would turn the row into a CAN bus and drop its LDF.
+// Ends the row's tree node; true when the row was removed.
+fn (mut app App) draw_lin_row_fields(i int, ch project.Channel, sc f32) bool {
+	cfg_field('address', 'inproc:<name>, tty:<path>[@baud] (a UART behind a LIN transceiver), pty:<path>[@baud][,plain] (a pseudo-terminal; ,plain for a program that writes LIN into it as into a UART). See docs/lin.md.',
+		sc)
+	vgui.set_next_item_width(320 * sc)
+	if vgui.input_text('##cad${i}', mut app.cfg_bufs[i].address_buf) {
+		app.dirty = true
+	}
+	cfg_field('bitrate', '1000..20000 baud; 0 takes the address\'s rate, else the LDF\'s LIN_speed.',
+		sc)
+	vgui.set_next_item_width(120 * sc)
+	if vgui.input_text('##cbr${i}', mut app.cfg_bufs[i].bitrate_buf) {
+		app.dirty = true
+	}
+	for label, value in {
+		'LDF':      if ch.ldf != '' { ch.ldf } else { '(none)' }
+		'role':     ch.lin_role
+		'simulate': if ch.simulate.len > 0 { ch.simulate.join(', ') } else { '(no node)' }
+		'schedule': if ch.schedule != '' { ch.schedule } else { '(none)' }
+	} {
+		cfg_field(label, '', sc)
+		vgui.text_dim(value)
+	}
+	cfg_field('', '', sc)
+	vgui.text_dim('the LDF, role, nodes and schedule are edited in the File tab')
+	cfg_field('', '', sc)
+	if vgui.small_button('remove this bus##crm${i}') {
+		vgui.tree_pop()
+		app.remove_bus(i)
+		return true
+	}
+	vgui.tree_pop()
+	return false
+}
+
 // draw_bus_editor renders one bus as a tree node: an enable checkbox + a header summary on
 // the collapsed row, expanding to the editable fields. Returns true if the bus was removed
 // (indices shifted — the caller stops iterating this frame). Enum/checkbox edits apply to
@@ -1015,7 +1053,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	addr := match ch.kind() {
 		.doip { ':${ch.doip_effective_address()}' }
 		.someip { ':${ch.someip_effective_address()}' }
-		.can { if ch.address != '' { ':${ch.address}' } else { '' } }
+		.can, .lin { if ch.address != '' { ':${ch.address}' } else { '' } }
 	}
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
 	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
@@ -1035,6 +1073,9 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	vgui.set_next_item_width(220 * sc)
 	if vgui.input_text('##cnw${i}', mut app.cfg_bufs[i].network_buf) {
 		app.dirty = true
+	}
+	if ch.kind() == .lin {
+		return app.draw_lin_row_fields(i, ch, sc)
 	}
 	// adapter picker (only backends usable on this platform)
 	cfg_field('adapter', adapter_tip(ch.adapter), sc)
@@ -1094,7 +1135,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	match ch.kind() {
 		.doip { app.draw_doip_entity_pick(i, ch) }
 		.can { app.draw_iface_pick(i) }
-		.someip {}
+		.someip, .lin {}
 	}
 
 	if ch.adapter == 'doip' {

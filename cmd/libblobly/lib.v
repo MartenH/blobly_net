@@ -845,6 +845,7 @@ pub fn bb_channel_kind(i i32) i32 {
 		.can { i32(C.BB_KIND_CAN) }
 		.doip { i32(C.BB_KIND_DOIP) }
 		.someip { i32(C.BB_KIND_SOMEIP) }
+		.lin { i32(C.BB_KIND_LIN) }
 	}
 }
 
@@ -868,11 +869,19 @@ pub fn bb_bus_open(iface &char) i32 {
 		return fail(bb_err, 'open: no interface')
 	}
 	name := unsafe { cstring_to_vstring(iface) }
-	// the rules the model uses — the interface's scheme, and a row's own type: on Linux a DoIP or
-	// SOME/IP endpoint would fall through to SocketCAN and fail as a missing device
-	if project.kind_of_iface(name) != .can || (bb_loaded && bb_rows.any(it.kind() != .can
-		&& it.iface_with_bitrate() == name)) {
-		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
+	// the rules the model uses — the interface's scheme, and a row's own type: on Linux a DoIP,
+	// SOME/IP or LIN endpoint would fall through to SocketCAN and fail as a missing device
+	mut not_can := project.kind_of_iface(name)
+	if not_can == .can && bb_loaded {
+		for r in bb_rows {
+			if r.kind() != .can && r.iface_with_bitrate() == name {
+				not_can = r.kind()
+				break
+			}
+		}
+	}
+	if not_can != .can {
+		return fail(bb_err, 'open: ${name} is a ${not_can.name()} endpoint, which carries no CAN frames')
 	}
 	nominal, data := project.wire_rates(if bb_loaded { bb_rows } else { [] }, name) or {
 		project.address_rates(name)

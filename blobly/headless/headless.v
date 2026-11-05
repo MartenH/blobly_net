@@ -73,7 +73,7 @@ pub:
 pub fn (c Channel) fault_target() sim.FaultTarget {
 	return sim.FaultTarget{
 		channel:  c.cfg.name
-		eth_kind: udsconn.carrier_of(c.cfg).eth_kind() or { '' }
+		not_can: udsconn.carrier_of(c.cfg).not_can() or { '' }
 		iface:    c.cfg.iface
 		db:       c.db
 		nodes:    c.cfg.all_nodes()
@@ -353,6 +353,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		// listening. Start the real thing here.
 		match ch.kind() {
 			.can {}
+			.lin {
+				continue // brought up by bring_up_lin
+			}
 			.someip {
 				// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
 				// someip.listen({ from = name }), which binds it for the window it asks for.

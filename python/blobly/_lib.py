@@ -146,7 +146,7 @@ BB_RELEASING = 3   # bb_stop / bb_wait_released: a loop is still letting go of i
 BB_ANSWERED = 4    # bb_uds_raw_suppressed: a positive answer came although none was asked for
 
 # enum bb_kind and enum bb_health_source
-KINDS = {0: "can", 1: "doip", 2: "someip"}
+KINDS = {0: "can", 1: "doip", 2: "someip", 3: "lin"}
 BB_HEALTH_SOURCE_NEEDS_READER = 2
 
 # bb_health, as transport.health_name spells it (the Lua prelude's bus.health strings)

@@ -83,13 +83,13 @@ LIN is being added in steps. This page says what exists today and what comes nex
 
 ## In a project
 
-A project's LIN buses are a list of their own, `lin:`, beside `buses:`. A LIN bus is never a row
-of `buses:`:
+A LIN bus is a row of `buses:` with `adapter: lin`:
 
 ```yaml
-lin:
+buses:
   - name: BODY
-    address: inproc:body        # or tty:/dev/ttyUSB0@19200, pty:/dev/pts/4
+    adapter: lin
+    address: inproc:body        # or tty:/dev/ttyUSB0@19200, pty:/tmp/lin_slave_0,plain
     bitrate: 19200              # optional: else the address's rate, else the LDF's LIN_speed
     ldf: ../dbc/lin_demo.ldf    # relative to the project file, as a database is
     role: master                # master | slave | monitor (the default)
@@ -98,12 +98,17 @@ lin:
     enabled: true
 ```
 
-An unknown key, a role that is not one of the three, a missing name or address, two LIN buses of
-one name, and a LIN bus named like a channel of `buses:` (scripts name both the same way) are
+Its interface is `lin:<address>` (`interface: lin:inproc:body` is the same row), and its kind is
+LIN: it has no generators, simulated CAN nodes or databases, and nothing that reads CAN frames
+reads it. A key a LIN row has no use for, a role that is not one of the three, a missing name or
+address, and a LIN row whose name another row carries (a script opens a LIN bus by its name) are
 refused when the project is read (an unknown key only in a file of this build's schema or older;
-a newer file opens with the version note). The GUI's Configuration refuses to save or start a
-channel renamed like a LIN bus, and a new bus never takes a LIN bus's name. A project with a `lin:` section is written as schema v11; one
-without it is written as before.
+a newer file opens with the version note). The GUI's Configuration refuses to save or start a row
+renamed like a LIN bus, and a new bus never takes a taken name. A project with a LIN row is
+written as schema v12; one without is written as before.
+
+A v11 file's top-level `lin:` list, the form LIN v1 used, is read into rows of this shape and
+saved as rows.
 
 The headless runner (`cmd/script`, `scripts/runtests.sh`) starts every enabled LIN bus before
 the CAN buses and stops it with the run. Its LDF notes are printed like a database's.

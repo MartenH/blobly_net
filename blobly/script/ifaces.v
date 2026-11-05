@@ -22,7 +22,7 @@ fn (mut env Env) register_ifaces() {
 fn (env &Env) rates_for(address string) (int, int) {
 	key := transport.wire_key(address)
 	for c in env.chans {
-		if c.carrier.eth_kind() == none && transport.wire_key(c.iface) == key {
+		if c.carrier.not_can() == none && transport.wire_key(c.iface) == key {
 			// as bus_for prices the row: an unset nominal rate is the default
 			return if c.nominal > 0 { c.nominal } else { project.default_bitrate }, c.data_rate
 		}
@@ -42,7 +42,7 @@ fn (mut env Env) open_iface(address string) !string {
 		return error('bus.open_iface: an address has no NUL')
 	}
 	if project.kind_of_iface(address) != .can {
-		return error('bus.open_iface: ${address} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
+		return error('bus.open_iface: ${address} is a ${project.kind_of_iface(address).name()} endpoint, which carries no CAN frames')
 	}
 	if address in env.by_address {
 		return address

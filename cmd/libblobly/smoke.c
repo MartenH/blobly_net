@@ -889,7 +889,7 @@ int main(int argc, char **argv) {
 	if (bb_message_count_p(can1) != BB_ERR_STATE) { fprintf(stderr, "FAIL a row's databases are the run's: none before start\n"); return 1; }
 	if (bb_channel_kind_p(n) != BB_ERR) { fprintf(stderr, "FAIL kind of a row past the end\n"); return 1; }
 	/* a DoIP endpoint is not a CAN bus: refused by name, not as a missing SocketCAN device */
-	if (bb_bus_open_p(doip_iface) != BB_ERR || strstr(bb_last_error_p(), "DoIP or SOME/IP") == NULL) { fprintf(stderr, "FAIL open of a DoIP row: %s\n", bb_last_error_p()); return 1; }
+	if (bb_bus_open_p(doip_iface) != BB_ERR || strstr(bb_last_error_p(), "is a DoIP endpoint") == NULL) { fprintf(stderr, "FAIL open of a DoIP row: %s\n", bb_last_error_p()); return 1; }
 	printf("ok   kinds and health sources; a DoIP row refused by name\n");
 	/* a UDS connection opens on the run's rows: before start no listen-only mark is published */
 	if (bb_uds_open_p(can1, NULL, NULL, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a UDS open before start must refuse\n"); return 1; }

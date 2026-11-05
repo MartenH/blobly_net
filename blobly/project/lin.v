@@ -1,37 +1,35 @@
-// lin — the project's LIN buses: a top-level `lin:` list, kept apart from `buses:` on purpose.
-// A LIN bus is never a row of `channels`, so nothing that reads the CAN and Ethernet rows meets
-// one. Plain strings and ints here; `blobly/lin` turns a bus into a running row (headless).
+// lin — a LIN bus as a row of `buses:`: `adapter: lin`, its LIN address (inproc:<name>,
+// tty:<path>[@baud], pty:<path>[@baud][,plain]) in `address:`, so its interface is
+// `lin:<address>` and its kind RowKind.lin; then `ldf:`, `role:`, `simulate:` and `schedule:`.
+// Parsed here, apart from parse_channel's CAN rules, which never see one. A v11 file's top-level
+// `lin:` list is read into rows of the same shape. Plain strings and ints; `blobly/lin` turns a
+// row into a running bus (lin.spec_of).
 module project
 
 import yaml
 
-// LinBus is one entry of the `lin:` list.
-pub struct LinBus {
-pub mut:
-	name    string
-	address string // inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]
-	// bitrate 0 takes the address's rate, else the LDF's LIN_speed
-	bitrate  int
-	ldf      string
-	role     string = 'monitor' // master | slave | monitor
-	simulate []string
-	schedule string
-	enabled  bool = true
-}
-
+// The keys a LIN row may carry; the legacy `lin:` entries carried the same but `type`/`adapter`.
+const lin_row_keys = ['name', 'network', 'adapter', 'type', 'protocol', 'address', 'interface',
+	'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
 const lin_keys = ['name', 'address', 'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
 const lin_roles = ['master', 'slave', 'monitor']
 
-// name_taken says whether a channel or a LIN bus of the project is called `name`.
-pub fn (p Project) name_taken(name string) bool {
-	return p.channels.any(it.name == name) || p.lin.any(it.name == name)
+// lin_rows is every LIN row of the project, in row order.
+pub fn (p Project) lin_rows() []Channel {
+	return p.channels.filter(it.kind() == .lin)
 }
 
-// name_clash is the refusal of a channel and a LIN bus sharing `name` (scripts name both in one
-// namespace); none when they do not.
+// name_taken says whether a row of the project is called `name`.
+pub fn (p Project) name_taken(name string) bool {
+	return p.channels.any(it.name == name)
+}
+
+// name_clash is the refusal of a LIN row sharing `name` with another row (a script opens a LIN
+// bus by its name, so it must name one); none when it does not.
 pub fn (p Project) name_clash(name string) ?string {
-	if p.channels.any(it.name == name) && p.lin.any(it.name == name) {
-		return '`${name}` is both a channel of buses: and a LIN bus; scripts name both in one namespace'
+	rows := p.channels.filter(it.name == name)
+	if rows.len > 1 && rows.any(it.kind() == .lin) {
+		return '`${name}` names a LIN bus and another row; a script opens a LIN bus by its name'
 	}
 	return none
 }
@@ -55,17 +53,109 @@ fn str_list(v yaml.Any, what string) ![]string {
 	return out
 }
 
-// parse_lin reads the `lin:` list; `chans` are the project's rows, whose names a LIN bus may not
-// take. An unknown key is refused in a file of this build's schema or older, and ignored in a
-// newer one, which the version note covers.
-fn parse_lin(v yaml.Any, chans []Channel, version int) ![]LinBus {
+// is_lin_row is whether a `buses:` entry is a LIN bus: `adapter: lin`, `type: lin`, or an
+// interface of the `lin:` scheme.
+fn is_lin_row(c yaml.Any) bool {
+	for k in ['adapter', 'type', 'protocol'] {
+		if v := c.value_opt(k) {
+			if v.string() == 'lin' {
+				return true
+			}
+		}
+	}
+	if v := c.value_opt('interface') {
+		return kind_of_iface(v.string()) == .lin
+	}
+	return false
+}
+
+// lin_row is a LIN row from its parts, the one constructor parse and the legacy section share.
+fn lin_row(name string, network string, address string, bitrate int, ldf string, role string, simulate []string, schedule string, enabled bool) Channel {
+	return Channel{
+		name:     name
+		network:  network
+		adapter:  'lin'
+		address:  address
+		typ:      'lin'
+		iface:    compose_iface('lin', address)
+		bitrate:  bitrate
+		ldf:      ldf
+		lin_role: role
+		simulate: simulate
+		schedule: schedule
+		enabled:  enabled
+	}
+}
+
+// parse_lin_row reads a LIN row of `buses:`. An unknown key is refused in a file of this
+// build's schema or older, and ignored in a newer one, which the version note covers.
+fn parse_lin_row(c yaml.Any, version int) !Channel {
+	m := c.as_map()
+	label := if n := m['name'] { 'channel "${n.string()}"' } else { 'a LIN channel' }
+	for k, _ in m {
+		if k !in lin_row_keys && version <= schema_version {
+			return error('${label}: unknown key `${k}` for a LIN bus (known: ${lin_row_keys.join(', ')})')
+		}
+	}
+	mut address := c.value('address').default_to('').string().trim_space()
+	if address == '' {
+		if v := c.value_opt('interface') {
+			_, address = decompose_iface(v.string())
+		}
+	}
+	return lin_fields(c, label, address, c.value('network').default_to('').string())
+}
+
+// lin_row_refusal is why an address and a typed rate cannot be a LIN row's, as lin_fields reads
+// them; none when they can. The GUI's editor asks it before it commits.
+pub fn lin_row_refusal(address string, rate string) ?string {
+	if address.trim_space() == '' {
+		return 'a LIN bus needs an address (inproc:<name>, tty:<path>, pty:<path>)'
+	}
+	r := rate.trim_space()
+	if r == '' || r == '0' {
+		return none
+	}
+	if !is_all_digits(r) || r.int() < 1000 || r.int() > 20000 {
+		return 'a LIN bitrate is 1000..20000 baud, or 0 for the address\'s or the LDF\'s (not ${r})'
+	}
+	return none
+}
+
+// lin_fields reads what a LIN row and a legacy `lin:` entry share.
+fn lin_fields(c yaml.Any, label string, address string, network string) !Channel {
+	name := c.value('name').default_to('').string().trim_space()
+	if name == '' {
+		return error('${label}: needs a name')
+	}
+	if address == '' {
+		return error('${label}: needs an address (inproc:<name>, tty:<path>, pty:<path>)')
+	}
+	role := c.value('role').default_to('monitor').string()
+	if role !in lin_roles {
+		return error('${label}: role `${role}` is not one of ${lin_roles.join(', ')}')
+	}
+	mut bitrate := 0
+	if r := c.value_opt('bitrate') {
+		bitrate = int(checked_int(r.str(), '${label}: bitrate', 1000, 20000)!)
+	}
+	mut simulate := []string{}
+	if s := c.value_opt('simulate') {
+		simulate = str_list(s, '${label}: simulate')!
+	}
+	return lin_row(name, network, address, bitrate, c.value('ldf').default_to('').string(),
+		role, simulate, c.value('schedule').default_to('').string(), c.value('enabled').default_to(true).bool())
+}
+
+// parse_lin reads a v11 file's top-level `lin:` list into LIN rows, appended after `buses:`.
+fn parse_lin(v yaml.Any, version int) ![]Channel {
 	if v is yaml.Null {
 		return []
 	}
 	if v !is []yaml.Any {
 		return error('lin: is a list of LIN buses')
 	}
-	mut out := []LinBus{}
+	mut out := []Channel{}
 	for i, e in v.array() {
 		if e !is map[string]yaml.Any {
 			return error('lin: entry ${i + 1} is not a mapping')
@@ -77,108 +167,45 @@ fn parse_lin(v yaml.Any, chans []Channel, version int) ![]LinBus {
 				return error('${label}: unknown key `${k}` (known: ${lin_keys.join(', ')})')
 			}
 		}
-		mut b := LinBus{
-			name:     e.value('name').default_to('').string().trim_space()
-			address:  e.value('address').default_to('').string().trim_space()
-			ldf:      e.value('ldf').default_to('').string()
-			role:     e.value('role').default_to('monitor').string()
-			schedule: e.value('schedule').default_to('').string()
-			enabled:  e.value('enabled').default_to(true).bool()
-		}
-		if b.name == '' {
-			return error('${label}: needs a name')
-		}
-		if b.address == '' {
-			return error('${label}: needs an address (inproc:<name>, tty:<path>, pty:<path>)')
-		}
-		if b.role !in lin_roles {
-			return error('${label}: role `${b.role}` is not one of ${lin_roles.join(', ')}')
-		}
-		if r := e.value_opt('bitrate') {
-			b.bitrate = int(checked_int(r.str(), '${label}: bitrate', 1000, 20000)!)
-		}
-		if s := e.value_opt('simulate') {
-			b.simulate = str_list(s, '${label}: simulate')!
-		}
-		if out.any(it.name == b.name) {
-			return error('${label}: two LIN buses are named `${b.name}`')
-		}
-		if why := Project{
-			channels: chans
-			lin:      [b]
-		}.name_clash(b.name) {
-			return error('${label}: ${why}')
-		}
-		out << b
+		out << lin_fields(e, label, e.value('address').default_to('').string().trim_space(),
+			'')!
 	}
 	return out
 }
 
-// lin_yaml is the `lin:` section as save writes it, after `buses:`; '' when there is none.
-fn (p Project) lin_yaml() string {
-	if p.lin.len == 0 {
-		return ''
-	}
-	mut s := '\nlin:\n'
-	for b in p.lin {
-		s += '  - name: ${yaml_scalar(b.name)}\n'
-		s += '    address: ${yaml_scalar(b.address)}\n'
-		if b.bitrate > 0 {
-			s += '    bitrate: ${b.bitrate}\n'
-		}
-		if b.ldf != '' {
-			s += '    ldf: ${yaml_scalar(b.ldf)}\n'
-		}
-		s += '    role: ${b.role}\n'
-		if b.simulate.len > 0 {
-			s += '    simulate: [${b.simulate.map(yaml_scalar(it)).join(', ')}]\n'
-		}
-		if b.schedule != '' {
-			s += '    schedule: ${yaml_scalar(b.schedule)}\n'
-		}
-		s += '    enabled: ${b.enabled}\n'
-	}
-	return s
-}
-
-// lin_refs is every LIN bus's LDF reference.
-fn (p Project) lin_refs() []string {
-	return p.lin.filter(it.ldf != '').map(it.ldf)
-}
-
-// lin_reference_notes is cwd_only_note over the LDFs not in `said`, prefixed with the bus.
-fn (p Project) lin_reference_notes(dir string, mut said map[string]bool) []string {
-	mut notes := []string{}
-	for b in p.lin {
-		if b.ldf == '' || b.ldf in said {
+// check_lin_names refuses a LIN row whose name another row carries.
+fn check_lin_names(p Project) ! {
+	for ch in p.channels {
+		if ch.kind() != .lin {
 			continue
 		}
-		said[b.ldf] = true
-		if n := cwd_only_note(dir, b.ldf) {
-			notes << '${b.name}: ${n}'
+		if why := p.name_clash(ch.name) {
+			return error('channel "${ch.name}": ${why}')
 		}
 	}
-	return notes
 }
 
-// rebase_lin rewrites each LIN bus's LDF for a Save As (rebase_assets), returning one AssetRefs
-// per bus with what it was.
-fn (mut p Project) rebase_lin(old_dir string, new_dir string) []AssetRefs {
-	mut was := []AssetRefs{cap: p.lin.len}
-	for mut b in p.lin {
-		was << AssetRefs{
-			ldf: b.ldf
-		}
-		b.ldf = rebase_ref(old_dir, new_dir, b.ldf)
+// lin_row_yaml is a LIN row as save writes it, inside `buses:`.
+fn lin_row_yaml(ch Channel) string {
+	mut s := '  - name: ${yaml_scalar(ch.name)}\n'
+	if ch.network != '' {
+		s += '    network: ${yaml_scalar(ch.network)}\n'
 	}
-	return was
-}
-
-// restore_lin puts back what rebase_lin returned, by LIN bus index.
-fn (mut p Project) restore_lin(was []AssetRefs) {
-	for i, w in was {
-		if i < p.lin.len {
-			p.lin[i].ldf = w.ldf
-		}
+	s += '    adapter: lin\n'
+	s += '    address: ${yaml_scalar(ch.address)}\n'
+	if ch.bitrate > 0 {
+		s += '    bitrate: ${ch.bitrate}\n'
 	}
+	if ch.ldf != '' {
+		s += '    ldf: ${yaml_scalar(ch.ldf)}\n'
+	}
+	s += '    role: ${ch.lin_role}\n'
+	if ch.simulate.len > 0 {
+		s += '    simulate: [${ch.simulate.map(yaml_scalar(it)).join(', ')}]\n'
+	}
+	if ch.schedule != '' {
+		s += '    schedule: ${yaml_scalar(ch.schedule)}\n'
+	}
+	s += '    enabled: ${ch.enabled}\n'
+	return s
 }

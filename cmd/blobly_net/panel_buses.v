@@ -415,6 +415,7 @@ fn bus_kind(adapter string) string {
 		'udp' { 'UDP software bus' }
 		'doip' { 'DoIP (Ethernet)' }
 		'someip' { 'SOME/IP (Ethernet)' }
+		'lin' { 'LIN' }
 		'' { 'Other' }
 		else { adapter }
 	}

@@ -75,7 +75,7 @@ fn (env &Env) rows_named(l lua.State, what string, first int) ![]replay.Row {
 		name := l.arg_str(a)
 		ci := env.find_chan(name)!
 		c := env.chans[ci]
-		if k := c.carrier.eth_kind() {
+		if k := c.carrier.not_can() {
 			return error('${what}("${name}"): a ${k} channel carries no CAN frames')
 		}
 		rows << replay.Row{

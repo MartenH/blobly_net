@@ -81,6 +81,12 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 			named_at = j
 		}
 	}
+	if named.len == 1 && named[0].kind() == .lin {
+		return SenderBus{
+			kind: .ambiguous
+			note: '`bus: ${bus}` names a LIN bus, which carries no CAN frames — the generator has nowhere to send'
+		}
+	}
 	if named.len == 1 {
 		return SenderBus{
 			kind: .named

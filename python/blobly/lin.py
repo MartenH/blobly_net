@@ -1,6 +1,6 @@
 """lin — LIN through libblobly (blobly/lin, docs/lin.md): a project's LIN buses (Project.lin) and a
-LIN bus by its address (blobly.lin.open). A LIN bus is not a Channel: it is the project's `lin:`
-list, its frames LinFrames, decoded through its LDF.
+LIN bus by its address (blobly.lin.open). A LIN bus is a row of the project (`adapter: lin`), its
+frames LinFrames, decoded through its LDF; its Channel in net.channels is of kind "lin".
 
     import blobly
     with blobly.Project("projects/lin-demo.blobnet") as net:

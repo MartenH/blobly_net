@@ -358,7 +358,7 @@ fn (mut env Env) bus_for(name string) !&transport.MeteredBus {
 	// through to SocketCAN and fails with an ioctl error about a device of that spelling, which
 	// tells the author nothing about what they actually did. Guarding uds.open alone (where this
 	// started) left the same mistake reachable through three other doors.
-	if k := env.chans[ci].carrier.eth_kind() {
+	if k := env.chans[ci].carrier.not_can() {
 		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted or received as frames on it')
 	}
 	if b := env.buses[name] {
@@ -521,7 +521,7 @@ pub fn (c ChanInfo) fault_iface() string {
 fn (c ChanInfo) fault_target() sim.FaultTarget {
 	return sim.FaultTarget{
 		channel:  c.name
-		eth_kind: c.carrier.eth_kind() or { '' }
+		not_can: c.carrier.not_can() or { '' }
 		iface:    c.fault_iface()
 		db:       c.db
 		nodes:    c.nodes
@@ -1036,7 +1036,7 @@ fn l_uds_functional(l lua.State) i32 {
 	if nil_id {
 		return l.fail('uds.functional: the functional id is not an integer')
 	}
-	if k := info.carrier.eth_kind() {
+	if k := info.carrier.not_can() {
 		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN or DoIP only')
 	}
 	if fid < 0 || fid > 0x1FFF_FFFF {

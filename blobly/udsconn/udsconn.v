@@ -27,11 +27,12 @@ pub:
 	ecu    u16
 }
 
-// eth_kind names this carrier's kind where it is not ISO-TP on a CAN bus, none for a CAN row.
-pub fn (c Carrier) eth_kind() ?string {
+// not_can names this carrier's kind where it is not ISO-TP on a CAN bus (DoIP, SOME/IP, LIN),
+// none for a CAN row.
+pub fn (c Carrier) not_can() ?string {
 	return match c.kind {
 		.can { none }
-		.doip, .someip { c.kind.name() }
+		.doip, .someip, .lin { c.kind.name() }
 	}
 }
 
@@ -40,6 +41,11 @@ pub fn carrier_of(ch project.Channel) Carrier {
 	return match ch.kind() {
 		.can {
 			Carrier{}
+		}
+		.lin {
+			Carrier{
+				kind: .lin
+			}
 		}
 		.someip {
 			host, port := ch.someip_endpoint()
@@ -107,8 +113,8 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 	check_ids(a, name)!
 	match car.kind {
 		.can {}
-		.someip {
-			return error('"${name}" is a SOME/IP channel — not a diagnostics carrier')
+		.someip, .lin {
+			return error('"${name}" is a ${car.kind.name()} channel — not a diagnostics carrier')
 		}
 		.doip {
 			if a.has_tx || a.has_rx {

@@ -433,8 +433,8 @@ else:
 
 ### LIN
 
-A LIN bus is not a channel: it is the project's `lin:` list ([lin.md](lin.md)), and `net.lin` is
-the run's LIN buses, a `LinBuses` of `LinBus`, re-read each run and keeping each bus still at its
+A LIN bus is a row of the project with `adapter: lin` ([lin.md](lin.md)); in `net.channels` it is a
+`Channel` of kind `"lin"`, which carries no CAN frames, and `net.lin` is the run's LIN buses, a `LinBuses` of `LinBus`, re-read each run and keeping each bus still at its
 position under its name. `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` is a LIN
 bus of the script's own on an address (`inproc:<name>`; on Linux `tty:<path>[@baud]` and
 `pty:<path>[@baud][,plain]`, [lin.md](lin.md)), with or without a project, stopped by `close()` or the end of a `with`; a

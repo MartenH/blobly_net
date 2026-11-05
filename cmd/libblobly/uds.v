@@ -1088,8 +1088,8 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		.doip {
 			return fail(bb_err, 'functional("${ch.name}"): a DoIP channel — its functional request is bb_uds_functional_doip, on its one handle')
 		}
-		.someip {
-			return fail(bb_err, 'functional("${ch.name}"): a SOME/IP channel — functional addressing is CAN or DoIP only')
+		.someip, .lin {
+			return fail(bb_err, 'functional("${ch.name}"): a ${ch.kind().name()} channel — functional addressing is CAN or DoIP only')
 		}
 	}
 	if id < 0 || id > 0x1FFF_FFFF {
