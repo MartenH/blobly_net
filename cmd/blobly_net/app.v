@@ -555,6 +555,9 @@ mut:
 	// bridge's channels appear as it dials in.
 	disc_wsl     []string
 	disc_bridges string
+	// Where BLOBLY_BRIDGE_LISTEN made the bridge listener listen, '' when it is not set (#587):
+	// the Discover dialog's LAN section says it.
+	bridge_listen_at string
 	disc_cansub_started u64
 	disc_cansub_landed  u64
 	disc_cansub_shown   u64

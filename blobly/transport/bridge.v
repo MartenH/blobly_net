@@ -358,6 +358,20 @@ pub fn bridge_drop(name string) {
 	}
 }
 
+// bridge_failures is why each bridge not connected now could not start, by name, as it said in
+// its hello or as its launch failed: WSL distributions and bridges on the LAN alike.
+pub fn bridge_failures() map[string]string {
+	mut out := map[string]string{}
+	rlock bridge_reg {
+		for name, why in bridge_reg.failed {
+			if name !in bridge_reg.sessions {
+				out[name] = why
+			}
+		}
+	}
+	return out
+}
+
 // bridge_state is where the bridge of that name stands, with the reason when it failed.
 pub fn bridge_state(name string) (BridgeState, string) {
 	now := time.ticks()

@@ -647,6 +647,7 @@ fn test_a_bridge_that_cannot_start_says_why_and_a_forged_failure_is_ignored() {
 		if st == .failed {
 			assert why == 'cannot create vcan0: no vcan module'
 			assert 'b-cannot' !in bridge_names()
+			assert bridge_failures()['b-cannot'] == why
 			return
 		}
 		time.sleep(10 * time.millisecond)
