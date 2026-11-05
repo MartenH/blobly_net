@@ -5,25 +5,6 @@ module headless
 import os
 import time
 import blobly.lin
-import blobly.project
-
-// lin_spec is a project's LIN bus as a lin.Row is started with, its LDF resolved against the
-// project's directory as a database is.
-fn lin_spec(b project.LinBus, proj_dir string) lin.RowSpec {
-	return lin.RowSpec{
-		name:     b.name
-		address:  b.address
-		baud:     b.bitrate
-		ldf:      if b.ldf == '' { '' } else { project.resolve_asset(proj_dir, b.ldf) }
-		role:     match b.role {
-			'master' { lin.Role.master }
-			'slave' { lin.Role.slave }
-			else { lin.Role.monitor }
-		}
-		simulate: b.simulate
-		schedule: b.schedule
-	}
-}
 
 // bring_up_lin starts every enabled LIN bus; on a refusal the rows already started are stopped,
 // and nothing is left running.
@@ -33,7 +14,7 @@ fn (mut r Run) bring_up_lin(o Options) ! {
 		if !b.enabled {
 			continue
 		}
-		mut row := lin.start_row(lin_spec(b, os.dir(r.path)), lin.RowOpts{}) or {
+		mut row := lin.start_row(lin.spec_of(b, os.dir(r.path)), lin.RowOpts{}) or {
 			for mut s in started {
 				s.stop()
 			}

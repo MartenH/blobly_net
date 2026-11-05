@@ -208,6 +208,7 @@ fn draw_menubar(mut app App) {
 			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_nm = vgui.menu_item_check('Network Management', app.show_nm)
+			app.show_lin = vgui.menu_item_check('LIN', app.show_lin)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
 			app.show_replay = vgui.menu_item_check('Replay', app.show_replay)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
@@ -612,6 +613,7 @@ fn (mut app App) reset_layout() {
 	app.show_stats = false
 	app.show_perf = false
 	app.show_nm = false
+	app.show_lin = false
 	app.show_shell = false
 	app.show_dbc = false
 	app.show_sys = false

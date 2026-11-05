@@ -106,9 +106,28 @@ channel renamed like a LIN bus, and a new bus never takes a LIN bus's name. A pr
 without it is written as before.
 
 The headless runner (`cmd/script`, `scripts/runtests.sh`) starts every enabled LIN bus before
-the CAN buses and stops it with the run. Its LDF notes are printed like a database's. The GUI
-reads and saves the section, but does not run or show the buses yet: Start says so in the Log.
+the CAN buses and stops it with the run. Its LDF notes are printed like a database's.
 `projects/lin-demo.blobnet` is the example, and `tests/lin.lua` its suite.
+
+## In the GUI
+
+Start runs every enabled LIN bus too, and Stop ends it. Each bus is shown in **View ▸ LIN**, and
+its LDF notes go to the Log:
+- a header line: the bus's state (active or asleep), rate and load, and the schedule's progress
+  (headers sent, slots that started late, headers the bus refused);
+- a master's controls: run a schedule table of the LDF, stop it, go to sleep, wakeup (a slave
+  has wakeup only, a monitor nothing);
+- a table with a row per frame id seen: its LDF name, count, errors, cadence, the last frame
+  with its origin (`TX-S` our simulation, `TX` our tester, `RX` another node) and its signals;
+- **simulated signals**: what the row's simulated nodes publish, one value each, set by typing
+  a value and Enter. A value is typed as it is shown: a number (physical where the signal has
+  a physical range, else raw), a logical value's text, a byte array's bytes in hex. `raw:N`,
+  `phys:X`, `text:...` and `bytes:01 02` say which. It goes out from the next response;
+- the last 500 frames, newest first.
+
+A script run from the Script panel while the run is on reaches its LIN buses by name.
+LIN is not in the trace, the Buses panel or a recording; that comes when a LIN bus is a row
+like the others.
 
 ## From Lua
 
@@ -116,7 +135,7 @@ reads and saves the section, but does not run or show the buses yet: Start says 
 controls the row (`lin.header`, `lin.set`, `lin.schedule`, ... as its role allows).
 `lin.open("inproc:x", { role = "master", ldf = "x.ldf", baud = 19200 })` opens an address as a
 bus of the script's own, closed when the script ends; the LDF path is relative to the script. In
-the GUI's Script panel `lin.open` takes an address only. The calls are in
+the GUI's Script panel a name reaches the running run's LIN buses. The calls are in
 [scripting.md](scripting.md#lin--lin).
 
 ## From C and Python
@@ -140,9 +159,7 @@ calls are in [scripting_python.md](scripting_python.md#lin), and
 ## What comes next
 
 Each step is its own pull request:
-1. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
-2. A LIN panel in the GUI.
+1. The project's buses restructured so a kind of bus is one row kind; then a LIN bus as a row
+   like the others, in the trace, the Buses panel and recordings.
+2. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
 3. A real LIN node on a system_full board.
-
-Until the LIN panel exists, LIN does not appear in the GUI's trace, its Buses panel or its
-recordings.

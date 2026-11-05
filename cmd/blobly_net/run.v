@@ -1071,9 +1071,8 @@ fn (mut app App) start() {
 	app.tx_health_noted = map[string]bool{}
 	app.mu.unlock()
 	app.running = true
-	if app.proj.lin.len > 0 {
-		app.notify('LIN: the GUI does not run or show the project lin: buses yet; the headless runner does (docs/lin.md)')
-	}
+	// the LIN buses, apart from the CAN rows: a worker each, shown in View ▸ LIN
+	app.start_lin()
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —
 	// an alarm about the interval the operator spent not measuring.

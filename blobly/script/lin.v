@@ -156,7 +156,7 @@ fn l_lin_open(l lua.State) i32 {
 				'it has none'
 			}}), and it is not an address')
 		}
-		return l.fail('lin.open: `${target}` is not an address, and the GUI does not run LIN rows yet (docs/lin.md); give lin.open an address such as inproc:<name>')
+		return l.fail('lin.open: `${target}` is not an address, and this script was given no run\'s LIN buses; give lin.open an address such as inproc:<name>')
 	}
 	role := role_of(l.arg_str(2)) or { return l.fail('lin.open: ${err.msg()}') }
 	baud := int_arg(l, 4, 'baud', 0, 20000) or { return l.fail('lin.open: ${err.msg()}') }

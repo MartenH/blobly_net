@@ -99,15 +99,15 @@ end)
 	m.close()
 }
 
-// Without the run's rows (the GUI), a row name is refused saying so.
-fn test_lin_names_need_a_headless_run() {
+// Without a run's rows, a row name is refused saying so.
+fn test_lin_names_need_a_run() {
 	mut env := new_env([])!
 	defer {
 		env.close()
 	}
 	env.run_source('test("gui", function()
   local ok, e = pcall(lin.open, "BODY")
-  check.truthy(e:find("the GUI does not run LIN rows yet", 1, true) ~= nil, e)
+  check.truthy(e:find("was given no run", 1, true) ~= nil, e)
 end)')!
 	assert env.failed() == 0, env.results.filter(!it.ok).map('${it.name}: ${it.msg}').str()
 }
