@@ -437,7 +437,7 @@ A LIN bus is not a channel: it is the project's `lin:` list ([lin.md](lin.md)), 
 the run's LIN buses, a `LinBuses` of `LinBus`, re-read each run and keeping each bus still at its
 position under its name. `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` is a LIN
 bus of the script's own on an address (`inproc:<name>`; on Linux `tty:<path>[@baud]` and
-`pty:<path>[@baud]`), with or without a project, stopped by `close()` or the end of a `with`; a
+`pty:<path>[@baud][,plain]`, [lin.md](lin.md)), with or without a project, stopped by `close()` or the end of a `with`; a
 second master on one bus is refused. A `LinBus` reads every frame the bus carries from its first
 read, its own included (`origin`), each a `LinFrame` decoded through the bus's LDF, and controls
 the bus as its role allows: a monitor sends nothing, a slave no header and no go-to-sleep
@@ -1967,7 +1967,7 @@ the block.
 
 | name | what |
 |---|---|
-| `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` | A `LinBus` of the script's own on `address` (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`), as `role` (`"master"`, `"slave"`, `"monitor"`), read by `ldf`, at `baud` (0: the address's, else the LDF's, else 19200); `Refused` when it will not open ([LIN](#lin)). |
+| `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` | A `LinBus` of the script's own on `address` (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud][,plain]`), as `role` (`"master"`, `"slave"`, `"monitor"`), read by `ldf`, at `baud` (0: the address's, else the LDF's, else 19200); `Refused` when it will not open ([LIN](#lin)). |
 
 ### `LinBus`, `LinBuses`
 

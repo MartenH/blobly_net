@@ -392,7 +392,7 @@ class LinBus:
 def open(address: str, role: Role = "monitor", *, ldf: "str | os.PathLike[str] | None" = None,  # noqa: A001
          baud: int = 0) -> LinBus:
     """A LIN bus of the script's own on `address` — "inproc:<name>", or on Linux
-    "tty:<path>[@baud]" and "pty:<path>[@baud]" — with or without a project loaded: `role`
+    "tty:<path>[@baud]" and "pty:<path>[@baud][,plain]" — with or without a project loaded: `role`
     "master", "slave" or "monitor"; `ldf` the description file its frames are read by (relative
     to the working directory; None: none); `baud` 0 for the address's rate, else the LDF's
     LIN_speed, else 19200 (or 1000..20000). Refused (Refused) when it will not open — a second

@@ -17,7 +17,11 @@
 // `pty:` is a pseudo-terminal, for tests and for talking to another program. A pty carries no
 // break and no echo, so a break is written in-band in the PARMRK form (FF 00 00, a data 0xFF as
 // FF FF), the reader passes input through untouched, and what this handle writes is fed to its
-// own decoder as it goes out.
+// own decoder as it goes out. `pty:<path>,plain` is a pty another program writes LIN into as it
+// would into a UART: no break mark and no escaped 0xFF. What the reader takes is put into the
+// PARMRK form before it is decoded — a sync byte read between frames gets the break it stood
+// for — and a frame whose header came from the other end, the master there, ends when the line
+// has been quiet for plain_quiet_ns.
 module lin
 
 import os
@@ -146,15 +150,16 @@ fn open_serial(a SerialAddr, cfg Config) !Bus {
 		baud: baud
 	}
 	check_config(c)!
-	key := os.real_path(a.path)
+	dev := device_path(a)!
+	key := os.real_path(dev)
 	lock lin_serial_reg {
 		if holder := lin_serial_reg.open[key] {
-			return error('lin: cannot open `${a.address}`: ${a.path} is already open in this process as `${holder}`')
+			return error('lin: cannot open `${a.address}`: ${dev} is already open in this process as `${holder}`')
 		}
 		lin_serial_reg.open[key] = a.address
 	}
 	mut got := u32(0)
-	fd := C.bl_ser_open(&char(a.path.str), i32(baud), i32(if a.kind == .tty { 1 } else { 0 }),
+	fd := C.bl_ser_open(&char(dev.str), i32(baud), i32(if a.kind == .tty { 1 } else { 0 }),
 		&got)
 	if fd < 0 {
 		release_device(key)
@@ -504,7 +509,8 @@ fn (mut b SerialBus) put(brk bool, bytes []u8, drain bool) ! {
 		return
 	}
 	enc := pty_bytes(brk, bytes)
-	r := C.bl_ser_write(b.fd, enc.data, i32(enc.len), serial_write_ms)
+	out := if b.addr.plain { bytes } else { enc }
+	r := C.bl_ser_write(b.fd, out.data, i32(out.len), serial_write_ms)
 	if r < 0 {
 		return b.port_error('write', -int(r))
 	}
@@ -540,7 +546,17 @@ fn (mut b SerialBus) drain() {
 		if n == 0 {
 			return
 		}
-		b.last_byte_ns = i64(time.sys_mono_now())
+		now := i64(time.sys_mono_now())
+		if b.addr.plain {
+			// a frame the quiet before these bytes has ended is over before they are read
+			if b.dec.wants_idle() && now >= b.end_at() {
+				b.finish(b.dec.idle(b.cfg.clock.now_ns()))
+			}
+			b.last_byte_ns = now
+			b.decode_plain(buf[..n], b.cfg.clock.now_ns())
+			continue
+		}
+		b.last_byte_ns = now
 		b.decode(buf[..n], b.cfg.clock.now_ns())
 	}
 }
@@ -551,6 +567,15 @@ fn (mut b SerialBus) drain() {
 fn (b &SerialBus) end_at() i64 {
 	if b.dec.st == .wake {
 		return b.last_byte_ns + wake_quiet_ns
+	}
+	if b.addr.plain && b.frame_open() && !b.own_break {
+		quiet := b.last_byte_ns + plain_quiet_ns(b.cfg.baud)
+		// a response of a stated length not begun yet may come late from a slave behind the
+		// other end, as on a wire: it has its slot
+		if b.dec.awaits_response() && b.slot_end_ns > quiet {
+			return b.slot_end_ns
+		}
+		return quiet
 	}
 	idle_at := b.last_byte_ns + b.idle_ns
 	if b.dec.response_begun() {
@@ -624,6 +649,21 @@ fn (mut b SerialBus) decode(bytes []u8, now i64) {
 			if b.cfg.role == .slave {
 				b.respond(id)
 			}
+		}
+	}
+}
+
+// decode_plain decodes bytes read from a plain pty in the PARMRK form: a sync byte read between
+// frames as the break it follows, a 0xFF as FF FF. The caller holds mu.
+fn (mut b SerialBus) decode_plain(bytes []u8, now i64) {
+	for x in bytes {
+		// a frame at its length is over on a plain pty, which has no break to end a long one
+		if x == 0x55 && b.dec.st in [.idle, .wake, .tail] {
+			b.decode([u8(0xFF), 0x00, 0x00, 0x55], now)
+		} else if x == 0xFF {
+			b.decode([u8(0xFF), 0xFF], now)
+		} else {
+			b.decode([x], now)
 		}
 	}
 }

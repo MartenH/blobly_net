@@ -326,6 +326,16 @@ pub fn (d &Decoder) response_begun() bool {
 	return false
 }
 
+// awaits_response is whether a header of an id with a stated length is in and no response byte
+// has come yet.
+pub fn (d &Decoder) awaits_response() bool {
+	if d.st != .response || d.buf.len > 0 {
+		return false
+	}
+	_ := d.exp or { return false }
+	return true
+}
+
 // wants_idle is whether the decoder is waiting on the line going quiet: a frame or a wakeup pulse
 // is open, or a stray byte keeps the next lone pulse from reading as a wakeup.
 pub fn (d &Decoder) wants_idle() bool {
