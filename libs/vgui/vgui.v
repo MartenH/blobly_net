@@ -209,6 +209,7 @@ fn C.vgui_text(&char)
 fn C.vgui_text_dim(&char)
 fn C.vgui_button(&char) int
 fn C.vgui_button_big(&char, int, int, int, f32, f32) int
+fn C.vgui_theme_icon(int, f32) int
 fn C.vgui_splitter_v(&char, f32, f32, f32) f32
 fn C.vgui_splitter_h(&char, f32, f32, f32) f32
 fn C.vgui_content_avail_w() f32
@@ -1034,6 +1035,12 @@ pub fn button(label string) bool {
 // for a primary action like Start/Stop. r,g,b are 0-255.
 pub fn button_big(label string, r int, g int, b int, w f32, h f32) bool {
 	return C.vgui_button_big(label.str, r, g, b, w, h) == 1
+}
+
+// theme_icon is the theme switch as an icon `side` px square: a sun while `dark` (a click
+// goes light), a crescent moon otherwise, framed only on hover. True when clicked.
+pub fn theme_icon(dark bool, side f32) bool {
+	return C.vgui_theme_icon(if dark { 1 } else { 0 }, side) == 1
 }
 
 // splitter_v: a draggable vertical divider between two side-by-side panes. Call it with

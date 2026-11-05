@@ -6,7 +6,16 @@ fn test_no_file_and_an_empty_file_are_the_defaults() {
 	p := parse('')!
 	assert p.editor == ''
 	assert p.ui_scale == 1.0
+	assert !p.emb_panels
 	assert p.foreign == []
+}
+
+fn test_the_blobly_emb_panels_choice_round_trips_and_a_non_bool_is_foreign() {
+	assert parse(Prefs{ emb_panels: true }.serialize())!.emb_panels
+	assert !Prefs{}.serialize().contains('emb_panels')
+	p := parse('emb_panels = "yes"\n')!
+	assert !p.emb_panels
+	assert p.foreign == ['emb_panels']
 }
 
 fn test_the_file_round_trips_including_a_windows_editor_path() {

@@ -100,10 +100,21 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Sta', app.show_stats, -1) {
 		app.show_stats = !app.show_stats
 	}
-	vgui.separator()
 	// --- blobly_emb target --- these speak blobly_emb's own protocols (trace records +
 	// manifest, the shell wire, the bootloader), so they are useless against an arbitrary
-	// CAN bus. Grouped last, with tooltips saying so.
+	// CAN bus: grouped last, and shown only when View ▸ "blobly_emb panels" asks for them.
+	if app.prefs.emb_panels {
+		draw_activity_emb(mut app)
+	}
+	vgui.pop_style_var(1) // frame padding
+	vgui.child_end()
+	vgui.pop_style_var(1) // window padding
+	vgui.activity_style_pop()
+}
+
+// draw_activity_emb is the activity bar's blobly_emb group.
+fn draw_activity_emb(mut app App) {
+	vgui.separator()
 	if vgui.toggle_button('Cht', app.show_tchart, -1) {
 		app.show_tchart = !app.show_tchart
 	}
@@ -120,10 +131,15 @@ fn draw_activity_bar(mut app App) {
 		app.show_sys = !app.show_sys
 	}
 	vgui.set_item_tooltip('System viewer — blobly_emb system.toml / ecu.toml')
-	vgui.pop_style_var(1) // frame padding
-	vgui.child_end()
-	vgui.pop_style_var(1) // window padding
-	vgui.activity_style_pop()
+}
+
+// set_emb_panels offers or withdraws the blobly_emb panels' buttons, remembered across runs. A
+// panel open when they are withdrawn stays open until its X — a flash or a shell session in it
+// may still be running.
+fn (mut app App) set_emb_panels(on bool) {
+	app.prefs.emb_panels = on
+	app.prefs_dirty = true
+	app.save_prefs(false)
 }
 
 fn draw_menubar(mut app App) {
@@ -217,10 +233,17 @@ fn draw_menubar(mut app App) {
 			// panels that only work against a blobly_emb SUT — grouped so the generic
 			// CAN workflow above stays uncluttered
 			vgui.separator_text('blobly_emb target')
-			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
-			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
-			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
-			app.show_sys = vgui.menu_item_check('System', app.show_sys)
+			emb := vgui.menu_item_check('blobly_emb panels', app.prefs.emb_panels)
+			if emb != app.prefs.emb_panels {
+				app.set_emb_panels(emb)
+			}
+			vgui.set_item_tooltip('Trace Chart, Flash, Shell and System: they speak a blobly_emb target\'s own protocols. Remembered across runs.')
+			if app.prefs.emb_panels {
+				app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
+				app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
+				app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
+				app.show_sys = vgui.menu_item_check('System', app.show_sys)
+			}
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('Settings') {
@@ -266,8 +289,8 @@ fn draw_menubar(mut app App) {
 	}
 }
 
-// draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
-// Pause/Clear/Record, theme).
+// draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status, the
+// latched capture states, and the theme switch at the right edge).
 // `chans` is the frame's SNAPSHOT, cloned under app.mu with rx/txs — not app.chans. The RX
 // workers write health, running, link_down and the cadence fields under that lock, so reading
 // the live array here raced them for a verdict this strip then displays.
@@ -363,11 +386,19 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 			app.toggle_pause()
 		}
 	}
+	// the theme switch, at the window's right edge whatever the strip holds — where it flows
+	// on after the status when the window is too narrow for both
+	side := bh
 	vgui.same_line()
-	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {
+	room := vgui.content_avail_w() - side - 8 * app.prefs.ui_scale
+	if room > 0 {
+		vgui.indent_x(room)
+	}
+	if vgui.theme_icon(app.dark, side) {
 		app.dark = !app.dark
 		vgui.set_theme(app.dark)
 	}
+	vgui.set_item_tooltip(if app.dark { 'Light theme' } else { 'Dark theme' })
 	vgui.separator()
 }
 

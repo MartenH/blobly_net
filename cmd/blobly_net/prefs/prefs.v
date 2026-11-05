@@ -3,8 +3,9 @@ module prefs
 import toml
 
 // WHAT THE APP REMEMBERS ACROSS RUNS — as opposed to what a project says (a .blobnet) and what
-// a run measures. Three things today (#306): the external editor, the UI scale, which the
-// Settings menu set and the next start forgot, and the dragged dividers. A GUI-free module in
+// a run measures. Four things today: the external editor, the UI scale, which the Settings
+// menu set and the next start forgot, the dragged dividers (#306), and whether the panels that
+// only speak to a blobly_emb target are offered. A GUI-free module in
 // the shape ../saverule set, so the file's grammar and the editor command's are tested where
 // the GUI cannot be.
 //
@@ -30,6 +31,10 @@ pub mut:
 	// is appended as the last argument. Quoted with double quotes where a path has a space.
 	editor   string
 	ui_scale f32 = 1.0
+	// The blobly_emb panels (Trace Chart, Flash, Shell, System) in the activity bar and the
+	// View menu. Off by default: they speak blobly_emb's own protocols and say nothing about
+	// any other ECU, which is most of what this tool is pointed at.
+	emb_panels bool
 	// Dragged dividers, by pane name, unscaled px (panerule): what a session set, the next
 	// finds. Written at exit, since a drag is many frames and the file is one write — the
 	// session's own drags folded over the ones it loaded, so a pane nobody touched keeps what
@@ -63,6 +68,13 @@ pub fn parse(text string) !Prefs {
 			p.foreign << 'ui_scale'
 		}
 	}
+	if v := doc.value_opt('emb_panels') {
+		if v is bool {
+			p.emb_panels = v
+		} else {
+			p.foreign << 'emb_panels'
+		}
+	}
 	if v := doc.value_opt('panes') {
 		if v is map[string]toml.Any {
 			for k, x in v {
@@ -82,7 +94,7 @@ pub fn parse(text string) !Prefs {
 		}
 	}
 	for k, _ in doc.to_any().as_map() {
-		if k !in ['editor', 'ui_scale', 'panes'] {
+		if k !in ['editor', 'ui_scale', 'emb_panels', 'panes'] {
 			p.foreign << k
 		}
 	}
@@ -123,6 +135,11 @@ pub fn (p Prefs) serialize() string {
 	// the scale as it is, not rounded to two places: an unchanged 1.125 must come back 1.125
 	// through an unrelated save (codex #307 r23)
 	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale}\n'
+	// only when on: an older build reads the key as foreign and stops saving automatically,
+	// which the default should not cost anybody
+	if p.emb_panels {
+		out += 'emb_panels = true\n'
+	}
 	if p.panes.len > 0 {
 		out += '\n[panes]\n'
 		mut keys := p.panes.keys()

@@ -121,6 +121,7 @@ void vgui_text(const char* s);
 void vgui_text_dim(const char* s);
 int  vgui_button(const char* label);
 int  vgui_button_big(const char* label, int r, int g, int b, float w, float h);
+int  vgui_theme_icon(int dark, float side);
 // vertical splitter handle between two side-by-side panes; returns the updated left width (px).
 float vgui_splitter_v(const char* id, float w, float min_w, float max_w);
 float vgui_splitter_h(const char* id, float h, float min_h, float max_h);
