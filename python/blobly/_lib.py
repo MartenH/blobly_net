@@ -450,6 +450,56 @@ NM_STATES = {0: "asleep", 1: "awake", 2: "releasing"}
 NM_SOURCES = {0: "system.toml", 1: "ARXML", 2: "project", 3: "script"}
 
 
+# LIN (lin.py)
+class BbLinBus(ctypes.Structure):
+    """bb_lin_bus, field for field."""
+    _fields_ = [("role", ctypes.c_int32), ("baud", ctypes.c_int32)]
+
+
+class BbLinFrame(ctypes.Structure):
+    """bb_lin_frame, field for field."""
+    _fields_ = [("id", ctypes.c_uint8), ("pid", ctypes.c_uint8), ("len", ctypes.c_uint8),
+                ("checksum", ctypes.c_uint8), ("data", ctypes.c_uint8 * 8), ("model", ctypes.c_int32),
+                ("errs", ctypes.c_uint32), ("event", ctypes.c_int32), ("origin", ctypes.c_int32),
+                ("t_ns", ctypes.c_int64)]
+
+
+class BbLinSignal(ctypes.Structure):
+    """bb_lin_signal, field for field."""
+    _fields_ = [("raw", ctypes.c_uint64), ("physical", ctypes.c_double), ("has_physical", ctypes.c_uint8),
+                ("is_array", ctypes.c_uint8), ("bytes", ctypes.c_int32)]
+
+
+class BbLinStatus(ctypes.Structure):
+    """bb_lin_status, field for field."""
+    _fields_ = [("role", ctypes.c_int32), ("state", ctypes.c_int32), ("frames", ctypes.c_int32),
+                ("notes", ctypes.c_int32), ("load", ctypes.c_double), ("dropped", ctypes.c_uint64),
+                ("sched_sent", ctypes.c_uint64), ("sched_failed", ctypes.c_uint64),
+                ("sched_late", ctypes.c_uint64), ("sched_running", ctypes.c_uint8)]
+
+
+class BbLinId(ctypes.Structure):
+    """bb_lin_id, field for field."""
+    _fields_ = [("id", ctypes.c_uint8), ("count", ctypes.c_uint64), ("errors", ctypes.c_uint64),
+                ("cadence_ms", ctypes.c_double)]
+
+
+# enum bb_lin_role, bb_lin_event, bb_lin_origin, bb_lin_model and bb_lin_state, as blobly/lin names
+# them; the BB_LIN_ERR_* bits by name, in their order
+LIN_ROLE_PROJECT = -1
+LIN_ROLES = {"master": 0, "slave": 1, "monitor": 2}
+LIN_EVENTS = {0: "frame", 1: "wakeup", 2: "sleep"}
+LIN_ORIGINS = {0: "RX", 1: "TX", 2: "TX-S"}
+LIN_MODELS = {0: "classic", 1: "enhanced"}
+LIN_STATES = {0: "active", 1: "sleep", 2: "short"}
+LIN_ERRS = ("sync", "parity", "checksum", "framing", "short", "no_response", "collision", "bit", "long")
+# enum bb_lin_value, bb_lin_text, bb_lin_signal_text and bb_lin_status_text
+LIN_NUMBER, LIN_RAW, LIN_TEXT, LIN_BYTES = range(4)
+LIN_TEXT_NAME, LIN_TEXT_ADDRESS, LIN_TEXT_LDF = range(3)
+LIN_SIGNAL_NAME, LIN_SIGNAL_TEXT, LIN_SIGNAL_UNIT = range(3)
+LIN_STATUS_NAME, LIN_STATUS_ADDRESS, LIN_STATUS_SCHEDULE, LIN_STATUS_NOTE, LIN_STATUS_FRAME = range(5)
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -663,6 +713,29 @@ def _declare(lib):
         "bb_nm_attach_range": ([c_int, c_int, ctypes.c_int64, ctypes.c_int64, c_int, c_int], c_int),
         "bb_nm_read_view": ([c_int, P(BbNmView)], c_int),
         "bb_nm_node_info": ([c_int, c_int, P(BbNmNode)], c_int),
+        # LIN (lin.py); a const uint8_t * is declared c_char_p, its length beside it
+        "bb_lin_count": ([], c_int),
+        "bb_lin_info": ([c_int, P(BbLinBus)], c_int),
+        "bb_lin_text": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_lin_open": ([c_int, c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_lin_recv": ([c_int, c_int, P(BbLinFrame)], c_int),
+        "bb_lin_decode": ([c_int, P(BbLinFrame), P(c_int)], c_int),
+        "bb_lin_frame_name": ([c_int, c_char_p, c_int], c_int),
+        "bb_lin_frame_id": ([c_int, c_char_p], c_int),
+        "bb_lin_signal_info": ([c_int, c_int, P(BbLinSignal)], c_int),
+        "bb_lin_signal_text": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_lin_signal_bytes": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_lin_header": ([c_int, c_int], c_int),
+        "bb_lin_set_signal": ([c_int, c_char_p, c_int, ctypes.c_double, c_char_p, c_int], c_int),
+        "bb_lin_schedule": ([c_int, c_char_p], c_int),
+        "bb_lin_stop_schedule": ([c_int], c_int),
+        "bb_lin_wakeup": ([c_int], c_int),
+        "bb_lin_sleep": ([c_int], c_int),
+        "bb_lin_read_status": ([c_int, P(BbLinStatus)], c_int),
+        "bb_lin_status_id": ([c_int, c_int, P(BbLinId)], c_int),
+        "bb_lin_status_text": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_lin_diagnostics": ([c_int, P(BbDiagnostics)], c_int),
+        "bb_lin_close": ([c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

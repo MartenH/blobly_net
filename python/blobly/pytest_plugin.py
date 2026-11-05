@@ -186,7 +186,14 @@ def _reopen(net: Project) -> None:
     """Each CAN channel's handle opened now and read once, so what arrives before the test's
     first use of it is kept for it, and nothing from before: the read is what makes a handle on
     a shared wire (PCAN, CANsub, the CAN bridge) a subscriber, where an unread one keeps only
-    its first second."""
+    its first second. Each LIN bus is tapped afresh the same way; a value an earlier test set
+    with `set()` stays, since it is what the simulated node publishes."""
+    for b in net.lin if net.started else []:
+        try:
+            b.close()  # a project's bus is untapped, and tapped again at once
+            b._handle()
+        except BloblyError:
+            pass  # the test that uses the bus meets the error
     for ch in net.channels:
         try:
             ch.close()

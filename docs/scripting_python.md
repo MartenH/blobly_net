@@ -431,6 +431,59 @@ else:
 - **Not verified by CI**: no runner has a Vector adapter. The rules are V tests
   (`blobly/transport/vector_names_test.v`); assigning on hardware is checked by hand on a VN1630A.
 
+### LIN
+
+A LIN bus is not a channel: it is the project's `lin:` list ([lin.md](lin.md)), and `net.lin` is
+the run's LIN buses, a `LinBuses` of `LinBus`, re-read each run and keeping each bus still at its
+position under its name. `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` is a LIN
+bus of the script's own on an address (`inproc:<name>`; on Linux `tty:<path>[@baud]` and
+`pty:<path>[@baud]`), with or without a project, stopped by `close()` or the end of a `with`; a
+second master on one bus is refused. A `LinBus` reads every frame the bus carries from its first
+read, its own included (`origin`), each a `LinFrame` decoded through the bus's LDF, and controls
+the bus as its role allows: a monitor sends nothing, a slave no header and no go-to-sleep
+(`Refused`, nothing sent).
+
+```python
+import blobly
+
+with blobly.Project("projects/lin-demo.blobnet") as net:
+    body = net.lin.BODY                        # master, simulating CEM, LSM and RSM
+    f = body.expect("CEM_Frm2", 500)           # by the LDF's name, or an id 0..63
+    print(f.origin, f.signals)                 # TX-S {'CabinTemp': 20.0, 'VehicleSpeed': 15.625}
+    body.set("IntTest", "passed")              # what LSM publishes, from its next response
+    body.schedule("FastTable")                 # switched at the slot boundary
+    print(body.expect("RSM_Frm3", 500).signals["RSM_Serial"].hex())
+    body.stop_schedule()
+    body.sleep()                               # the go-to-sleep command
+    print(body.status().state)                 # sleep
+    body.wakeup()
+```
+
+- **`recv(timeout_ms=1000)`** is the next frame (`None` waits for ever), `None` when none came;
+  **`expect(frame, timeout_ms=1000)`** the first error-free frame of `frame` (an id, or the LDF's
+  frame name; a go-to-sleep is a MasterReq, 0x3C) within one deadline, `blobly.Timeout` otherwise,
+  saying what came instead (`BODY: no 0x30 within 100 ms; came instead: 0x01 CEM_Frm1 x2, ...`).
+  Every frame read is consumed. Ctrl-C ends either within 100 ms, and `close()` from another
+  thread ends a wait there within 20 ms.
+- A **`LinFrame`** has `id`, `pid`, `data`, `checksum` and `model`; `errs`, a frozenset of names
+  (`"no_response"`, `"checksum"`, `"short"`, `"bit"`, ...); `event` (`"frame"`, `"wakeup"`,
+  `"sleep"`); `origin` (`"TX-S"`, `"TX"`, `"RX"`); and through the LDF `name`, `signals` (the
+  physical value, else a logical value's or an ascii / bcd array's text, else a byte array's
+  bytes, else the raw value) and `raw` (the scalars' raw values), both empty for a frame with an
+  error flag; `t_ms` on `blobly.now_ms()`'s clock is outside its value.
+- **`set(signal, value, *, raw=False)`**: a number is physical where the signal's encoding has a
+  physical range, else raw (`raw=True` always raw); a string a logical value, or an ascii / bcd
+  array's text; bytes a byte array. **`header(id)`**, **`schedule(name)`**,
+  **`stop_schedule()`** (`False` when the scheduler outlived its bound), **`wakeup()`** and
+  **`sleep()`** are the bus's controls.
+- **`status()`** is a `LinStatus`: role, `state` (`"active"`, `"sleep"`, `"short"`), the
+  schedule and its counts, `load`, `dropped`, `frames` (per id a `LinIdStatus`: name, count,
+  errors, cadence) and `notes`. **`diagnostics()`** is a `BusDiagnostics`.
+- A project's bus belongs to the run: after a stop it raises `BloblyError` (code -3) until the next
+  start, then reads that run's bus. One thread at a time uses a `LinBus`.
+
+[lin_monitor.py](../python/examples/lin_monitor.py) is a complete script.
+
 ---
 
 ## 5. Raw frames
@@ -1785,8 +1838,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ## 18. Reference
 
-Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing, the WSL bridge and Vector
-assignment from `blobly.e2e`, `blobly.someip`, `blobly.flash`, `blobly.bridge` and `blobly.vector`. The submodules
+Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing, the WSL bridge, Vector
+assignment and a LIN bus by address from `blobly.e2e`, `blobly.someip`, `blobly.flash`, `blobly.bridge`, `blobly.vector` and `blobly.lin`. The submodules
 `blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
 names are not part of the interface.
 `python/tests/test_docs.py` checks that every public class, method, property and attribute of
@@ -1811,6 +1864,7 @@ the package is named in this section.
 | `blobly.interfaces()` | The interfaces present now, each an `Interface`, without a network wait. |
 | `blobly.discover_cansub(window_ms=700)` | The CANsub channels an mDNS browse of `window_ms` (1 to 10000) finds, each an `Interface`; `Refused` when no browse was possible. |
 | `blobly.vector` | Vector application-channel assignment: see Module `blobly.vector`. |
+| `blobly.lin` | A LIN bus by its address: see Module `blobly.lin`. |
 
 ### Module `blobly.e2e`
 
@@ -1909,6 +1963,44 @@ the block.
 | `blobly.vector.assign(app, hw, *, create=False)` | Points `vector:<app>` at `hw`, with the Discover dialog's refusals; an `"absent"` channel only with `create=True` ([Vector channel assignment](#vector-channel-assignment)). |
 | `blobly.vector.VectorHardware` | One physical channel (also `blobly.VectorHardware`): see `VectorHardware`. |
 
+### Module `blobly.lin`
+
+| name | what |
+|---|---|
+| `blobly.lin.open(address, role="monitor", *, ldf=None, baud=0)` | A `LinBus` of the script's own on `address` (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`), as `role` (`"master"`, `"slave"`, `"monitor"`), read by `ldf`, at `baud` (0: the address's, else the LDF's, else 19200); `Refused` when it will not open ([LIN](#lin)). |
+
+### `LinBus`, `LinBuses`
+
+A LIN bus ([LIN](#lin)): `net.lin.BODY` (a `LinBuses` reads as `Channels` does: `net.lin["BODY"]`,
+`net.lin[0]`, `keys()`, `in`, iteration), or `blobly.lin.open(...)`.
+
+| member | what |
+|---|---|
+| `bus.name`, `bus.address`, `bus.role`, `bus.ldf`, `bus.baud` | Its name (an opened bus's is its address), address, role, LDF path (`None` none) and rate (0 for an opened bus left to the address or LDF). |
+| `bus.recv(timeout_ms=1000)` | The next `LinFrame` (`None`: wait for ever), `None` when none came. |
+| `bus.expect(frame, timeout_ms=1000)` | The first error-free frame of `frame` (an id 0..63 or the LDF's name), within one deadline; `Timeout` saying what came instead. |
+| `bus.header(id)` | One header (master). |
+| `bus.set(signal, value, *, raw=False)` | What a simulated node publishes for `signal`, from its next response: a number (physical where its encoding has a physical range, else raw), a string, or bytes. |
+| `bus.schedule(name)`, `bus.stop_schedule()` | An LDF schedule table started or switched to at the slot boundary; stopped (`False` when the scheduler outlived its bound). |
+| `bus.wakeup()`, `bus.sleep()` | A wakeup pulse; the go-to-sleep command (master). |
+| `bus.status()` | A `LinStatus`. |
+| `bus.diagnostics()` | A `BusDiagnostics`: the bus's own handle's counts, this bus's lost frames in `dropped`. |
+| `bus.close()`, `with bus:` | Lets it go: an opened bus is stopped and a later call refuses; a project's is untapped, and its next use taps the run's bus again. |
+
+### `LinFrame`, `LinStatus`, `LinIdStatus`
+
+Frozen dataclasses ([LIN](#lin)).
+
+| field | what |
+|---|---|
+| `LinFrame.id`, `.pid`, `.data`, `.checksum`, `.model` | The id 0..63, the protected identifier read, the response's bytes, the checksum byte and its model (`"classic"`, `"enhanced"`). |
+| `LinFrame.errs`, `.event`, `.origin` | What went wrong (a frozenset of names; empty for an error-free frame), `"frame"`, `"wakeup"` or `"sleep"`, and `"TX-S"`, `"TX"` or `"RX"`. |
+| `LinFrame.name`, `.signals`, `.raw`, `.t_ms` | The LDF's frame name, `{signal: value}` and `{signal: raw}` (empty for a frame with an error flag), when it was read; none of them part of its value. |
+| `LinStatus.name`, `.address`, `.role`, `.state`, `.load`, `.dropped`, `.notes` | The bus, `"active"`, `"sleep"` or `"short"`, the percent of the last whole second, frames any reader lost, what it did not take as written. |
+| `LinStatus.schedule`, `.schedule_running`, `.schedule_sent`, `.schedule_failed`, `.schedule_late` | The table running (`None` none) and the scheduler's counts. |
+| `LinStatus.frames` | `{id: LinIdStatus}`, in id order. |
+| `LinIdStatus.id`, `.name`, `.count`, `.errors`, `.cadence_ms` | One id: its LDF name, frames seen, those with an error flag, the time between its last two error-free frames (`None` before two). |
+
 ### `VectorHardware`
 
 A frozen dataclass, one physical channel of `blobly.vector.assignments()`: `name`, `transceiver`,
@@ -1990,6 +2082,7 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
 | `net.nodes` | The nodes of the run's system model, a `Nodes` ([Nodes and their DIDs](#nodes-and-their-dids)); empty without a system.toml. `BloblyError` (code -3) when not started. |
 | `net.system` | The system.toml the run read, or `None` when none describes the project. `BloblyError` (code -3) when not started. |
+| `net.lin` | The run's LIN buses, a `LinBuses` of `LinBus` ([LIN](#lin)); empty for a project with none. `BloblyError` (code -3) when not started. |
 | `net.replay(channels, source=None, *, speed=None, loop=None, paused=False, exclude=None, bus=None)` | Plays a recording onto channels of the started project: a `Replay`. |
 | `net.record(path, channels)` | Records channels of the started project to a candump `.log`: a `Recording`. |
 
@@ -2451,7 +2544,7 @@ Python covers bringing a project up, its channels, raw CAN, DBC messages and sig
 loop, background senders, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
 (its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
-discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, the NM reading, a bus opened by address,
+discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, the NM reading, LIN buses (a project's and one by address), a bus opened by address,
 interface discovery and Vector channel assignment, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**

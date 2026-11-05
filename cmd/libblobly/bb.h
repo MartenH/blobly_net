@@ -1451,6 +1451,183 @@ int bb_nm_read_view(int h, bb_nm_view *out);
 int bb_nm_node_info(int h, int k, bb_nm_node *out);
 #endif /* BB_FROM_V */
 
+/* LIN (cmd/libblobly/lin.v, blobly/lin; docs/lin.md). A LIN bus is NOT a channel and has no
+ * bb_kind: it is the project's `lin:` list, never a row of `buses:`, and its frames are bb_lin_frame,
+ * never bb_frame.
+ *
+ * bb_lin_count, bb_lin_info and bb_lin_text are the run's LIN buses (the enabled entries of the
+ * project's lin: list, in its order), from bb_start until bb_stop (BB_ERR_STATE otherwise); strings
+ * go into the caller's buffer as bb_message_name's.
+ *
+ * bb_lin_open answers a handle (>= 0). With row >= 0 it is a tap on the run's LIN bus `row`: every
+ * frame the bus carries from then on, and the bus's controls as its role allows; the project
+ * states its role, LDF and rate, so address and ldf are NULL, role BB_LIN_ROLE_PROJECT and baud 0
+ * (anything else is refused). Such a handle answers BB_ERR_STATE once its run has stopped; close it,
+ * and open another in the next run. With row -1 it is a LIN bus of the handle's own on `address`
+ * (inproc:<name>; on Linux tty:<path>[@baud] and pty:<path>[@baud]), with or without a project
+ * loaded: `role` an enum bb_lin_role, `ldf` the description file's path (NULL: none, which reads
+ * frames by what they carry), `baud` 0 for the address's rate, else the LDF's LIN_speed, else
+ * 19200 (or 1000..20000); bb_lin_close stops it.
+ * Handles as a bus handle's: a table under the library's lock, ONE THREAD at a time uses one, and
+ * bb_lin_close may come from another, ending a recv in progress there (BB_ERR_HANDLE) within 20 ms.
+ *
+ * bb_lin_recv waits at most timeout_ms (0: one look at what is queued; < 0 until a frame or a
+ * close) for the next frame: 0 and *out, or BB_NONE when none came. A frame has its id, the
+ * protected identifier read, its data (len bytes; for a response cut short, every byte read), the
+ * checksum byte read and its model, what went wrong as BB_LIN_ERR_* bits (0: an error-free frame),
+ * what it is (an enum bb_lin_event: a wakeup pulse carries no id) and who sent it (an enum
+ * bb_lin_origin, the trace's origin column), and t_ns, when it was read (bb_now_ns's clock).
+ *
+ * bb_lin_decode reads a frame through the bus's LDF, as the Lua lin.recv does: 0 with *signals the
+ * signals decoded — none for a frame with an error flag or a wakeup — or BB_NONE where the LDF
+ * names no frame of its id (or the bus has none). The decode is kept on the handle until its next
+ * one: bb_lin_frame_name is the frame's LDF name, bb_lin_signal_info / _signal_text / _signal_bytes
+ * signal k of it (0 .. *signals - 1): its raw value, its physical value where its encoding has a
+ * physical range for that raw value, its logical value's or an ascii / bcd array's text, its unit,
+ * and a byte array's bytes. bb_lin_frame_id is the id of the LDF frame `name`.
+ *
+ * The controls, each refused (BB_ERR, nothing sent) where the bus's role may not make it — a
+ * monitor makes none, a slave no header and no go-to-sleep:
+ *   bb_lin_header       one header for frame id 0..63 (master);
+ *   bb_lin_set_signal   what a node this bus simulates publishes for `signal`, from its next
+ *                       response: BB_LIN_VALUE_NUMBER `value` (physical where the signal's encoding
+ *                       has a physical range, else raw), BB_LIN_VALUE_RAW `value` (a whole number,
+ *                       0 .. 2^53), BB_LIN_VALUE_TEXT the `len` bytes of `data` as a logical value's
+ *                       or an ascii / bcd array's text, BB_LIN_VALUE_BYTES them as a byte array;
+ *   bb_lin_schedule     the LDF schedule table `name` started, or switched to at the slot boundary;
+ *   bb_lin_stop_schedule  0 once no header follows, BB_RELEASING when the scheduler was still inside
+ *                       a header call at its bound;
+ *   bb_lin_wakeup       a wakeup pulse;
+ *   bb_lin_sleep        the go-to-sleep command (master).
+ *
+ * bb_lin_read_status takes the bus's view now and keeps it on the handle: bb_lin_status_id gives row k
+ * of its frame ids (in id order) and bb_lin_status_text its texts (k for a note or a frame id's
+ * name). bb_lin_diagnostics is the bus's own handle's counts, the frames this handle's queue lost
+ * added to `dropped`. */
+enum bb_lin_role {
+	BB_LIN_ROLE_PROJECT = -1,  /* bb_lin_open of a run's bus: the project's */
+	BB_LIN_ROLE_MASTER = 0,
+	BB_LIN_ROLE_SLAVE = 1,
+	BB_LIN_ROLE_MONITOR = 2    /* reads, sends nothing */
+};
+enum bb_lin_event {
+	BB_LIN_EVENT_FRAME = 0,
+	BB_LIN_EVENT_WAKEUP = 1,   /* a wakeup pulse */
+	BB_LIN_EVENT_SLEEP = 2     /* the go-to-sleep command: a MasterReq whose first byte is 0x00 */
+};
+enum bb_lin_origin {
+	BB_LIN_ORIGIN_RX = 0,      /* a node outside this app */
+	BB_LIN_ORIGIN_TX = 1,      /* this app's tester */
+	BB_LIN_ORIGIN_TX_S = 2     /* this app's simulated node */
+};
+enum bb_lin_model {
+	BB_LIN_MODEL_CLASSIC = 0,  /* the checksum over the data */
+	BB_LIN_MODEL_ENHANCED = 1  /* over the protected identifier too */
+};
+enum bb_lin_state {
+	BB_LIN_STATE_ACTIVE = 0,
+	BB_LIN_STATE_SLEEP = 1,
+	BB_LIN_STATE_SHORT = 2     /* the bus is shorted (hardware only) */
+};
+enum bb_lin_value {
+	BB_LIN_VALUE_NUMBER = 0,
+	BB_LIN_VALUE_RAW = 1,
+	BB_LIN_VALUE_TEXT = 2,
+	BB_LIN_VALUE_BYTES = 3
+};
+/* bb_lin_frame.errs */
+#define BB_LIN_ERR_SYNC        0x001  /* the byte after the break was not 0x55 */
+#define BB_LIN_ERR_PARITY      0x002  /* the protected identifier's parity bits were wrong */
+#define BB_LIN_ERR_CHECKSUM    0x004  /* the checksum did not match the data */
+#define BB_LIN_ERR_FRAMING     0x008  /* a byte was read with a framing error */
+#define BB_LIN_ERR_SHORT       0x010  /* fewer bytes than the frame's length */
+#define BB_LIN_ERR_NO_RESPONSE 0x020  /* a header nobody answered */
+#define BB_LIN_ERR_COLLISION   0x040  /* this bus's response lost arbitration to another publisher's */
+#define BB_LIN_ERR_BIT         0x080  /* a publisher read back a bit other than the one it sent */
+#define BB_LIN_ERR_LONG        0x100  /* more bytes than the frame's length */
+typedef struct bb_lin_bus {
+	int32_t role;    /* an enum bb_lin_role */
+	int32_t baud;    /* the rate it runs at */
+} bb_lin_bus;
+enum bb_lin_text {
+	BB_LIN_TEXT_NAME = 0,
+	BB_LIN_TEXT_ADDRESS = 1,
+	BB_LIN_TEXT_LDF = 2      /* the description file's path as the run read it; "" none */
+};
+typedef struct bb_lin_frame {
+	uint8_t  id;
+	uint8_t  pid;
+	uint8_t  len;
+	uint8_t  checksum;
+	uint8_t  data[8];
+	int32_t  model;    /* an enum bb_lin_model */
+	uint32_t errs;     /* BB_LIN_ERR_* bits */
+	int32_t  event;    /* an enum bb_lin_event */
+	int32_t  origin;   /* an enum bb_lin_origin */
+	int64_t  t_ns;
+} bb_lin_frame;
+typedef struct bb_lin_signal {
+	uint64_t raw;          /* a scalar's raw value (0 for a byte array) */
+	double   physical;     /* has_physical: raw on the encoding's physical scale */
+	uint8_t  has_physical;
+	uint8_t  is_array;     /* a byte array: bb_lin_signal_bytes */
+	int32_t  bytes;        /* a byte array's length */
+} bb_lin_signal;
+enum bb_lin_signal_text {
+	BB_LIN_SIGNAL_NAME = 0,
+	BB_LIN_SIGNAL_TEXT = 1,  /* a logical value's text, an ascii / bcd array's; "" none */
+	BB_LIN_SIGNAL_UNIT = 2   /* a physical value's unit; "" none */
+};
+typedef struct bb_lin_status {
+	int32_t  role;           /* an enum bb_lin_role */
+	int32_t  state;          /* an enum bb_lin_state */
+	int32_t  frames;         /* the frame ids seen: bb_lin_status_id's rows */
+	int32_t  notes;          /* what the bus did not take as written (LDF notes, unsent slots) */
+	double   load;           /* percent of the bus time frames took in the last whole second */
+	uint64_t dropped;        /* frames every handle's queue on the bus lost */
+	uint64_t sched_sent;     /* the schedule's headers sent */
+	uint64_t sched_failed;   /* headers the bus refused */
+	uint64_t sched_late;     /* slots that started late, the grid taken up again from them */
+	uint8_t  sched_running;
+} bb_lin_status;
+typedef struct bb_lin_id {
+	uint8_t  id;
+	uint64_t count;          /* frames seen */
+	uint64_t errors;         /* those with an error flag */
+	double   cadence_ms;     /* between the last two error-free frames, 0 before two */
+} bb_lin_id;
+enum bb_lin_status_text {
+	BB_LIN_STATUS_NAME = 0,
+	BB_LIN_STATUS_ADDRESS = 1,
+	BB_LIN_STATUS_SCHEDULE = 2,  /* the table running; "" none */
+	BB_LIN_STATUS_NOTE = 3,      /* note k */
+	BB_LIN_STATUS_FRAME = 4      /* row k's LDF name; "" none */
+};
+#ifndef BB_FROM_V
+int bb_lin_count(void);                                          /* >= 0 */
+int bb_lin_info(int row, bb_lin_bus *out);
+int bb_lin_text(int row, int which, char *buf, int cap);         /* which: enum bb_lin_text */
+int bb_lin_open(int row, const char *address, int role, const char *ldf, int baud); /* >= 0: the handle */
+int bb_lin_recv(int h, int timeout_ms, bb_lin_frame *out);
+int bb_lin_decode(int h, const bb_lin_frame *f, int *signals);
+int bb_lin_frame_name(int h, char *buf, int cap);
+int bb_lin_frame_id(int h, const char *name);                    /* >= 0: the id */
+int bb_lin_signal_info(int h, int k, bb_lin_signal *out);
+int bb_lin_signal_text(int h, int k, int which, char *buf, int cap); /* which: enum bb_lin_signal_text */
+int bb_lin_signal_bytes(int h, int k, uint8_t *buf, int cap);    /* >= 0: the length */
+int bb_lin_header(int h, int id);
+int bb_lin_set_signal(int h, const char *signal, int kind, double value, const uint8_t *data, int len);
+int bb_lin_schedule(int h, const char *name);
+int bb_lin_stop_schedule(int h);
+int bb_lin_wakeup(int h);
+int bb_lin_sleep(int h);
+int bb_lin_read_status(int h, bb_lin_status *out);
+int bb_lin_status_id(int h, int k, bb_lin_id *out);
+int bb_lin_status_text(int h, int which, int k, char *buf, int cap); /* which: enum bb_lin_status_text */
+int bb_lin_diagnostics(int h, bb_diagnostics *out);
+int bb_lin_close(int h);
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

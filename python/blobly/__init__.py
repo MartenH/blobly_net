@@ -116,3 +116,7 @@ __all__ += ["J1939Address", "J1939Fault", "J1939Listener", "J1939Message", "J193
 # network management: who reports in on a channel's NM cluster and who keeps it awake (nm.py; Channel.nm)
 from .nm import NmBits, NmListener, NmNode, NmReading  # noqa: E402
 __all__ += ["NmBits", "NmListener", "NmNode", "NmReading"]
+# LIN: the project's LIN buses and a LIN bus by its address (lin.py; Project.lin, blobly.lin.open)
+from . import lin  # noqa: E402
+from .lin import LinBus, LinBuses, LinFrame, LinIdStatus, LinStatus  # noqa: E402
+__all__ += ["LinBus", "LinBuses", "LinFrame", "LinIdStatus", "LinStatus", "lin"]

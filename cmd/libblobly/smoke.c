@@ -4,7 +4,8 @@
  * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS and over raw ISO-TP,
  * states a UDS handle's timing, retargets a DoIP handle, arms and clears a
  * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
- * callbacks, fires and cycles a generator, then stops and starts again.
+ * callbacks, fires and cycles a generator, then stops and starts again; then LIN, on a bus of its
+ * own and on projects/lin-demo's BODY beside it.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -169,6 +170,26 @@ static int (*bb_nm_attach_p)(int, int);
 static int (*bb_nm_attach_range_p)(int, int, int64_t, int64_t, int, int);
 static int (*bb_nm_read_view_p)(int, bb_nm_view *);
 static int (*bb_nm_node_info_p)(int, int, bb_nm_node *);
+
+/* LIN */
+static int (*bb_lin_count_p)(void);
+static int (*bb_lin_info_p)(int, bb_lin_bus *);
+static int (*bb_lin_text_p)(int, int, char *, int);
+static int (*bb_lin_open_p)(int, const char *, int, const char *, int);
+static int (*bb_lin_recv_p)(int, int, bb_lin_frame *);
+static int (*bb_lin_decode_p)(int, const bb_lin_frame *, int *);
+static int (*bb_lin_frame_name_p)(int, char *, int);
+static int (*bb_lin_frame_id_p)(int, const char *);
+static int (*bb_lin_signal_info_p)(int, int, bb_lin_signal *);
+static int (*bb_lin_signal_text_p)(int, int, int, char *, int);
+static int (*bb_lin_header_p)(int, int);
+static int (*bb_lin_set_signal_p)(int, const char *, int, double, const uint8_t *, int);
+static int (*bb_lin_schedule_p)(int, const char *);
+static int (*bb_lin_read_status_p)(int, bb_lin_status *);
+static int (*bb_lin_status_id_p)(int, int, bb_lin_id *);
+static int (*bb_lin_status_text_p)(int, int, int, char *, int);
+static int (*bb_lin_diagnostics_p)(int, bb_diagnostics *);
+static int (*bb_lin_close_p)(int);
 
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
@@ -646,6 +667,106 @@ static int flash_steps(int row) {
 	return 0;
 }
 
+/* the next frame of `id` on LIN handle h, error-free, within ~2 s; 0 when none came */
+static int lin_frame_of(int h, int id, bb_lin_frame *f) {
+	for (int i = 0; i < 200; i++) {
+		int rc = bb_lin_recv_p(h, 20, f);
+		if (rc < 0) return 0;
+		if (rc == 0 && f->id == id && f->event == BB_LIN_EVENT_FRAME && f->errs == 0) return 1;
+	}
+	return 0;
+}
+
+/* signal `name` of LIN handle h's last decode, by index; -1 when it holds none */
+static int lin_signal_named(int h, int n, const char *name) {
+	char buf[64];
+	for (int k = 0; k < n; k++)
+		if (bb_lin_signal_text_p(h, k, BB_LIN_SIGNAL_NAME, buf, sizeof buf) >= 0 && strcmp(buf, name) == 0) return k;
+	return -1;
+}
+
+/* LIN: a bus of the host's own on an address with no project loaded, then projects/lin-demo's BODY
+ * (master, simulating CEM, LSM and RSM on NormalTable): its frames decoded through
+ * dbc/lin_demo.ldf, a signal LSM publishes changed, the bus's view, and a tap kept past its run */
+static int lin_steps(const char *sim_project) {
+	static char dir[2048], project[4096], ldf[4096];
+	const char *slash = strrchr(sim_project, '/'), *back = strrchr(sim_project, '\\');
+	if (back > slash) slash = back;
+	snprintf(dir, sizeof dir, "%.*s", slash ? (int)(slash - sim_project) : 1, slash ? sim_project : ".");
+	snprintf(project, sizeof project, "%s/lin-demo.blobnet", dir);
+	snprintf(ldf, sizeof ldf, "%s/../dbc/lin_demo.ldf", dir);
+	CHECK(bb_lin_count_p() == BB_ERR_STATE, "the LIN buses are the run's: none while stopped");
+
+	/* a master of the host's own: a header nobody answers is read as no response */
+	int own = bb_lin_open_p(-1, "inproc:BB_SMOKE_LIN", BB_LIN_ROLE_MASTER, ldf, 0);
+	CHECK(own >= 0, "open a LIN master on an address");
+	CHECK(bb_lin_open_p(-1, "inproc:BB_SMOKE_LIN", BB_LIN_ROLE_MASTER, NULL, 0) == BB_ERR, "a second master on one bus must refuse");
+	CHECK(bb_lin_header_p(own, 0x01) == 0, "a header");
+	bb_lin_frame f;
+	int got = 0;
+	for (int i = 0; i < 50 && !got; i++)
+		got = bb_lin_recv_p(own, 20, &f) == 0 && f.id == 0x01 && (f.errs & BB_LIN_ERR_NO_RESPONSE) && f.origin == BB_LIN_ORIGIN_TX;
+	CHECK(got, "the unanswered header read back as no response");
+	CHECK(bb_lin_header_p(own, 64) == BB_ERR, "id 64 must refuse");
+	CHECK(bb_lin_close_p(own) == 0 && bb_lin_recv_p(own, 0, &f) == BB_ERR_HANDLE, "closed, it is gone");
+
+	CHECK(bb_load_p(project) == 0, "load lin-demo");
+	CHECK(bb_start_p() == 0, "start lin-demo");
+	CHECK(bb_lin_count_p() == 1, "lin-demo has one LIN bus");
+	bb_lin_bus bus;
+	char text[256];
+	CHECK(bb_lin_info_p(0, &bus) == 0 && bus.role == BB_LIN_ROLE_MASTER && bus.baud == 19200, "BODY's info");
+	CHECK(bb_lin_text_p(0, BB_LIN_TEXT_NAME, text, sizeof text) == 4 && strcmp(text, "BODY") == 0, "BODY's name");
+	CHECK(bb_lin_text_p(0, BB_LIN_TEXT_ADDRESS, text, sizeof text) > 0 && strcmp(text, "inproc:body") == 0, "BODY's address");
+	CHECK(bb_lin_info_p(1, &bus) == BB_ERR, "a LIN bus past the end must refuse");
+	CHECK(bb_lin_open_p(0, NULL, BB_LIN_ROLE_MONITOR, NULL, 0) == BB_ERR, "a run's bus takes its role from the project");
+	int h = bb_lin_open_p(0, NULL, BB_LIN_ROLE_PROJECT, NULL, 0);
+	CHECK(h >= 0, "open a tap on BODY");
+
+	/* CEM_Frm2 at its template: CabinTemp init 120 at 0.5 degC from -40, VehicleSpeed 0x0FA at 0.0625 */
+	int n = -1;
+	CHECK(lin_frame_of(h, 0x02, &f) && f.len == 3 && f.origin == BB_LIN_ORIGIN_TX_S, "CEM_Frm2 heard");
+	CHECK(bb_lin_decode_p(h, &f, &n) == 0 && n == 2, "CEM_Frm2 decoded: %d signals", n);
+	CHECK(bb_lin_frame_name_p(h, text, sizeof text) == 8 && strcmp(text, "CEM_Frm2") == 0, "its LDF name: %s", text);
+	bb_lin_signal sig;
+	int ct = lin_signal_named(h, n, "CabinTemp"), vs = lin_signal_named(h, n, "VehicleSpeed");
+	CHECK(ct >= 0 && bb_lin_signal_info_p(h, ct, &sig) == 0 && sig.has_physical && sig.physical == 20 && sig.raw == 120, "CabinTemp");
+	CHECK(bb_lin_signal_text_p(h, ct, BB_LIN_SIGNAL_UNIT, text, sizeof text) == 4 && strcmp(text, "degC") == 0, "CabinTemp's unit");
+	CHECK(vs >= 0 && bb_lin_signal_info_p(h, vs, &sig) == 0 && sig.physical == 15.625, "VehicleSpeed");
+	CHECK(bb_lin_frame_id_p(h, "LSM_Frm2") == 0x12 && bb_lin_frame_id_p(h, "Nope") == BB_ERR, "a frame's id by its LDF name");
+
+	/* IntTest is logical: the text "passed" is raw 2, from LSM's next response */
+	CHECK(bb_lin_set_signal_p(h, "IntTest", BB_LIN_VALUE_TEXT, 0, (const uint8_t *)"passed", 6) == 0, "set IntTest");
+	int passed = 0;
+	for (int i = 0; i < 10 && !passed; i++) {
+		CHECK(lin_frame_of(h, 0x12, &f) && bb_lin_decode_p(h, &f, &n) == 0, "LSM_Frm2 heard");
+		int k = lin_signal_named(h, n, "IntTest");
+		passed = k >= 0 && bb_lin_signal_info_p(h, k, &sig) == 0 && sig.raw == 2
+			&& bb_lin_signal_text_p(h, k, BB_LIN_SIGNAL_TEXT, text, sizeof text) == 6 && strcmp(text, "passed") == 0;
+	}
+	CHECK(passed, "LSM_Frm2 carries IntTest passed");
+	CHECK(bb_lin_set_signal_p(h, "IntTest", BB_LIN_VALUE_RAW, 0.5, NULL, 0) == BB_ERR, "a raw value of 0.5 must refuse");
+	CHECK(bb_lin_set_signal_p(h, "IntTest", BB_LIN_VALUE_NUMBER, 0, NULL, 0) == 0, "IntTest back to 0");
+	CHECK(bb_lin_schedule_p(h, "NoTable") == BB_ERR, "an unknown schedule table must refuse");
+
+	bb_lin_status st;
+	bb_lin_id id;
+	CHECK(bb_lin_read_status_p(h, &st) == 0 && st.role == BB_LIN_ROLE_MASTER && st.state == BB_LIN_STATE_ACTIVE
+		&& st.frames > 0 && st.sched_running && st.sched_sent > 0, "BODY's status");
+	CHECK(bb_lin_status_text_p(h, BB_LIN_STATUS_SCHEDULE, 0, text, sizeof text) > 0 && strcmp(text, "NormalTable") == 0, "its schedule");
+	CHECK(bb_lin_status_id_p(h, 0, &id) == 0 && id.id == 0x01 && id.count > 0, "its first id row");
+	CHECK(bb_lin_status_text_p(h, BB_LIN_STATUS_FRAME, 0, text, sizeof text) > 0 && strcmp(text, "CEM_Frm1") == 0, "that row's name");
+	bb_diagnostics d;
+	CHECK(bb_lin_diagnostics_p(h, &d) == 0 && d.dropped == 0, "its diagnostics");
+
+	/* a tap kept past its run's stop answers BB_ERR_STATE */
+	CHECK(bb_stop_p() == 0, "stop lin-demo");
+	CHECK(bb_lin_recv_p(h, 0, &f) == BB_ERR_STATE, "a tap of a stopped run must refuse as BB_ERR_STATE");
+	CHECK(bb_lin_close_p(h) == 0, "close the kept tap");
+	printf("ok   LIN: a bus on an address with no project; lin-demo's BODY decoded through its LDF, a signal set\n");
+	return 0;
+}
+
 static int can1_row = -1; /* CAN1's row, for the host thread's database read */
 
 #ifndef _WIN32
@@ -724,6 +845,10 @@ int main(int argc, char **argv) {
 	SYM(bb_nm_attach_range);
 	SYM(bb_nm_read_view);
 	SYM(bb_nm_node_info);
+	SYM(bb_lin_count); SYM(bb_lin_info); SYM(bb_lin_text); SYM(bb_lin_open); SYM(bb_lin_recv); SYM(bb_lin_decode);
+	SYM(bb_lin_frame_name); SYM(bb_lin_frame_id); SYM(bb_lin_signal_info); SYM(bb_lin_signal_text); SYM(bb_lin_header);
+	SYM(bb_lin_set_signal); SYM(bb_lin_schedule); SYM(bb_lin_read_status); SYM(bb_lin_status_id); SYM(bb_lin_status_text);
+	SYM(bb_lin_diagnostics); SYM(bb_lin_close);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -866,6 +991,7 @@ int main(int argc, char **argv) {
 	if (bb_uds_close_p(kept) != 0) FAIL("close the kept DoIP handle");
 	printf("ok   a DoIP handle kept across a stop refuses as BB_ERR_STATE\n");
 	if (bb_stop_p() != 0) FAIL("stop again");
+	if (lin_steps(argv[2])) return 1;
 	printf("ok   libblobly smoke\n");
 	return 0;
 }
