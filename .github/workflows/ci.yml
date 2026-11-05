@@ -74,6 +74,7 @@ jobs:
   unit:
     name: linux • unit tests ${{ matrix.part }}/${{ strategy.job-total }}
     runs-on: ubuntu-24.04 # the release floor (release.yml linux)
+    timeout-minutes: 30
     strategy:
       # every part reports, so one failure does not hide another part's
       fail-fast: false
@@ -89,6 +90,7 @@ jobs:
   abi:
     name: linux • libblobly C ABI + Python
     runs-on: ubuntu-24.04 # the release floor (release.yml linux)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Set up pinned V (cached)
@@ -145,6 +147,7 @@ jobs:
   checks:
     name: linux • cmd checks, script tests + headless Lua
     runs-on: ubuntu-24.04 # the release floor (release.yml linux)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -252,6 +255,7 @@ jobs:
     needs: [unit, abi, checks]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Every part passed
         env:
@@ -264,6 +268,7 @@ jobs:
   gui-build:
     name: linux • GUI (imgui) compile-link
     runs-on: ubuntu-24.04 # the release floor (release.yml linux)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -391,6 +396,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: [test, gui-build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v8
         with:

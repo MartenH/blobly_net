@@ -12,17 +12,45 @@ inputs:
 runs:
   using: composite
   steps:
-    # Windows' own tar (libarchive) unpacks the zip in seconds where Expand-Archive took half a
-    # minute. By full path: the runner's PATH may put Git's GNU tar first, which reads no zip.
+    # The ZIP is cached, keyed by its name, which names the V commit it was minted from; a
+    # re-mint under the same name needs the key's prefix bumped.
+    - name: Restore the cached V zip
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}\${{ inputs.asset }}
+        key: v-windows-zip-1-${{ inputs.asset }}
+
+    # A download fails now and then on the runner (2026-10-23), so it is tried three times.
     - name: Download prebuilt V
+      if: steps.restore.outputs.cache-hit != 'true'
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
         V_RELEASE: ${{ inputs.release }}
         V_ASSET: ${{ inputs.asset }}
       run: |
-        gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-        if ($LASTEXITCODE -ne 0) { throw "could not download $env:V_ASSET from $env:V_RELEASE" }
+        foreach ($try in 1..3) {
+          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP" --clobber
+          if ($LASTEXITCODE -eq 0) { break }
+          if ($try -eq 3) { throw "could not download $env:V_ASSET from $env:V_RELEASE" }
+          Start-Sleep -Seconds (10 * $try)
+        }
+
+    - name: Cache the V zip
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}\${{ inputs.asset }}
+        key: v-windows-zip-1-${{ inputs.asset }}
+
+    # Windows' own tar (libarchive) unpacks the zip in seconds where Expand-Archive took half a
+    # minute. By full path: the runner's PATH may put Git's GNU tar first, which reads no zip.
+    - name: Unpack prebuilt V
+      shell: pwsh
+      env:
+        V_ASSET: ${{ inputs.asset }}
+      run: |
         New-Item -ItemType Directory -Force -Path C:\v-ct | Out-Null
         & "$env:SystemRoot\System32\tar.exe" -xf "$env:RUNNER_TEMP\$env:V_ASSET" -C C:\v-ct
         if ($LASTEXITCODE -ne 0) { throw "could not unpack $env:V_ASSET" }

@@ -50,6 +50,7 @@ env:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # full history: merge-base needs origin/main, and checkout at depth 0 fetches all
       # branch heads even on a tag ref
@@ -86,6 +87,7 @@ jobs:
     # one every PR is tested with. The tarball and the Linux wheel are both built here and share
     # the floor.
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       # the same pin as ci.yml, for the same reason: a release built with V master would build
@@ -146,6 +148,7 @@ jobs:
   publish:
     needs: [windows, linux]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -282,6 +285,7 @@ jobs:
   pypi:
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/project/blobly/

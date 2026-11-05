@@ -434,6 +434,10 @@ Both use exact keys, rebuild on a miss and save only after a successful dependen
 A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
 The Linux release runs on the same `ubuntu-24.04` image as CI's compiling jobs, so it restores the same caches.
+`.github/actions/setup-v-windows` caches the downloaded toolchain zip, keyed by its asset name
+(`v-windows-zip-1-` prefix; bump it after a re-mint under the same name), and on a miss tries
+the download three times. Every job carries a `timeout-minutes`, so a hung step costs that
+bound rather than GitHub's six hours.
 
 **CI runs as parallel jobs, and two required checks are verdict jobs.** The time is compiling
 (the unit suite was 18 CPU-minutes on a four-core runner), so the Linux backbone is `unit` —

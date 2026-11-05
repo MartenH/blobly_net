@@ -194,7 +194,9 @@ class TestPlugin:
                 "'project' (as 'project'); '_blobly_run' (as '_blobly_run'); 'tmp_path' (as 'tmp_path')") in out
 
     def test_diag_on_a_node_of_the_system_model(self, tmp_path):
-        write_all(tmp_path, {"conftest.py": CONFTEST, "test_node.py": NODE_SUITE})
+        # the ini makes tmp_path the run's root, so the child does not look above it into the
+        # temp folder other workers are deleting from
+        write_all(tmp_path, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\n", "test_node.py": NODE_SUITE})
         described = os.path.join(REPO, "projects", "described-ecu-demo", "described-ecu-demo.blobnet")
         r = pytest_run(tmp_path, f"--blobly-project={described}")
         out = r.stdout + r.stderr
