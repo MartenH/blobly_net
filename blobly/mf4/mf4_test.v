@@ -4,6 +4,7 @@ import math
 import compress.zlib
 import os
 import blobly.canlog
+import encoding.binary
 
 // Hermetic test against the committed samples/demo.mf4 (a python-can MF4Writer
 // file: master named 'time' as float64 seconds, DataBytes as a fixed inline
@@ -3616,4 +3617,162 @@ fn test_two_heads_at_one_millisecond_are_told_apart_by_position() {
 	log2, s2 := drain(img2)
 	assert same_log(log2, want2)
 	assert s2.out_of_order == 0
+}
+
+// ---- every field corrupted, both readers agreeing (#345) ----
+//
+// The class #342's eleven review rounds found one site at a time: a malformed, truncated,
+// oversized or failing input on which the stream and the loader diverge. Over every image the
+// builders make, each header field takes each extreme value in turn, and every byte limit
+// fails the source; the two readers must then both fail or read the same rows.
+
+fn corrupt_images() [][]u8 {
+	p, ids, ts := three()
+	return [
+		build_mlsd_file(p, ids, [u32(3), 5, 1]),
+		build_mlsd_multibus(p, ids, [u32(0), 2, 0], [0.010, 0.010, 0.020]),
+		build_vlsd_sd_file(p, ids, [false, true, false], ts),
+		build_remote_frame_file([u32(0x200), 0x201], [false, true], [u32(8), 3], [0.010, 0.011]),
+		build_dl_file(p, ids, ts, 30),
+		build_dz_file(p, ids, ts, 0),
+		build_dz_file(p, ids, ts, 1),
+		unfinalize(build_mlsd_file(p, ids, [u32(3), 5, 1])),
+		build_vlsd_sd_file_w(p, ids, [false, true, false], ts, 64),
+		build_mlsd_file_m(p, ids, [u32(3), 5, 1], true),
+		build_unsorted_vlsd_file(p, ids, ts),
+		build_vlsd_dz_chain_file(p, ids, ts, 10),
+		build_unsorted_file([URec{0, 0.010, 0x100, [u8(1)]}, URec{1, 0.005, 0x200, [u8(2)]},
+			URec{0, 0.040, 0x101, [u8(3)]}, URec{1, 0.040, 0x201, [u8(4)]}]),
+		build_two_dg_second_dz(p, ids, ts, [0.001, 0.002, 0.003]),
+		build_mlsd_multibus(p, ids, [u32(0), 0, 0], [0.030, 0.010, 0.020]),
+	]
+}
+
+// row_keys spells a log's rows so two logs can be compared as sets.
+fn row_keys(l canlog.Log) []string {
+	mut out := []string{cap: l.len()}
+	for i in 0 .. l.len() {
+		e := l.at(i)
+		out << '${e.t_s} ${e.iface} ${e.dir} ${e.frame.id} ${e.frame.extended} ${e.frame.rtr} ${e.frame.fd} ${e.frame.brs} ${e.frame.esi} ${e.frame.data}'
+	}
+	out.sort()
+	return out
+}
+
+// readers_agree runs both readers over one source each and says what differs, '' when they
+// agree: both failed, the same rows, or the same rows in another order which the stream
+// counted (a group whose time runs backwards: the loader sorts it, the stream counts it).
+fn readers_agree(mut a ByteSource, mut b ByteSource) string {
+	rec := parse_recording(mut a) or {
+		mut s := open_stream(mut b) or { return '' }
+		mut log := canlog.Log{}
+		for {
+			r := s.next(mut log) or { break }
+			log.rows << r
+		}
+		if s.err != '' {
+			return ''
+		}
+		return 'the loader failed (${err}), the stream read ${log.len()} rows'
+	}
+	mut s := open_stream(mut b) or { return 'the stream failed at open (${err}), the loader read ${rec.log.len()} rows' }
+	mut log := canlog.Log{}
+	for {
+		r := s.next(mut log) or { break }
+		log.rows << r
+	}
+	if s.err != '' {
+		return 'the stream failed (${s.err}), the loader read ${rec.log.len()} rows'
+	}
+	if same_log(log, rec.log) {
+		return ''
+	}
+	if s.out_of_order > 0 && row_keys(log) == row_keys(rec.log) {
+		return ''
+	}
+	return 'the readers read different rows (${log.len()} vs ${rec.log.len()})'
+}
+
+fn test_a_short_or_failing_source_at_every_byte_fails_both_readers_or_neither() {
+	for k, img in corrupt_images() {
+		for limit in 0 .. img.len + 1 {
+			mut a := ShortSource{
+				buf:   img
+				limit: u64(limit)
+			}
+			mut b := ShortSource{
+				buf:   img
+				limit: u64(limit)
+			}
+			d := readers_agree(mut a, mut b)
+			assert d == '', 'image ${k}, short at ${limit}: ${d}'
+			mut fa := FailSource{
+				buf:   img
+				limit: u64(limit)
+			}
+			mut fb := FailSource{
+				buf:   img
+				limit: u64(limit)
+			}
+			fd := readers_agree(mut fa, mut fb)
+			assert fd == '', 'image ${k}, failing at ${limit}: ${fd}'
+		}
+	}
+}
+
+// header_offsets lists every 4-aligned offset inside a block's header, links and data fields:
+// each block found by its '##' at 8-byte alignment, with the record bytes of a DT/SD/RD and
+// the compressed body of a DZ left out, since those are data and not fields.
+fn header_offsets(img []u8) []int {
+	mut out := []int{}
+	mut i := 64
+	for i + 24 <= img.len {
+		if img[i] != `#` || img[i + 1] != `#` {
+			i += 8
+			continue
+		}
+		id := img[i..i + 4].bytestr()
+		length := int(binary.little_endian_u64_at(img, i + 8))
+		links := int(binary.little_endian_u64_at(img, i + 16))
+		mut end := i + length
+		if length < 24 || end > img.len {
+			end = img.len
+		}
+		match id {
+			'##DT', '##SD', '##RD' { end = i + 24 + 8 * links }
+			'##DZ' { end = i + 24 + 8 * links + 24 }
+			else {}
+		}
+		for off := i + 8; off + 8 <= end && off + 8 <= img.len; off += 4 {
+			out << off
+		}
+		i = (i + length + 7) / 8 * 8
+		if length < 24 {
+			i += 8
+		}
+	}
+	return out
+}
+
+fn test_every_header_field_at_every_extreme_fails_both_readers_or_neither() {
+	values := [u64(0), 1, 2, 7, u64(1) << 31, u64(0xFFFF_FFFF), u64(1) << 63, u64(0xFFFF_FFFF_FFFF_FFFF)]
+	mut runs := 0
+	for k, img in corrupt_images() {
+		for off in header_offsets(img) {
+			for v in values {
+				mut bad := img.clone()
+				binary.little_endian_put_u64_at(mut bad, v, off)
+				mut a := MemSource{
+					buf: bad
+				}
+				mut b := MemSource{
+					buf: bad
+				}
+				d := readers_agree(mut a, mut b)
+				assert d == '', 'image ${k}, +${off} = ${v:x}: ${d}'
+				runs++
+			}
+		}
+	}
+	assert runs > 10000 // the walk found the blocks
 }
