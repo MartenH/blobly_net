@@ -203,7 +203,7 @@ fn draw_unlock(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 // on DoIP its opt-in to the reference key over the network.
 fn unlock_refusal_for(t DiagTarget, desc DiagDesc) string {
 	return diaghold.unlock_refusal(desc.ok && desc.desc.server, desc.ok
-		&& desc.desc.security_key == 'reference', t.carrier.doip, desc.ok
+		&& desc.desc.security_key == 'reference', t.carrier.kind == .doip, desc.ok
 		&& desc.desc.allow_bench_key)
 }
 

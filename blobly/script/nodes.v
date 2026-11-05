@@ -272,7 +272,7 @@ fn (mut env Env) seed_sizes(h int, n int) {
 fn (env &Env) on_node(c &UdsConn, node string) ! {
 	ci := env.find_chan(c.chan) or { return }
 	car := env.chans[ci].carrier
-	if car.doip && c.ch.rx_id != u32(car.ecu) {
+	if car.kind == .doip && c.ch.rx_id != u32(car.ecu) {
 		return error('${node}: the connection on ${c.chan} is retargeted to 0x${c.ch.rx_id:04X}; retarget it back first')
 	}
 }

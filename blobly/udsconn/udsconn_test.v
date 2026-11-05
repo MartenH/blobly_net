@@ -58,11 +58,11 @@ fn test_an_id_that_is_not_a_can_identifier_is_refused_before_the_row() {
 }
 
 fn test_a_someip_row_is_no_carrier_and_a_doip_row_takes_no_ids() {
-	resolve(ask(false, 0, false, 0), 'S', Carrier{ someip: true }) or {
+	resolve(ask(false, 0, false, 0), 'S', Carrier{ kind: .someip }) or {
 		assert err.msg() == '"S" is a SOME/IP channel — not a diagnostics carrier'
-		resolve(ask(true, 0x7E0, false, 0), 'D', Carrier{ doip: true }) or {
+		resolve(ask(true, 0x7E0, false, 0), 'D', Carrier{ kind: .doip }) or {
 			assert err.msg().contains('DoIP addressing comes from the channel')
-			t := resolve(ask(false, 0, false, 0), 'D', Carrier{ doip: true })!
+			t := resolve(ask(false, 0, false, 0), 'D', Carrier{ kind: .doip })!
 			assert t.doip
 			return
 		}
@@ -83,13 +83,13 @@ fn test_carrier_of_reads_the_row() {
 		tester_addr: 0x0E80
 		ecu_addr:    0x1000
 	})
-	assert d.doip && d.host == '127.0.0.1' && d.port == 13401 && d.tester == 0x0E80 && d.ecu == 0x1000
+	assert d.kind == .doip && d.host == '127.0.0.1' && d.port == 13401 && d.tester == 0x0E80 && d.ecu == 0x1000
 	assert d.eth_kind()? == 'DoIP'
 	s := carrier_of(project.Channel{
 		name:  'S'
 		iface: 'someip:0.0.0.0:30490'
 	})
-	assert s.someip && s.eth_kind()? == 'SOME/IP'
+	assert s.kind == .someip && s.eth_kind()? == 'SOME/IP'
 }
 
 fn opener(iface string, _ string) !transport.Bus {
@@ -138,14 +138,14 @@ fn test_doip_listener_takes_the_rows_port_and_family() {
 	p2, v62 := doip_listener(13555, true, '', none)!
 	assert p2 == 13555 && v62
 	alt := Carrier{
-		doip: true
+		kind: .doip
 		host: '127.0.0.4'
 		port: 13555
 	}
 	p3, v63 := doip_listener(0, false, 'Alt', alt)!
 	assert p3 == 13555 && !v63
 	six := Carrier{
-		doip: true
+		kind: .doip
 		host: '::1'
 		port: 13401
 	}
@@ -153,7 +153,7 @@ fn test_doip_listener_takes_the_rows_port_and_family() {
 	assert v64, 'an IPv6 row listens over IPv6'
 	// a row is a row whatever it is called: an unnamed one is not "no row"
 	unnamed := Carrier{
-		doip: true
+		kind: .doip
 		host: '127.0.0.1'
 		port: 13600
 	}
@@ -176,7 +176,7 @@ fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
 	_, p2, g2 := someip_listener(4000, '239.1.1.1', '', none)!
 	assert p2 == 4000 && g2 == '239.1.1.1'
 	row := Carrier{
-		someip: true
+		kind: .someip
 		host:   '127.0.0.1'
 		port:   30509
 		group:  ''
@@ -189,7 +189,7 @@ fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
 	if _, _, _ := someip_listener(4000, '', 'ETH1', row) {
 		assert false, 'another port than the row'
 	}
-	if _, _, _ := someip_listener(0, '', 'DoIP1', Carrier{ doip: true }) {
+	if _, _, _ := someip_listener(0, '', 'DoIP1', Carrier{ kind: .doip }) {
 		assert false, 'a DoIP row'
 	}
 }
@@ -197,9 +197,9 @@ fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
 // a raw ISO-TP channel: a CAN row only, both ids given, 29-bit as a UDS connection's
 fn test_a_raw_isotp_channel_needs_both_ids_on_a_can_row() {
 	for car in [Carrier{
-		doip: true
+		kind: .doip
 	}, Carrier{
-		someip: true
+		kind: .someip
 	}] {
 		resolve_isotp(ask(true, 0x700, true, 0x708), 'E', car) or {
 			assert err.msg().contains('carries no ISO-TP; a raw ISO-TP channel opens on a CAN row'), err.msg()

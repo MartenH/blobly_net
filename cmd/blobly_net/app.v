@@ -853,7 +853,7 @@ fn (app &App) wires_of_db(di int) []string {
 	mut out := []string{}
 	mut seen := map[string]bool{}
 	for c in app.chans {
-		if c.doip || c.someip {
+		if c.kind != .can {
 			continue
 		}
 		gate := transport.destination_key_for(c.adapter, c.iface)
@@ -1398,7 +1398,7 @@ fn (mut app App) rebuild_from_proj() {
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
-			senders_modelled: !ch.is_someip() // see Chan.senders_modelled
+			senders_modelled: ch.kind() != .someip // see Chan.senders_modelled
 			name:           ch.name
 			network:        ch.network
 			adapter:        ch.adapter
@@ -1413,8 +1413,7 @@ fn (mut app App) rebuild_from_proj() {
 			j1939:          ch.j1939
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
-			doip:           ch.is_doip()
-			someip:         ch.is_someip()
+			kind:           ch.kind()
 			group:          ch.group
 			enabled:        ch.enabled
 			replay_src:     if r := ch.replay { app.resolve_asset(r.source) } else { '' }
@@ -1484,7 +1483,7 @@ fn (mut app App) rebuild_from_proj() {
 		// fire answers `no open bus`. Converting a CAN row to `someip` carries its generators
 		// across, which is how a project reaches this without editing YAML, so the runtime drops
 		// them rather than displaying what it will not do.
-		row_senders := if ch.is_someip() { []project.Sender{} } else { ch.senders }
+		row_senders := if ch.kind() == .someip { []project.Sender{} } else { ch.senders }
 		for s in row_senders {
 			// `tgt` and `chan` are filled by resolve_sender_targets_locked once every channel has
 			// been built — not here. A `bus:` may name a channel that appears LATER in the file,
@@ -1518,14 +1517,14 @@ fn (mut app App) rebuild_from_proj() {
 		// supervisor exists whatever the tick). It must not contribute a verifier entry: an
 		// empty one made `verifiers.len == 1` false, and an unlabelled MF4 import stopped
 		// resolving to the single simulated bus.
-		keep_for_panel := ch.is_doip() && nodes.len > 0 && !ch.enabled
+		keep_for_panel := ch.kind() == .doip && nodes.len > 0 && !ch.enabled
 		// NOT A SOME/IP ROW. A SimCfg is what the Simulation panel draws enable/fault controls
 		// from and what the Network panel lists ECUs and Diagnostics under — and nothing
 		// simulates on a passive listener: `start()` skips sim_loop for it and the diagnostics
 		// seeding skips it too. So a converted row carrying nodes offered a set of live-looking
 		// controls that could not affect a single datagram. Its `verify:` entries are skipped
 		// for the same reason: there is no CAN frame here to check a counter or a CRC on.
-		if ch.is_someip() {
+		if ch.kind() == .someip {
 			continue
 		}
 		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {
@@ -1593,7 +1592,7 @@ fn (mut app App) rebuild_from_proj() {
 		// census, so a database attached to one decided a gate for a UDP destination no CAN
 		// frame is ever read against — and `dbs_for_gate` skips those rows, so the gate said
 		// J1939 about a wire whose databases it would not then look at (codex).
-		if c.doip || c.someip {
+		if c.kind != .can {
 			continue
 		}
 		dk := transport.destination_key_for(c.adapter, c.iface)
@@ -1608,7 +1607,7 @@ fn (mut app App) rebuild_from_proj() {
 	// and a project whose ONLY declaration is a tick answered false — so the fast paths that
 	// ask it skipped a wire the gate beside it had just turned on (codex).
 	app.j1939_any = app.dbs.any(it.j1939_declared())
-		|| app.chans.any(!it.doip && !it.someip && it.j1939)
+		|| app.chans.any(it.kind == .can && it.j1939)
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
 	app.j1939_undecoded = map[string]bool{}
@@ -1881,7 +1880,7 @@ fn (app &App) worst_bus_load_locked() (f32, bool) {
 	mut worst := f32(0)
 	mut any := false
 	for c in app.chans {
-		if c.running && !c.eth() && c.load_hist.len > 0 {
+		if c.running && c.kind == .can && c.load_hist.len > 0 {
 			any = true
 			if c.load_pct > worst {
 				worst = c.load_pct

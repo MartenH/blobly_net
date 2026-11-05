@@ -160,7 +160,7 @@ fn (mut app App) diag_sys_refresh() {
 		// project channel already reaches)
 		for nd in app.diag_sys.doip_targets() {
 			car := script.Carrier{
-				doip:   true
+				kind:   .doip
 				host:   nd.host
 				port:   doip.port
 				tester: if nd.tester != 0 { nd.tester } else { project.Channel{}.tester_addr }
@@ -222,7 +222,7 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 		}
 	}
 	// the channel decides between two nodes with one address, on either carrier
-	addr := if t.carrier.doip {
+	addr := if t.carrier.kind == .doip {
 		sysview.TargetAddr{
 			doip:    true
 			logical: t.carrier.ecu

@@ -60,7 +60,7 @@ fn nm_row(row i32) !(nm.Config, bool, u64) {
 	if row < 0 || int(row) >= bb_nm_cfgs.len {
 		return error('no channel ${row}')
 	}
-	if bb_run_rows[int(row)].is_eth() {
+	if bb_run_rows[int(row)].kind() != .can {
 		return error('channel ${row} (${bb_run_rows[int(row)].name}) is not a CAN row: NM is read from CAN frames')
 	}
 	return bb_nm_cfgs[int(row)], bb_nm_has[int(row)], bb_run_gen

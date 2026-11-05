@@ -62,9 +62,12 @@ Two things enter the same trace from somewhere other than a wire:
   is told. That half is documented, not prevented: *A bound UDP port is not an owned one* in
   [bus_config_dialog.md](bus_config_dialog.md). A DoIP row has
   no reader at all: no RX thread, no rows, a client (or a hosted entity) and nothing else.
-- **Is this a CAN wire?** is asked of one predicate — `project.Channel.is_eth()` in the model,
-  `Chan.eth()` at runtime — by taps, load, replay, the sim loop, staleness and trace ownership. Not
-  by adapter name at each site; that is how the second Ethernet kind was missed once.
+- **What kind of row is this?** has one answer, `project.RowKind` (`can`, `doip`, `someip`):
+  `project.Channel.kind()` in the model, `Chan.kind` at runtime, `udsconn.Carrier.kind` for a
+  script's connection. "Is this a CAN wire?" — taps, load, replay, the sim loop, staleness, trace
+  ownership — is `kind == .can`, and a site that treats each kind its own way matches on it
+  exhaustively, so a kind added to `RowKind` is a compile error at every site that must decide.
+  Not by adapter name at each site; that is how the second Ethernet kind was missed once.
 - **A backend that cannot answer is not asked.** A DoIP channel opens no `Bus` and no RX thread; a
   SOME/IP row contributes no generators, simulation nodes or verifiers to the runtime, because
   nothing there can transmit or be checked as a CAN frame.

@@ -841,20 +841,18 @@ fn row(i i32) ?project.Channel {
 pub fn bb_channel_kind(i i32) i32 {
 	ch := row(i) or { return fail(bb_err, 'no channel ${i}') }
 	ok()
-	if ch.is_doip() {
-		return i32(C.BB_KIND_DOIP)
+	return match ch.kind() {
+		.can { i32(C.BB_KIND_CAN) }
+		.doip { i32(C.BB_KIND_DOIP) }
+		.someip { i32(C.BB_KIND_SOMEIP) }
 	}
-	if ch.is_someip() {
-		return i32(C.BB_KIND_SOMEIP)
-	}
-	return i32(C.BB_KIND_CAN)
 }
 
 @[export: 'bb_channel_health_source']
 pub fn bb_channel_health_source(i i32) i32 {
 	ch := row(i) or { return fail(bb_err, 'no channel ${i}') }
 	ok()
-	if ch.is_eth() {
+	if ch.kind() != .can {
 		return i32(C.BB_HEALTH_SOURCE_NONE)
 	}
 	return match transport.health_source(ch.iface_with_bitrate()) {
@@ -872,7 +870,7 @@ pub fn bb_bus_open(iface &char) i32 {
 	name := unsafe { cstring_to_vstring(iface) }
 	// the rules the model uses — the interface's scheme, and a row's own type: on Linux a DoIP or
 	// SOME/IP endpoint would fall through to SocketCAN and fail as a missing device
-	if project.iface_is_eth(name) || (bb_loaded && bb_rows.any(it.is_eth()
+	if project.kind_of_iface(name) != .can || (bb_loaded && bb_rows.any(it.kind() != .can
 		&& it.iface_with_bitrate() == name)) {
 		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
 	}

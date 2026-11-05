@@ -20,7 +20,7 @@ fn test_a_found_entity_becomes_a_doip_channel_named_after_its_vin() {
 	assert c.name == 'BLOBLYEMBSYSNODE1'
 	assert c.adapter == 'doip'
 	assert c.typ == 'doip'
-	assert c.is_doip()
+	assert c.kind() == .doip
 	assert c.iface == 'doip:192.168.0.50:13400'
 	assert c.ecu_addr == 0x07A0
 	assert c.tester_addr == 0x0E80

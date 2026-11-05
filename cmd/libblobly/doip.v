@@ -85,7 +85,7 @@ fn announcement_out(out &C.bb_doip_announcement, v doip.VehicleInfo, source stri
 @[export: 'bb_doip_endpoint']
 pub fn bb_doip_endpoint(r i32, host &char, cap i32, port &i32) i32 {
 	name, car := run_row('endpoint', r) or { return failed_with(err) }
-	if !car.doip {
+	if car.kind != .doip {
 		return fail(bb_err, 'endpoint: "${name}" is not a DoIP channel')
 	}
 	if !isnil(port) {

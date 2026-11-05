@@ -83,7 +83,7 @@ fn test_stop_closes_a_connected_entity() {
 	o := lines.options()
 	proj := load(path, o)!
 	mut r := start(proj, path, o)!
-	row := r.proj.channels.filter(it.enabled && it.is_doip())[0]
+	row := r.proj.channels.filter(it.enabled && it.kind() == .doip)[0]
 	host, port := row.doip_endpoint()
 	mut tester := net.dial_tcp('${host}:${port}')!
 	time.sleep(50 * time.millisecond) // accepted: the serve loop is inside the connection

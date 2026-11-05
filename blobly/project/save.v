@@ -39,7 +39,7 @@ pub fn (p Project) to_yaml() string {
 		if address != '' {
 			b.writeln('    address: ${yaml_scalar(address)}')
 		}
-		if !ch.is_eth() {
+		if ch.kind() == .can {
 			b.writeln('    protocol: ${ch.typ}')
 			b.writeln('    bitrate: ${ch.bitrate}')
 		}
@@ -67,10 +67,10 @@ pub fn (p Project) to_yaml() string {
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')
 		}
-		if ch.is_someip() && ch.group != '' {
+		if ch.kind() == .someip && ch.group != '' {
 			b.writeln('    group: ${yaml_scalar(ch.group)}')
 		}
-		if ch.is_doip() {
+		if ch.kind() == .doip {
 			b.writeln('    tester_address: "0x${ch.tester_addr:04X}"')
 			b.writeln('    ecu_address: "0x${ch.ecu_addr:04X}"')
 			if ch.vin != '' {
@@ -141,7 +141,7 @@ pub fn (p Project) to_yaml() string {
 					// logical pair. Writing them unconditionally turned a deliberately absent
 					// pair into `rx: "0x0"` / `tx: "0x0"` on the first save, so the tool's own
 					// output then tripped its own "rx/tx are ignored here" warning.
-					if !ch.is_doip() {
+					if ch.kind() != .doip {
 						b.writeln('          rx: "0x${u.rx:X}"')
 						b.writeln('          tx: "0x${u.tx:X}"')
 						if u.functional != 0 {

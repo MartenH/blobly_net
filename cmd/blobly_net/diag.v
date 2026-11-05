@@ -83,8 +83,8 @@ struct DiagTarget {
 // target's with its interface — chan_where) or the DoIP endpoint, the carrier from `t.carrier`, so
 // every entry says CAN or DoIP the same way and two targets differ in the words that differ.
 fn (t DiagTarget) named(who string, where string) DiagTarget {
-	kind := if t.carrier.doip { 'DoIP' } else { 'CAN' }
-	addr := if t.carrier.doip {
+	kind := if t.carrier.kind == .doip { 'DoIP' } else { 'CAN' }
+	addr := if t.carrier.kind == .doip {
 		'0x${t.carrier.ecu:04X}'
 	} else {
 		'0x${t.rx:X}→0x${t.tx:X}'
@@ -177,7 +177,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	// the system's nodes on the running channels named after their buses (diag_dtc.v): a bench
 	// project addresses real ECUs it simulates nothing for, which no other entry reaches
 	for t in sys_targets {
-		if !t.carrier.doip && !out.any(it.key == t.key) {
+		if t.carrier.kind != .doip && !out.any(it.key == t.key) {
 			out << t
 		}
 	}
@@ -192,7 +192,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	rows := app.host_rows_locked()
 	a.mu.unlock()
 	for pi, c in app.proj.channels {
-		if !c.is_doip() {
+		if c.kind() != .doip {
 			continue
 		}
 		// The LIVE tick, not the load-time value. The Buses checkbox writes app.chans, so a
@@ -219,7 +219,7 @@ fn (app &App) diag_targets() []DiagTarget {
 			continue
 		}
 		// the ECU by the name the system gives the entity at that endpoint, else the channel's
-		described := sys_targets.filter(it.carrier.doip && same_entity(it.carrier, car))
+		described := sys_targets.filter(it.carrier.kind == .doip && same_entity(it.carrier, car))
 		who := if d := described[0] { d.who } else { 'ECU' }
 		out << DiagTarget{
 			key:     diag_key_doip(c)
@@ -233,7 +233,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	// does decides — ticked off, or hosting an entity whose bind failed, it is skipped above on
 	// purpose, and the system's entry must not reach the entity in its place.
 	for t in sys_targets {
-		if t.carrier.doip && !app.proj.channels.any(it.is_doip()
+		if t.carrier.kind == .doip && !app.proj.channels.any(it.kind() == .doip
 			&& same_entity(script.carrier_of(it), t.carrier)) && !out.any(it.key == t.key) {
 			out << t
 		}

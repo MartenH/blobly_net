@@ -72,12 +72,9 @@ pub:
 pub fn (c Channel) fault_target() sim.FaultTarget {
 	return sim.FaultTarget{
 		channel:  c.cfg.name
-		eth_kind: if c.cfg.is_doip() {
-			'DoIP'
-		} else if c.cfg.is_someip() {
-			'SOME/IP'
-		} else {
-			''
+		eth_kind: match c.cfg.kind() {
+			.can { '' }
+			.doip, .someip { c.cfg.kind().name() }
 		}
 		iface:    c.cfg.iface
 		db:       c.db
@@ -330,7 +327,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	desc_sys := described_system(proj_path, proj, o)
 	r.sys = desc_sys
 	for ci, ch in proj.channels {
-		if ch.is_eth() {
+		if ch.kind() != .can {
 			continue
 		}
 		// each FILE asked, as the GUI asks: the merge keeps an id's first definition, which may be
@@ -356,71 +353,74 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		// so a `type: doip` channel printed "+ UDS server" while spawning a CAN responder on an
 		// interface no CAN transport can open — the project documented an entity that was never
 		// listening. Start the real thing here.
-		if ch.is_someip() {
-			// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
-			// someip.listen({ from = name }), which binds it for the window it asks for.
-			host, port := ch.someip_endpoint()
-			grp := if ch.group != '' { ', group ${ch.group}' } else { '' }
-			o.out('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen(1500, { from = "${ch.name}" })')
-			continue
-		}
-		if ch.is_doip() {
-			if !ch.hosts_doip_entity() {
-				o.out('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')
+		match ch.kind() {
+			.can {}
+			.someip {
+				// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
+				// someip.listen({ from = name }), which binds it for the window it asks for.
+				host, port := ch.someip_endpoint()
+				grp := if ch.group != '' { ', group ${ch.group}' } else { '' }
+				o.out('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen(1500, { from = "${ch.name}" })')
 				continue
 			}
-			host, port := ch.doip_endpoint()
-			// Validate before serving, exactly as the CAN branch does. Without this a
-			// malformed `uds:` block was dropped by uds_nodes() in silence and the built-in
-			// default served in its place, so a suite could pass against the stock VIN while
-			// believing it had read the configured ECU.
-			for w in sim.validate_uds_doip(nodes) {
-				o.err('${ch.name}: ${w}')
+			.doip {
+				if !ch.hosts_doip_entity() {
+					o.out('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')
+					continue
+				}
+				host, port := ch.doip_endpoint()
+				// Validate before serving, exactly as the CAN branch does. Without this a
+				// malformed `uds:` block was dropped by uds_nodes() in silence and the built-in
+				// default served in its place, so a suite could pass against the stock VIN while
+				// believing it had read the configured ECU.
+				for w in sim.validate_uds_doip(nodes) {
+					o.err('${ch.name}: ${w}')
+				}
+				// One decision, shared with the GUI (sim.doip_entity): which node is served, and
+				// the single VIN both identity surfaces use. An entity that came up differently
+				// depending on which side started it would make a bench result depend on how the
+				// tool was launched.
+				ent := sim.doip_entity_described(ch, nodes, &desc_sys, can_sims(proj)) or {
+					// REFUSE, not continue. Leaving the channel in place let scripts dial the
+					// endpoint anyway, and if another DoIP process holds it the suite passes
+					// against that one — the wrong-ECU failure the bind check below prevents,
+					// reached by skipping the bind entirely.
+					return error('${ch.name}: ${err}\nrefusing to run: scripts would dial ${ch.name} and reach whatever else is there')
+				}
+				for n in ent.notes {
+					o.err('${ch.name}: ${n}')
+				}
+				if ent.extra > 0 {
+					// One channel is one entity at one logical address, so extra UDS nodes have no
+					// address to answer on. Say which one won rather than silently serving it.
+					o.err('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
+				}
+				mut srv := ent.server
+				probes.release(port)
+				// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
+				// left the run announcing an entity and carrying on — and if the port was held by
+				// another DoIP process serving the same built-in defaults, uds.open would connect
+				// to THAT and the suite would pass against the wrong ECU.
+				mut entity := doip_listen(host, port, ent.cfg, srv) or {
+					return error('${ch.name}: ${err}\nrefusing to run: a suite would connect to whatever else is on ${host}:${port}')
+				}
+				r.mu.lock()
+				r.entities << entity
+				r.mu.unlock()
+				r.counted()
+				spawn r.doip_serve_loop(mut entity)
+				// NOT announced here. The default sequence is 3 × 500ms and would be finished
+				// before the script environment exists, so a suite could never observe it — the
+				// documented "listen before they announce" was unachievable with the defaults, and
+				// the announce fixture was only passing because it announces for four seconds.
+				// Collected and fired once the environment is ready, below.
+				announcers << Announcer{
+					srv:  entity
+					name: ch.name
+				}
+				o.out('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
+				continue
 			}
-			// One decision, shared with the GUI (sim.doip_entity): which node is served, and
-			// the single VIN both identity surfaces use. An entity that came up differently
-			// depending on which side started it would make a bench result depend on how the
-			// tool was launched.
-			ent := sim.doip_entity_described(ch, nodes, &desc_sys, can_sims(proj)) or {
-				// REFUSE, not continue. Leaving the channel in place let scripts dial the
-				// endpoint anyway, and if another DoIP process holds it the suite passes
-				// against that one — the wrong-ECU failure the bind check below prevents,
-				// reached by skipping the bind entirely.
-				return error('${ch.name}: ${err}\nrefusing to run: scripts would dial ${ch.name} and reach whatever else is there')
-			}
-			for n in ent.notes {
-				o.err('${ch.name}: ${n}')
-			}
-			if ent.extra > 0 {
-				// One channel is one entity at one logical address, so extra UDS nodes have no
-				// address to answer on. Say which one won rather than silently serving it.
-				o.err('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
-			}
-			mut srv := ent.server
-			probes.release(port)
-			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
-			// left the run announcing an entity and carrying on — and if the port was held by
-			// another DoIP process serving the same built-in defaults, uds.open would connect
-			// to THAT and the suite would pass against the wrong ECU.
-			mut entity := doip_listen(host, port, ent.cfg, srv) or {
-				return error('${ch.name}: ${err}\nrefusing to run: a suite would connect to whatever else is on ${host}:${port}')
-			}
-			r.mu.lock()
-			r.entities << entity
-			r.mu.unlock()
-			r.counted()
-			spawn r.doip_serve_loop(mut entity)
-			// NOT announced here. The default sequence is 3 × 500ms and would be finished
-			// before the script environment exists, so a suite could never observe it — the
-			// documented "listen before they announce" was unachievable with the defaults, and
-			// the announce fixture was only passing because it announces for four seconds.
-			// Collected and fired once the environment is ready, below.
-			announcers << Announcer{
-				srv:  entity
-				name: ch.name
-			}
-			o.out('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
-			continue
 		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
@@ -512,7 +512,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	}
 	r.run_t0 = run_t0
 	for ci, ch in proj.channels {
-		if ch.is_doip() || ch.is_someip() {
+		if ch.kind() != .can {
 			continue
 		}
 		for s in ch.senders {
@@ -814,7 +814,7 @@ fn (mut r Run) build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 fn can_sims(proj project.Project) []project.NodeCfg {
 	mut out := []project.NodeCfg{}
 	for c in proj.channels {
-		if c.enabled && !c.is_eth() {
+		if c.enabled && c.kind() == .can {
 			out << c.all_nodes()
 		}
 	}
@@ -880,7 +880,7 @@ fn nm_wires(sys &sysview.System, chans []project.Channel, proj_dir string, files
 	mut rows := map[string][]project.Channel{}
 	mut order := []string{}
 	for ch in chans {
-		if ch.is_eth() {
+		if ch.kind() != .can {
 			continue
 		}
 		k := j1939_wire_key(ch)

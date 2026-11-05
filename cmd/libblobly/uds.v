@@ -1083,11 +1083,14 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		return fail(bb_err_state, "not started: a functional request goes out on a row of the run")
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
-	if ch.is_doip() {
-		return fail(bb_err, 'functional("${ch.name}"): a DoIP channel — its functional request is bb_uds_functional_doip, on its one handle')
-	}
-	if ch.is_eth() {
-		return fail(bb_err, 'functional("${ch.name}"): a SOME/IP channel — functional addressing is CAN or DoIP only')
+	match ch.kind() {
+		.can {}
+		.doip {
+			return fail(bb_err, 'functional("${ch.name}"): a DoIP channel — its functional request is bb_uds_functional_doip, on its one handle')
+		}
+		.someip {
+			return fail(bb_err, 'functional("${ch.name}"): a SOME/IP channel — functional addressing is CAN or DoIP only')
+		}
 	}
 	if id < 0 || id > 0x1FFF_FFFF {
 		return fail(bb_err, 'functional("${ch.name}"): ${id} is not a CAN identifier')

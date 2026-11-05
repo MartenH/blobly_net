@@ -125,7 +125,7 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		}
 		addr := import_address(pl)!
 		iface := compose_iface(pl.adapter, addr)
-		if pl.adapter !in adapters || iface_is_eth(iface) {
+		if pl.adapter !in adapters || kind_of_iface(iface) != .can {
 			return error('${c.bus}: ${pl.adapter} is not a CAN adapter')
 		}
 		if addr == '' && pl.adapter !in ['virtual', 'udp'] {
@@ -246,7 +246,7 @@ pub fn arxml_rate_findings(chs []Channel, dir string, find DatabaseLoad) []RowWa
 	mut dbs := map[string]candb.Database{}
 	mut out := []RowWarning{}
 	for i, ch in chs {
-		if ch.is_eth() {
+		if ch.kind() != .can {
 			continue
 		}
 		mut checked := map[string]bool{} // this row's: a cluster listed twice is one statement

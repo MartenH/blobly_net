@@ -497,7 +497,7 @@ fn selftest_config(mut app App) {
 			&& os.real_path(project.resolve_asset(os.dir(tmp), c0.databases[0])) == os.real_path('dbc/blobly_net.dbc')) && ok
 		c1 := rp.channels[1]
 		ok = selftest_check('c1 name Diag', c1.name == 'Diag') && ok
-		ok = selftest_check('c1 is doip', c1.is_doip()) && ok
+		ok = selftest_check('c1 is doip', c1.kind() == .doip) && ok
 		ok = selftest_check('c1 adapter doip', c1.adapter == 'doip') && ok
 		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
 	}

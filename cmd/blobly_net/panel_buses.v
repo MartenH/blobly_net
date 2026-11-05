@@ -320,7 +320,7 @@ fn draw_buses(mut app App, chans []Chan, model_en []bool) {
 			// (transport.busload), worst-case stuffing, ours and theirs alike.
 			// The number as soon as one interval has closed; the strip once there are two points
 			// to draw a line between (codex #263 r4).
-			if c.running && !c.eth() && c.load_hist.len >= 1 {
+			if c.running && c.kind == .can && c.load_hist.len >= 1 {
 				if c.load_hist.len >= 2 {
 					vgui.same_line()
 					vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.prefs.ui_scale, 16 * app.prefs.ui_scale)
@@ -453,7 +453,7 @@ fn draw_network(mut app App, chans []Chan) {
 			// A listener is neither monitorable() nor a Send target, so an expanded running
 			// SOME/IP row read "(nothing attached)" while its own reader filled the trace — the
 			// one place the panel says what a row is doing.
-			if c.someip {
+			if c.kind == .someip {
 				grp := if c.group != '' { ' (group ${c.group})' } else { '' }
 				tf << 'Listen${grp}'
 			}
