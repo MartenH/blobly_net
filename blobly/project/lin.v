@@ -9,7 +9,7 @@ import yaml
 pub struct LinBus {
 pub mut:
 	name    string
-	address string // inproc:<name>, tty:<path>[@baud], pty:<path>[@baud]
+	address string // inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]
 	// bitrate 0 takes the address's rate, else the LDF's LIN_speed
 	bitrate  int
 	ldf      string

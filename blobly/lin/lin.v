@@ -219,7 +219,7 @@ mut:
 }
 
 // open opens a handle on the bus an address names: `inproc:<name>`, or a serial port
-// `tty:<path>[@baud]` / `pty:<path>[@baud]` (Linux). A serial address's rate is the bus's where
+// `tty:<path>[@baud]` / `pty:<path>[@baud][,plain]` (Linux). A serial address's rate is the bus's where
 // Config.baud states none; one that contradicts a stated Config.baud is refused.
 pub fn open(address string, cfg Config) !Bus {
 	if address.starts_with('inproc:') {

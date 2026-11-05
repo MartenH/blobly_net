@@ -150,7 +150,7 @@ fn open_serial(a SerialAddr, cfg Config) !Bus {
 		baud: baud
 	}
 	check_config(c)!
-	dev := device_path(a.path)!
+	dev := device_path(a)!
 	key := os.real_path(dev)
 	lock lin_serial_reg {
 		if holder := lin_serial_reg.open[key] {
@@ -569,7 +569,13 @@ fn (b &SerialBus) end_at() i64 {
 		return b.last_byte_ns + wake_quiet_ns
 	}
 	if b.addr.plain && b.frame_open() && !b.own_break {
-		return b.last_byte_ns + plain_quiet_ns
+		quiet := b.last_byte_ns + plain_quiet_ns(b.cfg.baud)
+		// a response of a stated length not begun yet may come late from a slave behind the
+		// other end, as on a wire: it has its slot
+		if b.dec.awaits_response() && b.slot_end_ns > quiet {
+			return b.slot_end_ns
+		}
+		return quiet
 	}
 	idle_at := b.last_byte_ns + b.idle_ns
 	if b.dec.response_begun() {
@@ -651,7 +657,8 @@ fn (mut b SerialBus) decode(bytes []u8, now i64) {
 // frames as the break it follows, a 0xFF as FF FF. The caller holds mu.
 fn (mut b SerialBus) decode_plain(bytes []u8, now i64) {
 	for x in bytes {
-		if x == 0x55 && b.dec.st in [.idle, .wake] {
+		// a frame at its length is over on a plain pty, which has no break to end a long one
+		if x == 0x55 && b.dec.st in [.idle, .wake, .tail] {
 			b.decode([u8(0xFF), 0x00, 0x00, 0x55], now)
 		} else if x == 0xFF {
 			b.decode([u8(0xFF), 0xFF], now)

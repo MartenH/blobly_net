@@ -15,6 +15,7 @@ fn test_a_serial_address_states_its_device_and_rate() {
 	bad := {
 		'tty:/dev/ttyS0,plain':  'is for a pty'
 		'pty:,plain':            'names no device'
+		'pty:/dev/pts/3,plain@19200': 'write `,plain` last'
 		'tty:':                  'names no device'
 		'pty:@19200':            'names no device'
 		'tty:/dev/ttyS0@':       'must be a number'
@@ -127,4 +128,9 @@ fn test_an_unknown_length_tty_response_waits_for_its_last_packet() {
 	assert response_end(.tty, true, 1000) == 1000
 	assert response_end(.pty, false, 1000) == 1000
 	assert response_end(.tty, false, 1000) == 1000 + serial_rx_margin_ns(.tty)
+}
+
+fn test_a_plain_ptys_quiet_is_twenty_bits_and_at_least_2_ms() {
+	assert plain_quiet_ns(19200) == 2_000_000
+	assert plain_quiet_ns(1000) == 20_000_000
 }

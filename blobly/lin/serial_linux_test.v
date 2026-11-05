@@ -441,7 +441,7 @@ fn test_a_lost_port_ends_the_schedule() {
 		if !r.view().sched.running {
 			break
 		}
-		time.sleep(10 * time.millisecond)
+		time.sleep(30 * time.millisecond)
 	}
 	assert !r.view().sched.running
 	mut gone := false
@@ -768,11 +768,6 @@ fn test_a_serial_master_times_external_frames_by_the_ldf() {
 	assert gaps[gaps.len / 2] < 7_000_000, 'median gap ${gaps[gaps.len / 2]} ns'
 }
 
-// plain_peer is a pty whose master end the test holds and writes into as a program does that
-// writes LIN to a serial port: no break mark, no escaped 0xFF.
-fn plain_peer() (i32, string) {
-	return raw_pty()
-}
 
 // raw_read reads what fd has within ms.
 fn raw_read(fd i32, ms int) []u8 {
@@ -789,7 +784,7 @@ fn raw_read(fd i32, ms int) []u8 {
 }
 
 fn test_a_plain_pty_reads_frames_with_no_break_between_them() {
-	mfd, slave := plain_peer()
+	mfd, slave := raw_pty()
 	defer {
 		C.bl_ser_close(mfd)
 	}
@@ -809,7 +804,7 @@ fn test_a_plain_pty_reads_frames_with_no_break_between_them() {
 		checksum(.enhanced, pid(0x10), [u8(1), 2])], frame]
 	for bytes in frames_out {
 		assert C.bl_ser_write(mfd, bytes.data, i32(bytes.len), 100) == 0
-		time.sleep(10 * time.millisecond)
+		time.sleep(30 * time.millisecond)
 	}
 	got3 := [got(mut mon), got(mut mon), got(mut mon)]
 	assert got3.map(reading(it)) == ['0x30 no response',
@@ -819,7 +814,7 @@ fn test_a_plain_pty_reads_frames_with_no_break_between_them() {
 }
 
 fn test_a_plain_pty_slave_answers_in_plain_bytes() {
-	mfd, slave := plain_peer()
+	mfd, slave := raw_pty()
 	defer {
 		C.bl_ser_close(mfd)
 	}
@@ -838,7 +833,7 @@ fn test_a_plain_pty_slave_answers_in_plain_bytes() {
 }
 
 fn test_a_plain_pty_master_writes_plain_bytes() {
-	mfd, slave := plain_peer()
+	mfd, slave := raw_pty()
 	defer {
 		C.bl_ser_close(mfd)
 	}
@@ -855,7 +850,7 @@ fn test_a_plain_pty_master_writes_plain_bytes() {
 }
 
 fn test_a_pty_path_is_read_from_the_file_a_program_writes_it_in() {
-	mfd, slave := plain_peer()
+	mfd, slave := raw_pty()
 	defer {
 		C.bl_ser_close(mfd)
 	}
@@ -877,6 +872,60 @@ fn test_a_pty_path_is_read_from_the_file_a_program_writes_it_in() {
 	assert reading(got(mut mon)) == '0x30 no response'
 	os.write_file(file, '\n')!
 	mut empty_why := ''
-	device_path(file) or { empty_why = err.msg() }
+	device_path(parse_serial('pty:${file}')!) or { empty_why = err.msg() }
 	assert empty_why.contains('names no device'), empty_why
+}
+
+fn test_a_plain_pty_splits_frames_that_came_in_one_read_and_waits_for_a_late_response() {
+	mfd, slave := raw_pty()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	mut s := open('pty:${slave},plain', Config{ role: .slave })!
+	defer {
+		s.close()
+	}
+	s.set_entry(Entry{ id: 0x10, dir: .subscribe, len: 2 })!
+	s.set_entry(Entry{ id: 0x11, dir: .subscribe, len: 1 })!
+	cs10 := checksum(.enhanced, pid(0x10), [u8(1), 2])
+	cs11 := checksum(.enhanced, pid(0x11), [u8(7)])
+	// two whole frames in one write: the first ends at its length
+	two := [u8(0x55), pid(0x10), 1, 2, cs10, 0x55, pid(0x11), 7, cs11]
+	assert C.bl_ser_write(mfd, two.data, i32(two.len), 100) == 0
+	assert reading(got(mut s)) == '0x10 [2] 01 02 cs 0x${cs10:02X} enhanced'
+	assert reading(got(mut s)) == '0x11 [1] 07 cs 0x${cs11:02X} enhanced'
+	// a response 4 ms behind its header: past the quiet, within an 8-byte frame's 9 ms slot
+	s.set_entry(Entry{ id: 0x20, dir: .subscribe, len: 8 })!
+	data := []u8{len: 8, init: u8(index)}
+	cs20 := checksum(.enhanced, pid(0x20), data)
+	time.sleep(30 * time.millisecond)
+	hdr := [u8(0x55), pid(0x20)]
+	assert C.bl_ser_write(mfd, hdr.data, 2, 100) == 0
+	time.sleep(4 * time.millisecond)
+	mut resp := data.clone()
+	resp << cs20
+	assert C.bl_ser_write(mfd, resp.data, i32(resp.len), 100) == 0
+	late := got(mut s)
+	assert reading(late) == '0x20 [8] 00 01 02 03 04 05 06 07 cs 0x${cs20:02X} enhanced', reading(late)
+}
+
+fn test_a_pty_path_file_older_than_its_device_is_refused() {
+	file := os.join_path(os.temp_dir(), 'lin_stale_${os.getpid()}')
+	os.write_file(file, '/dev/pts/0\n')!
+	defer {
+		os.rm(file) or {}
+	}
+	// written long before any pty there was made
+	os.utime(file, 1_000_000, 1_000_000)!
+	mfd, slave := raw_pty()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	os.write_file(file, '${slave}\n')!
+	os.utime(file, 1_000_000, 1_000_000)!
+	mut why := ''
+	device_path(parse_serial('pty:${file},plain')!) or { why = err.msg() }
+	assert why.contains('was written before'), why
+	// a tty address never reads a file
+	assert device_path(parse_serial('tty:${file}')!)! == file
 }

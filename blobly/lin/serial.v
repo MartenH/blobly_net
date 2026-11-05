@@ -47,6 +47,9 @@ pub fn parse_serial(address string) !SerialAddr {
 		plain = true
 		path = path[..path.len - ',plain'.len]
 	}
+	if path.contains(',plain') {
+		return error('lin: `${address}`: write `,plain` last, after the rate')
+	}
 	mut baud := 0
 	if at := path.last_index('@') {
 		rate := path[at + 1..]
@@ -81,24 +84,43 @@ pub fn address_baud(address string) ?int {
 }
 
 // plain_quiet_ns is how long a plain pty is quiet before a frame whose header came from the other
-// end is over. On a pty that end is the master, which writes its response right behind its
-// header, so a frame arrives in one burst; the next header comes a schedule slot later.
-const plain_quiet_ns = i64(2_000_000)
+// end is over: 20 bit times, at least 2 ms. On a pty that end is the master, which writes its
+// response right behind its header, so a frame arrives in one burst; the next header comes a
+// schedule slot later.
+fn plain_quiet_ns(baud int) i64 {
+	bits := i64(20) * 1_000_000_000 / i64(baud)
+	return if bits > 2_000_000 { bits } else { i64(2_000_000) }
+}
 
-// device_path is the device an address's path names: the path, or, when the path is a regular
-// file, the device path written on its first line — how a program that makes its own pty may say
-// where it is (`/tmp/lin_slave_0` holding `/dev/pts/7`), so the address holds across its runs.
-pub fn device_path(path string) !string {
-	if !os.exists(path) || os.inode(path).typ != .regular {
+// most_path_file is the largest file device_path reads a device's path from.
+const most_path_file = 4096
+
+// device_path is the device a pty address's path names: the path, or, when the path is a
+// regular file, the device path written on its first line — how a program that makes its own pty
+// may say where it is (`/tmp/lin_slave_0` holding `/dev/pts/7`), so the address holds across its
+// runs. A file written before its device was made names a pty that has since gone, whose number
+// may now be somebody's terminal: refused.
+pub fn device_path(a SerialAddr) !string {
+	path := a.path
+	if a.kind != .pty || !os.exists(path) || os.inode(path).typ != .regular {
 		return path
+	}
+	if os.file_size(path) > most_path_file {
+		return error('lin: `${path}` is a file of more than ${most_path_file} bytes, not one naming a device')
 	}
 	text := os.read_file(path) or { return error('lin: cannot read `${path}`: ${err}') }
 	dev := text.split_into_lines()[0] or { '' }.trim_space()
 	if dev == '' {
 		return error('lin: `${path}` is a file but names no device on its first line')
 	}
-	if os.exists(dev) && os.inode(dev).typ == .regular {
+	if !os.exists(dev) {
+		return error('lin: `${path}` names `${dev}`, which does not exist: is the program that made it running?')
+	}
+	if os.inode(dev).typ == .regular {
 		return error('lin: `${path}` names `${dev}`, which is a file, not a device')
+	}
+	if os.stat(dev)!.ctime > os.stat(path)!.mtime {
+		return error('lin: `${path}` was written before `${dev}` was made: it names a pty that has gone, and the number has been given to another')
 	}
 	return dev
 }

@@ -830,7 +830,7 @@ the bus as far as its role allows (a monitor controls nothing).
 
 | function | returns |
 |---|---|
-| `lin.open(name_or_address [, { role, ldf, baud }])` | a handle. A name is a LIN bus of the run, whose role, LDF and rate are the project's (opts refused). An address (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`) is a bus of the script's own, closed at the script's end: `role` master, slave or monitor (default), `ldf` relative to the script, `baud` 1000..20000. In the GUI an address only |
+| `lin.open(name_or_address [, { role, ldf, baud }])` | a handle. A name is a LIN bus of the run, whose role, LDF and rate are the project's (opts refused). An address (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud][,plain]`, [docs/lin.md](lin.md)) is a bus of the script's own, closed at the script's end: `role` master, slave or monitor (default), `ldf` relative to the script, `baud` 1000..20000. In the GUI an address only |
 | `lin.recv(h [, timeout_ms])` | the next frame within `timeout_ms` (default 1000; 0 a look), or nil |
 | `lin.expect(h, id_or_frame_name [, timeout_ms])` | the first error-free frame of that id (0..63, or the LDF's frame name) within `timeout_ms` (default 1000); an error naming what came instead |
 | `lin.header(h, id)` | nothing: one header (master) |

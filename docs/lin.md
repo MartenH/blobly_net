@@ -38,11 +38,16 @@ LIN is being added in steps. This page says what exists today and what comes nex
       AUTOSAR Lin driver ported to Linux that opens a pty instead of a serial port writes this.
       A sync byte read between frames starts a frame. On a pty the other program is the only
       other node, so when it sends a header it is the master, and it writes its own response
-      right behind the header: a frame whose header came from it ends after 2 ms with no
-      bytes. blobly answers in the same plain bytes.
-    - Where the path is a regular file, its first line names the device, so a program that
+      right behind the header. So a frame whose header came from it ends once 2 ms pass with
+      no bytes (20 bit times below 10000 baud). The exception is a header whose length the LDF
+      states and whose response has not begun: that waits for its slot, as on a wire. A
+      frame ends when it reaches its length, so a sync byte right after it starts the next
+      frame. blobly answers in the same plain bytes.
+    - Where a pty's path is a regular file, its first line names the device, so a program that
       writes the path of the pty it made (`/tmp/lin_slave_0` holding `/dev/pts/7`) can be
-      named the same way every run: `pty:/tmp/lin_slave_0,plain`.
+      named the same way every run: `pty:/tmp/lin_slave_0,plain`. A file older than the device
+      it names is refused: the pty it was written for is gone, and its number may now be
+      somebody's terminal.
     - One handle per device in a process; a second open of the same path is refused.
     - A header, a wakeup or a go-to-sleep waits until the previous frame's slot (its longest
       allowed time) has ended, as a LIN master must. A wakeup is a dominant pulse of 250 µs to

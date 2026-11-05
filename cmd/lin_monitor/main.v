@@ -11,7 +11,7 @@
 //       --schedule NormalTable --seconds 2
 //
 // The address is `inproc:<name>`, or on Linux `tty:<path>[@baud]` (a UART behind a LIN
-// transceiver) or `pty:<path>[@baud]`. `--pty` makes a linked pair of pseudo-terminals, runs the
+// transceiver) or `pty:<path>[@baud][,plain]`. `--pty` makes a linked pair of pseudo-terminals, runs the
 // bus on one and prints the other's path, for another program to attach to.
 //
 // The bus is brought up as a blobly/lin Row, so the rules (what is published, the schedule,
