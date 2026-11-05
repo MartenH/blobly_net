@@ -286,7 +286,7 @@ exactly what the GUI and the headless runner open.
 | `kvaser:<n>@<rate>[/<data rate>]` | Kvaser, through `canlib32.dll`. | no | yes |
 | `vector:<n>@<rate>[/<data rate>][,silent]` | Vector XL, through `vxlapi64.dll`. The application channel must already be assigned. | no | yes |
 | `cansub:<device id>/<channel>[@<rate>[/<data rate>]]` | A CSS Electronics CANsub, over its USB network interface. | yes | yes |
-| `bridge:<distribution>/<interface>` | A WSL distribution's SocketCAN interface, through `canbridge` ([wsl_bridge.md](wsl_bridge.md)). | no | yes |
+| `bridge:<name>/<interface>` | Another host's CAN interface, through `canbridge` ([wsl_bridge.md](wsl_bridge.md)): a WSL distribution's on Windows, or one on the LAN that dials a listener `BLOBLY_BRIDGE_LISTEN` fixes. | the LAN only | yes |
 | `doip:<host>:<port>`, `someip:<host>:<port>` | Ethernet rows (`kind` `"doip"` or `"someip"`). They are listed but carry no frames. | | |
 
 A data rate in the address (`@500000/2000000`) is what opens a vendor adapter as CAN-FD. The

@@ -1,6 +1,8 @@
 // canbridge — offer this host's CAN interfaces to a blobly_net running elsewhere (#451).
 //
-//   canbridge --connect <address>:<port> --token <token> [--name <name>] [--vcan <n>] [iface ...]
+//   canbridge --connect <address>:<port> [--token <token>] [--name <name>] [--vcan <n>] [iface ...]
+//
+// The token is BLOBLY_BRIDGE_TOKEN's when --token is not given.
 //
 // It dials the app, offers the named interfaces (every CAN and vcan interface `ip link` lists,
 // when none are named), and carries frames both ways until the app closes the connection; then it
@@ -21,7 +23,7 @@ import os
 import time
 import blobly.transport
 
-const usage = 'usage: canbridge --connect <host:port> --token <token> [--name <name>] [--vcan <n>] [iface ...]'
+const usage = 'usage: canbridge --connect <host:port> [--token <token>] [--name <name>] [--vcan <n>] [iface ...]\n(the token is BLOBLY_BRIDGE_TOKEN when --token is not given)'
 
 // How long to keep trying to reach the app: it is listening before it starts a bridge, but a
 // cold WSL start can take a moment to bring networking up.
@@ -68,6 +70,10 @@ fn main() {
 			}
 		}
 		i++
+	}
+	// From the environment when not given: an argument is visible to every user in `ps`.
+	if token == '' {
+		token = os.getenv(transport.bridge_token_env)
 	}
 	if addr == '' || token == '' {
 		fail(usage)

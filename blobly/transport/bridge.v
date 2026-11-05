@@ -687,6 +687,7 @@ pub fn bridge_label_error(name string, channels []string) ?string {
 
 // bridge_session_run serves one connection: the hello, then every record until it ends.
 fn bridge_session_run(mut c net.TcpConn, token string) {
+	bridge_keepalive(mut c)
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 65536}
 	recs := bridge_hello(mut c, token, mut dec, mut buf)

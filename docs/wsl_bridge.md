@@ -1,9 +1,11 @@
-# CAN in WSL from the Windows build
+# CAN bridge: WSL from the Windows build, and the LAN
 
 The Windows build draws better than the Linux one under WSLg, but Linux virtual CAN interfaces
 (`vcan0`, `vcan1`) live inside WSL, along with whatever talks on them: a host build of an ECU, `candump`,
 `cangen`. A **CAN bridge** lets the Windows app use them. It is a small program, `canbridge`,
 that runs inside the WSL distribution and carries frames between its CAN interfaces and the app.
+The same program on another Linux machine, or a board speaking its protocol, offers that
+machine's interfaces over the LAN, on Linux and Windows alike ([A bridge on the LAN](#a-bridge-on-the-lan)).
 
 ## Use it
 
@@ -143,11 +145,14 @@ starts listening when it starts:
 
 Unset, nothing changes: loopback, a new port and a random token at every launch.
 
-A Linux machine with CAN interfaces runs:
+A Linux machine with CAN interfaces runs, with the same token in its environment:
 
 ```
-canbridge --connect 192.168.1.5:29500 --token <the token> --name bench can0 can1
+export BLOBLY_BRIDGE_TOKEN=<the token>
+canbridge --connect 192.168.1.5:29500 --name bench can0 can1
 ```
+
+`--token <the token>` works too, but every user of that machine can read a command line in `ps`.
 
 Its channels appear as `bridge:bench/can0` and `bridge:bench/can1` in **Discover…**. A project row
 with that address opens once the bridge has dialled in; an open that comes first waits up to 20 s
@@ -159,7 +164,7 @@ closes (the app quits, **Disconnect**, the network drops). To keep the interface
 in a loop or under a service manager:
 
 ```
-while :; do canbridge --connect 192.168.1.5:29500 --token <the token> --name bench can0 can1; sleep 2; done
+while :; do canbridge --connect 192.168.1.5:29500 --name bench can0 can1; sleep 2; done
 ```
 
 - **Trusted networks only.** The token travels in the clear and nothing is encrypted. It keeps

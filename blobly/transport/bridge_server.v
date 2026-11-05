@@ -82,6 +82,7 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 	if why := bridge_label_error(cfg.name, cfg.channels) {
 		return error(why)
 	}
+	bridge_keepalive(mut c)
 	mut srv := &BridgeServer{
 		cfg:  cfg
 		conn: c

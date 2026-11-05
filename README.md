@@ -108,7 +108,8 @@ everything in one folder, take a release.
 - **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
   whole test suite runs with no hardware and no drivers.
 - **CAN bridge** — another host's CAN interfaces over TCP (`bridge:`, `cmd/canbridge`): the
-  Windows build reaches WSL's `vcan`s this way ([wsl_bridge.md](docs/wsl_bridge.md)).
+  Windows build reaches WSL's `vcan`s this way, and any build a machine on the LAN
+  ([wsl_bridge.md](docs/wsl_bridge.md), the protocol in [bridge_protocol.md](docs/bridge_protocol.md)).
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (send and call from Lua, an RPC client, a
   passive listener, and a `someip` channel whose messages are trace rows), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
@@ -345,7 +346,7 @@ messages by signal name, and react to traffic with `on_message`, `on_timer` and 
 | `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
 | `loadtest` | data-plane benchmark across many concurrent buses | |
 | `arxml2dbc` | export one CAN cluster of an AUTOSAR ARXML as a DBC (and an `ecu.toml` fragment) | |
-| `canbridge` | offer this host's CAN interfaces to a Blobly Net elsewhere — WSL's `vcan`s to the Windows build | |
+| `canbridge` | offer this host's CAN interfaces to a Blobly Net elsewhere — WSL's `vcan`s to the Windows build, or a LAN machine's | |
 | `restbus` | replay a recording onto live bus(es) with the ECU under test subtracted by DBC sender; several recorded buses onto several live ones from one clock | |
 
 † needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
@@ -398,7 +399,8 @@ above is manual, so a regression there is caught only when someone next runs it.
 - [doip.md](docs/doip.md) — DoIP: what works, discovering an entity, the wire
 - [security_access.md](docs/security_access.md) — 0x27 levels and the reference key
 - [j1939.md](docs/j1939.md) — the J1939 read side
-- [wsl_bridge.md](docs/wsl_bridge.md) — the Windows build reaching WSL's vcans
+- [wsl_bridge.md](docs/wsl_bridge.md) — the CAN bridge: the Windows build reaching WSL's vcans, and bridges on the LAN
+- [bridge_protocol.md](docs/bridge_protocol.md) — the bridge's wire format, for a board that implements it
 
 **Design**
 - [data_path.md](docs/data_path.md) — the map: every carrier from the wire to the panels, scripts and files

@@ -1,5 +1,7 @@
 module transport
 
+import net
+
 const lan_token = '0123456789abcdef'
 
 fn test_unset_is_the_loopback_listener() {
@@ -104,5 +106,30 @@ fn test_ip6_text() {
 		if _ := bridge_ip6_bytes(bad) {
 			assert false, '${bad} read as IPv6'
 		}
+	}
+}
+
+fn test_a_bridge_connection_is_kept_alive_at_its_timers() {
+	mut l := net.listen_tcp(.ip, '127.0.0.1:0')!
+	defer {
+		l.close() or {}
+	}
+	mut c := net.dial_tcp(l.addr()!.str())!
+	defer {
+		c.close() or {}
+	}
+	bridge_keepalive(mut c)
+	$if linux {
+		fd := i32(c.sock.handle)
+		mut on := i32(0)
+		mut idle := i32(0)
+		mut probes := i32(0)
+		mut n := u32(sizeof(i32))
+		assert C.getsockopt(fd, i32(C.SOL_SOCKET), i32(C.SO_KEEPALIVE), &on, &n) == 0
+		assert on == 1
+		assert C.getsockopt(fd, i32(C.IPPROTO_TCP), i32(C.TCP_KEEPIDLE), &idle, &n) == 0
+		assert idle == bridge_keepalive_idle_s
+		assert C.getsockopt(fd, i32(C.IPPROTO_TCP), i32(C.TCP_KEEPCNT), &probes, &n) == 0
+		assert probes == bridge_keepalive_probes
 	}
 }
