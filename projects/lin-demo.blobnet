@@ -1,0 +1,25 @@
+# LIN demo — one LIN bus beside one CAN bus, zero drivers, no hardware.
+#
+# BODY is an in-process LIN bus described by dbc/lin_demo.ldf. This process is its master and
+# simulates all three nodes (CEM, LSM, RSM), running the NormalTable schedule, so every frame of
+# the schedule is answered. LIN buses are their own list, `lin:`, not rows of `buses:`
+# (docs/lin.md). The headless runner brings them up; the GUI does not show them yet.
+#
+# tests/lin.lua runs against it.
+project:
+  name: LIN demo
+  version: 11
+
+buses:
+  - name: CAN1
+    interface: inproc:LIN_DEMO_CAN
+    databases:
+      - ../dbc/blobly_net.dbc
+
+lin:
+  - name: BODY
+    address: inproc:body
+    ldf: ../dbc/lin_demo.ldf
+    role: master
+    simulate: [CEM, LSM, RSM]
+    schedule: NormalTable

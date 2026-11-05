@@ -21,6 +21,7 @@ import blobly.sysview
 import blobly.nm
 import blobly.doip
 import blobly.testports
+import blobly.lin
 import sync
 import sync.stdatomic
 
@@ -133,6 +134,8 @@ mut:
 	run_t0 u64 // the ONE epoch every generator's time-based source runs from
 	// how a generator's loop opens its bus: transport.open; a test stalls it
 	gen_opener fn (string) !transport.Bus = transport.open
+	// the LIN rows, each held by a counted loop (lin.v)
+	lins []&lin.Row
 pub:
 	path string
 	// the project as the run uses it: the DoIP rows moved onto this process's ports
@@ -317,6 +320,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
 	project.apply_listen_only(proj.channels)
+	r.bring_up_lin(o)!
 	// every row's databases loaded once, by ROW: the channel loop and the generators below both
 	// ask, and a row a generator targets need not be one the loop loaded
 	mut row_dbs := map[int]candb.Database{}

@@ -28,6 +28,7 @@ import blobly.sysview
 import blobly.replay
 import blobly.j1939
 import blobly.nm
+import blobly.lin
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -171,6 +172,8 @@ mut:
 	by_address map[string]bool
 	// the background senders the script started, by handle, stopped by close (cyclic.v)
 	senders []&cyclic.Sender
+	// the LIN handles lin.open made, by handle, closed by close (lin.v)
+	lins []&LinHandle
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
@@ -181,6 +184,9 @@ pub mut:
 	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
 	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
 	sys sysview.System
+	// The run's LIN rows lin.open reaches by name (lin.v): cmd/script's headless run; none in the
+	// GUI, which runs no LIN row yet.
+	lin_rows ?[]&lin.Row
 	// Whether a run has its wires in this process — cmd/script's headless run, or the GUI's
 	// measurement, started or still letting go of them. vector.assign is refused while it does
 	// (transport.assign_run_refusal).
@@ -287,6 +293,7 @@ pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 			out['${c.chan} (isotp #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
 		}
 	}
+	env.close_lin(mut out)
 	for name, mut b in env.buses {
 		b.close()
 		d := b.diagnostics()
@@ -438,6 +445,7 @@ fn (mut env Env) register_all() {
 	env.register_cyclic()
 	env.register_j1939()
 	env.register_nm()
+	env.register_lin()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.

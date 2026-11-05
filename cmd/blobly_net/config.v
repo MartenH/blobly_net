@@ -123,6 +123,13 @@ fn (mut app App) commit_cfg() {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
 		ch.name = vgui.buf_str(b.name_buf)
+		if why := app.proj.name_clash(ch.name) {
+			app.cfg_invalid << CfgInvalid{
+				idx:  i
+				name: ch.name
+				why:  why
+			}
+		}
 		ch.network = vgui.buf_str(b.network_buf)
 		ch.address = vgui.buf_str(b.address_buf)
 		ch.iface = project.compose_iface(ch.adapter, ch.address)
@@ -291,14 +298,7 @@ fn (app &App) unique_bus_name(base string) string {
 	mut name := base
 	mut n := 2
 	for {
-		mut taken := false
-		for c in app.proj.channels {
-			if c.name == name {
-				taken = true
-				break
-			}
-		}
-		if !taken {
+		if !app.proj.name_taken(name) {
 			return name
 		}
 		name = '${base}_${n}'

@@ -26,7 +26,7 @@ import blobly.player
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 10
+pub const schema_version = 11
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -40,6 +40,10 @@ pub const schema_version = 10
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v11 — a `lin:` section, which an older build drops on its next structured save.
+	if p.lin.len > 0 {
+		return 11
+	}
 	// v10 — a channel's own NM cluster (`nm:`). An older build drops the unknown key on its next
 	// structured save, and the wire loses its network-management reading with nothing said.
 	for c in p.channels {
@@ -640,6 +644,8 @@ pub mut:
 	name     string = 'untitled'
 	version  int    = 1
 	channels []Channel
+	// the LIN buses, a list of their own and never rows of `channels` (lin.v)
+	lin []LinBus
 	// What reading the file had to say about it — currently the pre-v4 `bus:` migration (#97).
 	// NOT serialised: it describes this read, not the project, and `to_yaml` names its fields
 	// explicitly so nothing here reaches the file.
@@ -926,6 +932,7 @@ pub fn parse(text string) !Project {
 			p.channels << parse_channel(c)!
 		}
 	}
+	p.lin = parse_lin(doc.value('lin'), p.channels, p.version)!
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
@@ -1229,7 +1236,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.manifest = mf.string()
 	}
 	if sim := c.value_opt('simulate') {
-		ch.simulate = sim.array().as_strings()
+		ch.simulate = str_list(sim, '${ch.name}: simulate')!
 	}
 	if vs := c.value_opt('verify') {
 		ch.verify = parse_protect_list(vs)
