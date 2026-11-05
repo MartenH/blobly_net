@@ -25,7 +25,7 @@ fn (mut env Env) register_cyclic() {
 fn (mut env Env) start_sender(name string, spec cyclic.Spec) !int {
 	ci := env.find_chan(name)!
 	ch := env.chans[ci]
-	if k := ch.carrier.eth_kind() {
+	if k := ch.carrier.not_can() {
 		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted on it')
 	}
 	spec.check() or { return error('${name}: ${err.msg()}') }

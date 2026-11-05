@@ -27,8 +27,9 @@ pub:
 	ecu    u16
 }
 
-// eth_kind names this carrier's kind where it is not ISO-TP on a CAN bus, none for a CAN row.
-pub fn (c Carrier) eth_kind() ?string {
+// not_can names this carrier's kind where it is not ISO-TP on a CAN bus (DoIP, SOME/IP, LIN),
+// none for a CAN row.
+pub fn (c Carrier) not_can() ?string {
 	return match c.kind {
 		.can { none }
 		.doip, .someip, .lin { c.kind.name() }

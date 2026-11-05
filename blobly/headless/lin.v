@@ -10,7 +10,7 @@ import blobly.lin
 // and nothing is left running.
 fn (mut r Run) bring_up_lin(o Options) ! {
 	mut started := []&lin.Row{}
-	for b in r.proj.lin_buses() {
+	for b in r.proj.lin_rows() {
 		if !b.enabled {
 			continue
 		}
@@ -25,7 +25,7 @@ fn (mut r Run) bring_up_lin(o Options) ! {
 		}
 		sim := if b.simulate.len > 0 { ', simulating ${b.simulate.join(', ')}' } else { '' }
 		sched := if b.schedule != '' { ', schedule ${b.schedule}' } else { '' }
-		o.out('lin ${b.name} (${b.address} @ ${row.baud}): ${b.role}${sim}${sched}')
+		o.out('lin ${b.name} (${b.address} @ ${row.baud}): ${b.lin_role}${sim}${sched}')
 		started << row
 	}
 	r.lins = started

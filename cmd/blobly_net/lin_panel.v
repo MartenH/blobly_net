@@ -67,11 +67,11 @@ fn (mut app App) start_lin() {
 		if ch.kind() != .lin || !ch.enabled {
 			continue
 		}
-		b := ch.lin_bus()
+		b := ch
 		mut lr := &LinRun{
 			name:    b.name
 			address: b.address
-			role:    b.role
+			role:    b.lin_role
 			ci:      ci
 			iface:   ch.iface
 			gen:     app.run_gen
@@ -268,16 +268,19 @@ fn draw_lin(mut app App) {
 		vgui.end()
 		return
 	}
-	if app.proj.lin_buses().len == 0 {
+	if !app.proj.channels.any(it.kind() == .lin) {
 		vgui.text_dim_wrapped('The project has no LIN bus. A LIN bus is a row of buses: with `adapter: lin` — name, address (inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]), ldf, role, simulate, schedule. See docs/lin.md.')
 		vgui.end()
 		return
 	}
 	if app.lin_runs.len == 0 {
 		vgui.text_dim('Start runs these LIN buses:')
-		for b in app.proj.lin_buses() {
+		for b in app.proj.channels {
+			if b.kind() != .lin {
+				continue
+			}
 			on := if b.enabled { '' } else { '  (disabled)' }
-			vgui.text('${b.name}   ${b.address}   ${b.role}${on}')
+			vgui.text('${b.name}   ${b.address}   ${b.lin_role}${on}')
 		}
 		vgui.end()
 		return

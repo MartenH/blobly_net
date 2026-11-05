@@ -1452,12 +1452,13 @@ int bb_nm_read_view(int h, bb_nm_view *out);
 int bb_nm_node_info(int h, int k, bb_nm_node *out);
 #endif /* BB_FROM_V */
 
-/* LIN (cmd/libblobly/lin.v, blobly/lin; docs/lin.md). A LIN bus is NOT a channel and has no
- * bb_kind: it is the project's `lin:` list, never a row of `buses:`, and its frames are bb_lin_frame,
- * never bb_frame.
+/* LIN (cmd/libblobly/lin.v, blobly/lin; docs/lin.md). A LIN bus is a row of the project
+ * (`adapter: lin`), whose bb_channel_kind is BB_KIND_LIN; it carries no bb_frame, and every
+ * bb_bus_* call refuses it: its frames are bb_lin_frame, through the calls below.
  *
- * bb_lin_count, bb_lin_info and bb_lin_text are the run's LIN buses (the enabled entries of the
- * project's lin: list, in its order), from bb_start until bb_stop (BB_ERR_STATE otherwise); strings
+ * bb_lin_count, bb_lin_info and bb_lin_text are the run's LIN buses (its enabled LIN rows, in row
+ * order) — indexed among themselves, NOT by bb_channel_* row index: in a project of CAN1 then BODY,
+ * BODY is channel 1 and LIN bus 0; find a bus by its name (bb_lin_info), from bb_start until bb_stop (BB_ERR_STATE otherwise); strings
  * go into the caller's buffer as bb_message_name's.
  *
  * bb_lin_open answers a handle (>= 0). With row >= 0 it is a tap on the run's LIN bus `row`: every

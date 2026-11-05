@@ -11,7 +11,7 @@ pub fn row_ref(name string, iface string, car Carrier, hosts bool) sysview.RowRe
 	return sysview.RowRef{
 		name:    name
 		doip:    car.kind == .doip
-		eth:     car.kind == .someip
+		eth:     car.kind in [.someip, .lin] // a row no diagnostics ride
 		host:    car.host
 		logical: car.ecu
 		wire:    if car.kind != .can { '' } else { transport.destination_key(iface) }

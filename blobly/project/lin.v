@@ -8,43 +8,15 @@ module project
 
 import yaml
 
-// LinBus is a LIN row as the front ends start it: lin_buses() derives one per LIN row.
-pub struct LinBus {
-pub:
-	name    string
-	address string // inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]
-	// bitrate 0 takes the address's rate, else the LDF's LIN_speed
-	bitrate  int
-	ldf      string
-	role     string = 'monitor' // master | slave | monitor
-	simulate []string
-	schedule string
-	enabled  bool = true
-}
-
 // The keys a LIN row may carry; the legacy `lin:` entries carried the same but `type`/`adapter`.
 const lin_row_keys = ['name', 'network', 'adapter', 'type', 'protocol', 'address', 'interface',
 	'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
 const lin_keys = ['name', 'address', 'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
 const lin_roles = ['master', 'slave', 'monitor']
 
-// lin_bus is a LIN row as the front ends start it.
-pub fn (ch Channel) lin_bus() LinBus {
-	return LinBus{
-		name:     ch.name
-		address:  ch.address
-		bitrate:  ch.bitrate
-		ldf:      ch.ldf
-		role:     ch.lin_role
-		simulate: ch.simulate
-		schedule: ch.schedule
-		enabled:  ch.enabled
-	}
-}
-
-// lin_buses is every LIN row of the project, in row order.
-pub fn (p Project) lin_buses() []LinBus {
-	return p.channels.filter(it.kind() == .lin).map(it.lin_bus())
+// lin_rows is every LIN row of the project, in row order.
+pub fn (p Project) lin_rows() []Channel {
+	return p.channels.filter(it.kind() == .lin)
 }
 
 // name_taken says whether a row of the project is called `name`.
@@ -92,7 +64,7 @@ fn is_lin_row(c yaml.Any) bool {
 		}
 	}
 	if v := c.value_opt('interface') {
-		return v.string().trim_space().starts_with('lin:')
+		return kind_of_iface(v.string()) == .lin
 	}
 	return false
 }
@@ -128,10 +100,26 @@ fn parse_lin_row(c yaml.Any, version int) !Channel {
 	mut address := c.value('address').default_to('').string().trim_space()
 	if address == '' {
 		if v := c.value_opt('interface') {
-			address = v.string().trim_space().all_after('lin:')
+			_, address = decompose_iface(v.string())
 		}
 	}
 	return lin_fields(c, label, address, c.value('network').default_to('').string())
+}
+
+// lin_row_refusal is why an address and a typed rate cannot be a LIN row's, as lin_fields reads
+// them; none when they can. The GUI's editor asks it before it commits.
+pub fn lin_row_refusal(address string, rate string) ?string {
+	if address.trim_space() == '' {
+		return 'a LIN bus needs an address (inproc:<name>, tty:<path>, pty:<path>)'
+	}
+	r := rate.trim_space()
+	if r == '' || r == '0' {
+		return none
+	}
+	if !is_all_digits(r) || r.int() < 1000 || r.int() > 20000 {
+		return 'a LIN bitrate is 1000..20000 baud, or 0 for the address\'s or the LDF\'s (not ${r})'
+	}
+	return none
 }
 
 // lin_fields reads what a LIN row and a legacy `lin:` entry share.

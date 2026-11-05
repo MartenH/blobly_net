@@ -8,7 +8,7 @@ import blobly.transport
 // default pair it could take), 29-bit when either is past 0x7FF, as resolve's.
 pub fn resolve_isotp(a Ask, name string, car Carrier) !Target {
 	check_ids(a, name)!
-	if k := car.eth_kind() {
+	if k := car.not_can() {
 		return error('${a.what}("${name}"): a ${k} channel carries no ISO-TP; a raw ISO-TP channel opens on a CAN row')
 	}
 	if !a.has_tx || !a.has_rx {

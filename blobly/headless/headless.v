@@ -73,7 +73,7 @@ pub:
 pub fn (c Channel) fault_target() sim.FaultTarget {
 	return sim.FaultTarget{
 		channel:  c.cfg.name
-		eth_kind: udsconn.carrier_of(c.cfg).eth_kind() or { '' }
+		not_can: udsconn.carrier_of(c.cfg).not_can() or { '' }
 		iface:    c.cfg.iface
 		db:       c.db
 		nodes:    c.cfg.all_nodes()

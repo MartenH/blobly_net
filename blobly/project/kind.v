@@ -61,8 +61,15 @@ pub fn (ch Channel) kind() RowKind {
 		'lin' { .lin }
 		'doip' { .doip }
 		'someip' { if kind_of_iface(ch.iface) == .doip { .doip } else { .someip } }
-		else { kind_of_iface(ch.iface) }
+		// a row is LIN by its type, never by an address typed into a CAN row
+		else { if ch.adapter == 'lin' { .lin } else { can_or_eth(kind_of_iface(ch.iface)) } }
 	}
+}
+
+// can_or_eth reads a scheme's kind for a row that is not LIN: a `lin:` interface on one is CAN,
+// whose open then fails as the device it is not.
+fn can_or_eth(k RowKind) RowKind {
+	return if k == .lin { RowKind.can } else { k }
 }
 
 // kind_of_iface is the kind an interface string names by its scheme alone. Public because the

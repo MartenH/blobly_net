@@ -121,7 +121,7 @@ fn (c Chan) fold_key() string {
 // grouped panel: its copy tested `typ == 'doip'`, narrower than the kind rule behind c.kind,
 // and an `interface: doip:<host>` row rendered as playable).
 fn (c Chan) replay_blocker() string {
-	return replay_blocker(c.kind != .can, c.listen_only, c.replay_src)
+	return replay_blocker(c.kind, c.listen_only, c.replay_src)
 }
 
 // The free form exists for the Replay panel's preview, which must judge the MODEL
@@ -129,9 +129,9 @@ fn (c Chan) replay_blocker() string {
 // Configure's checkboxes until apply_edits, and Start folds the model first, so a preview
 // read from Chan showed "(one clock)" over a channel Start was about to drop (codex #136
 // r1). One rule, two adapters; the clauses live only here.
-fn replay_blocker(eth bool, listen_only bool, src string) string {
-	if eth {
-		return 'Ethernet channel — replay does not apply'
+fn replay_blocker(kind project.RowKind, listen_only bool, src string) string {
+	if kind != .can {
+		return '${kind.name()} channel — replay does not apply'
 	}
 	if listen_only {
 		// listen_only means NEVER TRANSMIT, which is what the editor promises and what a

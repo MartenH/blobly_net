@@ -43,15 +43,15 @@ fn with_rows(rows string) string {
 }
 
 fn check_parsed(p Project) {
-	bs := p.lin_buses()
+	bs := p.lin_rows()
 	assert bs.len == 2
 	b := bs[0]
 	assert b.name == 'BODY' && b.address == 'inproc:body' && b.bitrate == 19200
-	assert b.ldf == 'dbc/lin_demo.ldf' && b.role == 'master' && b.schedule == 'NormalTable'
+	assert b.ldf == 'dbc/lin_demo.ldf' && b.lin_role == 'master' && b.schedule == 'NormalTable'
 	assert b.simulate == ['CEM', 'LSM'] && b.enabled
 	d := bs[1]
 	assert d.name == 'DOOR' && d.address == 'pty:/dev/pts/4'
-	assert d.role == 'monitor' && !d.enabled && d.bitrate == 0 && d.ldf == ''
+	assert d.lin_role == 'monitor' && !d.enabled && d.bitrate == 0 && d.ldf == ''
 	row := p.channels.filter(it.name == 'BODY')[0]
 	assert row.kind() == .lin && row.iface == 'lin:inproc:body' && !row.kind().has_generators()
 }
@@ -62,7 +62,7 @@ fn test_a_lin_bus_is_a_row_and_the_old_section_reads_as_one() {
 	check_parsed(rows)
 	old := parse(sim_demo_text() + lin_section)!
 	check_parsed(old)
-	assert old.lin_buses() == rows.lin_buses()
+	assert old.lin_rows() == rows.lin_rows()
 	assert old.channels.filter(it.kind() == .lin).map(it.iface) == ['lin:inproc:body',
 		'lin:pty:/dev/pts/4']
 }
@@ -79,7 +79,7 @@ fn test_lin_rows_save_and_round_trip() {
 		assert version_for(p) == 12
 		assert !after.contains('\nlin:') && after.contains('    adapter: lin\n')
 		back := parse(after)!
-		assert back.lin_buses() == p.lin_buses()
+		assert back.lin_rows() == p.lin_rows()
 		assert back.to_yaml() == after
 	}
 }
@@ -130,9 +130,9 @@ fn test_lin_ldf_is_a_reference() {
 	os.write_file(os.join_path(root, 'proj', 'dbc', 'lin_demo.ldf'), '')!
 	mut q := p
 	was := q.rebase_assets(os.join_path(root, 'proj'), os.join_path(root, 'other'))
-	assert q.lin_buses()[0].ldf == '../proj/dbc/lin_demo.ldf'
+	assert q.lin_rows()[0].ldf == '../proj/dbc/lin_demo.ldf'
 	q.restore_assets(was)
-	assert q.lin_buses()[0].ldf == 'dbc/lin_demo.ldf'
+	assert q.lin_rows()[0].ldf == 'dbc/lin_demo.ldf'
 }
 
 // The clash is one predicate a front end can ask before it saves: a channel renamed like a LIN bus.
@@ -154,7 +154,7 @@ fn test_lin_name_clash_is_asked_of_the_model() {
 fn test_simulate_null_is_empty_and_items_are_names() {
 	p := parse('project:\n  name: t\nbuses:\n  - name: CAN1\n    interface: inproc:x\n    simulate:\nlin:\n  - name: B\n    address: inproc:b\n    simulate: ~\n')!
 	assert p.channels[0].simulate == []
-	assert p.lin_buses()[0].simulate == []
+	assert p.lin_rows()[0].simulate == []
 	assert !p.to_yaml().contains('null')
 	if _ := parse('lin:\n  - name: B\n    address: inproc:b\n    simulate: [{ a: 1 }]\n') {
 		assert false, 'a mapping read as a node'
@@ -172,10 +172,38 @@ fn test_simulate_null_is_empty_and_items_are_names() {
 fn test_unknown_lin_key_in_a_newer_file_is_ignored() {
 	body := 'lin:\n  - name: B\n    address: inproc:b\n    break_len: 13\n'
 	newer := parse('project:\n  name: t\n  version: ${schema_version + 1}\n' + body)!
-	assert newer.lin_buses().len == 1 && newer.version_note() != ''
+	assert newer.lin_rows().len == 1 && newer.version_note() != ''
 	if _ := parse('project:\n  name: t\n  version: ${schema_version}\n' + body) {
 		assert false, 'a typo at the current schema read'
 	} else {
 		assert err.msg().contains('unknown key `break_len`'), err.msg()
+	}
+}
+
+// The editor's commit asks what the reader refuses; a bare lin interface names no address.
+fn test_a_lin_rows_address_and_rate_are_checked_as_the_file_is() {
+	assert lin_row_refusal('inproc:b', '') == none && lin_row_refusal('inproc:b', '0') == none
+	assert lin_row_refusal('inproc:b', '19200') == none
+	for addr, rate in {
+		'':         '19200'
+		'inproc:b': '500000'
+		'inproc:x': 'abc'
+		'inproc:y': '999'
+	} {
+		assert lin_row_refusal(addr, rate) != none, '${addr} ${rate}'
+	}
+	a, addr := decompose_iface('lin:pty:/tmp/lin_slave_0,plain')
+	assert a == 'lin' && addr == 'pty:/tmp/lin_slave_0,plain'
+	b, none_addr := decompose_iface('lin')
+	assert b == 'lin' && none_addr == ''
+	// an address typed into a CAN row does not make it a LIN row
+	assert Channel{
+		adapter: 'vcan'
+		iface:   'lin:inproc:body'
+	}.kind() == .can
+	if _ := parse('buses:\n  - name: B\n    interface: lin\n') {
+		assert false, 'a bare lin read'
+	} else {
+		assert err.msg().contains('needs an address'), err.msg()
 	}
 }

@@ -11,7 +11,7 @@ import blobly.project
 pub struct FaultTarget {
 pub:
 	channel  string // the row's name, for the refusals
-	eth_kind string // 'DoIP' or 'SOME/IP' for an Ethernet row, where nothing simulates
+	not_can string // the kind of a row that is not CAN (DoIP, SOME/IP, LIN), where nothing simulates
 	iface    string // the logical interface faults are keyed on (fault_key)
 	db       candb.Database
 	nodes    []project.NodeCfg // the simulated nodes on it
@@ -35,8 +35,8 @@ pub fn fault_kind_of(kind string) !FaultKind {
 // kind, a node not simulated here, a message `node` does not send, and a kind that would change
 // no bit on the wire.
 pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal string) ! {
-	if t.eth_kind != '' {
-		return error('"${t.channel}" is a ${t.eth_kind} channel — nothing simulates on it, so a fault there could never take effect')
+	if t.not_can != '' {
+		return error('"${t.channel}" is a ${t.not_can} channel — nothing simulates on it, so a fault there could never take effect')
 	}
 	k := fault_kind_of(kind)!
 	if k == .none_ {

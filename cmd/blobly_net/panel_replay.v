@@ -327,7 +327,7 @@ fn draw_replay_config(mut app App) {
 			if ci < app.cfg_bufs.len {
 				psrc = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
 			}
-			if pc.enabled && replay_blocker(pc.kind() != .can, pc.listen_only, psrc) == '' {
+			if pc.enabled && replay_blocker(pc.kind(), pc.listen_only, psrc) == '' {
 				ifc := project.compose_iface(pc.adapter, pc.address)
 				claims << DstClaim{
 					key:   transport.destination_key(ifc)
@@ -363,7 +363,7 @@ fn draw_replay_config(mut app App) {
 			if ci < app.cfg_bufs.len {
 				psrc = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
 			}
-			if pc.enabled && replay_blocker(pc.kind() != .can, pc.listen_only, psrc) == '' {
+			if pc.enabled && replay_blocker(pc.kind(), pc.listen_only, psrc) == '' {
 				active << ci
 			}
 		}
@@ -453,7 +453,7 @@ fn draw_replay_config(mut app App) {
 			if ci < app.cfg_bufs.len {
 				src_i = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
 			}
-			blocker := replay_blocker(ch.kind() != .can, ch.listen_only, src_i)
+			blocker := replay_blocker(ch.kind(), ch.listen_only, src_i)
 			arrow := if rp0.bus != '' { '<- ${rp0.bus}' } else { '' }
 			if app.running {
 				// mid-run the set is fixed (topology at Start); show, don't edit

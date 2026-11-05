@@ -84,12 +84,12 @@ fn test_carrier_of_reads_the_row() {
 		ecu_addr:    0x1000
 	})
 	assert d.kind == .doip && d.host == '127.0.0.1' && d.port == 13401 && d.tester == 0x0E80 && d.ecu == 0x1000
-	assert d.eth_kind()? == 'DoIP'
+	assert d.not_can()? == 'DoIP'
 	s := carrier_of(project.Channel{
 		name:  'S'
 		iface: 'someip:0.0.0.0:30490'
 	})
-	assert s.kind == .someip && s.eth_kind()? == 'SOME/IP'
+	assert s.kind == .someip && s.not_can()? == 'SOME/IP'
 }
 
 fn opener(iface string, _ string) !transport.Bus {

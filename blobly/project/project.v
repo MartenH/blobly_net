@@ -1971,6 +1971,9 @@ pub fn compose_iface(adapter string, address string) string {
 // to the `vcan` adapter; anything else raw is treated as `socketcan` (real `canN`).
 pub fn decompose_iface(iface string) (string, string) {
 	s := iface.trim_space()
+	if s == 'lin' {
+		return 'lin', ''
+	}
 	if s.starts_with('lin:') {
 		return 'lin', s['lin:'.len..]
 	}
