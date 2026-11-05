@@ -30,7 +30,7 @@ fn run_rows(what string, rows &i32, n i32) ![]headless.Channel {
 			return error('${what}: no channel ${i}')
 		}
 		if chans[i].cfg.kind() != .can {
-			return error('${what}("${chans[i].cfg.name}"): a DoIP or SOME/IP row carries no CAN frames')
+			return error('${what}("${chans[i].cfg.name}"): a ${chans[i].cfg.kind().name()} row carries no CAN frames')
 		}
 		out << chans[i]
 	}

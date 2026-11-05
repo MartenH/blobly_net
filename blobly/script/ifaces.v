@@ -42,7 +42,7 @@ fn (mut env Env) open_iface(address string) !string {
 		return error('bus.open_iface: an address has no NUL')
 	}
 	if project.kind_of_iface(address) != .can {
-		return error('bus.open_iface: ${address} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
+		return error('bus.open_iface: ${address} is a ${project.kind_of_iface(address).name()} endpoint, which carries no CAN frames')
 	}
 	if address in env.by_address {
 		return address

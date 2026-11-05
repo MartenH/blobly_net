@@ -353,6 +353,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		// listening. Start the real thing here.
 		match ch.kind() {
 			.can {}
+			.lin {
+				continue // brought up by bring_up_lin
+			}
 			.someip {
 				// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
 				// someip.listen({ from = name }), which binds it for the window it asks for.

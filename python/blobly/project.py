@@ -428,7 +428,7 @@ class Channel(Bus):
 
     @property
     def kind(self) -> str:
-        """"can", "doip" or "someip": only a CAN row has frames to send and receive."""
+        """"can", "doip", "someip" or "lin": only a CAN row has frames to send and receive (a LIN row's are `net.lin`'s)."""
         lib = _lib.lib()
         with _lib.state_lock:
             self._current()
@@ -1177,8 +1177,8 @@ class Project(EventLoop[Channel | str], Faults, Replays):
 
     @property
     def lin(self) -> "LinBuses":
-        """The run's LIN buses (blobly.LinBuses), the project's `lin:` list — never channels:
-        `net.lin.BODY` is a LinBus. Empty for a project with none. BloblyError (code -3) when the
+        """The run's LIN buses (blobly.LinBuses), the project's LIN rows: `net.lin.BODY` is a
+        LinBus. Empty for a project with none. BloblyError (code -3) when the
         project is not started."""
         with _lib.state_lock:
             if not self.started:

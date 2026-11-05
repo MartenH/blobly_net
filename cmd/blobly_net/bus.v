@@ -769,6 +769,7 @@ fn adapter_hint(a string) string {
 		'someip' { 'bind host:port — 30490 if no port' }
 		'cansub' { '1A2B3C4D/1 — device id / channel' }
 		'bridge' { 'Ubuntu-24.04/vcan0 — bridge / interface' }
+		'lin' { 'inproc:body, tty:/dev/ttyUSB0@19200, pty:/tmp/lin_slave_0,plain — LDF, role, simulate, schedule in the File tab' }
 		else { '' }
 	}
 }

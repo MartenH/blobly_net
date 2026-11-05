@@ -67,8 +67,9 @@ Two things enter the same trace from somewhere other than a wire:
   script's connection. "Is this a CAN wire?" — taps, load, replay, the sim loop, staleness, trace
   ownership — is `kind == .can`. What differs per kind is a `RowKind` method that matches
   exhaustively (`has_generators`, `simulates`, `nodes_have_can_ids`, `name`), or an exhaustive
-  `match` where a site treats each kind its own way, so a kind added to `RowKind` is a compile
-  error at those. A test of ONE kind (`== .doip`: "is this the DoIP carrier?") stays a test.
+  `match` where a site treats each kind its own way, so a kind added to `RowKind` has to be
+  named at those — by grep today (`match .*kind`): the pinned V3 does not check a plain enum
+  `match` for exhaustiveness, and an unlisted value falls into another arm. A test of ONE kind (`== .doip`: "is this the DoIP carrier?") stays a test.
   Not by adapter name at each site; that is how the second Ethernet kind was missed once.
 - **A backend that cannot answer is not asked.** A DoIP channel opens no `Bus` and no RX thread; a
   SOME/IP row contributes no generators, simulation nodes or verifiers to the runtime, because

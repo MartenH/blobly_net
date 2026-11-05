@@ -1,4 +1,4 @@
-// project — a project's `lin:` bus as a Row is started with: the one translation the headless run
+// project — a project's LIN row as a Row is started with: the one translation the headless run
 // and the GUI both start their rows by.
 module lin
 

@@ -21,6 +21,10 @@ pub fn (p Project) to_yaml() string {
 	b.writeln('')
 	b.writeln('buses:')
 	for ch in p.channels {
+		if ch.kind() == .lin {
+			b.write_string(lin_row_yaml(ch))
+			continue
+		}
 		// Effective adapter/address. adapter+address are the v2 source of truth (iface is
 		// derived); but some callers (tests, defaults) instead set `iface` directly and leave
 		// adapter/address at the struct default (vcan/vcan0 → `vcan0`). Only in THAT case does
@@ -241,7 +245,6 @@ pub fn (p Project) to_yaml() string {
 			b.writeln('      loop: ${replay.repeat}')
 		}
 	}
-	b.write_string(p.lin_yaml())
 	return b.str()
 }
 

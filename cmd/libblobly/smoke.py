@@ -207,7 +207,7 @@ def main(path, project):
         if kind == BB_KIND_CAN and iface.startswith("inproc:"):
             assert src == BB_HEALTH_SOURCE_NONE, f"inproc health source {src}"
     assert doip, "sim-demo has a DoIP row"
-    assert lib.bb_bus_open(doip[1].encode()) == BB_ERR and "DoIP or SOME/IP" in err(lib), err(lib)
+    assert lib.bb_bus_open(doip[1].encode()) == BB_ERR and "is a DoIP endpoint" in err(lib), err(lib)
     print("ok   kinds and health sources; a DoIP row refused by name")
     assert lib.bb_start() == 0, f"start: {err(lib)}"
     moved = lib.bb_channel_iface(doip[0]).decode()

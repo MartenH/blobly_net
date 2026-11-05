@@ -115,7 +115,8 @@ enum bb_health {
 enum bb_kind {
 	BB_KIND_CAN = 0,
 	BB_KIND_DOIP = 1,    /* diagnostics over Ethernet: no frames */
-	BB_KIND_SOMEIP = 2   /* a SOME/IP listener endpoint: no frames */
+	BB_KIND_SOMEIP = 2,  /* a SOME/IP listener endpoint: no frames */
+	BB_KIND_LIN = 3      /* a LIN bus: its frames through bb_lin_* (the LIN block) */
 };
 
 /* Where a CAN row's ladder comes from (bb_channel_health_source, transport.health_source). */

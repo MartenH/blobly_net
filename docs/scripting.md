@@ -824,7 +824,7 @@ range.
 
 ### LIN — lin.*
 
-A LIN bus ([lin.md](lin.md)): one of the run's `lin:` buses by name, or an address. A handle
+A LIN bus ([lin.md](lin.md)): one of the run's LIN rows by name, or an address. A handle
 reads every frame the bus carries from the moment it was opened, whoever sent it, and controls
 the bus as far as its role allows (a monitor controls nothing).
 

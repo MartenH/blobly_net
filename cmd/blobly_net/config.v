@@ -135,8 +135,8 @@ fn (mut app App) commit_cfg() {
 		ch.iface = project.compose_iface(ch.adapter, ch.address)
 		ch.manifest = vgui.buf_str(b.manifest_buf)
 		br := vgui.buf_str(b.bitrate_buf).int()
-		if br > 0 {
-			ch.bitrate = br
+		if br > 0 || (ch.kind() == .lin && br == 0) {
+			ch.bitrate = br // a LIN row's 0 states no rate
 		}
 		// EMPTY IS A VALUE HERE, unlike the nominal rate above, which keeps its old figure rather
 		// than accepting a zero. Clearing this field deliberately says "no separate data phase",

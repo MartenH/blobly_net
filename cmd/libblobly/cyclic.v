@@ -48,7 +48,7 @@ fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 	}
 	ch := rows[int(row)]
 	if ch.kind() != .can {
-		return fail(bb_err, '${ch.name} is a DoIP or SOME/IP row, which carries no CAN frames')
+		return fail(bb_err, '${ch.name} is a ${ch.kind().name()} row, which carries no CAN frames')
 	}
 	spec.check() or { return fail(bb_err, '${ch.name}: ${err.msg()}') }
 	iface := ch.iface_with_bitrate()

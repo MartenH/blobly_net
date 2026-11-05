@@ -421,7 +421,7 @@ mut:
 	// holding a server Stop already closed — and then deregisters the LIVE supervisor's target
 	// and competes with it to bind. Incremented by every Start; a worker exits when it differs.
 	run_gen u64
-	// The run's LIN buses (lin_panel.v), one per enabled `lin:` entry: replaced by Start on the GUI
+	// The run's LIN buses (lin_panel.v), one per enabled LIN row: replaced by Start on the GUI
 	// thread, each one's worker publishing into its own under its lock.
 	lin_runs []&LinRun
 	// The Configuration window's File tab: the project's own TEXT, edited in place.

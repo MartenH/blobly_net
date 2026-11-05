@@ -1,14 +1,16 @@
 module project
 
 // RowKind is what a row of `buses:` is, the one answer every site that treats a row by its kind
-// asks: a CAN bus (CAN or CAN-FD, on any adapter), a DoIP endpoint, or a SOME/IP listener. A site
-// that treats each kind its own way matches on it exhaustively, so a kind added here is a compile
-// error at every site that has to decide what to do with it; a site asking "is this a CAN wire?"
-// compares with `.can`, so a new kind is not mistaken for one.
+// asks: a CAN bus (CAN or CAN-FD, on any adapter), a DoIP endpoint, a SOME/IP listener, or a LIN
+// bus (lin.v). A site that treats each kind its own way matches on it exhaustively, naming every
+// kind, so the site that has to decide about a new kind is found (by grep, `match .*kind`, while
+// the pinned V3 does not check a plain enum match); a site asking "is this a CAN wire?" compares
+// with `.can`, so a new kind is not mistaken for one.
 pub enum RowKind {
 	can
 	doip
 	someip
+	lin
 }
 
 // name is the kind as the Log and the Diagnostics panel name it.
@@ -17,6 +19,7 @@ pub fn (k RowKind) name() string {
 		.can { 'CAN' }
 		.doip { 'DoIP' }
 		.someip { 'SOME/IP' }
+		.lin { 'LIN' }
 	}
 }
 
@@ -26,16 +29,17 @@ pub fn (k RowKind) name() string {
 pub fn (k RowKind) has_generators() bool {
 	return match k {
 		.can, .doip { true }
-		.someip { false }
+		.someip, .lin { false }
 	}
 }
 
 // simulates is whether the row's nodes and `verify:` entries mean anything: simulated ECUs and
-// checked frames on a CAN bus, a hosted entity on a DoIP endpoint; nothing on a passive listener.
+// checked frames on a CAN bus, a hosted entity on a DoIP endpoint; nothing on a passive listener,
+// and nothing of that kind on a LIN row, whose `simulate:` is LDF nodes its own Row plays.
 pub fn (k RowKind) simulates() bool {
 	return match k {
 		.can, .doip { true }
-		.someip { false }
+		.someip, .lin { false }
 	}
 }
 
@@ -44,7 +48,7 @@ pub fn (k RowKind) simulates() bool {
 pub fn (k RowKind) nodes_have_can_ids() bool {
 	return match k {
 		.can, .someip { true }
-		.doip { false }
+		.doip, .lin { false }
 	}
 }
 
@@ -54,6 +58,7 @@ pub fn (k RowKind) nodes_have_can_ids() bool {
 // with both reads as DoIP.
 pub fn (ch Channel) kind() RowKind {
 	return match ch.typ {
+		'lin' { .lin }
 		'doip' { .doip }
 		'someip' { if kind_of_iface(ch.iface) == .doip { .doip } else { .someip } }
 		else { kind_of_iface(ch.iface) }
@@ -64,6 +69,9 @@ pub fn (ch Channel) kind() RowKind {
 // runtime asks it of a DESTINATION — a generator names where it sends, not which row it is — and
 // that answer must be the rule kind() uses for a row.
 pub fn kind_of_iface(iface string) RowKind {
+	if iface_scheme_is(iface, 'lin') {
+		return .lin
+	}
 	if iface_scheme_is(iface, 'doip') {
 		return .doip
 	}

@@ -8,7 +8,7 @@ import blobly.lin
 import blobly.lindb
 import blobly.transport
 
-// LIN (View ▸ LIN): the project's `lin:` buses, run by Start and shown here — apart from the CAN
+// LIN (View ▸ LIN): the project's LIN rows, run by Start and shown here — apart from the CAN
 // rows, which never see one. Each bus is a lin.Row owned by a run worker of its own (lin_worker):
 // it starts the row, keeps the frames a tap reads in a bounded list, and stops the row when the
 // run ends, so neither Start nor Stop waits for a port on the GUI thread. The panel draws the
@@ -26,6 +26,8 @@ struct LinRun {
 	address string
 	role    string
 	gen     u64
+	ci      int    // its row in app.chans (and app.proj.channels)
+	iface   string // the row's interface, what row_is_mine_locked asks
 mut:
 	mu sync.Mutex
 	// prev is the previous run's bus of this name, which may still be letting go of the port;
@@ -61,14 +63,17 @@ fn (mut app App) start_lin() {
 		before[r.name] = r
 	}
 	dir := os.dir(app.proj_path)
-	for b in app.proj.lin {
-		if !b.enabled {
+	for ci, ch in app.proj.channels {
+		if ch.kind() != .lin || !ch.enabled {
 			continue
 		}
+		b := ch.lin_bus()
 		mut lr := &LinRun{
 			name:    b.name
 			address: b.address
 			role:    b.role
+			ci:      ci
+			iface:   ch.iface
 			gen:     app.run_gen
 			prev:    before[b.name] or { none }
 			t0_ns:   i64(time.sys_mono_now())
@@ -161,6 +166,7 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	run.row = row
 	run.owned = true
 	run.mu.unlock()
+	lin_mark(app, run, gen, true)
 	mut viewed := i64(0)
 	sim := if spec.simulate.len > 0 { ', simulating ${spec.simulate.join(', ')}' } else { '' }
 	sched := if spec.schedule != '' { ', schedule ${spec.schedule}' } else { '' }
@@ -177,6 +183,7 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 				run.ended = err.msg()
 				run.mu.unlock()
 				lin_say(app, gen, 'LIN ${spec.name}: ended — ${err.msg()}')
+				lin_mark(app, run, gen, false)
 				break
 			}
 			continue
@@ -230,6 +237,17 @@ fn holder_of(p &LinRun) ?&LinRun {
 	return none
 }
 
+// lin_mark is the bus's row in the Buses panel running or not, while the row is still this run's.
+fn lin_mark(app &App, run &LinRun, gen u64, on bool) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	// on only while the run is: a Stop has already cleared every row
+	if (!on || a.running) && a.row_is_mine_locked(run.ci, run.iface, gen) {
+		a.chans[run.ci].running = on
+	}
+	a.mu.unlock()
+}
+
 // lin_say puts a LIN bus's line in the Log unless a later run has started, whose Log it is not
 // about; its own run may have stopped, since a bus says what it counted as it stops.
 fn lin_say(app &App, gen u64, msg string) {
@@ -250,14 +268,14 @@ fn draw_lin(mut app App) {
 		vgui.end()
 		return
 	}
-	if app.proj.lin.len == 0 {
-		vgui.text_dim_wrapped('The project has no LIN bus. They are a list of their own, `lin:`, beside `buses:` — name, address (inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]), ldf, role, simulate, schedule. See docs/lin.md.')
+	if app.proj.lin_buses().len == 0 {
+		vgui.text_dim_wrapped('The project has no LIN bus. A LIN bus is a row of buses: with `adapter: lin` — name, address (inproc:<name>, tty:<path>[@baud], pty:<path>[@baud][,plain]), ldf, role, simulate, schedule. See docs/lin.md.')
 		vgui.end()
 		return
 	}
 	if app.lin_runs.len == 0 {
 		vgui.text_dim('Start runs these LIN buses:')
-		for b in app.proj.lin {
+		for b in app.proj.lin_buses() {
 			on := if b.enabled { '' } else { '  (disabled)' }
 			vgui.text('${b.name}   ${b.address}   ${b.role}${on}')
 		}

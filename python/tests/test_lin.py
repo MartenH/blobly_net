@@ -33,7 +33,7 @@ def test_the_run_lists_its_lin_buses(net):
     b = net.lin.BODY
     assert (b.address, b.role, b.baud) == ("inproc:body", "master", 19200)
     assert os.path.samefile(b.ldf, LDF)
-    assert "CAN1" in net.channels and "BODY" not in net.channels  # LIN is never a channel
+    assert "CAN1" in net.channels and net.channels.BODY.kind == "lin"  # a row of its own kind
 
 
 def test_frames_arrive_with_their_template_values(body):

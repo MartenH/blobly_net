@@ -172,7 +172,7 @@ pub:
 	databases     []string
 	manifest      string
 	replay_source string
-	ldf           string // a LIN bus's, in the entries after the channels' (rebase_lin)
+	ldf           string // a LIN row's
 }
 
 // rebase_assets rewrites every file reference in the project for a move from `old_dir` to
@@ -186,8 +186,10 @@ pub fn (mut p Project) rebase_assets(old_dir string, new_dir string) []AssetRefs
 			databases:     ch.databases.clone()
 			manifest:      ch.manifest
 			replay_source: if r := ch.replay { r.source } else { '' }
+			ldf:           ch.ldf
 		}
 		ch.databases = ch.databases.map(rebase_ref(old_dir, new_dir, it))
+		ch.ldf = rebase_ref(old_dir, new_dir, ch.ldf)
 		ch.manifest = rebase_ref(old_dir, new_dir, ch.manifest)
 		if r := ch.replay {
 			ch.replay = Replay{
@@ -196,22 +198,19 @@ pub fn (mut p Project) rebase_assets(old_dir string, new_dir string) []AssetRefs
 			}
 		}
 	}
-	was << p.rebase_lin(old_dir, new_dir)
 	return was
 }
 
 // restore_assets puts back what rebase_assets returned, by channel index — the reference fields
 // only, so whatever else changed since (a generator synced in) stays.
 pub fn (mut p Project) restore_assets(was []AssetRefs) {
-	if was.len > p.channels.len {
-		p.restore_lin(was[p.channels.len..])
-	}
 	for i, w in was {
 		if i >= p.channels.len {
 			break
 		}
 		p.channels[i].databases = w.databases
 		p.channels[i].manifest = w.manifest
+		p.channels[i].ldf = w.ldf
 		if r := p.channels[i].replay {
 			p.channels[i].replay = Replay{
 				...r
@@ -265,13 +264,15 @@ pub fn (p Project) references() []string {
 		if ch.manifest != '' {
 			refs << ch.manifest
 		}
+		if ch.ldf != '' {
+			refs << ch.ldf
+		}
 		if r := ch.replay {
 			if r.source != '' {
 				refs << r.source
 			}
 		}
 	}
-	refs << p.lin_refs()
 	return refs
 }
 
@@ -298,6 +299,5 @@ pub fn (p Project) reference_notes(dir string, known []string) []string {
 			}
 		}
 	}
-	notes << p.lin_reference_notes(dir, mut said)
 	return notes
 }

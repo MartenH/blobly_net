@@ -128,7 +128,7 @@ pub fn reserved_ports(chs []Channel) []int {
 				_, p := ch.someip_endpoint()
 				p
 			}
-			.can {
+			.can, .lin {
 				continue
 			}
 		}

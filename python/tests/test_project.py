@@ -940,7 +940,7 @@ class TestRefusals:
         with blobly.Project(SIM_DEMO) as net:
             assert net.channels.DoIP1.kind == "doip"
             assert net.channels.CAN1.kind == "can"
-            with pytest.raises(blobly.BloblyError, match="DoIP or SOME/IP"):
+            with pytest.raises(blobly.BloblyError, match="carries no CAN frames"):
                 net.channels.DoIP1.send(0x100, b"")
 
     def test_on_health_alone_leaves_a_polled_channel_unread(self):

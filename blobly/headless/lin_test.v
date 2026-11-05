@@ -64,7 +64,7 @@ fn test_lin_rows_run_with_the_run() {
 	mut lines := &LinSaid{}
 	o := lines.options()
 	proj := load(path, o)!
-	assert proj.channels.len == 1, 'the LIN bus is not a channel'
+	assert proj.channels.len == 2 && proj.channels[1].kind() == .lin, 'the LIN bus is a row after CAN1'
 	mut r := start(proj, path, o)!
 	rows := r.lin_rows()
 	assert rows.len == 1 && rows[0].spec.name == 'BODY'
@@ -98,13 +98,14 @@ fn test_a_refused_lin_bus_refuses_the_run() {
 		os.rmdir_all(dir) or {}
 	}
 	mut proj := project.load(lin_project(dir, 'hl_bad', 'NoSuchTable')!)!
-	proj.lin << project.LinBus{
-		...proj.lin[0]
-		name:     'FIRST'
-		address:  'inproc:hl_first'
-		schedule: 'NormalTable'
-	}
-	proj.lin = [proj.lin[1], proj.lin[0]]
+	// a second LIN row, listed first, which starts before the refused one
+	at := proj.channels.len - 1
+	mut first := proj.channels[at]
+	first.name = 'FIRST'
+	first.address = 'inproc:hl_first'
+	first.iface = project.compose_iface('lin', first.address)
+	first.schedule = 'NormalTable'
+	proj.channels.insert(at, first)
 	mut lines := &LinSaid{}
 	if _ := start(proj, os.join_path(dir, 'x.blobnet'), lines.options()) {
 		assert false, 'started with a schedule the LDF does not have'

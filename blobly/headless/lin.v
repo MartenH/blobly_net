@@ -1,4 +1,4 @@
-// lin — the run's LIN rows: a lin.Row per enabled bus of the project's `lin:` list, each held by
+// lin — the run's LIN rows: a lin.Row per enabled LIN row of the project, each held by
 // a counted loop so stop ends it and waits for it. Apart from the CAN rows, which never see one.
 module headless
 
@@ -10,7 +10,7 @@ import blobly.lin
 // and nothing is left running.
 fn (mut r Run) bring_up_lin(o Options) ! {
 	mut started := []&lin.Row{}
-	for b in r.proj.lin {
+	for b in r.proj.lin_buses() {
 		if !b.enabled {
 			continue
 		}
