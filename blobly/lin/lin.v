@@ -96,10 +96,14 @@ pub fn (c MonoClock) now_ns() i64 {
 	return i64(time.sys_mono_now())
 }
 
+// default_baud is the rate a handle runs at when nothing states one.
+pub const default_baud = 19200
+
 pub struct Config {
 pub:
 	role Role
-	baud int = 19200
+	// baud is the bus's rate; 0 states none: a serial address's rate, else default_baud.
+	baud int
 	// src is what this handle's responses and events are, as the trace attributes them: .sim for
 	// a simulated node, .tester for the tester, .remote for a stand-in for a node outside this app.
 	src Src
@@ -137,6 +141,20 @@ pub:
 	// one_shot entries are consumed by the header that uses them. A SlaveResp (0x3D) entry is
 	// one-shot always.
 	one_shot bool
+	// sim: the response is a simulated node's, whatever the handle's src — for a handle that
+	// answers for simulated nodes beside its own frames.
+	sim bool
+}
+
+// src_on is whom the trace attributes the entry's response to, on a handle whose src is h.
+pub fn (e Entry) src_on(h Src) Src {
+	return if e.sim { Src.sim } else { h }
+}
+
+// names_nad is whether a MasterReq's data addresses the node with this NAD: its own, or the
+// broadcast. NAD 0 is nobody's.
+pub fn names_nad(nad u8, data []u8) bool {
+	return nad != 0 && data.len > 0 && (data[0] == nad || data[0] == broadcast_nad)
 }
 
 pub enum State {
@@ -200,7 +218,9 @@ mut:
 	close()
 }
 
-// open opens a handle on the bus an address names. v1 knows `inproc:<name>`.
+// open opens a handle on the bus an address names: `inproc:<name>`, or a serial port
+// `tty:<path>[@baud]` / `pty:<path>[@baud]` (Linux). A serial address's rate is the bus's where
+// Config.baud states none; one that contradicts a stated Config.baud is refused.
 pub fn open(address string, cfg Config) !Bus {
 	if address.starts_with('inproc:') {
 		name := address[7..]
@@ -209,12 +229,61 @@ pub fn open(address string, cfg Config) !Bus {
 		}
 		return open_inproc(name, cfg)!
 	}
+	if is_serial(address) {
+		return open_serial(parse_serial(address)!, cfg)!
+	}
 	scheme := if address.contains(':') { address.all_before(':') } else { address }
-	return error('lin: cannot open `${address}`: scheme `${scheme}` is not supported — this build opens inproc:<name>')
+	return error('lin: cannot open `${address}`: scheme `${scheme}` is not supported — this build opens inproc:<name>, tty:<path> and pty:<path>')
+}
+
+// one_handle_per_device is whether an address's bus takes a single handle in this process, so a
+// row puts its simulated nodes on its own handle rather than opening one each.
+pub fn one_handle_per_device(address string) bool {
+	return is_serial(address)
+}
+
+// queue_pop is a handle's next queued frame within timeout_ms (0 a look, < 0 for ever): Timeout
+// when none came, `gone` once the queue is closed.
+fn queue_pop(q chan Frame, timeout_ms int, gone IError) !Frame {
+	if timeout_ms == 0 {
+		mut f := Frame{}
+		return match q.try_pop(mut f) {
+			.success { f }
+			.closed { gone }
+			.not_ready { Timeout{} }
+		}
+	}
+	if timeout_ms < 0 {
+		f := <-q or { return gone }
+		return f
+	}
+	// The select is an expression: its false is the closed channel.
+	mut got := false
+	mut frame := Frame{}
+	chan_open := select {
+		f := <-q {
+			got = true
+			frame = f
+		}
+		(i64(timeout_ms) * time.millisecond) {
+		}
+	}
+	if got {
+		return frame
+	}
+	if !chan_open {
+		return gone
+	}
+	return Timeout{}
+}
+
+// rate is the configured rate, default_baud where none is stated.
+pub fn (c Config) rate() int {
+	return if c.baud == 0 { default_baud } else { c.baud }
 }
 
 fn check_config(cfg Config) ! {
-	if cfg.baud < 1000 || cfg.baud > 20000 {
+	if cfg.rate() < 1000 || cfg.rate() > 20000 {
 		return error("lin: baud ${cfg.baud} is outside LIN's 1000..20000")
 	}
 	if cfg.nad == broadcast_nad {

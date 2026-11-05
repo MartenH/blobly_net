@@ -26,8 +26,8 @@ fn take(mut b Bus) Frame {
 }
 
 fn test_open_refuses_other_schemes() {
-	open('tty:/dev/ttyUSB0', Config{}) or {
-		assert err.msg().contains('scheme `tty`')
+	open('plin:0', Config{}) or {
+		assert err.msg().contains('scheme `plin`')
 		return
 	}
 	assert false

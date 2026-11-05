@@ -2,12 +2,17 @@
 //
 //   lin_monitor <address> [--ldf FILE] [--role monitor|master|slave] [--simulate NODE,...]
 //               [--schedule TABLE] [--baud N] [--seconds N]
+//   lin_monitor --pty [the same options]
 //   lin_monitor --dump-ldf FILE
 //
 // A whole simulated cluster in one process, the LDF's master running its schedule:
 //
 //   lin_monitor inproc:body --ldf dbc/lin_demo.ldf --role master --simulate CEM,LSM,RSM \
 //       --schedule NormalTable --seconds 2
+//
+// The address is `inproc:<name>`, or on Linux `tty:<path>[@baud]` (a UART behind a LIN
+// transceiver) or `pty:<path>[@baud]`. `--pty` makes a linked pair of pseudo-terminals, runs the
+// bus on one and prints the other's path, for another program to attach to.
 //
 // The bus is brought up as a blobly/lin Row, so the rules (what is published, the schedule,
 // how a frame is read) are the engine's; this file is arguments and printing.
@@ -22,6 +27,7 @@ import blobly.lindb
 import blobly.transport
 
 const usage = 'usage: lin_monitor <address> [--ldf FILE] [--role monitor|master|slave] [--simulate NODE,...] [--schedule TABLE] [--baud N] [--seconds N]
+       lin_monitor --pty [the same options]
        lin_monitor --dump-ldf FILE'
 
 fn main() {
@@ -32,12 +38,18 @@ fn main() {
 	mut schedule := ''
 	mut baud := 0
 	mut seconds := 0.0
+	mut pty := false
 	mut i := 1
 	for i < os.args.len {
 		a := os.args[i]
 		if a in ['-h', '--help'] {
 			println(usage)
 			return
+		}
+		if a == '--pty' {
+			pty = true
+			i++
+			continue
 		}
 		if !a.starts_with('--') {
 			if address != '' {
@@ -91,6 +103,21 @@ fn main() {
 			else {}
 		}
 		i += 2
+	}
+	mut link := ?&lin.PtyLink(none)
+	if pty {
+		if address != '' {
+			fail('--pty makes its own address; leave `${address}` out')
+		}
+		l := lin.pty_link() or { fail(err.msg()) }
+		link = l
+		address = 'pty:${l.a}'
+		eprintln('pty: attach to ${l.b} — raw 8N1; a break is the bytes FF 00 00, a data 0xFF is FF FF')
+	}
+	defer {
+		if mut l := link {
+			l.close()
+		}
 	}
 	if address == '' {
 		fail('no address')
