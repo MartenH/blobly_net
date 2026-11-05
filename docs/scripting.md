@@ -822,6 +822,43 @@ r:stop()
 `tests/nm.lua` is the suite: the demo's wake-up, release and sleep, a wait not met, a stated
 range.
 
+### LIN — lin.*
+
+A LIN bus ([lin.md](lin.md)): one of the run's `lin:` buses by name, or an address. A handle
+reads every frame the bus carries from the moment it was opened, whoever sent it, and controls
+the bus as far as its role allows (a monitor controls nothing).
+
+| function | returns |
+|---|---|
+| `lin.open(name_or_address [, { role, ldf, baud }])` | a handle. A name is a LIN bus of the run, whose role, LDF and rate are the project's (opts refused). An address (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`) is a bus of the script's own, closed at the script's end: `role` master, slave or monitor (default), `ldf` relative to the script, `baud` 1000..20000. In the GUI an address only |
+| `lin.recv(h [, timeout_ms])` | the next frame within `timeout_ms` (default 1000; 0 a look), or nil |
+| `lin.expect(h, id_or_frame_name [, timeout_ms])` | the first error-free frame of that id (0..63, or the LDF's frame name) within `timeout_ms` (default 1000); an error naming what came instead |
+| `lin.header(h, id)` | nothing: one header (master) |
+| `lin.set(h, signal, value [, { raw = true }])` | nothing: what a simulated node publishes, from its next response. A number is physical where the signal's encoding has a physical range, else raw (`raw = true` always raw); a string a logical value, or an ascii/bcd array's text; a byte table a byte array |
+| `lin.schedule(h, name)` / `lin.stop_schedule(h)` | nothing / false when the scheduler outlived its bound: an LDF schedule table started or switched to at the slot boundary (master) |
+| `lin.sleep(h)` / `lin.wakeup(h)` | nothing: the go-to-sleep command (master), a wakeup pulse |
+| `lin.status(h)` | `{ name, address, role, state, schedule, load, dropped, sched = { sent, failed, late, running }, frames, notes }`: `state` active, sleep or short; `load` percent of the last whole second; `frames[id] = { name, count, errors, cadence_ms }` |
+| `lin.diagnostics(h)` | `{ dropped, bus_errors, decode_errors }` |
+| `lin.close(h)` | nothing |
+
+A frame is `{ id, pid, name, data, errs, event, origin, t_ms, signals, raw }`: `data` a byte
+table, `errs` a list of names (`checksum`, `no_response`, `collision`, ...), `event` frame,
+wakeup or sleep, `origin` TX-S (a simulated node), TX (this tester) or RX. Where the LDF decodes
+it, `name` is its frame name and `signals[name]` the physical value, else the logical value's
+text, else the raw value (a byte array: its text, else its bytes); `raw[name]` a scalar's raw
+value.
+
+```lua
+-- projects/lin-demo.blobnet
+local body = lin.open("BODY")
+local f = lin.expect(body, "CEM_Frm2", 500)
+log(f.signals.CabinTemp)                -- 20
+lin.set(body, "IntTest", "passed")      -- LSM is simulated
+lin.schedule(body, "FastTable")
+```
+
+`tests/lin.lua` is the suite.
+
 ### Byte payloads & helpers
 
 CAN/UDS payloads are Lua **byte strings** (8-bit clean). Helpers:

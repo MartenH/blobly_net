@@ -91,7 +91,7 @@ The transport layer is untouched: parse composes `adapter`+`address` into the ex
 
 ## Schema (evolved, back-compatible)
 
-`schema_version` bumps to 2 (now 9: a Save writes the version the project's features need,
+`schema_version` bumps to 2 (now 11: a Save writes the version the project's features need,
 `version_for` in `blobly/project/project.v`). New files use `buses:` + `adapter`/`address`/`network`; old
 files (`channels:` + `interface:`) still load — the parser accepts the legacy keys and
 decomposes `interface:` into `adapter`+`address`.
@@ -112,6 +112,12 @@ buses:
     databases: [../dbc/blobly_net.dbc]   # relative to this project file
     simulate: [Engine]
 ```
+
+LIN buses are a top-level list of their own, `lin:`, after `buses:` — never rows of it. Each is
+`name`, `address` (`inproc:<name>`, `tty:<path>[@baud]`, `pty:<path>[@baud]`), and optionally
+`bitrate`, `ldf`, `role` (master | slave | monitor), `simulate`, `schedule` and `enabled`; a
+project that has one is written as v11. The fields and what runs them are in
+[lin.md](lin.md#in-a-project).
 
 ## Example configurations
 

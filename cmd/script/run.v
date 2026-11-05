@@ -231,6 +231,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		return !headless.released()
 	}
 	env.sys = hrun.sys
+	env.lin_rows = hrun.lin_rows()
 	if timeout_s > 0 {
 		after_ms := i64(math.ceil(timeout_s * 1000))
 		env.set_deadline(after_ms)
@@ -245,6 +246,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		mut failure := ''
 		env.run_file(s) or { failure = err.msg() }
 		env.stop_senders() // what this script left sending ends with it
+		env.close_lin_handles() // and its LIN handles: its own buses stopped, its taps let go
 		// what this script left playing or recording ends with it; a recording that failed is its error
 		for e in env.stop_replays() {
 			failure = if failure == '' { e } else { '${failure}; ${e}' }

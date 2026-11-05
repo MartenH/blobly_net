@@ -66,15 +66,51 @@ LIN is being added in steps. This page says what exists today and what comes nex
       --role slave --simulate LSM
   ```
 
+## In a project
+
+A project's LIN buses are a list of their own, `lin:`, beside `buses:`. A LIN bus is never a row
+of `buses:`:
+
+```yaml
+lin:
+  - name: BODY
+    address: inproc:body        # or tty:/dev/ttyUSB0@19200, pty:/dev/pts/4
+    bitrate: 19200              # optional: else the address's rate, else the LDF's LIN_speed
+    ldf: ../dbc/lin_demo.ldf    # relative to the project file, as a database is
+    role: master                # master | slave | monitor (the default)
+    simulate: [CEM, LSM, RSM]   # LDF nodes this process plays; the master only as master
+    schedule: NormalTable       # the table the master runs from the start
+    enabled: true
+```
+
+An unknown key, a role that is not one of the three, a missing name or address, two LIN buses of
+one name, and a LIN bus named like a channel of `buses:` (scripts name both the same way) are
+refused when the project is read (an unknown key only in a file of this build's schema or older;
+a newer file opens with the version note). The GUI's Configuration refuses to save or start a
+channel renamed like a LIN bus, and a new bus never takes a LIN bus's name. A project with a `lin:` section is written as schema v11; one
+without it is written as before.
+
+The headless runner (`cmd/script`, `scripts/runtests.sh`) starts every enabled LIN bus before
+the CAN buses and stops it with the run. Its LDF notes are printed like a database's. The GUI
+reads and saves the section, but does not run or show the buses yet: Start says so in the Log.
+`projects/lin-demo.blobnet` is the example, and `tests/lin.lua` its suite.
+
+## From Lua
+
+`lin.open("BODY")` is a handle on a LIN bus of the run: it reads every frame from then on, and
+controls the row (`lin.header`, `lin.set`, `lin.schedule`, ... as its role allows).
+`lin.open("inproc:x", { role = "master", ldf = "x.ldf", baud = 19200 })` opens an address as a
+bus of the script's own, closed when the script ends; the LDF path is relative to the script. In
+the GUI's Script panel `lin.open` takes an address only. The calls are in
+[scripting.md](scripting.md#lin--lin).
+
 ## What comes next
 
 Each step is its own pull request:
-1. A `lin:` section in the project file, brought up by the headless runner, and a Lua `lin.*`
-   namespace.
-2. The same from C and Python.
-3. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
-4. A LIN panel in the GUI.
-5. A real LIN node on a system_full board.
+1. The same from C and Python.
+2. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
+3. A LIN panel in the GUI.
+4. A real LIN node on a system_full board.
 
 Until the LIN panel exists, LIN does not appear in the GUI's trace, its Buses panel or its
 recordings.

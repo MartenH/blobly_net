@@ -172,6 +172,7 @@ pub:
 	databases     []string
 	manifest      string
 	replay_source string
+	ldf           string // a LIN bus's, in the entries after the channels' (rebase_lin)
 }
 
 // rebase_assets rewrites every file reference in the project for a move from `old_dir` to
@@ -195,12 +196,16 @@ pub fn (mut p Project) rebase_assets(old_dir string, new_dir string) []AssetRefs
 			}
 		}
 	}
+	was << p.rebase_lin(old_dir, new_dir)
 	return was
 }
 
 // restore_assets puts back what rebase_assets returned, by channel index — the reference fields
 // only, so whatever else changed since (a generator synced in) stays.
 pub fn (mut p Project) restore_assets(was []AssetRefs) {
+	if was.len > p.channels.len {
+		p.restore_lin(was[p.channels.len..])
+	}
 	for i, w in was {
 		if i >= p.channels.len {
 			break
@@ -266,6 +271,7 @@ pub fn (p Project) references() []string {
 			}
 		}
 	}
+	refs << p.lin_refs()
 	return refs
 }
 
@@ -292,5 +298,6 @@ pub fn (p Project) reference_notes(dir string, known []string) []string {
 			}
 		}
 	}
+	notes << p.lin_reference_notes(dir, mut said)
 	return notes
 }

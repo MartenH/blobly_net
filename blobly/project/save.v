@@ -241,6 +241,7 @@ pub fn (p Project) to_yaml() string {
 			b.writeln('      loop: ${replay.repeat}')
 		}
 	}
+	b.write_string(p.lin_yaml())
 	return b.str()
 }
 
