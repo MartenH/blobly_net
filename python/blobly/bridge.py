@@ -2,7 +2,8 @@
 on Windows, `canbridge` run inside a WSL distribution carries that distribution's CAN interfaces to
 this process as `bridge:<distribution>/<interface>` channels. Opening such a channel starts its
 bridge by itself; these functions do it explicitly. On Linux there are no distributions and start
-is refused, saying so.
+is refused, saying so. A bridge on the LAN starts itself: it dials the listener
+BLOBLY_BRIDGE_LISTEN fixes, and its channels are opened by address like any other.
 
     from blobly import bridge
     bridge.distributions()            # ['Ubuntu-24.04']

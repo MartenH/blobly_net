@@ -25,7 +25,8 @@ const help_docs = [
 	// addressed. Reaching it by finding the file in the repo is no use to somebody running the
 	// shipped bundle.
 	HelpDoc{'Vector (Windows)', 'docs/windows_can_hardware.md'},
-	HelpDoc{'CAN in WSL (Windows)', 'docs/wsl_bridge.md'},
+	HelpDoc{'CAN bridge (WSL, LAN)', 'docs/wsl_bridge.md'},
+	HelpDoc{'CAN bridge protocol', 'docs/bridge_protocol.md'},
 	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
 	HelpDoc{'Security access', 'docs/security_access.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},

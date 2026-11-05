@@ -24,6 +24,9 @@ is `cmd/canbridge`, over `blobly/transport/bridge_server.v`.
 - **The bridge's name identifies it.** If a bridge connects under the name of one already
   connected, it replaces that session. This lets a bridge that lost its connection without a FIN
   (its host rebooted) reconnect at once. Every handle open on the old session fails.
+- **The app turns on TCP keepalive** (5 s idle, a probe every 2 s, 3 probes), so a bridge that
+  vanishes without closing is dropped within about 11 s. A TCP stack answers the probes itself.
+  A board should turn keepalive on too, or it will not notice the app vanishing.
 - When the connection closes, every channel open on it closes too. A board should then reconnect.
   `canbridge` exits instead: in WSL the app starts it again when a channel needs it, and anywhere
   else it is run under something that restarts it.
