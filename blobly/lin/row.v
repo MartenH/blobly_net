@@ -574,11 +574,14 @@ pub fn (mut r Row) set_signal(signal string, value lindb.Value) ! {
 		return error('lin ${r.spec.name}: the LDF has no signal `${signal}` in an unconditional frame')
 	}
 	f := l.frames[idx]
+	if !r.sets(l, f) {
+		return error('lin ${r.spec.name}: ${signal} is in ${f.name}, which ${f.publisher} publishes, and this row does not simulate ${f.publisher}')
+	}
 	r.mu.lock()
 	defer {
 		r.mu.unlock()
 	}
-	if f.publisher == l.master.name && l.master.name in r.spec.simulate {
+	if f.publisher == l.master.name {
 		mut vals := (r.master_vals[f.name] or { map[string]lindb.Value{} }).clone()
 		vals[signal] = value
 		r.bus.update(f.id, l.encode(f, vals)!)!

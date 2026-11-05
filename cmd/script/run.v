@@ -15,6 +15,7 @@ import os
 import strconv
 import sync
 import time
+import blobly.lin
 import blobly.headless
 import blobly.player
 import blobly.project
@@ -231,7 +232,10 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		return !headless.released()
 	}
 	env.sys = hrun.sys
-	env.lin_rows = hrun.lin_rows()
+	run_lins := hrun.lin_rows()
+	env.lin_rows = fn [run_lins] () []&lin.Row {
+		return run_lins
+	}
 	if timeout_s > 0 {
 		after_ms := i64(math.ceil(timeout_s * 1000))
 		env.set_deadline(after_ms)

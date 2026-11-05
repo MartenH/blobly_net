@@ -9,18 +9,16 @@ import blobly.lindb
 // the frames whose signals set_signal changes.
 pub fn (r &Row) simulated_frames() []string {
 	l := r.ldf or { return [] }
-	mut out := []string{}
-	for f in l.frames {
-		if f.kind != .unconditional {
-			continue
-		}
-		master_sim := r.spec.role == .master && f.publisher == l.master.name
-			&& l.master.name in r.spec.simulate
-		if master_sim || (f.publisher != l.master.name && f.publisher in r.spec.simulate) {
-			out << f.name
-		}
+	return l.frames.filter(it.kind == .unconditional && r.sets(l, it)).map(it.name)
+}
+
+// sets is whether set_signal changes what this row publishes in frame f: a frame of the master
+// node it simulates (only a master simulates it), or of a slave node it simulates.
+fn (r &Row) sets(l lindb.Ldf, f lindb.Frame) bool {
+	if f.publisher == l.master.name {
+		return l.master.name in r.spec.simulate
 	}
-	return out
+	return f.publisher in r.spec.simulate
 }
 
 // value_of_text is a signal value as typed: `raw:N`, `phys:X`, `text:...` and `bytes:01 02` as a
@@ -67,18 +65,28 @@ pub fn value_of_text(ldf ?lindb.Ldf, signal string, text string) !lindb.Value {
 			}
 		}
 	}
-	if is_number(t) {
-		if has_physical(ldf, signal) {
-			return lindb.Value(num_of(signal, t)!)
-		}
+	if t.starts_with('0x') || t.starts_with('0X') {
 		return lindb.Value(raw_of(signal, t)!)
+	}
+	// a physical value as shown, its unit after it
+	num := if has_physical(ldf, signal) && t.contains(' ') { t.all_before(' ') } else { t }
+	if is_number(num) {
+		if has_physical(ldf, signal) {
+			return lindb.Value(num_of(signal, num)!)
+		}
+		return lindb.Value(raw_of(signal, num)!)
 	}
 	return lindb.Value(t)
 }
 
+// is_number is whether t is a decimal number or a 0x hex one: digits, a sign, a point, an
+// exponent — not nan or inf.
 fn is_number(t string) bool {
 	if t.starts_with('0x') || t.starts_with('0X') {
 		return t.len > 2 && t[2..].bytes().all(it.is_hex_digit())
+	}
+	if t == '' || !t.bytes().all(it.is_digit() || it in [`.`, `-`, `+`, `e`, `E`]) {
+		return false
 	}
 	strconv.atof64(t) or { return false }
 	return true

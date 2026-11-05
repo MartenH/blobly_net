@@ -62,7 +62,10 @@ fn test_a_signal_reads_in_one_cell_as_it_is_typed_back() {
 		shown[v.name] = signal_text(v)
 	}
 	assert shown['CabinTemp'] == 'CabinTemp=21.5 degC', shown.str()
-	assert value_of_text(l, 'CabinTemp', shown['CabinTemp'].all_after('=').all_before(' '))! == lindb.Value(21.5)
+	assert value_of_text(l, 'CabinTemp', shown['CabinTemp'].all_after('='))! == lindb.Value(21.5)
+	// hex is raw, wherever the signal has a physical range
+	assert value_of_text(l, 'CabinTemp', '0x10')! == lindb.Value(u64(16))
+	assert value_of_text(l, 'CabinTemp', 'nan')! == lindb.Value('nan')
 	assert signal_text(lindb.SignalValue{ name: 'S', raw: 3 }) == 'S=3'
 	assert signal_text(lindb.SignalValue{ name: 'S', raw: 0, text: 'off' }) == 'S=off'
 	assert signal_text(lindb.SignalValue{ name: 'B', is_array: true, bytes: [u8(1), 0xAB] }) == 'B=01 AB'

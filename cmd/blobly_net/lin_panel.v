@@ -16,6 +16,7 @@ import blobly.transport
 
 const lin_recent = 500 // frames each bus keeps for the panel
 const lin_view_ms = 100.0 // how often the open panel takes a bus's view
+const lin_handover_ms = 3000 // the longest a bus waits for the previous run's to let go
 
 // LinRun is one LIN bus of a run: what its worker publishes, read by the panel under `mu`.
 @[heap]
@@ -23,6 +24,9 @@ struct LinRun {
 	name    string
 	address string
 	role    string
+	gen     u64
+	// prev is the previous run's bus of this name, which may still be letting go of the port
+	prev ?&LinRun
 mut:
 	mu sync.Mutex
 	// row is the bus once its worker started it; none before, or when it did not start (err).
@@ -30,6 +34,7 @@ mut:
 	err     string
 	ended   string // why the bus ended while the run was on: its port gone
 	recent  []lin.Frame
+	done    bool // the worker has stopped its row and gone
 	t0_ns   i64
 	view    lin.RowView
 	view_at f64
@@ -45,6 +50,10 @@ mut:
 // is published under app.mu, since a script's worker reads it.
 fn (mut app App) start_lin() {
 	mut runs := []&LinRun{}
+	mut before := map[string]&LinRun{}
+	for r in app.lin_runs {
+		before[r.name] = r
+	}
 	dir := os.dir(app.proj_path)
 	for b in app.proj.lin {
 		if !b.enabled {
@@ -54,15 +63,25 @@ fn (mut app App) start_lin() {
 			name:    b.name
 			address: b.address
 			role:    b.role
+			gen:     app.run_gen
+			prev:    before[b.name] or { none }
 			t0_ns:   i64(time.sys_mono_now())
 		}
 		runs << lr
 		app.reserve_run_worker() // released by the worker's own defer
-		spawn lin_worker(app, lr, lin.spec_of(b, dir), app.run_gen)
+		spawn lin_worker(app, lr, lin.spec_of(b, dir))
 	}
 	app.mu.lock()
 	app.lin_runs = runs
 	app.mu.unlock()
+}
+
+// lin_rows_fn is what a script asks for the run's LIN rows, at each lin.open.
+fn (app &App) lin_rows_fn() fn () []&lin.Row {
+	return fn [app] () []&lin.Row {
+		mut a := unsafe { app }
+		return a.lin_rows_now()
+	}
 }
 
 // lin_rows_now is the running run's LIN rows that started: what a script's lin.open reaches by
@@ -82,30 +101,50 @@ fn (mut app App) lin_rows_now() []&lin.Row {
 	return out
 }
 
-// lin_worker holds one LIN bus for the run `gen`: starts its row, keeps what a tap reads, and
-// stops the row when the run ends or the bus does.
-fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec, gen u64) {
-	defer {
-		release_run_worker(app)
-	}
+// lin_worker holds one LIN bus for its run: waits for the previous run's bus of the name to let
+// go (a Stop does not wait for it), starts its row, keeps what a tap reads, and stops the row when
+// the run ends or the bus does.
+fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	mut a := unsafe { app }
 	mut run := unsafe { lr }
+	defer {
+		run.mu.lock()
+		run.done = true
+		run.mu.unlock()
+		release_run_worker(app)
+	}
+	gen := run.gen
+	if p := run.prev {
+		mut prev := unsafe { p }
+		for _ in 0 .. lin_handover_ms / 10 {
+			prev.mu.lock()
+			gone := prev.done
+			prev.mu.unlock()
+			if gone || !a.run_live(gen) {
+				break
+			}
+			time.sleep(10 * time.millisecond)
+		}
+	}
+	if !a.run_live(gen) {
+		return
+	}
 	mut row := lin.start_row(spec, lin.RowOpts{}) or {
 		run.mu.lock()
 		run.err = err.msg()
 		run.mu.unlock()
-		a.notify('LIN ${spec.name}: not started — ${err.msg()}')
+		lin_say(app, gen, 'LIN ${spec.name}: not started — ${err.msg()}')
 		return
 	}
 	for n in row.notes() {
-		a.notify(n) // each names its bus
+		lin_say(app, gen, n) // each names its bus
 	}
 	mut tap := row.tap() or {
 		row.stop()
 		run.mu.lock()
 		run.err = err.msg()
 		run.mu.unlock()
-		a.notify('LIN ${spec.name}: not started — ${err.msg()}')
+		lin_say(app, gen, 'LIN ${spec.name}: not started — ${err.msg()}')
 		return
 	}
 	run.mu.lock()
@@ -113,14 +152,14 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec, gen u64) {
 	run.mu.unlock()
 	sim := if spec.simulate.len > 0 { ', simulating ${spec.simulate.join(', ')}' } else { '' }
 	sched := if spec.schedule != '' { ', schedule ${spec.schedule}' } else { '' }
-	a.notify('LIN ${spec.name} (${spec.address} @ ${row.baud} baud): ${spec.role}${sim}${sched}')
+	lin_say(app, gen, 'LIN ${spec.name} (${spec.address} @ ${row.baud} baud): ${spec.role}${sim}${sched}')
 	for a.run_live(gen) {
 		f := tap.recv(50) or {
 			if err is transport.CarrierGone {
 				run.mu.lock()
 				run.ended = err.msg()
 				run.mu.unlock()
-				a.notify('LIN ${spec.name}: ended — ${err.msg()}')
+				lin_say(app, gen, 'LIN ${spec.name}: ended — ${err.msg()}')
 				break
 			}
 			continue
@@ -133,11 +172,23 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec, gen u64) {
 		run.mu.unlock()
 	}
 	if !row.stop() {
-		a.notify('LIN ${spec.name}: its schedule or reader outlived its bound')
+		lin_say(app, gen, 'LIN ${spec.name}: its schedule or reader outlived its bound')
 	}
 	d := row.diagnostics()
 	if d.dropped > 0 || d.bus_errors > 0 || d.decode_errors > 0 {
-		a.notify('LIN ${spec.name}: ${d.dropped} dropped, ${d.bus_errors} bus errors, ${d.decode_errors} undecodable')
+		lin_say(app, gen, 'LIN ${spec.name}: ${d.dropped} dropped, ${d.bus_errors} bus errors, ${d.decode_errors} undecodable')
+	}
+}
+
+// lin_say puts a LIN bus's line in the Log unless a later run has started, whose Log it is not
+// about; its own run may have stopped, since a bus says what it counted as it stops.
+fn lin_say(app &App, gen u64, msg string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	ours := a.run_gen == gen
+	a.mu.unlock()
+	if ours {
+		a.notify(msg)
 	}
 }
 
@@ -176,9 +227,10 @@ fn draw_lin_run(mut app App, i int, mut lr LinRun) {
 	row_opt := lr.row
 	err := lr.err
 	ended := lr.ended
-	n := if lr.recent.len > lin_recent { lin_recent } else { lr.recent.len }
-	recent := lr.recent[lr.recent.len - n..].clone()
 	lr.mu.unlock()
+	// the controls only while this bus runs: after a Stop or its port going, the view stays and
+	// nothing can be asked of the row
+	live := app.running && app.run_gen == lr.gen && ended == ''
 	if err != '' {
 		vgui.text_colored_wrapped(220, 120, 80, 'not started: ${err}')
 		return
@@ -218,7 +270,11 @@ fn draw_lin_run(mut app App, i int, mut lr LinRun) {
 	if v.sched.last_error != '' {
 		vgui.text_colored_wrapped(220, 120, 80, 'schedule: ${v.sched.last_error}')
 	}
-	app.draw_lin_controls(i, mut lr, mut row, v)
+	if live {
+		app.draw_lin_controls(i, mut lr, mut row, v)
+	} else if ended == '' {
+		vgui.text_dim('stopped: the view as the run ended')
+	}
 	if v.notes.len > 0 && vgui.tree_node('LDF notes (${v.notes.len})##linnotes${i}') {
 		for note in v.notes {
 			vgui.text_dim_wrapped(note)
@@ -263,10 +319,14 @@ fn draw_lin_run(mut app App, i int, mut lr LinRun) {
 		}
 		vgui.table_end()
 	}
-	if sims.len > 0 {
+	if sims.len > 0 && live {
 		app.draw_lin_signals(i, mut lr, mut row, sims, v)
 	}
-	if vgui.tree_node('frames (${recent.len}, newest first)##linrecent${i}') {
+	if vgui.tree_node('frames (the last ${lin_recent}, newest first)##linrecent${i}') {
+		lr.mu.lock()
+		n := if lr.recent.len > lin_recent { lin_recent } else { lr.recent.len }
+		recent := lr.recent[lr.recent.len - n..].clone()
+		lr.mu.unlock()
 		vgui.child_begin('##linlog${i}', 220 * sc)
 		for k := recent.len - 1; k >= 0; k-- {
 			f := recent[k]

@@ -184,9 +184,9 @@ pub mut:
 	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
 	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
 	sys sysview.System
-	// The run's LIN rows lin.open reaches by name (lin.v): cmd/script's headless run, or the GUI's
-	// running run (lin_panel.v).
-	lin_rows ?[]&lin.Row
+	// The run's LIN rows lin.open reaches by name (lin.v), asked at each open: cmd/script's headless
+	// run, or the GUI's run while it is on (lin_panel.v).
+	lin_rows ?fn () []&lin.Row
 	// Whether a run has its wires in this process — cmd/script's headless run, or the GUI's
 	// measurement, started or still letting go of them. vector.assign is refused while it does
 	// (transport.assign_run_refusal).

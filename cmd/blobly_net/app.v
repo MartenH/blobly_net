@@ -1291,6 +1291,12 @@ fn (mut app App) rebuild_from_proj() {
 	// the run's workers; this waits for them to actually go — ~200 ms measured, bounded, and on
 	// the GUI thread only for a project switch or a Save, never for a plain Stop.
 	app.wait_for_run_workers()
+	// the last run's LIN views are of the project being replaced; their workers have gone
+	app.mu.lock()
+	if !app.running {
+		app.lin_runs = []&LinRun{}
+	}
+	app.mu.unlock()
 	// THROUGH THE RULE, not a fourth open-coded copy of it: drainrule is the tested statement of
 	// when this is safe, and a rule production code never calls is a rule that can drift from
 	// the code it describes. ONE Census answers both halves — the verdict, and the words for it —
