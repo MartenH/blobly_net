@@ -573,6 +573,7 @@ fn draw_discover_dialog(mut app App) {
 		app.disc_list_h = app.pane_moved('discover_list', app.disc_list_h, box_h, moved, sc)
 	}
 	app.draw_discover_wsl()
+	app.draw_discover_lan()
 	app.draw_discover_doip()
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
@@ -735,6 +736,46 @@ fn (mut app App) draw_discover_wsl() {
 		}
 	}
 	vgui.text_dim_wrapped('Start runs canbridge in the distribution as root: it creates vcan0 and vcan1 if they are missing and offers its CAN interfaces here. WSL must use networkingMode=mirrored.')
+}
+
+// draw_discover_lan is the Discover dialog's section for CAN bridges on other machines (#587):
+// where the listener a bridge dials is, each such bridge connected now — its channels are in the
+// list above — and each that dialled in to say why it could not start. A WSL distribution's
+// bridge is the section above's.
+fn (mut app App) draw_discover_lan() {
+	vgui.separator_text('CAN bridges on the LAN')
+	if app.bridge_listen_at == '' {
+		vgui.text_dim('not listening')
+		vgui.same_line()
+		vgui.help_marker('A machine on the LAN running canbridge (or a board speaking its protocol) dials this app. Start the app with BLOBLY_BRIDGE_LISTEN=<address>:<port> and BLOBLY_BRIDGE_TOKEN=<token> set, and give the bridge the same address and token (Help ▸ CAN bridge).')
+		return
+	}
+	vgui.text_dim('listening on ${app.bridge_listen_at}')
+	for name in transport.bridge_names() {
+		if name in app.disc_wsl {
+			continue
+		}
+		n := transport.bridge_channels(name).len
+		vgui.align_text_to_frame_padding()
+		vgui.text(name)
+		vgui.same_line()
+		vgui.text_dim('connected — ${n} channel${if n == 1 { '' } else { 's' }}, listed above')
+		// Disconnecting fails every channel on it, which is a run's topology: stopped only.
+		if !app.running {
+			vgui.same_line()
+			if vgui.button('Disconnect##lan_${name}') {
+				transport.bridge_drop(name)
+			}
+		}
+	}
+	failures := transport.bridge_failures()
+	mut failed := failures.keys().filter(it !in app.disc_wsl)
+	failed.sort()
+	for name in failed {
+		vgui.text(name)
+		vgui.same_line()
+		vgui.text_colored_wrapped(u8(240), u8(150), u8(60), failures[name])
+	}
 }
 
 fn bridge_start_worker(app &App, distro string) {

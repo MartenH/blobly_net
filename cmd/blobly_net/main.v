@@ -138,6 +138,7 @@ fn main() {
 		alert(msg)
 		exit(1)
 	}
+	app.bridge_listen_at = bridge_at
 	if bridge_at != '' {
 		app.mu.lock()
 		app.log_append_locked('listening for CAN bridges on ${bridge_at}')
