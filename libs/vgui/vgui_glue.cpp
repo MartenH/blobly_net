@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 #include <string>
 
 extern "C" {
@@ -1052,6 +1053,51 @@ int vgui_button_big(const char* label, int r, int g, int b, float w, float h) {
     bool c = ImGui::Button(label, ImVec2(w, h));
     ImGui::PopStyleColor(4);
     return c ? 1 : 0;
+}
+// vgui_theme_icon is the theme switch: a square of `side` px drawn as the theme a click
+// switches TO — a sun while dark, a crescent moon while light — in the text colour, with a
+// button background only while hovered. Drawn, not a glyph, so no font has to carry one.
+int vgui_theme_icon(int dark, float side) {
+    bool clicked = ImGui::InvisibleButton("##theme_icon", ImVec2(side, side));
+    ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (ImGui::IsItemHovered())
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_ButtonActive
+            : ImGuiCol_ButtonHovered), ImGui::GetStyle().FrameRounding);
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    const float r = side * 0.32f;
+    const float pi = 3.14159265f;
+    if (dark) {
+        // sun: a disc and eight rays
+        dl->AddCircleFilled(c, r * 0.48f, col);
+        const float th = side * 0.06f > 1.5f ? side * 0.06f : 1.5f;
+        for (int i = 0; i < 8; i++) {
+            const float t = i * pi / 4.0f;
+            dl->AddLine(ImVec2(c.x + cosf(t) * r * 0.72f, c.y + sinf(t) * r * 0.72f),
+                ImVec2(c.x + cosf(t) * r, c.y + sinf(t) * r), col, th);
+        }
+    } else {
+        // crescent: the disc less an equal disc offset towards the upper right — the outer
+        // arc the long way round between the two intersections, then the inner arc back
+        const float R = r * 0.9f, d = R * 0.6f, u = -pi / 4.0f;
+        const float al = acosf(d / (2.0f * R));
+        const ImVec2 ic(c.x + cosf(u) * d, c.y + sinf(u) * d);
+        // built point by point: the arcs meet at the intersections, and a point given twice
+        // there is a zero-length edge the concave fill does not survive
+        ImVec2 pts[48];
+        int n = 0;
+        for (int i = 0; i <= 31; i++) {
+            const float t = u + al + (2.0f * pi - 2.0f * al) * i / 31.0f;
+            pts[n++] = ImVec2(c.x + cosf(t) * R, c.y + sinf(t) * R);
+        }
+        for (int i = 1; i < 16; i++) {
+            const float t = u + pi + al - 2.0f * al * i / 16.0f;
+            pts[n++] = ImVec2(ic.x + cosf(t) * R, ic.y + sinf(t) * R);
+        }
+        dl->AddConcavePolyFilled(pts, n, col);
+    }
+    return clicked ? 1 : 0;
 }
 void vgui_same_line() { ImGui::SameLine(); }
 // the next item on this line, starting at `x` from the window's left edge (a column).

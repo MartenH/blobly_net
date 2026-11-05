@@ -246,6 +246,11 @@ fn main() {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}
 	if !headless {
+		// the startup project was loaded before the profile was read, so its system.toml
+		// opened no System panel; it does where the blobly_emb panels are offered
+		if app.prefs.emb_panels && app.sys_loaded {
+			app.show_sys = true
+		}
 		// the dragged panes are per-user state too: a headless render keeps the defaults (r13)
 		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }

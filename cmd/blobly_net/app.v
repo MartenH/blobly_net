@@ -1144,7 +1144,8 @@ fn (mut app App) load_project(path string) {
 		sys_cand := os.join_path(os.dir(path), 'system.toml')
 		if os.is_file(sys_cand) {
 			app.load_system(sys_cand)
-			app.show_sys = app.sys_loaded
+			// loaded for Diagnostics and NM either way; the panel only where it is offered
+			app.show_sys = app.sys_loaded && app.prefs.emb_panels
 		}
 	}
 }

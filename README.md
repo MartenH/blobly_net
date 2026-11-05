@@ -214,7 +214,8 @@ on-target DWT benchmark: cycles, CPI, stalls).*
 > ECU: they speak wire formats implemented by
 > [**blobly_emb**](docs/blobly_emb_synergies.md), the companion embedded stack that runs on the
 > target. They are the group at the bottom of the activity bar (`Cht`/`Fsh`/`Shl`/`Sys`),
-> deliberately separated there for this reason.
+> deliberately separated there for this reason, and hidden until **View ▸ blobly_emb panels**
+> is ticked (remembered across runs).
 >
 > **blobly_emb is not publicly released yet**, so today those four panels have nothing to talk
 > to. Everything else on this page — CAN and CAN-FD, DBC decode/encode and the editor, ISO-TP,
