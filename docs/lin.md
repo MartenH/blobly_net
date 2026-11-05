@@ -134,13 +134,15 @@ A script run from the Script panel while the run is on reaches its LIN buses by 
 
 A LIN bus is in the Buses panel, in a LIN group, running while its bus is up. Its frames are in
 the trace beside the CAN ones, under the bus's name:
-- the id column reads `LIN 0x21` (`LIN —` for a wakeup, which names no frame), the name is the
+- the id column reads `LIN 0x21` (`LIN —` where the record names no frame: a wakeup, or a header
+  that broke before its id), the name is the
   LDF's, and the origin is who published the response (`TX-S` our simulation, `TX` our tester,
   `RX` another node);
 - the flags column is the checksum model, an event (`wakeup`, `sleep`), `no response`, and each
   error as `!name`; a frame with an error is grouped apart from the good ones of its id;
-- an expanded group shows the frame's signals, decoded through the bus's LDF;
-- the bus's `last RX` and RX count move only for an error-free response another node published,
+- an expanded group shows the frame's signals, decoded through the LDF its bus read it through;
+  a frame with an error is not decoded, and its group says why;
+- the bus's `last RX` and the RX counts move only for an error-free response another node published,
   so the master's own unanswered headers never make a dead slave look alive.
 
 A LIN frame is not a CAN frame to anything that reads one: the trace's filter, a plot, Send and a

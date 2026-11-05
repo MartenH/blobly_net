@@ -385,7 +385,7 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// bytes, and formatting all of them for every row on every repaint while a filter is typed
 	// is the per-repaint allocation #299 removed, 28 times over.
 	hay :=
-		'${idstr_row(r.id, r.ext, r.someip, r.lin)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip, r.lin)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${flags_str(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -499,6 +499,11 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	}
 }
 
+// can is whether the group is of CAN frames (TraceRow.can).
+fn (g GAgg) can() bool {
+	return !g.someip && !g.lin
+}
+
 struct GAgg {
 mut:
 	origin string
@@ -591,9 +596,6 @@ fn gkey_someip(ch string, id u32, msg_type u8, iface_version u8, proto_version u
 
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
-	if r.lin && r.key.len == 0 {
-		return gkey_lin(r.origin, r.ch, r.id, r.lin_flags)
-	}
 	if r.someip && r.key.len == 0 {
 		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface, r.someip_proto, r.someip_from,
 			r.someip_bad_fixed)
@@ -605,8 +607,8 @@ fn (r TraceRow) gkey() string {
 }
 
 // gkey_lin: a LIN frame's group identity — prefixed like SOME/IP's so it never meets a CAN group
-// of the same number, and keyed on what lin.key_suffix sets apart (an errored frame, a wakeup, a
-// sleep: `suffix`), so a checksum error is a row of its own beside the good frames.
+// of the same number, and keyed on lin.key_suffix (an errored frame, a wakeup, a sleep), so a
+// checksum error is a row of its own beside the good frames.
 fn gkey_lin(origin string, ch string, id u32, suffix string) string {
 	return 'lin|${origin}|${ch.len}:${ch}|${id}|${suffix}'
 }
@@ -847,7 +849,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// NOT a SOME/IP row: `sel_id`/`sel_ext` are a CAN arbitration id and feed the Send
 			// panel, so selecting a service:method there would offer to transmit it as a 29-bit
 			// CAN frame on whatever bus Send is pointed at.
-			if vgui.is_item_clicked() && !g.someip && !g.lin {
+			if vgui.is_item_clicked() && g.can() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 				app.sel_tp = r.tp
@@ -860,7 +862,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// id that happens to equal an extended CAN id would offer to decode a service
 			// payload with that frame's signal layout; and the filter is keyed on the CAN
 			// identity, so watching one would also match the CAN frame.
-			if !g.someip && !g.lin && vgui.begin_popup_context_item(lb.ctx) {
+			if g.can() && vgui.begin_popup_context_item(lb.ctx) {
 				// group_message, not find_message: a rejoined J1939 message is looked up by its
 				// PGN against the databases on ITS OWN wire.
 				if m := app.group_message(r) {
@@ -943,7 +945,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
 				// group decodes nothing because its payload layout is the deployment's, not a
 				// DBC's (decoding it from an emb node's config is the next rung).
-				if m := app.group_message_kind(r, g.someip || g.lin) {
+				if m := app.group_message_kind(r, !g.can()) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
@@ -973,12 +975,18 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 				// a LIN frame decodes through its bus's LDF
 				if g.lin {
-					for sv in app.lin_signals(r) {
+					if r.lin_flags.contains('!') {
 						vgui.table_row()
 						vgui.table_set_col(gcol_name)
-						vgui.text(sv.name)
-						vgui.table_set_col(gcol_data)
-						vgui.text(lin.signal_text(sv).all_after('='))
+						vgui.text_dim('not decoded: the frame has errors (${r.lin_flags})')
+					} else {
+						for sv in lin_signals(r) {
+							vgui.table_row()
+							vgui.table_set_col(gcol_name)
+							vgui.text(sv.name)
+							vgui.table_set_col(gcol_data)
+							vgui.text(lin.value_text(sv))
+						}
 					}
 				}
 				vgui.tree_pop()

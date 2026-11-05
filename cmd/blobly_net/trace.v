@@ -10,6 +10,7 @@ import blobly.project
 import blobly.sim
 import blobly.j1939
 import blobly.nm
+import blobly.lindb
 import vgui
 
 struct TraceRow {
@@ -70,10 +71,13 @@ struct TraceRow {
 	// and then silently unannounced by the next good message.
 	someip_bad_fixed bool
 	// A LIN frame (blobly/lin), not a CAN frame — a KIND as `someip` is: `id` is a LIN id
-	// (0..63, or 0xFF for a wakeup, which names none), `name` its LDF frame, and `lin_flags` the
-	// flags column (lin.flags_text: its checksum model, an event, its errors).
+	// (0..63, or 0xFF where the record names none: a wakeup, a header that broke before its id),
+	// `name` its LDF frame, `lin_flags` the flags column (lin.flags_text: its checksum model, an
+	// event, its errors), and `lin_ldf` the LDF its bus read it through — the decode of an
+	// expanded group, which no later rename, Stop or reloaded file can change.
 	lin       bool
 	lin_flags string
+	lin_ldf   &lindb.Ldf = unsafe { nil }
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands
@@ -149,12 +153,6 @@ mut:
 	run u64
 }
 
-// has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
-// zero-filled placeholder that carries only the requested DLC — live SocketCAN delivers it that
-// way (the shim returns can_dlc bytes with no RTR check) and the canlog import now mirrors it —
-// so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
-// One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
-// instead of rediscovering it (codex #127 r2).
 // can is whether the row is a CAN frame: what every consumer of (id, ext) asks before it reads
 // one — the filter, a plot, Send, a DBC decode — since a SOME/IP message's id is a
 // service:method and a LIN frame's a LIN id.
@@ -162,6 +160,12 @@ fn (r TraceRow) can() bool {
 	return !r.someip && !r.lin
 }
 
+// has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
+// zero-filled placeholder that carries only the requested DLC — live SocketCAN delivers it that
+// way (the shim returns can_dlc bytes with no RTR check) and the canlog import now mirrors it —
+// so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
+// One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
+// instead of rediscovering it (codex #127 r2).
 fn (r TraceRow) has_payload() bool {
 	return !r.rtr && r.data.len > 0
 }

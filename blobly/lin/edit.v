@@ -107,21 +107,27 @@ fn num_of(signal string, t string) !f64 {
 	return strconv.atof64(s) or { error('${signal}: `${s}` is not a number') }
 }
 
-// signal_text is a decoded signal as a panel shows it in one cell: the logical value's text,
-// else the physical value and its unit, else a byte array's bytes in hex, else the raw value.
+// signal_text is a decoded signal as a panel shows it in one cell: `name=` its value_text.
 pub fn signal_text(v lindb.SignalValue) string {
+	return '${v.name}=${value_text(v)}'
+}
+
+// value_text is a decoded signal's value: the logical value's text, else the physical value and
+// its unit, else a byte array's bytes in hex (an ascii or bcd one's text, quoted), else the raw
+// value.
+pub fn value_text(v lindb.SignalValue) string {
 	if v.is_array {
 		if v.text != '' {
-			return '${v.name}="${v.text}"'
+			return '"${v.text}"'
 		}
-		return '${v.name}=${v.bytes.map('${it:02X}').join(' ')}'
+		return v.bytes.map('${it:02X}').join(' ')
 	}
 	if v.text != '' {
-		return '${v.name}=${v.text}'
+		return v.text
 	}
 	if p := v.physical {
 		unit := if v.unit != '' { ' ${v.unit}' } else { '' }
-		return '${v.name}=${lindb.fmt_num(p)}${unit}'
+		return '${lindb.fmt_num(p)}${unit}'
 	}
-	return '${v.name}=${v.raw}'
+	return '${v.raw}'
 }

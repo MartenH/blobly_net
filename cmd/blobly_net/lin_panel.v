@@ -170,6 +170,10 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	lin_mark(app, run, gen, true)
 	mut viewed := i64(0)
 	ldf := row.ldf()
+	// one copy for the run's trace rows to decode by
+	ldf_ref := if l := ldf { &lindb.Ldf{
+			...l
+		} } else { &lindb.Ldf(unsafe { nil }) }
 	sim := if spec.simulate.len > 0 { ', simulating ${spec.simulate.join(', ')}' } else { '' }
 	sched := if spec.schedule != '' { ', schedule ${spec.schedule}' } else { '' }
 	lin_say(app, gen, 'LIN ${spec.name} (${spec.address} @ ${row.baud} baud): ${spec.role}${sim}${sched}')
@@ -196,7 +200,7 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 				name = resp.name
 			}
 		}
-		push_lin(app, mut run, gen, f, name)
+		push_lin(app, mut run, gen, f, name, ldf_ref)
 		run.mu.lock()
 		run.recent << f
 		if run.recent.len > 2 * lin_recent {
@@ -214,28 +218,16 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	}
 }
 
-// lin_signals is a LIN trace row decoded through the LDF of the bus it came from (by its channel
-// name among the run's LIN buses); none where that bus has no LDF or the LDF no frame for it.
-// GUI thread.
-fn (app &App) lin_signals(r TraceRow) []lindb.SignalValue {
-	for run in app.lin_runs {
-		if run.name != r.ch {
-			continue
-		}
-		mut lr := unsafe { run }
-		lr.mu.lock()
-		row_opt := lr.row
-		lr.mu.unlock()
-		row := row_opt or { return [] }
-		l := row.ldf() or { return [] }
-		if r.id > 0x3F {
-			return []
-		}
-		resp := l.response_for(u8(r.id), r.data) or { return [] }
-		f := resp.frame or { return [] }
-		return l.decode(f, r.data)
+// lin_signals is a LIN trace row decoded through the LDF its bus read it through (none where the
+// bus has no LDF, or the LDF no frame for its id).
+fn lin_signals(r TraceRow) []lindb.SignalValue {
+	if isnil(r.lin_ldf) || r.id > 0x3F {
+		return []
 	}
-	return []
+	l := unsafe { *r.lin_ldf }
+	resp := l.response_for(u8(r.id), r.data) or { return [] }
+	f := resp.frame or { return [] }
+	return l.decode(f, r.data)
 }
 
 // push_lin puts a frame in the trace, as a row of its bus: on the trace's clock (a LIN frame is
@@ -243,7 +235,7 @@ fn (app &App) lin_signals(r TraceRow) []lindb.SignalValue {
 // frame's publisher (lin.origin_of), grouped apart when it errs or is an event (its flags). The
 // row's RX count and `last RX` move only for a frame that shows another node alive
 // (lin.is_bus_traffic): the master's own unanswered headers never make a dead slave look current.
-fn push_lin(app &App, mut run LinRun, gen u64, f lin.Frame, name string) {
+fn push_lin(app &App, mut run LinRun, gen u64, f lin.Frame, name string, ldf &lindb.Ldf) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	defer {
@@ -255,6 +247,7 @@ fn push_lin(app &App, mut run LinRun, gen u64, f lin.Frame, name string) {
 	t_ms := f64(f.t_ns - i64(a.t0_ns)) / 1_000_000.0
 	ch := a.chans[run.ci].name
 	if lin.is_bus_traffic(f) {
+		a.rx++
 		a.chans[run.ci].rx++
 		a.chans[run.ci].rx_seen++
 		a.chans[run.ci].rx_last = t_ms
@@ -269,7 +262,7 @@ fn push_lin(app &App, mut run LinRun, gen u64, f lin.Frame, name string) {
 	id := if lin.has_id(f) { u32(f.id) } else { u32(0xFF) }
 	origin := lin.origin_of(f)
 	flags := lin.flags_text(f)
-	key := gkey_lin(origin, ch, id, flags)
+	key := gkey_lin(origin, ch, id, lin.key_suffix(f))
 	a.push_row_locked(TraceRow{
 		t_ms:      t_ms
 		ch:        ch
@@ -279,6 +272,7 @@ fn push_lin(app &App, mut run LinRun, gen u64, f lin.Frame, name string) {
 		lin_flags: flags
 		name:      name
 		data:      f.data.clone()
+		lin_ldf:   unsafe { ldf } // the heap copy lin_worker made for its run
 		key:       key
 	})
 	a.gcount[key]++
@@ -596,7 +590,7 @@ fn (mut app App) draw_lin_signals(i int, mut lr LinRun, mut row lin.Row, sims []
 			for f in v.frames {
 				if f.id == lf.id {
 					for s in f.signals {
-						now[s.name] = lin.signal_text(s).all_after('=')
+						now[s.name] = lin.value_text(s)
 					}
 				}
 			}
