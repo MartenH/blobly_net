@@ -1,0 +1,235 @@
+// lin_demo.ldf — a hand-written LIN 2.2A cluster, modelled on the example of LIN 2.2A §9.3
+// (master CEM, slaves LSM and RSM), with one feature per frame. blobly/lindb's tests pin it;
+// sut/ldf_oracle.py diffs blobly's reading of it against ldfparser's.
+/* The file declares LIN 2.2; RSM declares LIN 2.1 in its Node_attributes (enhanced checksum
+   either way), and the diagnostic frames are classic whatever anyone declares. */
+
+LIN_description_file;
+LIN_protocol_version = "2.2";
+LIN_language_version = "2.2";
+LIN_speed = 19.2 kbps;
+Channel_name = "DB";
+
+Nodes {
+  Master: CEM, 5 ms, 0.1 ms;
+  Slaves: LSM, RSM;
+}
+
+Signals {
+  InternalLightsRequest: 2, 0, CEM, LSM, RSM;   // logical encoding, 2 bits
+  NightMode: 1, 1, CEM, LSM;                    // one bit, init 1
+  CabinTemp: 8, 120, CEM, LSM, RSM;             // two physical ranges and a logical value
+  VehicleSpeed: 12, 0x0FA, CEM, RSM;            // spans bytes 1 and 2, unaligned
+  LeftIntLightsSwitch: 8, 0, LSM, CEM;
+  LSMerror: 1, 0, LSM, CEM;
+  IntTest: 2, 0, LSM, CEM;
+  LSM_Ident: 32, {0x4C, 0x53, 0x4D, 0x31}, LSM, CEM;   // ascii "LSM1"
+  RightIntLightsSwitch: 8, 0, RSM, CEM;
+  RSMerror: 1, 0, RSM, CEM;
+  RSM_PartNo: 24, {1, 2, 3}, RSM, CEM;          // bcd "123"
+  RSM_Serial: 64, {0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80}, RSM, CEM; // an 8-byte array
+}
+
+Diagnostic_signals {
+  MasterReqB0: 8, 0;
+  MasterReqB1: 8, 0;
+  MasterReqB2: 8, 0;
+  MasterReqB3: 8, 0;
+  MasterReqB4: 8, 0;
+  MasterReqB5: 8, 0;
+  MasterReqB6: 8, 0;
+  MasterReqB7: 8, 0;
+  SlaveRespB0: 8, 0;
+  SlaveRespB1: 8, 0;
+  SlaveRespB2: 8, 0;
+  SlaveRespB3: 8, 0;
+  SlaveRespB4: 8, 0;
+  SlaveRespB5: 8, 0;
+  SlaveRespB6: 8, 0;
+  SlaveRespB7: 8, 0;
+}
+
+Frames {
+  CEM_Frm1: 0x01, CEM, 1 {      // the master's, one byte, unused bits recessive
+    InternalLightsRequest, 0;
+    NightMode, 2;
+  }
+  CEM_Frm2: 0x02, CEM, 3 {      // a signal crossing a byte boundary
+    CabinTemp, 0;
+    VehicleSpeed, 10;
+  }
+  LSM_Frm1: 0x11, LSM, 2 {      // tied to Node_Status_Event: byte 0 is this frame's own PID
+    LeftIntLightsSwitch, 8;
+  }
+  LSM_Frm2: 0x12, LSM, 1 {
+    LSMerror, 0;
+    IntTest, 1;
+  }
+  LSM_Frm3: 0x13, LSM, 4 {      // an ascii byte array
+    LSM_Ident, 0;
+  }
+  RSM_Frm1: 0x21, RSM, 2 {      // tied to Node_Status_Event as well
+    RightIntLightsSwitch, 8;
+  }
+  RSM_Frm2: 0x22, RSM, 4 {      // a bcd byte array after a one-bit signal
+    RSMerror, 0;
+    RSM_PartNo, 8;
+  }
+  RSM_Frm3: 0x23, RSM, 8 {      // an 8-byte array filling the frame
+    RSM_Serial, 0;
+  }
+}
+
+Event_triggered_frames {
+  Node_Status_Event: Collision_resolver, 0x3A, RSM_Frm1, LSM_Frm1;
+}
+
+Sporadic_frames {
+  CEM_Sporadic: CEM_Frm2, CEM_Frm1;
+}
+
+Diagnostic_frames {
+  MasterReq: 0x3C {
+    MasterReqB0, 0;
+    MasterReqB1, 8;
+    MasterReqB2, 16;
+    MasterReqB3, 24;
+    MasterReqB4, 32;
+    MasterReqB5, 40;
+    MasterReqB6, 48;
+    MasterReqB7, 56;
+  }
+  SlaveResp: 0x3D {
+    SlaveRespB0, 0;
+    SlaveRespB1, 8;
+    SlaveRespB2, 16;
+    SlaveRespB3, 24;
+    SlaveRespB4, 32;
+    SlaveRespB5, 40;
+    SlaveRespB6, 48;
+    SlaveRespB7, 56;
+  }
+}
+
+Node_attributes {
+  LSM {
+    LIN_protocol = "2.2";
+    configured_NAD = 0x20;
+    initial_NAD = 0x01;
+    product_id = 0x4A4F, 0x4841, 0x01;
+    response_error = LSMerror;
+    fault_state_signals = IntTest;
+    P2_min = 150 ms;
+    ST_min = 50 ms;
+    N_As_timeout = 1000 ms;
+    N_Cr_timeout = 1000 ms;
+    configurable_frames {
+      Node_Status_Event;
+      CEM_Frm1;
+      LSM_Frm1;
+      LSM_Frm2;
+      LSM_Frm3;
+    }
+  }
+  RSM {
+    LIN_protocol = "2.1";
+    configured_NAD = 0x21;
+    product_id = 0x4E4E, 0x4553;
+    response_error = RSMerror;
+    P2_min = 100 ms;
+    ST_min = 20 ms;
+    N_As_timeout = 500 ms;
+    N_Cr_timeout = 750 ms;
+    configurable_frames {
+      Node_Status_Event;
+      CEM_Frm1;
+      RSM_Frm1;
+      RSM_Frm2;
+      RSM_Frm3;
+    }
+  }
+}
+
+Schedule_tables {
+  NormalTable {
+    CEM_Frm1 delay 10 ms;
+    CEM_Frm2 delay 10 ms;
+    LSM_Frm2 delay 10 ms;
+    RSM_Frm2 delay 15 ms;
+    Node_Status_Event delay 10 ms;
+  }
+  FastTable {
+    CEM_Frm2 delay 5 ms;
+    RSM_Frm1 delay 5 ms;
+    LSM_Frm1 delay 5 ms;
+    LSM_Frm3 delay 10 ms;
+    RSM_Frm3 delay 15 ms;
+    CEM_Sporadic delay 10 ms;
+    MasterReq delay 20 ms;
+    SlaveResp delay 20 ms;
+  }
+  Collision_resolver {
+    RSM_Frm1 delay 10 ms;
+    LSM_Frm1 delay 10 ms;
+  }
+  ConfigTable {
+    AssignNAD { LSM } delay 15 ms;
+    AssignFrameIdRange { RSM, 0 } delay 15 ms;
+    SaveConfiguration { RSM } delay 15 ms;
+  }
+}
+
+Signal_encoding_types {
+  Dig2Bit {
+    logical_value, 0, "off";
+    logical_value, 1, "on";
+    logical_value, 2, "error";
+    logical_value, 3, "void";
+  }
+  ModeEncoding {
+    logical_value, 0, "day";
+    logical_value, 1, "night";
+  }
+  TempEncoding {
+    physical_value, 0, 199, 0.5, -40, "degC";
+    physical_value, 200, 250, 1, 60, "degC";
+    logical_value, 255, "sensor fault";
+  }
+  SpeedEncoding {
+    physical_value, 0, 4000, 0.0625, 0, "km/h";
+    logical_value, 4095, "invalid";
+  }
+  LightEncoding {
+    logical_value, 0, "Off";
+    physical_value, 1, 254, 1, 100, "lux";
+    logical_value, 255, "error";
+  }
+  ErrorEncoding {
+    logical_value, 0, "OK";
+    logical_value, 1, "error";
+  }
+  FaultStateEncoding {
+    logical_value, 0, "No test result";
+    logical_value, 1, "failed";
+    logical_value, 2, "passed";
+    logical_value, 3, "not used";
+  }
+  IdentEncoding {
+    ascii_value;
+  }
+  PartNoEncoding {
+    bcd_value;
+  }
+}
+
+Signal_representation {
+  Dig2Bit: InternalLightsRequest;
+  ModeEncoding: NightMode;
+  TempEncoding: CabinTemp;
+  SpeedEncoding: VehicleSpeed;
+  LightEncoding: LeftIntLightsSwitch, RightIntLightsSwitch;
+  ErrorEncoding: LSMerror, RSMerror;
+  FaultStateEncoding: IntTest;
+  IdentEncoding: LSM_Ident;
+  PartNoEncoding: RSM_PartNo;
+}
