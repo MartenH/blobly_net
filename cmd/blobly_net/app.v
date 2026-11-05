@@ -1398,7 +1398,7 @@ fn (mut app App) rebuild_from_proj() {
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
-			senders_modelled: ch.kind() != .someip // see Chan.senders_modelled
+			senders_modelled: ch.kind().has_generators() // see Chan.senders_modelled
 			name:           ch.name
 			network:        ch.network
 			adapter:        ch.adapter
@@ -1483,7 +1483,7 @@ fn (mut app App) rebuild_from_proj() {
 		// fire answers `no open bus`. Converting a CAN row to `someip` carries its generators
 		// across, which is how a project reaches this without editing YAML, so the runtime drops
 		// them rather than displaying what it will not do.
-		row_senders := if ch.kind() == .someip { []project.Sender{} } else { ch.senders }
+		row_senders := if ch.kind().has_generators() { ch.senders } else { []project.Sender{} }
 		for s in row_senders {
 			// `tgt` and `chan` are filled by resolve_sender_targets_locked once every channel has
 			// been built — not here. A `bus:` may name a channel that appears LATER in the file,
@@ -1524,7 +1524,7 @@ fn (mut app App) rebuild_from_proj() {
 		// seeding skips it too. So a converted row carrying nodes offered a set of live-looking
 		// controls that could not affect a single datagram. Its `verify:` entries are skipped
 		// for the same reason: there is no CAN frame here to check a counter or a CRC on.
-		if ch.kind() == .someip {
+		if !ch.kind().simulates() {
 			continue
 		}
 		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {

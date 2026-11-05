@@ -1727,9 +1727,23 @@ fn test_endpoint_warning_folds_written_spellings() {
 // SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
 // real CAN wire.
 fn test_kind_of_iface_matches_the_scheme_not_a_prefix() {
-	for yes in ['someip', 'someip:0.0.0.0:30491', 'doip', 'doip:127.0.0.1:13400'] {
-		assert kind_of_iface(yes) != .can, yes
+	for iface, want in {
+		'someip':                RowKind.someip
+		'someip:0.0.0.0:30491':  .someip
+		'doip':                  .doip
+		'doip:127.0.0.1:13400':  .doip
+	} {
+		assert kind_of_iface(iface) == want, iface
 	}
+	// the type decides where the interface is CAN; a row both ways reads as DoIP
+	assert Channel{
+		typ:   'someip'
+		iface: 'vcan0'
+	}.kind() == .someip
+	assert Channel{
+		typ:   'someip'
+		iface: 'doip:127.0.0.1'
+	}.kind() == .doip
 	for no in ['someip0', 'doip1', 'someipx', 'vcan0', 'can0', 'udp:239.0.0.1:5000', ''] {
 		assert kind_of_iface(no) == .can, no
 	}

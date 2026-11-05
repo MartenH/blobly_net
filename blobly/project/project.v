@@ -62,7 +62,7 @@ pub fn version_for(p Project) int {
 	// v8 — a simulated ECU answering a functional id (#366). An older build drops `functional:`
 	// on its next structured save, and the ECU silently stops answering broadcasts.
 	for c in p.channels {
-		if c.kind() == .doip {
+		if !c.kind().nodes_have_can_ids() {
 			continue // not written there (a DoIP node has no CAN ids), so nothing to lose
 		}
 		for n in c.nodes {
@@ -1142,8 +1142,8 @@ fn parse_channel(c yaml.Any) !Channel {
 			// `type: someip` beside a raw `someip0` or a malformed `someipx:30491` was read as a
 			// scheme, handed to decompose_iface — which correctly calls it SocketCAN — and the
 			// row came out `typ: someip` on a CAN adapter: someip_endpoint then fell back to
-			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (kind() is .someip
-			// true) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
+			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (the row read as
+			// SOME/IP) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
 			// somewhere nobody named and change type on the way out.
 			if iface_scheme_is(ch.iface, 'someip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)

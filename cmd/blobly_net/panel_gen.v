@@ -477,7 +477,7 @@ fn (mut app App) sync_senders_into_proj() {
 		// hidden generators, CAN→SOME/IP skipped and discarded the panel edits that had not been
 		// synced yet. `Chan.senders_modelled` records the state app.senders was actually built
 		// in, which is the only thing that describes it.
-		mut modelled := p.channels[ci].kind() != .someip
+		mut modelled := p.channels[ci].kind().has_generators()
 		for c in app.chans {
 			if c.proj_idx == ci {
 				modelled = c.senders_modelled

@@ -141,7 +141,7 @@ pub fn (p Project) to_yaml() string {
 					// logical pair. Writing them unconditionally turned a deliberately absent
 					// pair into `rx: "0x0"` / `tx: "0x0"` on the first save, so the tool's own
 					// output then tripped its own "rx/tx are ignored here" warning.
-					if ch.kind() != .doip {
+					if ch.kind().nodes_have_can_ids() {
 						b.writeln('          rx: "0x${u.rx:X}"')
 						b.writeln('          tx: "0x${u.tx:X}"')
 						if u.functional != 0 {

@@ -22,6 +22,7 @@ import blobly.nm
 import blobly.doip
 import blobly.testports
 import blobly.lin
+import blobly.udsconn
 import sync
 import sync.stdatomic
 
@@ -72,10 +73,7 @@ pub:
 pub fn (c Channel) fault_target() sim.FaultTarget {
 	return sim.FaultTarget{
 		channel:  c.cfg.name
-		eth_kind: match c.cfg.kind() {
-			.can { '' }
-			.doip, .someip { c.cfg.kind().name() }
-		}
+		eth_kind: udsconn.carrier_of(c.cfg).eth_kind() or { '' }
 		iface:    c.cfg.iface
 		db:       c.db
 		nodes:    c.cfg.all_nodes()

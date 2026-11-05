@@ -11,7 +11,7 @@ pub enum RowKind {
 	someip
 }
 
-// name is the kind as the Log and the refusals name it.
+// name is the kind as the Log and the Diagnostics panel name it.
 pub fn (k RowKind) name() string {
 	return match k {
 		.can { 'CAN' }
@@ -20,17 +20,44 @@ pub fn (k RowKind) name() string {
 	}
 }
 
+// has_generators is whether the row's `senders:` run: a CAN row's frames, and a DoIP row's,
+// which a generator on its wire may name; a SOME/IP listener transmits nothing, so a row
+// converted to one keeps its generators in the file and runs none.
+pub fn (k RowKind) has_generators() bool {
+	return match k {
+		.can, .doip { true }
+		.someip { false }
+	}
+}
+
+// simulates is whether the row's nodes and `verify:` entries mean anything: simulated ECUs and
+// checked frames on a CAN bus, a hosted entity on a DoIP endpoint; nothing on a passive listener.
+pub fn (k RowKind) simulates() bool {
+	return match k {
+		.can, .doip { true }
+		.someip { false }
+	}
+}
+
+// nodes_have_can_ids is whether a node's diagnostic server is reached by CAN ids (rx, tx,
+// functional): not on DoIP, whose node is addressed by the channel's logical pair.
+pub fn (k RowKind) nodes_have_can_ids() bool {
+	return match k {
+		.can, .someip { true }
+		.doip { false }
+	}
+}
+
 // kind is the row's kind: DoIP when its type or its interface's scheme says so (`type: doip`,
 // `doip`, `doip:<host>[:<port>]`), else SOME/IP by the same test, else CAN. The parser keeps the
-// two in agreement (a type with another scheme's interface is refused).
+// two in agreement (a type with another scheme's interface is refused); a row built otherwise
+// with both reads as DoIP.
 pub fn (ch Channel) kind() RowKind {
-	if ch.typ == 'doip' || iface_scheme_is(ch.iface, 'doip') {
-		return .doip
+	return match ch.typ {
+		'doip' { .doip }
+		'someip' { if kind_of_iface(ch.iface) == .doip { .doip } else { .someip } }
+		else { kind_of_iface(ch.iface) }
 	}
-	if ch.typ == 'someip' || iface_scheme_is(ch.iface, 'someip') {
-		return .someip
-	}
-	return .can
 }
 
 // kind_of_iface is the kind an interface string names by its scheme alone. Public because the

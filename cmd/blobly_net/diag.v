@@ -83,7 +83,7 @@ struct DiagTarget {
 // target's with its interface — chan_where) or the DoIP endpoint, the carrier from `t.carrier`, so
 // every entry says CAN or DoIP the same way and two targets differ in the words that differ.
 fn (t DiagTarget) named(who string, where string) DiagTarget {
-	kind := if t.carrier.kind == .doip { 'DoIP' } else { 'CAN' }
+	kind := t.carrier.kind.name()
 	addr := if t.carrier.kind == .doip {
 		'0x${t.carrier.ecu:04X}'
 	} else {
