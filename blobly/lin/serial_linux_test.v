@@ -2,6 +2,7 @@ module lin
 
 // The serial backend over pseudo-terminals.
 
+import os
 import time
 import blobly.lindb
 import blobly.transport
@@ -765,4 +766,117 @@ fn test_a_serial_master_times_external_frames_by_the_ldf() {
 	slave.stop()
 	gaps.sort()
 	assert gaps[gaps.len / 2] < 7_000_000, 'median gap ${gaps[gaps.len / 2]} ns'
+}
+
+// plain_peer is a pty whose master end the test holds and writes into as a program does that
+// writes LIN to a serial port: no break mark, no escaped 0xFF.
+fn plain_peer() (i32, string) {
+	return raw_pty()
+}
+
+// raw_read reads what fd has within ms.
+fn raw_read(fd i32, ms int) []u8 {
+	mut out := []u8{}
+	mut buf := []u8{len: 256}
+	deadline := time.now().add(ms * time.millisecond)
+	for time.now() < deadline {
+		n := C.bl_ser_read(fd, buf.data, i32(buf.len), 5)
+		if n > 0 {
+			out << buf[..n]
+		}
+	}
+	return out
+}
+
+fn test_a_plain_pty_reads_frames_with_no_break_between_them() {
+	mfd, slave := plain_peer()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	// a slave that publishes nothing reads as a monitor does, and takes the LDF's lengths
+	mut mon := open('pty:${slave},plain', Config{ role: .slave })!
+	defer {
+		mon.close()
+	}
+	mon.set_entry(Entry{ id: 0x21, dir: .subscribe, len: 4, model: .classic })!
+	p21 := pid(0x21)
+	data := [u8(0xAA), 0xFF, 0x55, 0xDD]
+	mut frame := [u8(0x55), p21]
+	frame << data
+	frame << checksum(.classic, p21, data)
+	// a header nobody answers, then a frame of an id with no expectation, then the 0x21 frame
+	frames_out := [[u8(0x55), pid(0x30)], [u8(0x55), pid(0x10), 1, 2,
+		checksum(.enhanced, pid(0x10), [u8(1), 2])], frame]
+	for bytes in frames_out {
+		assert C.bl_ser_write(mfd, bytes.data, i32(bytes.len), 100) == 0
+		time.sleep(10 * time.millisecond)
+	}
+	got3 := [got(mut mon), got(mut mon), got(mut mon)]
+	assert got3.map(reading(it)) == ['0x30 no response',
+		'0x10 [2] 01 02 cs 0x${checksum(.enhanced, pid(0x10), [u8(1), 2]):02X} enhanced',
+		'0x21 [4] AA FF 55 DD cs 0x${frame.last():02X} classic']
+	assert got3.all(it.src == .remote && !it.ours && !it.header)
+}
+
+fn test_a_plain_pty_slave_answers_in_plain_bytes() {
+	mfd, slave := plain_peer()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	mut s := open('pty:${slave},plain', Config{ role: .slave, src: .sim })!
+	defer {
+		s.close()
+	}
+	s.set_entry(Entry{ id: 0x20, dir: .publish, len: 2, data: [u8(0xFF), 0x01] })!
+	hdr := [u8(0x55), pid(0x20)]
+	assert C.bl_ser_write(mfd, hdr.data, 2, 100) == 0
+	cs := checksum(.enhanced, pid(0x20), [u8(0xFF), 0x01])
+	// the master reads its response as it reads a UART: data and checksum, no marks
+	assert raw_read(mfd, 30) == [u8(0xFF), 0x01, cs]
+	f := got(mut s)
+	assert reading(f) == '0x20 [2] FF 01 cs 0x${cs:02X} enhanced' && f.ours && f.src == .sim
+}
+
+fn test_a_plain_pty_master_writes_plain_bytes() {
+	mfd, slave := plain_peer()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	mut m := open('pty:${slave},plain', Config{ role: .master, src: .tester })!
+	defer {
+		m.close()
+	}
+	m.set_entry(Entry{ id: 0x10, dir: .publish, len: 2, data: [u8(0xFF), 0x12] })!
+	m.header(0x10)!
+	cs := checksum(.enhanced, pid(0x10), [u8(0xFF), 0x12])
+	assert raw_read(mfd, 30) == [u8(0x55), pid(0x10), 0xFF, 0x12, cs]
+	f := got(mut m)
+	assert reading(f) == '0x10 [2] FF 12 cs 0x${cs:02X} enhanced' && f.ours && f.header
+}
+
+fn test_a_pty_path_is_read_from_the_file_a_program_writes_it_in() {
+	mfd, slave := plain_peer()
+	defer {
+		C.bl_ser_close(mfd)
+	}
+	file := os.join_path(os.temp_dir(), 'lin_slave_${os.getpid()}')
+	os.write_file(file, '${slave}\n')!
+	defer {
+		os.rm(file) or {}
+	}
+	mut mon := open('pty:${file},plain', Config{ role: .monitor })!
+	defer {
+		mon.close()
+	}
+	// the device, not the file, is what is open once in this process
+	mut refused := ''
+	open('pty:${slave}', Config{ role: .monitor }) or { refused = err.msg() }
+	assert refused.contains('is already open'), refused
+	bytes := [u8(0x55), pid(0x30)]
+	assert C.bl_ser_write(mfd, bytes.data, 2, 100) == 0
+	assert reading(got(mut mon)) == '0x30 no response'
+	os.write_file(file, '\n')!
+	mut empty_why := ''
+	device_path(file) or { empty_why = err.msg() }
+	assert empty_why.contains('names no device'), empty_why
 }

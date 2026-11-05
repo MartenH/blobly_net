@@ -33,6 +33,16 @@ LIN is being added in steps. This page says what exists today and what comes nex
     - `pty:<path>[@baud]` is a pseudo-terminal, for tests and for talking to another program. A
       pty carries no break, so a break is written as the bytes `FF 00 00` and a data byte 0xFF as
       `FF FF`. Nothing is echoed. A pty has two ends, so a pty bus has two nodes on it.
+    - `pty:<path>,plain` is a pty that another program writes LIN into the way it would write
+      to a UART: the sync byte, PID, data and checksum, with no break and 0xFF as itself. An
+      AUTOSAR Lin driver ported to Linux that opens a pty instead of a serial port writes this.
+      A sync byte read between frames starts a frame. On a pty the other program is the only
+      other node, so when it sends a header it is the master, and it writes its own response
+      right behind the header: a frame whose header came from it ends after 2 ms with no
+      bytes. blobly answers in the same plain bytes.
+    - Where the path is a regular file, its first line names the device, so a program that
+      writes the path of the pty it made (`/tmp/lin_slave_0` holding `/dev/pts/7`) can be
+      named the same way every run: `pty:/tmp/lin_slave_0,plain`.
     - One handle per device in a process; a second open of the same path is refused.
     - A header, a wakeup or a go-to-sleep waits until the previous frame's slot (its longest
       allowed time) has ended, as a LIN master must. A wakeup is a dominant pulse of 250 µs to

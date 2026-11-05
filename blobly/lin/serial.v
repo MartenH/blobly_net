@@ -1,7 +1,10 @@
 module lin
 
+import os
+
 // The serial addresses and the rules every platform shares: `tty:<path>[@baud]` is a UART behind
-// a LIN transceiver, `pty:<path>[@baud]` a pseudo-terminal. The backend is serial_linux.c.v.
+// a LIN transceiver, `pty:<path>[@baud][,plain]` a pseudo-terminal. The backend is
+// serial_linux.c.v.
 
 pub enum SerialKind {
 	tty
@@ -15,6 +18,10 @@ pub:
 	path    string
 	// baud is the rate the address states, 0 for none.
 	baud int
+	// plain: a pty carrying the bytes a UART would put on the wire and nothing else, as a
+	// program that writes LIN to a serial port puts them into a pty — no break mark and no
+	// escaped 0xFF (`,plain`).
+	plain bool
 }
 
 // is_serial is whether an address names a serial port.
@@ -32,6 +39,14 @@ pub fn parse_serial(address string) !SerialAddr {
 		return error('lin: `${address}` is not a serial address (tty:<path> or pty:<path>)')
 	}
 	mut path := address[4..]
+	mut plain := false
+	if path.ends_with(',plain') {
+		if kind != .pty {
+			return error('lin: `${address}`: `,plain` is for a pty; a tty carries real breaks')
+		}
+		plain = true
+		path = path[..path.len - ',plain'.len]
+	}
 	mut baud := 0
 	if at := path.last_index('@') {
 		rate := path[at + 1..]
@@ -52,6 +67,7 @@ pub fn parse_serial(address string) !SerialAddr {
 		kind:    kind
 		path:    path
 		baud:    baud
+		plain:   plain
 	}
 }
 
@@ -62,6 +78,29 @@ pub fn address_baud(address string) ?int {
 	}
 	a := parse_serial(address) or { return none }
 	return if a.baud == 0 { none } else { a.baud }
+}
+
+// plain_quiet_ns is how long a plain pty is quiet before a frame whose header came from the other
+// end is over. On a pty that end is the master, which writes its response right behind its
+// header, so a frame arrives in one burst; the next header comes a schedule slot later.
+const plain_quiet_ns = i64(2_000_000)
+
+// device_path is the device an address's path names: the path, or, when the path is a regular
+// file, the device path written on its first line — how a program that makes its own pty may say
+// where it is (`/tmp/lin_slave_0` holding `/dev/pts/7`), so the address holds across its runs.
+pub fn device_path(path string) !string {
+	if !os.exists(path) || os.inode(path).typ != .regular {
+		return path
+	}
+	text := os.read_file(path) or { return error('lin: cannot read `${path}`: ${err}') }
+	dev := text.split_into_lines()[0] or { '' }.trim_space()
+	if dev == '' {
+		return error('lin: `${path}` is a file but names no device on its first line')
+	}
+	if os.exists(dev) && os.inode(dev).typ == .regular {
+		return error('lin: `${path}` names `${dev}`, which is a file, not a device')
+	}
+	return dev
 }
 
 // serial_baud is the rate a serial handle runs at: the address's, else the configuration's. An

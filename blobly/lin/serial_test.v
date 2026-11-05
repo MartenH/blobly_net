@@ -8,7 +8,13 @@ fn test_a_serial_address_states_its_device_and_rate() {
 	assert address_baud('pty:/dev/pts/3@9600') or { 0 } == 9600
 	assert address_baud('tty:/dev/ttyS0') == none
 	assert address_baud('inproc:x') == none
+	plain := parse_serial('pty:/dev/pts/3@19200,plain')!
+	assert plain.plain && plain.path == '/dev/pts/3' && plain.baud == 19200
+	assert parse_serial('pty:/dev/pts/3,plain')!.plain
+	assert !p.plain
 	bad := {
+		'tty:/dev/ttyS0,plain':  'is for a pty'
+		'pty:,plain':            'names no device'
 		'tty:':                  'names no device'
 		'pty:@19200':            'names no device'
 		'tty:/dev/ttyS0@':       'must be a number'
