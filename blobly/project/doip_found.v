@@ -35,7 +35,7 @@ pub fn doip_found_channel(f DoipFound) Channel {
 // doip_found_at reports whether DoIP channel `c` dials the entity `f` was found at: the
 // endpoint as Start would dial it, so `192.168.0.50` and `192.168.0.50:13400` are one.
 pub fn doip_found_at(c Channel, f DoipFound) bool {
-	if !c.is_doip() {
+	if c.kind() != .doip {
 		return false
 	}
 	want_host, want_port := doip_found_channel(f).doip_endpoint()

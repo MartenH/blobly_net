@@ -34,7 +34,7 @@ fn (app &App) nm_configs(sys &sysview.System) map[string]nm.Config {
 	mut rows := map[string][]project.Channel{}
 	mut iface_of := map[string]string{}
 	for c in app.chans {
-		if c.eth() {
+		if c.kind != .can {
 			continue
 		}
 		dk := transport.destination_key_for(c.adapter, c.iface)
@@ -170,7 +170,7 @@ fn (mut app App) nm_sections() ([]NmSection, string) {
 		mut names := []string{}
 		mut read := false
 		for c in app.chans {
-			if !c.eth() && transport.destination_key_for(c.adapter, c.iface) == w {
+			if c.kind == .can && transport.destination_key_for(c.adapter, c.iface) == w {
 				if c.name !in names {
 					names << c.name
 				}

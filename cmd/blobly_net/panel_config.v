@@ -1012,14 +1012,10 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
 	// An Ethernet row shows the endpoint Start uses, defaults filled in: a DoIP address typed
 	// without a port is dialled on 13400, and the header says so rather than hiding it.
-	addr := if ch.is_doip() {
-		':${ch.doip_effective_address()}'
-	} else if ch.is_someip() {
-		':${ch.someip_effective_address()}'
-	} else if ch.address != '' {
-		':${ch.address}'
-	} else {
-		''
+	addr := match ch.kind() {
+		.doip { ':${ch.doip_effective_address()}' }
+		.someip { ':${ch.someip_effective_address()}' }
+		.can { if ch.address != '' { ':${ch.address}' } else { '' } }
 	}
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
 	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
@@ -1095,10 +1091,10 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.text_dim(adapter_hint(ch.adapter))
-	if ch.is_doip() {
-		app.draw_doip_entity_pick(i, ch)
-	} else if !ch.is_someip() {
-		app.draw_iface_pick(i)
+	match ch.kind() {
+		.doip { app.draw_doip_entity_pick(i, ch) }
+		.can { app.draw_iface_pick(i) }
+		.someip {}
 	}
 
 	if ch.adapter == 'doip' {
@@ -1187,7 +1183,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			app.dirty = true
 		}
 		// CAN only: a tick on a DoIP or SOME/IP row is one that can never do anything.
-		if !ch.is_eth() {
+		if ch.kind() == .can {
 			cfg_field('J1939', 'J1939: read THIS wire as SAE J1939 — the trace names each frame\'s parameter group and sender, and multi-packet transfers are rejoined. For a bus whose database does not declare its frames J1939 (`VFrameFormat` is a Vector attribute most J1939 files were written without). A database that DOES declare them turns it on by itself, and the Trace panel\'s J1939 button overrides every wire at once.',
 				sc)
 			jb := vgui.checkbox('##j19${i}', ch.j1939)

@@ -158,7 +158,7 @@ fn test_doip_channel() {
 		panic(err)
 	}
 	c := p.channels[0]
-	assert c.is_doip()
+	assert c.kind() == .doip
 	assert c.tester_addr == 0x0E80
 	assert c.ecu_addr == 0x1000
 	host, port := c.doip_endpoint()
@@ -172,7 +172,7 @@ fn test_doip_endpoint_defaults() {
 		typ:   'doip'
 		iface: 'doip'
 	}
-	assert bare.is_doip()
+	assert bare.kind() == .doip
 	h0, p0 := bare.doip_endpoint()
 	assert h0 == '127.0.0.1'
 	assert p0 == 13400
@@ -180,7 +180,7 @@ fn test_doip_endpoint_defaults() {
 	hostonly := Channel{
 		iface: 'doip:192.168.1.5'
 	}
-	assert hostonly.is_doip() // recognised via the iface prefix even without type
+	assert hostonly.kind() == .doip // recognised via the iface prefix even without type
 	h1, p1 := hostonly.doip_endpoint()
 	assert h1 == '192.168.1.5'
 	assert p1 == 13400
@@ -188,7 +188,7 @@ fn test_doip_endpoint_defaults() {
 	shorthand := Channel{
 		iface: 'doip'
 	}
-	assert shorthand.is_doip()
+	assert shorthand.kind() == .doip
 	hs, ps := shorthand.doip_endpoint()
 	assert hs == '127.0.0.1'
 	assert ps == 13400
@@ -201,7 +201,7 @@ fn test_doip_endpoint_defaults() {
 		typ: 'doip'
 		// iface left at its 'vcan0' default
 	}
-	assert inherited.is_doip()
+	assert inherited.kind() == .doip
 	h2, p2 := inherited.doip_endpoint()
 	assert h2 == '127.0.0.1'
 	assert p2 == 13400
@@ -284,7 +284,7 @@ fn test_doip_entity_identity() {
 		panic(err)
 	}
 	c := p.channels[0]
-	assert c.is_doip()
+	assert c.kind() == .doip
 	assert c.vin == 'BLOBLYNETENGINE01'
 	assert c.eid == [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x02]
 	host, port := c.doip_endpoint()
@@ -1590,9 +1590,9 @@ fn test_someip_channel() {
 		panic(err)
 	}
 	c := p.channels[0]
-	assert c.is_someip()
-	assert c.is_eth()
-	assert !c.is_doip()
+	assert c.kind() == .someip
+	assert c.kind() != .can
+	assert c.kind() != .doip
 	assert c.typ == 'someip'
 	assert c.iface == 'someip:0.0.0.0:30491'
 	assert c.group == '239.1.2.3'
@@ -1660,7 +1660,7 @@ fn test_someip_round_trip() {
 	assert !y.contains('bitrate:'), y
 	back := parse(y) or { panic(err) }
 	c := back.channels[0]
-	assert c.is_someip()
+	assert c.kind() == .someip
 	assert c.iface == 'someip:0.0.0.0:30491'
 	assert c.group == '239.1.2.3'
 }
@@ -1726,20 +1726,34 @@ fn test_endpoint_warning_folds_written_spellings() {
 // The Ethernet scheme is matched exactly, never as a prefix: `someip0` and `doip1` are legal
 // SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
 // real CAN wire.
-fn test_iface_is_eth_matches_the_scheme_not_a_prefix() {
-	for yes in ['someip', 'someip:0.0.0.0:30491', 'doip', 'doip:127.0.0.1:13400'] {
-		assert iface_is_eth(yes), yes
+fn test_kind_of_iface_matches_the_scheme_not_a_prefix() {
+	for iface, want in {
+		'someip':                RowKind.someip
+		'someip:0.0.0.0:30491':  .someip
+		'doip':                  .doip
+		'doip:127.0.0.1:13400':  .doip
+	} {
+		assert kind_of_iface(iface) == want, iface
 	}
+	// the type decides where the interface is CAN; a row both ways reads as DoIP
+	assert Channel{
+		typ:   'someip'
+		iface: 'vcan0'
+	}.kind() == .someip
+	assert Channel{
+		typ:   'someip'
+		iface: 'doip:127.0.0.1'
+	}.kind() == .doip
 	for no in ['someip0', 'doip1', 'someipx', 'vcan0', 'can0', 'udp:239.0.0.1:5000', ''] {
-		assert !iface_is_eth(no), no
+		assert kind_of_iface(no) == .can, no
 	}
 	// and a channel follows the same rule, so the model and the runtime cannot disagree
-	assert !Channel{
+	assert Channel{
 		iface: 'someip0'
-	}.is_someip()
+	}.kind() == .can
 	assert Channel{
 		iface: 'someip:0.0.0.0:1'
-	}.is_someip()
+	}.kind() == .someip
 }
 
 // The Start-time warning and the claim registry must not disagree: a v4 wildcard and a v6

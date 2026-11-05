@@ -12,7 +12,7 @@ import blobly.transport
 // resolves to IPv6 only is read as v4 here as it is there (docs/doip.md).
 pub fn doip_listener(port int, ip6 bool, from string, row ?Carrier) !(int, bool) {
 	car := row or { return transport.listen_port(port, '', none, doip.port, 'entity')!, ip6 }
-	if !car.doip {
+	if car.kind != .doip {
 		return error('"${from}" is not a DoIP channel')
 	}
 	return transport.listen_port(port, from, car.port, doip.port, 'entity')!, ip6
@@ -28,7 +28,7 @@ pub fn someip_listener(port int, group string, from string, row ?Carrier) !(stri
 	car := row or {
 		return '', transport.listen_port(port, '', none, someip.default_port, 'listener')!, group
 	}
-	if !car.someip {
+	if car.kind != .someip {
 		return error('"${from}" is not a SOME/IP channel')
 	}
 	if group != '' && group != car.group {

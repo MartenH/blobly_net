@@ -62,7 +62,7 @@ pub fn version_for(p Project) int {
 	// v8 — a simulated ECU answering a functional id (#366). An older build drops `functional:`
 	// on its next structured save, and the ECU silently stops answering broadcasts.
 	for c in p.channels {
-		if c.is_doip() {
+		if !c.kind().nodes_have_can_ids() {
 			continue // not written there (a DoIP node has no CAN ids), so nothing to lose
 		}
 		for n in c.nodes {
@@ -105,7 +105,7 @@ pub fn version_for(p Project) int {
 	// interface called `0.0.0.0:30491`, and Start tries to OPEN it as one. A passive listener
 	// silently turning into a failing CAN bus is exactly the loss this label exists to announce.
 	for c in p.channels {
-		if c.is_someip() {
+		if c.kind() == .someip {
 			return 5
 		}
 	}
@@ -483,13 +483,6 @@ pub mut:
 	group string
 }
 
-// is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
-// endpoint rather than a CAN bus. Recognised via `type: doip` or an interface of
-// `doip` (bare shorthand) / `doip:<host>[:<port>]`.
-pub fn (ch Channel) is_doip() bool {
-	return ch.typ == 'doip' || iface_scheme_is(ch.iface, 'doip')
-}
-
 // iface_scheme_is reports whether an interface string carries EXACTLY this scheme: the bare
 // name, or the name followed by its colon. Not a prefix test — `someip0` and `doip1` are legal
 // SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
@@ -499,30 +492,10 @@ fn iface_scheme_is(iface string, scheme string) bool {
 	return t == scheme || t.starts_with('${scheme}:')
 }
 
-// iface_is_eth reports whether an interface string names an Ethernet endpoint of either kind.
-// Public because the runtime asks it of a DESTINATION — a generator names where it sends, not
-// which row it is — and that answer must be the same rule the model uses for a channel.
-pub fn iface_is_eth(iface string) bool {
-	return iface_scheme_is(iface, 'someip') || iface_scheme_is(iface, 'doip')
-}
-
-// is_someip reports whether this channel is a SOME/IP listener rather than a CAN bus.
-// Recognised via `type: someip` or an interface of `someip` / `someip:<host>[:<port>]`.
-pub fn (ch Channel) is_someip() bool {
-	return ch.typ == 'someip' || iface_scheme_is(ch.iface, 'someip')
-}
-
-// is_eth reports whether this channel is an Ethernet endpoint of either kind — the ONE rule for
-// every site whose question is "is this a CAN wire?" (listen-only, framing, replay, the sim
-// loop), where each kind was previously tested by name and the second kind was missed.
-pub fn (ch Channel) is_eth() bool {
-	return ch.is_doip() || ch.is_someip()
-}
-
 // someip_endpoint parses `iface` ("someip:host:port" / "someip:host" / "someip") into the
 // bind host + port, defaulting to 0.0.0.0:30490 — the wildcard, because a listener wants every
 // interface (a multicast join needs it), where a DoIP client wants one peer. Only meaningful
-// when is_someip().
+// when kind() is .someip.
 pub fn (ch Channel) someip_endpoint() (string, int) {
 	return eth_endpoint(ch.iface, 'someip', '0.0.0.0', 30490)
 }
@@ -588,7 +561,7 @@ fn eth_endpoint(iface string, prefix string, dflt_host string, dflt_port int) (s
 }
 
 // doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
-// host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
+// host + port, defaulting to 127.0.0.1:13400. Only meaningful when kind() is .doip.
 pub fn (ch Channel) doip_endpoint() (string, int) {
 	return eth_endpoint(ch.iface, 'doip', '127.0.0.1', 13400)
 }
@@ -635,7 +608,7 @@ pub fn (ch Channel) all_nodes() []NodeCfg {
 // what only an entity uses (its announced VIN) does nothing there. The GUI's Start, the headless
 // runner and the Configuration panel all ask this.
 pub fn (ch Channel) hosts_doip_entity() bool {
-	return ch.is_doip() && ch.all_nodes().len > 0
+	return ch.kind() == .doip && ch.all_nodes().len > 0
 }
 
 // Project is a parsed project file.
@@ -744,7 +717,7 @@ pub fn apply_listen_only(chs []Channel) {
 		// endpoint, not a wire that can be held quiet, and its editor never draws the tick — so
 		// a flag left behind by an adapter change would silence an address no CAN bus opens and
 		// could not be cleared from the UI that set it.
-		if !c.enabled || !c.listen_only || c.is_eth() {
+		if !c.enabled || !c.listen_only || c.kind() != .can {
 			continue
 		}
 		quiet << c.iface_with_bitrate()
@@ -773,7 +746,7 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 	mut out := map[string]transport.Framing{}
 	mut disputed := map[string]bool{}
 	for c in chs {
-		if !c.enabled || c.is_eth() {
+		if !c.enabled || c.kind() != .can {
 			continue
 		}
 		k := transport.wire_key(c.iface_with_bitrate())
@@ -835,7 +808,7 @@ pub fn row_framings(chs []Channel) map[string]map[string]transport.Framing {
 	mut seen := map[string]transport.Framing{} // by wire and row name
 	mut split := map[string]bool{}
 	for c in chs {
-		if !c.enabled || c.is_eth() {
+		if !c.enabled || c.kind() != .can {
 			continue
 		}
 		key := compose_key(transport.wire_key(c.iface_with_bitrate()), c.name)
@@ -850,7 +823,7 @@ pub fn row_framings(chs []Channel) map[string]map[string]transport.Framing {
 	}
 	mut out := map[string]map[string]transport.Framing{}
 	for c in chs {
-		if !c.enabled || c.is_eth() {
+		if !c.enabled || c.kind() != .can {
 			continue
 		}
 		k := transport.wire_key(c.iface_with_bitrate())
@@ -1169,8 +1142,8 @@ fn parse_channel(c yaml.Any) !Channel {
 			// `type: someip` beside a raw `someip0` or a malformed `someipx:30491` was read as a
 			// scheme, handed to decompose_iface — which correctly calls it SocketCAN — and the
 			// row came out `typ: someip` on a CAN adapter: someip_endpoint then fell back to
-			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (is_someip() is
-			// true) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
+			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (the row read as
+			// SOME/IP) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
 			// somewhere nobody named and change type on the way out.
 			if iface_scheme_is(ch.iface, 'someip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
@@ -1260,7 +1233,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		}
 	}
 	if v := c.value_opt('nm') {
-		if ch.is_eth() {
+		if ch.kind() != .can {
 			return error('nm: an NM cluster is a CAN bus property; ${ch.name} is an Ethernet channel')
 		}
 		ch.nm = parse_nm(v)!
@@ -2175,7 +2148,7 @@ pub fn (c Channel) origination_framing() Framing {
 // declares nothing about the run, and an FD row whose adapter cannot carry FD is not declared FD,
 // as wire_framings rules for the wire.
 pub fn (c Channel) emitter_framing() transport.Framing {
-	if !c.enabled || c.is_eth() || !c.can_carry_fd() {
+	if !c.enabled || c.kind() != .can || !c.can_carry_fd() {
 		return transport.Framing{}
 	}
 	return c.origination_framing().to_wire()
@@ -2363,7 +2336,7 @@ pub fn someip_endpoint_warnings(chs []Channel) []string {
 	mut rows := []Channel{}
 	for c in chs {
 		// ENABLED ROWS ONLY, the rule every check here follows.
-		if c.enabled && c.is_someip() {
+		if c.enabled && c.kind() == .someip {
 			rows << c
 		}
 	}
@@ -2396,12 +2369,11 @@ pub fn fd_capability_warnings(chs []Channel) []string {
 		if c.can_carry_fd() {
 			continue
 		}
-		if c.is_eth() {
+		if c.kind() != .can {
 			// A `doip:`/`someip:` row with `type: canfd` is a different mistake — an Ethernet
 			// channel carrying a CAN protocol flag — and naming CAN-FD support would answer a
 			// question nobody asked. Said as what it is.
-			kind := if c.is_doip() { 'DoIP' } else { 'SOME/IP' }
-			out << '${c.name} is a ${kind} channel configured as CAN-FD; the protocol flag does not apply to it and is ignored'
+			out << '${c.name} is a ${c.kind().name()} channel configured as CAN-FD; the protocol flag does not apply to it and is ignored'
 			continue
 		}
 		out << '${c.name} is configured as CAN-FD on ${c.adapter}, whose backend refuses CAN-FD frames — its classic traffic will run and every FD frame will be counted as failed'
@@ -2460,7 +2432,7 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		// Keyed on what the bus will be OPENED with, so this groups rows exactly as the
 		// transport table does — a mark filed under one spelling and looked up under another
 		// finds nothing, and would report agreement between rows that will not agree at run time.
-		if c.listen_only && !c.is_eth() {
+		if c.listen_only && c.kind() == .can {
 			quiet[conflict_wire_key(c)] = c.name
 		}
 		if !transport.adapter_configures_bitrate(c.adapter) {

@@ -30,8 +30,7 @@ struct Chan {
 	j1939        bool
 	databases    []string
 	manifest     string
-	doip         bool
-	someip       bool   // a SOME/IP listener row (bus.v eth(): the one "not a CAN wire" rule)
+	kind         project.RowKind // the row's (project.Channel.kind): "is this a CAN wire?" is `== .can`
 	group        string // multicast group the listener joins ('' = unicast only)
 	// WHICH project row this is, by index. app.chans is built 1:1 from proj.channels, so the
 	// index IS the identity — and a name is not: nothing makes channel names unique, and the one
@@ -104,15 +103,7 @@ mut:
 }
 
 fn (c Chan) monitorable() bool {
-	return c.enabled && c.mode in ['normal', 'replay'] && !c.eth()
-}
-
-// eth: an Ethernet row of either kind — DoIP (a diagnostics endpoint) or SOME/IP (a listener).
-// Every site that asks "is this a CAN wire?" (taps, load, replay, the sim loop, the trace's
-// wire ownership) asks this, not `doip`, so the second kind is not missed the way the first
-// one's name-by-name checks would have missed it (project.Channel.is_eth is the model twin).
-fn (c Chan) eth() bool {
-	return c.doip || c.someip
+	return c.enabled && c.mode in ['normal', 'replay'] && c.kind == .can
 }
 
 // fold_key is the key this row's RECEIVE state is folded and looked up under — the wire's
@@ -120,21 +111,21 @@ fn (c Chan) eth() bool {
 // Ethernet row, which has its own (foldrule.key, #336). Every reader of read_destinations
 // asks this, so the fold and its lookups cannot key a row two ways.
 fn (c Chan) fold_key() string {
-	return foldrule.key(transport.destination_key(c.iface), c.eth(), c.proj_idx)
+	return foldrule.key(transport.destination_key(c.iface), c.kind != .can, c.proj_idx)
 }
 
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
 // blocks it. THE one statement of the disqualifiers: replaying() is defined by it and the
 // Replay panel prints it, so a clause added here reaches both — the panel hand-copying the
 // clauses is how a ticked row that will not play came back once already (self-review of the
-// grouped panel: its copy tested `typ == 'doip'`, narrower than the is_doip() rule behind
-// c.doip, and an `interface: doip:<host>` row rendered as playable).
+// grouped panel: its copy tested `typ == 'doip'`, narrower than the kind rule behind c.kind,
+// and an `interface: doip:<host>` row rendered as playable).
 fn (c Chan) replay_blocker() string {
-	return replay_blocker(c.eth(), c.listen_only, c.replay_src)
+	return replay_blocker(c.kind != .can, c.listen_only, c.replay_src)
 }
 
 // The free form exists for the Replay panel's preview, which must judge the MODEL
-// (project.Channel: is_doip(), listen_only, replay source) — the runtime rows lag behind
+// (project.Channel: kind(), listen_only, replay source) — the runtime rows lag behind
 // Configure's checkboxes until apply_edits, and Start folds the model first, so a preview
 // read from Chan showed "(one clock)" over a channel Start was about to drop (codex #136
 // r1). One rule, two adapters; the clauses live only here.
@@ -397,7 +388,7 @@ fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name 
 	// only the startup plan (where this began) left the CAN transport reachable from all the
 	// others: `transport.open('someip:0.0.0.0:30490')` falls through to SocketCAN and reports a
 	// device error for a row the UI calls passive.
-	if project.iface_is_eth(iface) {
+	if project.kind_of_iface(iface) != .can {
 		return error('${iface} is an Ethernet endpoint, not a CAN bus — nothing can be transmitted on it')
 	}
 	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
@@ -511,7 +502,7 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 // has_named_tap reports whether a run opens this row its own transmit tap (tap_plan_locked), so a
 // manual send can be attributed to the row rather than to the first row on its wire.
 fn (c Chan) has_named_tap() bool {
-	return c.enabled && !c.eth()
+	return c.enabled && c.kind == .can
 }
 
 // tx_bus_key identifies a tester bus by the project ROW that owns it as well as its interface

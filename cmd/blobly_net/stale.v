@@ -66,7 +66,7 @@ fn (app &App) quietest_wire(chans []Chan) (string, f64) {
 		// service that had nothing to publish, and calling it the "quietest wire" beside real
 		// buses reads as a dead link. Its rx count and last-seen stay on the Buses row, which is
 		// where "has this endpoint said anything?" belongs for a listener.
-		if c.eth() {
+		if c.kind != .can {
 			continue
 		}
 		st := dests[c.fold_key()] or { continue }

@@ -47,7 +47,7 @@ fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 		return fail(bb_err, 'no channel ${row}')
 	}
 	ch := rows[int(row)]
-	if ch.is_eth() {
+	if ch.kind() != .can {
 		return fail(bb_err, '${ch.name} is a DoIP or SOME/IP row, which carries no CAN frames')
 	}
 	spec.check() or { return fail(bb_err, '${ch.name}: ${err.msg()}') }

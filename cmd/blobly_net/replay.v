@@ -129,7 +129,7 @@ fn (mut app App) load_recording(path string) {
 		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
 		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
 		// import stopped resolving to the single simulated bus.
-		if sc.pch.is_eth() {
+		if sc.pch.kind() != .can {
 			continue
 		}
 		// Per ENTRY, from the CURRENTLY LOADED databases. Two things have to hold at once: an
@@ -182,7 +182,7 @@ fn (mut app App) load_recording(path string) {
 	// single-bus fallback and an imported one-bus recording was verified against nothing.
 	mut can_buses := map[string]bool{}
 	for c in app.chans {
-		if !c.eth() {
+		if c.kind == .can {
 			can_buses[transport.destination_key_for(c.adapter, c.iface)] = true
 		}
 	}
@@ -213,7 +213,7 @@ fn (mut app App) load_recording(path string) {
 		// CAN row it forces `undecidable`, and as the only match it replaces the sole-CAN
 		// fallback with a gate that declares nothing, so a J1939 recording imports unread
 		// (codex). A recorded CAN bus resolves to a CAN wire or to nothing.
-		if c.doip || c.someip {
+		if c.kind != .can {
 			continue
 		}
 		dest := transport.destination_key_for(c.adapter, c.iface)

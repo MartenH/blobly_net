@@ -585,7 +585,7 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 	info := env.chans[ci]
 	// the connection's carrier and ids, by the one rule the C ABI's bb_uds_open uses too
 	t := udsconn.resolve(ask, name, info.carrier) or {
-		return error(if info.carrier.someip { '${err.msg()}; use someip.listen' } else { err.msg() })
+		return error(if info.carrier.kind == .someip { '${err.msg()}; use someip.listen' } else { err.msg() })
 	}
 	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
 	// accepted connection until the peer disconnects, and nothing here closes a connection
@@ -713,7 +713,7 @@ fn l_uds_read_did(l lua.State) i32 {
 fn (env &Env) doip_chan(name string) !ChanInfo {
 	ci := env.find_chan(name) or { return err }
 	info := env.chans[ci]
-	if !info.carrier.doip {
+	if info.carrier.kind != .doip {
 		return error('"${name}" is not a DoIP channel')
 	}
 	return info
@@ -723,7 +723,7 @@ fn (env &Env) doip_chan(name string) !ChanInfo {
 fn (env &Env) someip_chan(name string) !ChanInfo {
 	ci := env.find_chan(name) or { return err }
 	info := env.chans[ci]
-	if !info.carrier.someip {
+	if info.carrier.kind != .someip {
 		return error('"${name}" is not a SOME/IP channel')
 	}
 	// WHO holds this endpoint is not asked here. It was, through a `live` flag the GUI filled in
@@ -1030,7 +1030,7 @@ fn l_uds_functional(l lua.State) i32 {
 	window := int(env.bounded_window(ms_up(l, 4)))
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	info := env.chans[ci]
-	if info.carrier.doip {
+	if info.carrier.kind == .doip {
 		return env.uds_functional_doip(l, name, fid, req, window)
 	}
 	if nil_id {

@@ -148,7 +148,7 @@ fn test_roundtrip_v2() {
 	c1 := rp.channels[1]
 	assert c1.adapter == 'doip'
 	assert c1.address == '127.0.0.1:13400'
-	assert c1.is_doip()
+	assert c1.kind() == .doip
 	assert c1.tester_addr == 0x0E80
 	assert c1.ecu_addr == 0x1000
 	c2 := rp.channels[2]
@@ -190,7 +190,7 @@ channels:
 	assert p.channels[1].address == 'vcan0'
 	assert p.channels[2].adapter == 'doip'
 	assert p.channels[2].address == '127.0.0.1:13400'
-	assert p.channels[2].is_doip()
+	assert p.channels[2].kind() == .doip
 	assert p.channels[2].ecu_addr == 0x1000
 }
 
@@ -258,7 +258,7 @@ fn test_ipv6_address_roundtrip() {
 	c := rp.channels[0]
 	assert c.adapter == 'doip'
 	assert c.address == '[::1]:13400'
-	assert c.is_doip()
+	assert c.kind() == .doip
 }
 
 // compose_iface / decompose_iface are inverses across every adapter.

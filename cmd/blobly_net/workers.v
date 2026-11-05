@@ -1587,7 +1587,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		// bind failed because something else owns that endpoint, so uds.open() would dial that
 		// process and a GUI script would pass against the wrong ECU — the failure the
 		// synchronous bind exists to prevent, reached through the scripting side instead.
-		if ch.doip && a.doip_host_failed(ch.proj_idx) {
+		if ch.kind == .doip && a.doip_host_failed(ch.proj_idx) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}

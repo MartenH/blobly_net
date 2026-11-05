@@ -543,7 +543,7 @@ fn (app &App) tap_plan_locked() []TapWant {
 		// that resolves there — an adapter change carries generators across) still planned a CAN
 		// transmit tap on `someip:0.0.0.0:30490`. Start then opens that string as a device name
 		// and reports a driver failure for a row the UI calls passive.
-		if tgt != '' && !project.iface_is_eth(tgt) {
+		if tgt != '' && project.kind_of_iface(tgt) == .can {
 			plan << TapWant{sr.chan_idx, sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}
@@ -579,7 +579,7 @@ fn (app &App) taprule_wants_locked() taprule.Wants {
 		wires << transport.destination_key(tgt)
 	}
 	for ch in app.chans {
-		if ch.enabled && !ch.eth() {
+		if ch.enabled && ch.kind == .can {
 			wires << transport.destination_key(ch.iface)
 		}
 		// a row's own tap is the row's, whichever generator stops firing on it
@@ -1128,14 +1128,14 @@ fn (mut app App) start() {
 	// row's own socket. Reserved and spawned exactly as a CAN reader is, so Stop's census counts
 	// it and a double-click cannot start two.
 	for ci, ch in app.chans {
-		if ch.enabled && ch.someip && !ch.running && !ch.spawning {
+		if ch.enabled && ch.kind == .someip && !ch.running && !ch.spawning {
 			app.chans[ci].spawning = true
 			app.reserve_run_worker() // released by the loop's own defer
 			spawn someip_rx_loop(app, ci, ch.iface, app.run_gen)
 		}
 	}
 	for ch in app.chans {
-		if ch.enabled && ch.mode == 'replay' && !ch.eth() {
+		if ch.enabled && ch.mode == 'replay' && ch.kind == .can {
 			if ch.replay_src == '' {
 				app.notify('${ch.name}: mode is replay but no recording is configured — monitoring only')
 			} else if ch.listen_only {
@@ -1167,7 +1167,7 @@ fn (mut app App) start() {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
 		// which on Linux falls through to SocketCAN, logs a failure and exits the thread — the
 		// no-hardware demo trying to open its Ethernet endpoint as a CAN interface.
-		if sc.pch.is_eth() {
+		if sc.pch.kind() != .can {
 			continue
 		}
 		if sc.nodes.len > 0 {
@@ -1189,7 +1189,7 @@ fn (mut app App) start() {
 		}
 		// DoIP is hosted from the project, not from here — see start_doip_hosts(); a SOME/IP row
 		// has no nodes to seed.
-		if sc.pch.is_eth() {
+		if sc.pch.kind() != .can {
 			continue
 		}
 		if sc.nodes.len == 0 {
@@ -1220,7 +1220,7 @@ fn (mut app App) start() {
 			// not CAN peers: a disabled `type: doip` channel with no `interface:` inherits
 			// vcan0, and copied rx/tx on its node would then start a CAN responder for a
 			// channel that is switched off.
-			if other.pch.is_eth() {
+			if other.pch.kind() != .can {
 				continue
 			}
 			if transport.destination_key(other.iface) == sc_key {
@@ -1320,7 +1320,7 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 	// a row is named in the Log by its name, and its row number where another row has the name
 	names := app.proj.channels.map(it.name)
 	for pi, c in app.proj.channels {
-		if !c.is_doip() {
+		if c.kind() != .doip {
 			continue
 		}
 		who := rowrule.label(names, pi)
@@ -1361,7 +1361,7 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 fn (app &App) can_sims() []project.NodeCfg {
 	mut out := []project.NodeCfg{}
 	for sc in app.sims {
-		if !sc.pch.is_eth() {
+		if sc.pch.kind() == .can {
 			out << sc.nodes
 		}
 	}
@@ -1479,7 +1479,7 @@ fn (app &App) doip_is_hosted(pi int) bool {
 fn (app &App) doip_host_failed(pi int) bool {
 	mut a := unsafe { app }
 	chs := a.proj.channels // one array for the bound and the read: this is a script's thread
-	simulated := pi >= 0 && pi < chs.len && chs[pi].is_doip() && chs[pi].hosts_doip_entity()
+	simulated := pi >= 0 && pi < chs.len && chs[pi].kind() == .doip && chs[pi].hosts_doip_entity()
 	if !simulated {
 		return false // tester-only: nothing for us to host, so nothing can have failed
 	}

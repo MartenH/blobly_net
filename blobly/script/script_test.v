@@ -80,7 +80,7 @@ fn test_doip_listen_from_resolves_or_refuses() {
 			name:    'Alt'
 			iface:   'doip:127.0.0.4:13555'
 			carrier: Carrier{
-				doip: true
+				kind: .doip
 				host: '127.0.0.4'
 				port: 13555
 			}
@@ -202,7 +202,7 @@ fn test_someip_listen_from_resolves_or_refuses() {
 			name:    'ETH1'
 			iface:   'someip:0.0.0.0:${port}'
 			carrier: Carrier{
-				someip: true
+				kind: .someip
 				host:   '0.0.0.0'
 				port:   port
 			}
@@ -276,7 +276,7 @@ fn test_a_duplicated_channel_name_is_refused_not_guessed() {
 			name:    'ETH'
 			iface:   'someip:0.0.0.0:${port}'
 			carrier: Carrier{
-				someip: true
+				kind: .someip
 				host:   '0.0.0.0'
 				port:   port
 			}

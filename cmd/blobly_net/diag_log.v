@@ -382,14 +382,14 @@ fn (app &App) lua_target(t DiagTarget, chans []script.ChanInfo) script.LuaTarget
 	mut ch := script.channel_for(t.chan, t.iface, chans)
 	// uds.open infers 29-bit addressing from an id above 0x7FF: a 29-bit target on smaller ids
 	// cannot be opened as it was reached, so its requests are left as comments
-	if !t.carrier.doip && t.ext && t.rx <= 0x7FF && t.tx <= 0x7FF {
+	if t.carrier.kind != .doip && t.ext && t.rx <= 0x7FF && t.tx <= 0x7FF {
 		ch = ''
 	}
 	return script.LuaTarget{
 		key:     t.key
 		label:   t.label
 		channel: ch
-		ids:     !t.carrier.doip
+		ids:     t.carrier.kind != .doip
 		tx:      t.rx
 		rx:      t.tx
 	}

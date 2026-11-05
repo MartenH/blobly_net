@@ -13,7 +13,7 @@ pub fn wire_rates(rows []Channel, iface string) ?(int, int) {
 	mut nominal := 0
 	mut data := 0
 	for c in rows {
-		if c.is_eth() || transport.wire_key(c.iface_with_bitrate()) != key {
+		if c.kind() != .can || transport.wire_key(c.iface_with_bitrate()) != key {
 			continue
 		}
 		if nominal == 0 {

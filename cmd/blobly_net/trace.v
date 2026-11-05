@@ -494,7 +494,7 @@ fn (app &App) load_owner_locked(key string) int {
 	mut spawning := -1
 	mut enabled := -1
 	for i, c in app.chans {
-		if c.eth() || transport.destination_key(c.iface) != key {
+		if c.kind != .can || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if c.running {

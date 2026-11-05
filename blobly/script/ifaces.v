@@ -41,7 +41,7 @@ fn (mut env Env) open_iface(address string) !string {
 		// a C string would end there and reach another wire than the one the policy is asked about
 		return error('bus.open_iface: an address has no NUL')
 	}
-	if project.iface_is_eth(address) {
+	if project.kind_of_iface(address) != .can {
 		return error('bus.open_iface: ${address} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
 	}
 	if address in env.by_address {

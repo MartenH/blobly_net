@@ -27,7 +27,7 @@ pub struct DoipHosts {
 pub fn resolve_doip_hosts(chs []Channel, resolve Resolve) DoipHosts {
 	mut addr := map[string]string{}
 	for ch in chs {
-		if !ch.is_doip() {
+		if ch.kind() != .doip {
 			continue
 		}
 		host, _ := ch.doip_endpoint()
@@ -119,14 +119,18 @@ pub fn doip_hosting(chs []Channel, hosts DoipHosts) []DoipHosting {
 pub fn reserved_ports(chs []Channel) []int {
 	mut out := []int{}
 	for ch in chs {
-		port := if ch.is_doip() {
-			_, p := ch.doip_endpoint()
-			p
-		} else if ch.is_someip() {
-			_, p := ch.someip_endpoint()
-			p
-		} else {
-			continue
+		port := match ch.kind() {
+			.doip {
+				_, p := ch.doip_endpoint()
+				p
+			}
+			.someip {
+				_, p := ch.someip_endpoint()
+				p
+			}
+			.can {
+				continue
+			}
 		}
 		if port !in out {
 			out << port
@@ -188,7 +192,7 @@ pub fn with_doip_ports(chs []Channel, moves []DoipMove, hosts DoipHosts) ([]Chan
 	mut out := chs.clone()
 	mut notes := []string{}
 	for mut ch in out {
-		if !ch.is_doip() {
+		if ch.kind() != .doip {
 			continue
 		}
 		host, port := ch.doip_endpoint()

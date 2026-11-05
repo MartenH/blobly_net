@@ -17,8 +17,9 @@ import time
 // rather than assembled by each caller, so every front end reaches a row the same way.
 pub struct Carrier {
 pub:
-	doip   bool
-	someip bool // a SOME/IP listener endpoint: host/port are where it binds, group what it joins
+	// kind is the row's: a DoIP connection, a SOME/IP listener (host and port are where it
+	// binds, group what it joins), or ISO-TP on its CAN bus
+	kind   project.RowKind
 	group  string
 	host   string
 	port   int
@@ -26,39 +27,39 @@ pub:
 	ecu    u16
 }
 
-// eth_kind names this carrier's Ethernet kind, or none for a CAN row. One predicate, so a third
-// kind does not become a third `|| c.someip` in every caller.
+// eth_kind names this carrier's kind where it is not ISO-TP on a CAN bus, none for a CAN row.
 pub fn (c Carrier) eth_kind() ?string {
-	if c.doip {
-		return 'DoIP'
+	return match c.kind {
+		.can { none }
+		.doip, .someip { c.kind.name() }
 	}
-	if c.someip {
-		return 'SOME/IP'
-	}
-	return none
 }
 
 // carrier_of derives the UDS carrier from a project channel.
 pub fn carrier_of(ch project.Channel) Carrier {
-	if ch.is_someip() {
-		host, port := ch.someip_endpoint()
-		return Carrier{
-			someip: true
-			group:  ch.group
-			host:   host
-			port:   port
+	return match ch.kind() {
+		.can {
+			Carrier{}
 		}
-	}
-	if !ch.is_doip() {
-		return Carrier{}
-	}
-	host, port := ch.doip_endpoint()
-	return Carrier{
-		doip:   true
-		host:   host
-		port:   port
-		tester: ch.tester_addr
-		ecu:    ch.ecu_addr
+		.someip {
+			host, port := ch.someip_endpoint()
+			Carrier{
+				kind:  .someip
+				group: ch.group
+				host:  host
+				port:  port
+			}
+		}
+		.doip {
+			host, port := ch.doip_endpoint()
+			Carrier{
+				kind:   .doip
+				host:   host
+				port:   port
+				tester: ch.tester_addr
+				ecu:    ch.ecu_addr
+			}
+		}
 	}
 }
 
@@ -104,15 +105,18 @@ pub fn check_ids(a Ask, name string) ! {
 // 0x7FF, as the server side infers it — opened standard, SocketCAN masks 0x18DA10F1 to 0x0F1.
 pub fn resolve(a Ask, name string, car Carrier) !Target {
 	check_ids(a, name)!
-	if car.someip {
-		return error('"${name}" is a SOME/IP channel — not a diagnostics carrier')
-	}
-	if car.doip {
-		if a.has_tx || a.has_rx {
-			return error('${a.what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+	match car.kind {
+		.can {}
+		.someip {
+			return error('"${name}" is a SOME/IP channel — not a diagnostics carrier')
 		}
-		return Target{
-			doip: true
+		.doip {
+			if a.has_tx || a.has_rx {
+				return error('${a.what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+			}
+			return Target{
+				doip: true
+			}
 		}
 	}
 	tx := if a.has_tx { u32(a.tx) } else { a.dtx }

@@ -845,7 +845,7 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 fn (mut app App) follow_edits_for_hidden_locked(before []project.Channel, after []project.Channel, row_map []int) []string {
 	mut said := []string{}
 	for ci in 0 .. app.proj.channels.len {
-		if !app.proj.channels[ci].is_someip() {
+		if app.proj.channels[ci].kind().has_generators() {
 			continue // its senders are in app.senders, handled above
 		}
 		own := project.Channel{

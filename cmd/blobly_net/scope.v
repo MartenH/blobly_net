@@ -43,7 +43,7 @@ fn rec_wire(label string) string {
 fn (app &App) build_wire_dbs() map[string][]int {
 	mut out := map[string][]int{}
 	for c in app.chans {
-		if c.doip || c.someip {
+		if c.kind != .can {
 			continue
 		}
 		mut keys := [transport.destination_key_for(c.adapter, c.iface)]
@@ -207,7 +207,7 @@ fn (app &App) wire_label(wire string) string {
 	}
 	p := gaterule.placement(wire)
 	for c in app.chans {
-		if !c.doip && !c.someip && transport.destination_key_for(c.adapter, c.iface) == p {
+		if c.kind == .can && transport.destination_key_for(c.adapter, c.iface) == p {
 			return c.name
 		}
 	}

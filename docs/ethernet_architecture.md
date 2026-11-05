@@ -117,7 +117,7 @@ structural), and the server takes a plain callback. This keeps the dependency ar
 
 - **Project config** gained a DoIP channel form: `type: doip` with `interface: doip:<host>[:<port>]`
   plus `tester_address` / `ecu_address` (logical addresses, default 0x0E80 / 0x1000). Bitrate/timing
-  are meaningless for Ethernet and ignored. `project.Channel.is_doip()` + `doip_endpoint()` parse it;
+  are meaningless for Ethernet and ignored. `project.Channel.kind()` (`.doip`) + `doip_endpoint()` parse it;
   the addresses round-trip through Save. `projects/doip-demo.blobnet` runs the entity driver-free.
 - **NOT wired into `transport.open()`** (a deliberate deviation from the original sketch): that returns
   a `transport.Bus` — a CAN-*frame* pipe — but DoIP is a diagnostics carrier with no frames to monitor.

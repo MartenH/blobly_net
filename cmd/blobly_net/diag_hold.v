@@ -357,7 +357,7 @@ fn (mut app App) diag_drop(gen u64, mut h HeldConn, conn diaghold.Conn, why stri
 	if !h.open {
 		return ''
 	}
-	if h.target.carrier.doip {
+	if h.target.carrier.kind == .doip {
 		h.ch.close()
 	} else {
 		app.diag_detach(mut h)
@@ -412,7 +412,7 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 
 // diag_detach closes a CAN connection's channel and its tap.
 fn (mut app App) diag_detach(mut h HeldConn) {
-	if h.target.carrier.doip || !h.attached {
+	if h.target.carrier.kind == .doip || !h.attached {
 		return
 	}
 	h.ch.close()
@@ -433,7 +433,7 @@ fn (mut app App) diag_open(gen u64, mut h HeldConn, t DiagTarget) !diaghold.Open
 	app.mu.lock()
 	h.p2_star_ms = app.diag_timing[t.key] or { 0 }
 	app.mu.unlock()
-	if t.carrier.doip {
+	if t.carrier.kind == .doip {
 		mut c := doip.open_doip_stoppable(t.carrier.host, t.carrier.port, t.carrier.tester,
 			t.carrier.ecu, h.stop)!
 		total := i64(time.sys_mono_now() - t0) / 1000
@@ -525,7 +525,7 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	out, negative = app.diag_request(gen, mut h, req)
 	// (a press its token cancelled is not a stale connection: it is not repeated)
 	if out.err && !h.stop()
-		&& diaghold.retry_on_reopen(t.carrier.doip, held_before, h.press_sent, negative) {
+		&& diaghold.retry_on_reopen(t.carrier.kind == .doip, held_before, h.press_sent, negative) {
 		// the entity had closed the idle connection: the request never went out, so it is asked
 		// once more on a fresh one
 		app.diag_say_for(req, '${out.line} — reopening', true)
@@ -575,7 +575,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 	app.diag_set_status(gen, DiagHoldStatus{
 		key: t.key
 		label: t.label
-		doip: t.carrier.doip
+		doip: t.carrier.kind == .doip
 		conn: .opening
 		p2_ms: -1
 	})
@@ -585,7 +585,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 			app.diag_conn_for(req, app.diag_drop(gen, mut h, .failed, err.msg()), true)
 		}
 		ms := diaghold.ms_text(i64(time.sys_mono_now() - t0) / 1000)
-		where := if t.carrier.doip { 'doip ${t.carrier.host}:${t.carrier.port}' } else { t.iface }
+		where := if t.carrier.kind == .doip { 'doip ${t.carrier.host}:${t.carrier.port}' } else { t.iface }
 		// an open the token ended did not fail: it was abandoned, and nothing is held for the
 		// holder's next look to let go with the command's reason
 		cancelled := h.stop()
@@ -594,7 +594,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 		app.diag_set_status(gen, DiagHoldStatus{
 			key: t.key
 			label: t.label
-			doip: t.carrier.doip
+			doip: t.carrier.kind == .doip
 			conn: if cancelled { diaghold.Conn.closed } else { diaghold.Conn.failed }
 			why: why
 			p2_ms: -1
@@ -605,7 +605,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 	app.diag_set_status(gen, DiagHoldStatus{
 		key: t.key
 		label: t.label
-		doip: t.carrier.doip
+		doip: t.carrier.kind == .doip
 		conn: .held
 		p2_ms: -1
 	})
@@ -749,7 +749,7 @@ fn (mut app App) diag_forget(gen u64, mut h HeldConn, session bool) {
 // meanwhile; the next request's pre-send drain would discard the same frames. A bus that fails
 // here is let go, said.
 fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
-	if !h.target.carrier.doip {
+	if h.target.carrier.kind != .doip {
 		if isnil(h.sc) {
 			return
 		}
