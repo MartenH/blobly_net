@@ -507,3 +507,71 @@ fn test_queue_drops_counted() {
 	assert mon.diagnostics().dropped == 7
 	assert m.diagnostics().dropped == 0
 }
+
+fn test_delivered_copies_share_nothing() {
+	mut m := open_or_panic('inproc:copies', Config{ role: .master })
+	mut s := open_or_panic('inproc:copies', Config{ role: .slave })
+	mut mon := open_or_panic('inproc:copies', Config{ role: .monitor })
+	defer {
+		m.close()
+		s.close()
+		mon.close()
+	}
+	s.set_entry(id: 0x21, dir: .publish, len: 2, data: [u8(1), 2])!
+	m.header(0x21)!
+	mut fm := take(mut m)
+	fm.data[0] = 0xEE
+	fm.raw[0] = 0xEE
+	fo := take(mut mon)
+	assert fo.data == [u8(1), 2]
+	assert fo.raw[0] == 1
+	// Events too.
+	s.wakeup()!
+	mut w := take(mut m)
+	w.raw << 9
+	assert take(mut mon).raw.len == 0
+}
+
+fn test_subscriber_reads_by_its_own_entry() {
+	mut m := open_or_panic('inproc:subs', Config{ role: .master })
+	mut s := open_or_panic('inproc:subs', Config{ role: .slave, src: .sim })
+	mut short_sub := open_or_panic('inproc:subs', Config{ role: .slave })
+	mut long_sub := open_or_panic('inproc:subs', Config{ role: .slave })
+	mut same_sub := open_or_panic('inproc:subs', Config{ role: .slave })
+	mut mon := open_or_panic('inproc:subs', Config{ role: .monitor })
+	defer {
+		m.close()
+		s.close()
+		short_sub.close()
+		long_sub.close()
+		same_sub.close()
+		mon.close()
+	}
+	s.set_entry(id: 0x21, dir: .publish, len: 4, data: [u8(1), 2, 3, 4])!
+	short_sub.set_entry(id: 0x21, dir: .subscribe, len: 2)!
+	long_sub.set_entry(id: 0x21, dir: .subscribe, len: 6)!
+	same_sub.set_entry(id: 0x21, dir: .subscribe, len: 4, model: .classic)!
+	m.header(0x21)!
+	assert take(mut mon).errs == Errs.zero()
+	assert take(mut s).errs == Errs.zero()
+	fs := take(mut short_sub)
+	assert fs.errs.has(.long) && fs.data == [u8(1), 2] && fs.src == .sim
+	assert take(mut long_sub).errs == Errs.short
+	fc := take(mut same_sub)
+	assert fc.model == .classic && fc.errs == Errs.checksum
+}
+
+fn test_diagnostic_entries_are_eight_bytes() {
+	mut s := open_or_panic('inproc:diaglen', Config{ role: .slave, nad: 1 })
+	defer {
+		s.close()
+	}
+	for id in [u8(0x3C), 0x3D] {
+		if _ := s.set_entry(id: id, dir: .subscribe, len: 4) {
+			assert false, '0x${id:02X} length 4 accepted'
+		} else {
+			assert err.msg().contains('carry 8 data bytes')
+		}
+	}
+	s.set_entry(id: 0x3D, dir: .publish, len: 8, data: []u8{len: 8})!
+}

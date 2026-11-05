@@ -71,6 +71,7 @@ fn lex(src string) ![]Tok {
 			continue
 		}
 		if c == `/` && i + 1 < src.len && src[i + 1] == `*` {
+			oline := line
 			i += 2
 			mut closed := false
 			for i < src.len {
@@ -86,7 +87,7 @@ fn lex(src string) ![]Tok {
 				i++
 			}
 			if !closed {
-				return error('${line}:${col}: comment opened here is never closed')
+				return error('${oline}:${col}: comment opened here is never closed')
 			}
 			continue
 		}
@@ -94,7 +95,11 @@ fn lex(src string) ![]Tok {
 			start := i + 1
 			sline := line
 			i++
+			// a backslash escapes the next character, so `\"` does not close the string
 			for i < src.len && src[i] != `"` {
+				if src[i] == `\\` && i + 1 < src.len {
+					i++
+				}
 				if src[i] == `\n` {
 					line++
 					lstart = i + 1
@@ -104,7 +109,7 @@ fn lex(src string) ![]Tok {
 			if i >= src.len {
 				return error('${sline}:${col}: string is never closed')
 			}
-			toks << Tok{.str, src[start..i], sline, col}
+			toks << Tok{.str, unescape(src[start..i]), sline, col}
 			i++
 			continue
 		}
@@ -156,6 +161,23 @@ fn lex(src string) ![]Tok {
 	}
 	toks << Tok{.eof, '', line, i - lstart + 1}
 	return toks
+}
+
+// unescape is a string's text with each `\x` read as `x` (`\"` a quote, `\\` a backslash).
+fn unescape(s string) string {
+	if !s.contains('\\') {
+		return s
+	}
+	mut out := []u8{cap: s.len}
+	mut i := 0
+	for i < s.len {
+		if s[i] == `\\` && i + 1 < s.len {
+			i++
+		}
+		out << s[i]
+		i++
+	}
+	return out.bytestr()
 }
 
 // --- the raw form: every value as its token --------------------------------------------------

@@ -1,5 +1,6 @@
 module lin
 
+import math
 import sync
 import sync.stdatomic
 import blobly.transport
@@ -11,6 +12,11 @@ mut:
 	ns i64
 	// overshoot is how late every sleep wakes.
 	overshoot i64
+	// extra[n] is how much later the n-th sleep wakes.
+	extra map[int]i64
+	// on_sleep runs at the start of the n-th sleep.
+	on_sleep fn (n int) = unsafe { nil }
+	calls    i64
 }
 
 fn (c &SimClock) now_ns() i64 {
@@ -18,7 +24,11 @@ fn (c &SimClock) now_ns() i64 {
 }
 
 fn (c &SimClock) sleep_ns(ns i64) {
-	stdatomic.add_i64(&c.ns, int(ns + c.overshoot))
+	n := int(stdatomic.add_i64(&c.calls, 1) - 1)
+	if c.on_sleep != unsafe { nil } {
+		c.on_sleep(n)
+	}
+	stdatomic.add_i64(&c.ns, int(ns + c.overshoot + c.extra[n]))
 }
 
 fn (c &SimClock) advance(ns i64) {
@@ -204,14 +214,52 @@ fn test_bus_gone_ends_the_run() {
 	assert s.stop()
 }
 
+fn test_switch_while_waiting_takes_the_next_slot() {
+	mut clk, mut bus := fake(5)
+	mut s := new_scheduler(bus, [Slot{0x01, 10}, Slot{0x02, 10}],
+		name:    'A'
+		clock:   clk
+		sleeper: clk
+	)!
+	sp := s
+	// The second wait is for the slot at 20 ms, after 0x02 went out at 10 ms.
+	clk.on_sleep = fn [sp] (n int) {
+		if n == 1 {
+			mut t := sp
+			t.switch_to([Slot{0x20, 5}], 'B') or { panic(err) }
+		}
+	}
+	sent := run_to_limit(mut bus, mut s)
+	assert sent.map(it.id) == [u8(0x01), 0x02, 0x20, 0x20, 0x20]
+	assert rel(sent) == [i64(0), 100, 200, 250, 300]
+}
+
+fn test_overshot_wait_does_not_burst() {
+	mut clk, mut bus := fake(4)
+	// The first wait, for the 0x02 header at 10 ms, wakes at 35 ms.
+	clk.extra[0] = 25 * ms
+	mut s := new_scheduler(bus, [Slot{0x01, 10}, Slot{0x02, 10}], clock: clk, sleeper: clk)!
+	sent := run_to_limit(mut bus, mut s)
+	assert rel(sent) == [i64(0), 350, 450, 550]
+	assert s.stats().late == 1
+}
+
 fn test_slots_checked() {
 	_, bus := fake(1)
 	new_scheduler(bus, [], SchedOpts{}) or {
 		assert err.msg().contains('at least one slot')
 		new_scheduler(bus, [Slot{0x01, 0}], SchedOpts{}) or {
-			assert err.msg().contains('must be above 0')
+			assert err.msg().contains('from 0.1 ms to 1 hour')
 			new_scheduler(bus, [Slot{0x40, 10}], SchedOpts{}) or {
 				assert err.msg().contains('above 0x3F')
+				for d in [1e20, 0.05, 1e-10, math.nan(), math.inf(1), 3_600_001.0] {
+					if _ := new_scheduler(bus, [Slot{0x01, d}], SchedOpts{}) {
+						assert false, 'delay ${d} accepted'
+					} else {
+						assert err.msg().contains('from 0.1 ms to 1 hour')
+					}
+				}
+				new_scheduler(bus, [Slot{0x01, 0.1}, Slot{0x02, 3_600_000}], SchedOpts{})!
 				return
 			}
 		}

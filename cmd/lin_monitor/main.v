@@ -111,12 +111,23 @@ fn main() {
 	mut t := r.tap() or { fail(err.msg()) }
 	l := r.ldf()
 	start := time.now()
-	for seconds == 0 || time.since(start).seconds() < seconds {
-		f := t.recv(100) or {
+	for {
+		mut wait := 100
+		if seconds > 0 {
+			left := seconds - time.since(start).seconds()
+			if left <= 0 {
+				break
+			}
+			wait = int(math.min(100.0, math.ceil(left * 1000)))
+		}
+		f := t.recv(wait) or {
 			if err is transport.CarrierGone {
 				break
 			}
 			continue
+		}
+		if seconds > 0 && time.since(start).seconds() >= seconds {
+			break
 		}
 		println(line(f, l, t0))
 	}

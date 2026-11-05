@@ -365,3 +365,58 @@ fn test_a_physical_value_that_is_no_number_is_refused() {
 		}
 	}
 }
+
+// A zero-scale physical range names one raw value; one wider than the signal is not encoded.
+fn test_a_zero_scale_range_too_wide_for_its_signal_is_not_used() {
+	src := 'LIN_description_file;
+LIN_protocol_version = "2.2";
+LIN_language_version = "2.2";
+LIN_speed = 19.2 kbps;
+Nodes { Master: M, 5 ms, 0.1 ms; Slaves: S; }
+Signals { A: 4, 0, M, S; B: 8, 0, M, S; }
+Frames { F: 0x01, M, 2 { A, 0; B, 8; } }
+Node_attributes { S { LIN_protocol = "2.2"; configured_NAD = 0x01; } }
+Signal_encoding_types { E { physical_value, 16, 20, 0, 5; } }
+Signal_representation { E: A, B; }
+'
+	l := parse_ldf(src) or { panic(err) }
+	f := l.frame('F') or { panic('no F') }
+	if got := l.encode(f, {
+		'A': Value(f64(5))
+	})
+	{
+		assert false, 'encoded as ${got}'
+	} else {
+		assert err.msg() == 'signal A: 5 is in no physical range of encoding E'
+	}
+	assert l.encode(f, {
+		'B': Value(f64(5))
+	})! == [u8(0xF0), 16]
+}
+
+// Bytes outside ASCII are no ascii reading: the bytes are kept and no text is given.
+fn test_ascii_decoding_needs_ascii_bytes() {
+	l := fixture()
+	f := l.frame('LSM_Frm3') or { panic('no LSM_Frm3') }
+	v := l.decode(f, [u8(0x80), 0x41, 0x42, 0x43])[0]
+	assert v.text == '' && v.bytes == [u8(0x80), 0x41, 0x42, 0x43]
+}
+
+// A query value may hold `|`, `=` and `\` escaped by a backslash.
+fn test_query_escapes() {
+	src := 'LIN_description_file;
+LIN_protocol_version = "2.2";
+LIN_language_version = "2.2";
+LIN_speed = 19.2 kbps;
+Nodes { Master: M, 5 ms, 0.1 ms; Slaves: S; }
+Signals { A: 2, 0, M, S; }
+Frames { F: 0x01, M, 1 { A, 0; } }
+Node_attributes { S { LIN_protocol = "2.2"; configured_NAD = 0x01; } }
+Signal_encoding_types { E { logical_value, 1, "a|b=c\\\\d"; logical_value, 2, "x:y"; } }
+Signal_representation { E: A; }
+'
+	l := parse_ldf(src) or { panic(err) }
+	assert l.query('encode|F|A=text:a\\|b\\=c\\\\d') == 'encode|F|A=text:a\\|b\\=c\\\\d -> FD'
+	assert l.query('encode|F|A=text:x:y') == 'encode|F|A=text:x:y -> FE'
+	assert l.query('encode|F|A') == 'encode|F|A -> bad request'
+}

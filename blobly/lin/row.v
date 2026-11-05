@@ -120,8 +120,9 @@ mut:
 	count  u64
 	errors u64
 	last   Frame
-	// last_ok_ns is the last error-free frame's time, 0 before one.
+	// last_ok_ns is the last error-free frame's time, when has_ok.
 	last_ok_ns i64
+	has_ok     bool
 	cadence_ns i64
 }
 
@@ -139,9 +140,12 @@ pub:
 	spec RowSpec
 	baud int
 mut:
-	ldf  ?lindb.Ldf
-	bus  Bus // the row's own handle: master, slave or monitor
-	sims []Simulated
+	ldf ?lindb.Ldf
+	// expects is every LDF frame's length and model: what the row reads a response by, whatever
+	// the backend made of it, so a monitor holds the bus to its LDF too.
+	expects map[u8]Expect
+	bus     Bus // the row's own handle: master, slave or monitor
+	sims    []Simulated
 	// smu guards sched and sched_name, and is held across a start, a switch or a stop, so two
 	// front ends never run two schedulers and none starts after the row stops. Taken before mu
 	// where both are held; never held while waiting for the reader.
@@ -162,6 +166,7 @@ mut:
 	// the load window: bits seen in the second that began at sec_start_ns, and the last whole
 	// second's.
 	sec_start_ns i64
+	sec_started  bool
 	sec_bits     i64
 	last_bits    i64
 	stopping     u64
@@ -206,6 +211,21 @@ pub fn start_row(spec RowSpec, opts RowOpts) !&Row {
 			notes << sched.notes.map('lin ${spec.name}: ${it}')
 		}
 	}
+	// Every node's entries, worked out before any handle opens, so a refused one opens nothing.
+	mut master_entries := []Entry{}
+	mut slave_entries := [][]Entry{}
+	if l := ldf {
+		if master_sim {
+			master_entries = publish_entries(&l, l.master.name) or {
+				return error('lin ${spec.name}: ${err.msg()}')
+			}
+		}
+		for n in slaves {
+			slave_entries << publish_entries(&l, n) or {
+				return error('lin ${spec.name}: ${err.msg()}')
+			}
+		}
+	}
 	src := if spec.role == .monitor {
 		Src.remote
 	} else if master_sim {
@@ -227,7 +247,10 @@ pub fn start_row(spec RowSpec, opts RowOpts) !&Row {
 		bus:   bus
 		notes: notes
 	}
-	r.bring_up(master_sim, slaves) or {
+	if l := ldf {
+		r.expects = expects_of(&l)
+	}
+	r.bring_up(master_entries, slaves, slave_entries) or {
 		r.close_handles()
 		return error('lin ${spec.name}: ${err.msg()}')
 	}
@@ -273,14 +296,12 @@ fn check_row(spec RowSpec, ldf ?lindb.Ldf) ! {
 	}
 }
 
-fn (mut r Row) bring_up(master_sim bool, slaves []string) ! {
+fn (mut r Row) bring_up(master_entries []Entry, slaves []string, slave_entries [][]Entry) ! {
 	l := r.ldf or { return }
-	if master_sim {
-		for e in publish_entries(&l, l.master.name)! {
-			r.bus.set_entry(e)!
-		}
+	for e in master_entries {
+		r.bus.set_entry(e)!
 	}
-	for n in slaves {
+	for k, n in slaves {
 		node := l.node(n) or { lindb.Node{} }
 		mut b := open(r.spec.address, Config{
 			role:  .slave
@@ -293,7 +314,7 @@ fn (mut r Row) bring_up(master_sim bool, slaves []string) ! {
 			node: n
 			bus:  b
 		}
-		for e in publish_entries(&l, n)! {
+		for e in slave_entries[k] {
 			b.set_entry(e)!
 		}
 	}
@@ -329,8 +350,14 @@ fn (mut r Row) drain_sims() {
 	}
 }
 
-// saw folds one frame into the view and hands it to every tap.
-fn (mut r Row) saw(f Frame) {
+// saw folds one frame into the view and hands it to every tap, read against the LDF.
+fn (mut r Row) saw(read Frame) {
+	mut f := read
+	if exp := r.expects[f.id] {
+		if has_id(f) && f.raw.len > 0 {
+			f = reread(f, exp)
+		}
+	}
 	r.mu.lock()
 	defer {
 		r.mu.unlock()
@@ -345,10 +372,11 @@ fn (mut r Row) saw(f Frame) {
 		if f.errs != Errs.zero() {
 			st.errors++
 		} else {
-			if st.last_ok_ns != 0 {
+			if st.has_ok {
 				st.cadence_ns = f.t_ns - st.last_ok_ns
 			}
 			st.last_ok_ns = f.t_ns
+			st.has_ok = true
 		}
 		st.last = f
 		r.ids[f.id] = st
@@ -356,7 +384,7 @@ fn (mut r Row) saw(f Frame) {
 		r.count_bits(f.t_ns, bits)
 	}
 	for mut t in r.taps {
-		if t.q.try_push(f) != .success {
+		if t.q.try_push(f.clone()) != .success {
 			stdatomic.add_u64(&t.dropped, 1)
 			r.dropped++
 		}
@@ -365,8 +393,9 @@ fn (mut r Row) saw(f Frame) {
 
 // count_bits adds a frame's bits to the load window.
 fn (mut r Row) count_bits(t_ns i64, bits int) {
-	if r.sec_start_ns == 0 {
+	if !r.sec_started {
 		r.sec_start_ns = t_ns
+		r.sec_started = true
 	}
 	r.roll(t_ns)
 	r.sec_bits += bits
@@ -376,7 +405,7 @@ fn (mut r Row) count_bits(t_ns i64, bits int) {
 // second, and a second with no frame in it is a second at 0. Frames are stamped by the clock
 // the row gave its bus, so a frame's time and the view's now are one clock.
 fn (mut r Row) roll(now_ns i64) {
-	if r.sec_start_ns == 0 {
+	if !r.sec_started {
 		return
 	}
 	gap := now_ns - r.sec_start_ns
@@ -458,7 +487,7 @@ pub fn (mut r Row) view() RowView {
 			name:       name
 			count:      st.count
 			errors:     st.errors
-			last:       st.last
+			last:       st.last.clone()
 			cadence_ms: f64(st.cadence_ns) / 1e6
 			signals:    sigs
 		}

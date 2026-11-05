@@ -36,7 +36,8 @@ struct Leaf {
 // The table. LIN facts, from LIN 2.2A §2 and §9: ids 0..59 carry signals, 0x3C/0x3D are the
 // diagnostic frames and 0x3E/0x3F are reserved; a frame is 1..8 bytes; a NAD of a slave is
 // 1..125 (0 is go-to-sleep, 126 functional, 127 broadcast); 0x7FFF and 0xFFFF are the product
-// id wildcards, which no node is; the bit rate is 1..20 kbit/s. A scalar signal is 1..64 bits
+// id wildcards, which no node is; the bit rate is 1..20 kbit/s; a schedule slot lasts 0.1 ms
+// to an hour, what a scheduler can run (blobly/lin holds a schedule to the same). A scalar signal is 1..64 bits
 // here (the spec says 16; a wider one is carried, since it fits a u64 and real files have them).
 const ldf_leaves = [
 	Leaf{
@@ -228,8 +229,8 @@ const ldf_leaves = [
 		section: 'Schedule_tables'
 		field:   'delay'
 		kind:    .number
-		flo:     0
-		open_lo: true
+		flo:     0.1
+		fhi:     3600000
 	},
 	Leaf{
 		section: 'Signal_encoding_types'

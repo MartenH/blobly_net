@@ -102,7 +102,7 @@ pub fn (l &Ldf) decode(f Frame, data []u8) []SignalValue {
 			mut text := ''
 			mut raw := u64(0)
 			for rule in rules {
-				if rule.kind == .ascii {
+				if rule.kind == .ascii && bytes.all(it < 0x80) {
 					text = bytes.bytestr()
 					break
 				}
@@ -195,7 +195,7 @@ fn (l &Ldf) scalar_raw(s Signal, v Value) !u64 {
 					continue
 				}
 				if rule.scale == 0 {
-					if v == rule.offset {
+					if v == rule.offset && fits(rule.lo, s.width) {
 						return rule.lo
 					}
 					continue
@@ -383,9 +383,10 @@ fn or_dash(s string) string {
 // query answers one request in the line form `sut/ldf_oracle.py` diffs:
 // `encode|<frame>|<signal>=<kind>:<value>|...` (kind raw, phys, text, or bytes as hex) answers
 // `<request> -> <hex>` or `-> error`; `decode|<frame>|<hex>` answers
-// `decode <frame> <hex> -> <signal values>`.
+// `decode <frame> <hex> -> <signal values>`. In a value, `\|`, `\=` and `\\` stand for the
+// character itself.
 pub fn (l &Ldf) query(request string) string {
-	parts := request.split('|')
+	parts := split_escaped(request, `|`)
 	if parts.len < 3 || parts[0] !in ['encode', 'decode'] {
 		return '${request} -> bad request'
 	}
@@ -396,9 +397,14 @@ pub fn (l &Ldf) query(request string) string {
 	}
 	mut values := map[string]Value{}
 	for p in parts[2..] {
-		name := p.all_before('=')
-		kind := p.all_after('=').all_before(':')
-		v := p.all_after('=').all_after(':')
+		pair := split_escaped(p, `=`)
+		if pair.len < 2 {
+			return '${request} -> bad request'
+		}
+		name := unescape(pair[0])
+		rest := pair[1..].join('=')
+		kind := rest.all_before(':')
+		v := unescape(rest.all_after(':'))
 		values[name] = match kind {
 			'raw' { Value(parse_uint(v) or { return '${request} -> bad request' }) }
 			'phys' { Value(parse_number(v) or { return '${request} -> bad request' }) }
@@ -409,6 +415,26 @@ pub fn (l &Ldf) query(request string) string {
 	}
 	bytes := l.encode(f, values) or { return '${request} -> error' }
 	return '${request} -> ${hex_bytes(bytes)}'
+}
+
+// split_escaped splits at every `sep` no backslash escapes, keeping the escapes in the parts.
+fn split_escaped(s string, sep u8) []string {
+	mut out := []string{}
+	mut start := 0
+	mut i := 0
+	for i < s.len {
+		if s[i] == `\\` {
+			i += 2
+			continue
+		}
+		if s[i] == sep {
+			out << s[start..i]
+			start = i + 1
+		}
+		i++
+	}
+	out << s[start..]
+	return out
 }
 
 // str is a decoded value as the dump and the oracle print it.

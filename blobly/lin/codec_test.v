@@ -293,3 +293,71 @@ fn test_decode_pulse_among_noise_is_stray() {
 	fs := d.idle(5)
 	assert fs.len == 0
 }
+
+fn test_diagnostic_frames_are_eight_bytes() {
+	// A one-byte 0x3C [00] is not a sleep command: a MasterReq is 8 data bytes.
+	f := interpret(0x3C, [u8(0x00), 0xC3], none)
+	assert f.errs == Errs.short
+	assert f.event == .frame
+	d8 := [u8(1), 2, 3, 4, 5, 6, 7, 8]
+	mut r8 := d8.clone()
+	r8 << checksum(.classic, pid(0x3D), d8)
+	g := interpret(0x3D, r8, none)
+	assert g.errs == Errs.zero() && g.model == .classic && g.data.len == 8
+	// The decoder, with no table, reads a cut MasterReq as short.
+	mut d := new_decoder(map[u8]Expect{}, 19200)
+	d.feed(wire(0x3C, [u8(0x00), checksum(.classic, pid(0x3C), [u8(0)])]), 0)
+	fs := d.idle(1)
+	assert fs.len == 1 && fs[0].errs == Errs.short && fs[0].event == .frame
+}
+
+fn test_long_response_is_an_error() {
+	f := interpret(0x21, [u8(1), 0x9D, 0x42], Expect{ len: 1 })
+	assert f.errs == Errs.long
+	assert f.data == [u8(1)] && f.checksum == 0x9D
+	assert f.raw.len == 3
+	assert reading(f) == '0x21 [1] 01 cs 0x9D enhanced !long'
+	assert f.errs.names() == ['long']
+}
+
+fn test_reread_by_a_receivers_expectation() {
+	// Published as 4 bytes enhanced.
+	mut f := interpret(0x21, [u8(1), 2, 3, 4, 0x94], Expect{ len: 4 })
+	f.ours = true
+	f.src = .sim
+	f.t_ns = 77
+	f.hw_ns = 5
+	f.hw_domain = 'd'
+	f.errs.set(.bit)
+	f.errs.set(.collision)
+	// A receiver expecting 2 bytes: long, and the checksum at its position does not match.
+	g := reread(f, Expect{ len: 2 })
+	assert g.data == [u8(1), 2] && g.checksum == 3
+	assert g.errs == Errs.checksum | Errs.long | Errs.bit | Errs.collision
+	assert g.ours && g.src == .sim && g.t_ns == 77 && g.hw_ns == 5 && g.hw_domain == 'd'
+	// A receiver expecting 6: short.
+	assert reread(f, Expect{ len: 6 }).errs.has(.short)
+	// The same expectation reads the same.
+	h := reread(interpret(0x21, [u8(1), 2, 3, 4, 0x94], Expect{ len: 4 }), Expect{ len: 4 })
+	assert h.errs == Errs.zero() && h.data == [u8(1), 2, 3, 4]
+	// A header nobody answered stays as it was.
+	n := interpret(0x21, [], none)
+	assert reread(n, Expect{ len: 4 }).errs == Errs.no_response
+}
+
+fn test_bytes_after_a_rejected_header_are_no_wakeup() {
+	mut d := new_decoder(table(), 19200)
+	fs := d.feed([u8(0xFF), 0x00, 0x00, 0x54, 0x00], 0)
+	assert fs.len == 1 && fs[0].errs == Errs.sync
+	assert d.idle(1).len == 0
+	// After a parity error, and after a framing error on the PID.
+	gs := d.feed([u8(0xFF), 0x00, 0x00, 0x55, 0x21, 0x00], 2)
+	assert gs.len == 1 && gs[0].errs == Errs.parity
+	assert d.idle(3).len == 0
+	ks := d.feed([u8(0xFF), 0x00, 0x00, 0x55, 0xFF, 0x00, 0x61, 0x00], 4)
+	assert ks.len == 1 && ks[0].errs == Errs.framing
+	assert d.idle(5).len == 0
+	// A wakeup after the idle is one again.
+	d.feed([u8(0x00)], 6)
+	assert d.idle(7).len == 1
+}

@@ -24,6 +24,9 @@ Where the two are not compared as-is, and why:
     function, in the template and in every encode of such a frame.
   - ldfparser reads a product_id without a variant as variant 0; lindb keeps it absent (`-`),
     so the oracle asks ldfparser's own parse tree whether the variant was written.
+  - ldfparser keeps a string's escapes (`"switch \\"on\\""` reads as `switch \\"on\\"`); lindb reads
+    `\\x` as `x`, so the oracle unescapes ldfparser's texts the same way before comparing.
+  - A text in a request escapes `|`, `=` and `\\` with a backslash (`Ldf.query`).
   - A header statement, Master line or Nodes section given twice: ldfparser keeps the last,
     lindb the first, with a note. The fixtures have none.
   - ldfparser pads unused bits with zeros unless asked; LIN has them recessive (1), so
@@ -51,6 +54,7 @@ Needs ldfparser (requirements.txt).
 import argparse
 import difflib
 import os
+import re
 import subprocess
 import sys
 
@@ -67,6 +71,16 @@ def fmt_num(x):
     if x == int(x) and abs(x) < 1e15:
         return str(int(x))
     return f'{x:.6f}'.rstrip('0').rstrip('.')
+
+
+def unesc(t):
+    """A string's text with each backslash escape read as the character it escapes."""
+    return re.sub(r'\\(.)', r'\1', t) if t else t
+
+
+def esc(t):
+    """A text as a request carries it: `\\`, `|` and `=` escaped."""
+    return t.replace('\\', '\\\\').replace('|', '\\|').replace('=', '\\=')
 
 
 def dash(s):
@@ -136,7 +150,7 @@ def frame_name(f):
 def dump(ldf, variants):
     out = []
     out.append(f'header protocol={ldf.get_protocol_version()} language={ldf.get_language_version()} '
-               f'speed_bps={ldf.baudrate} channel={dash(ldf.channel)}')
+               f'speed_bps={ldf.baudrate} channel={dash(unesc(ldf.channel))}')
     m = ldf.master
     out.append(f'master {m.name} time_base_ms={fmt_num(m.timebase * 1000)} jitter_ms={fmt_num(m.jitter * 1000)}')
     out.append('slaves ' + ','.join(s.name for s in ldf.slaves))
@@ -171,10 +185,10 @@ def dump(ldf, variants):
     for e in sorted(ldf.get_signal_encoding_types(), key=lambda e: e.name):
         for c in e.get_converters():
             if isinstance(c, LogicalValue):
-                out.append(f'encoding {e.name} logical value={c.phy_value} text={c.info or ""}')
+                out.append(f'encoding {e.name} logical value={c.phy_value} text={unesc(c.info) or ""}')
             elif isinstance(c, PhysicalValue):
                 out.append(f'encoding {e.name} physical min={c.phy_min} max={c.phy_max} scale={fmt_num(c.scale)} '
-                           f'offset={fmt_num(c.offset)} unit={c.unit or ""}')
+                           f'offset={fmt_num(c.offset)} unit={unesc(c.unit) or ""}')
             elif isinstance(c, BCDValue):
                 out.append(f'encoding {e.name} bcd')
             elif isinstance(c, ASCIIValue):
@@ -252,8 +266,9 @@ def samples(s):
                 out.append((f'text:{text[:-1]}', ('list', c.encode(text[:-1], s))))  # one short
             if isinstance(c, BCDValue):
                 digits = '9876543210'[:n]
+                shorter = int(digits[1:] or '0')  # fewer digits than the array holds
                 out.append((f'text:{digits}', ('list', c.encode(int(digits), s))))
-                out.append((f'raw:{int(digits[1:])}', ('list', c.encode(int(digits[1:]), s))))
+                out.append((f'raw:{shorter}', ('list', c.encode(shorter, s))))
         return out
     top = (1 << s.width) - 1
     for raw in sorted({0, top // 2, top}):
@@ -261,7 +276,7 @@ def samples(s):
     out.append((f'raw:{top + 1}', ('raw', top + 1)))
     for c in rules(s):
         if isinstance(c, LogicalValue) and c.info:
-            out.append((f'text:{c.info}', ('enc', c.info)))
+            out.append((f'text:{esc(unesc(c.info))}', ('enc', c.info)))
         if isinstance(c, PhysicalValue):
             for raw in sorted({c.phy_min, (c.phy_min + c.phy_max) // 2, c.phy_max}):
                 phys = raw * c.scale + c.offset
@@ -298,7 +313,7 @@ def decode_text(ldf, f, data):
         if s.is_array():
             text = ''
             for c in rules(s):
-                if isinstance(c, ASCIIValue):
+                if isinstance(c, ASCIIValue) and all(b < 0x80 for b in v):
                     text = c.decode(v, s)
                     break
                 if isinstance(c, BCDValue) and all(b <= 9 for b in v):
@@ -316,9 +331,9 @@ def decode_text(ldf, f, data):
             except ValueError:
                 continue
             if isinstance(c, PhysicalValue):
-                part += f' phys:{fmt_num(got)}' + (f' unit:{c.unit}' if c.unit else '')
+                part += f' phys:{fmt_num(got)}' + (f' unit:{unesc(c.unit)}' if c.unit else '')
             elif c.info:
-                part += f' text:{got}'
+                part += f' text:{unesc(got)}'
             break
         parts.append(part)
     return ' '.join(parts)

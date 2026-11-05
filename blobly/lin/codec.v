@@ -106,11 +106,25 @@ pub:
 	model Model = .enhanced
 }
 
+// diag_expect is what every MasterReq and SlaveResp is: 8 data bytes, classic checksum.
+const diag_expect = Expect{
+	len:   max_data
+	model: .classic
+}
+
 // interpret is the one reading of a response: the bytes read after a valid PID, judged against
-// what is expected of the id, or with no expectation by trying enhanced then classic. A
-// response cut short holds every byte read as data, since which one was the checksum cannot be
-// told.
-pub fn interpret(id u8, raw []u8, exp ?Expect) Frame {
+// what is expected of the id (MasterReq and SlaveResp are always diag_expect), or with no
+// expectation by trying enhanced then classic. A response cut short holds every byte read as
+// data, since which one was the checksum cannot be told; one longer than its length is `long`,
+// read by its length.
+pub fn interpret(id u8, raw []u8, given ?Expect) Frame {
+	exp := if e := given {
+		?Expect(e)
+	} else if id == master_req || id == slave_resp {
+		?Expect(diag_expect)
+	} else {
+		?Expect(none)
+	}
 	p := pid(id)
 	mut f := Frame{
 		id:  id
@@ -136,6 +150,9 @@ pub fn interpret(id u8, raw []u8, exp ?Expect) Frame {
 		if checksum(f.model, p, f.data) != f.checksum {
 			f.errs.set(.checksum)
 		}
+		if raw.len > e.len + 1 {
+			f.errs.set(.long)
+		}
 	} else {
 		if raw.len < 2 {
 			f.errs.set(.short)
@@ -157,6 +174,38 @@ pub fn interpret(id u8, raw []u8, exp ?Expect) Frame {
 		f.event = .sleep
 	}
 	return f
+}
+
+// wire_errs are the flags a re-reading cannot change: facts about the bytes on the wire.
+const wire_errs = [Errs.framing, Errs.collision, Errs.bit]
+
+// reread reads a received frame's response again against another expectation (a receiver's own
+// length and model), keeping who sent what and when, and the wire's own flags. A frame with no
+// response bytes is returned as it is.
+pub fn reread(f Frame, exp Expect) Frame {
+	if f.raw.len == 0 {
+		return f
+	}
+	g := interpret(f.id, f.raw, exp)
+	mut errs := g.errs
+	for flag in wire_errs {
+		if f.errs.has(flag) {
+			errs.set(flag)
+		}
+	}
+	// A sleep command only when the frame is error-free.
+	event := if errs == Errs.zero() { g.event } else { Event.frame }
+	return Frame{
+		...g
+		errs:      errs
+		event:     event
+		ours:      f.ours
+		header:    f.header
+		src:       f.src
+		t_ns:      f.t_ns
+		hw_ns:     f.hw_ns
+		hw_domain: f.hw_domain
+	}
 }
 
 // The serial byte stream, PARMRK-marked: FF 00 00 is a break, FF FF a data byte 0xFF, FF 00 x
@@ -184,6 +233,7 @@ enum DecState {
 // frames whose bits are one dominant run from the start bit (0x00, 0x80, 0xC0 .. 0xFE) lasting at
 // least the 150 us a receiver must accept, confirmed by idle or a break after it and stamped with
 // its own chunk's time. A byte beside other stray bytes is noise, not a wakeup.
+// The bytes after a rejected header (bad sync, parity or framing) are noise too.
 pub struct Decoder {
 pub mut:
 	lengths map[u8]Expect
@@ -302,6 +352,7 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 			}
 			if d.errs != Errs.zero() {
 				d.emit(Frame{ errs: d.errs }, mut out)
+				d.garbage = true
 				return
 			}
 			d.st = .want_pid
@@ -311,11 +362,13 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 			if s == .ferr {
 				d.errs.set(.framing)
 				d.emit(Frame{ pid: b, errs: d.errs }, mut out)
+				d.garbage = true
 				return
 			}
 			id := id_of(b) or {
 				d.errs.set(.parity)
 				d.emit(Frame{ id: b & max_id, pid: b, errs: d.errs }, mut out)
+				d.garbage = true
 				return
 			}
 			d.id = id

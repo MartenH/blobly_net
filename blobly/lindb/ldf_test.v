@@ -590,7 +590,7 @@ fn test_the_lin_bounds() {
 		'Node_attributes/configured_NAD': ['0x7D', '0x7E']
 		'Node_attributes/supplier_id':    ['0x7FFE', '0x7FFF']
 		'Node_attributes/function_id':    ['0xFFFE', '0xFFFF']
-		'Schedule_tables/delay':          ['0.1', '0']
+		'Schedule_tables/delay':          ['0.1', '0.09']
 	} {
 		f := leaf_fields[key] or { panic(key) }
 		section := key.all_before('/')
@@ -897,4 +897,50 @@ fn test_a_slave_without_node_attributes_is_said() {
 		'')) or { panic(err) }
 	assert "Node_attributes S2: no attributes; its frames take the file's checksum model and it has no NAD" in l.notes
 	assert !parse_ldf(lin13)!.notes.any(it.contains('no attributes')) // LIN 1.x has no such section
+}
+
+// A string may hold an escaped quote or backslash, as ldfparser's grammar allows.
+fn test_a_string_with_escapes() {
+	src := 'LIN_description_file;
+LIN_protocol_version = "2.2";
+LIN_language_version = "2.2";
+LIN_speed = 19.2 kbps;
+Channel_name = "a \\"b\\" c\\\\";
+Nodes { Master: M, 5 ms, 0.1 ms; Slaves: S; }
+Signals { A: 2, 0, M, S; }
+Frames { F: 0x01, M, 1 { A, 0; } }
+Node_attributes { S { LIN_protocol = "2.2"; configured_NAD = 0x01; } }
+Signal_encoding_types { E { logical_value, 1, "switch \\"on\\""; } }
+Signal_representation { E: A; }
+'
+	l := parse_ldf(src) or { panic(err) }
+	assert l.channel == 'a "b" c\\'
+	assert (l.encoding('E') or { panic('no E') }).rules[0].text == 'switch "on"'
+	f := l.frame('F') or { panic('no F') }
+	assert l.encode(f, {
+		'A': Value('switch "on"')
+	})! == [u8(0xFD)]
+}
+
+// An unclosed comment is reported where it opened, not where the scan gave up.
+fn test_an_unclosed_comment_names_its_opening_line() {
+	if _ := parse_ldf('LIN_description_file;\n  /* open\nmore\nand more\n') {
+		assert false
+	} else {
+		assert err.msg() == '2:3: comment opened here is never closed'
+	}
+}
+
+// A slot lasts what a scheduler can run: 0.1 ms to an hour.
+fn test_a_schedule_delay_is_bounded() {
+	for bad, why in {
+		'1e20':    'must be at most 3600000'
+		'3600001': 'must be at most 3600000'
+		'0.05':    'must be at least 0.1'
+	} {
+		l := parse_ldf(leaf_doc('Schedule_tables/delay', bad)) or { panic(err) }
+		assert 'Schedule_tables T: delay "${bad}" ${why}; not read' in l.notes, l.notes.str()
+	}
+	ok := parse_ldf(leaf_doc('Schedule_tables/delay', '3600000')) or { panic(err) }
+	assert ok.schedules.len == 1
 }

@@ -54,10 +54,12 @@ pub:
 }
 
 // HostScheduler runs a schedule table on its own thread, sending each slot's header at its
-// start on an absolute grid: a slot starts where the previous one's delay ends, however late
-// the wait woke, so lateness does not accumulate. A slot that starts after its time (a header
-// call that ran long) is sent at once and the grid is taken up again from it, so the slots
-// after it are not sent in a burst. The bus going away (transport.CarrierGone) ends the run.
+// start on an absolute grid: a slot starts where the previous one's delay ends, so a wait that
+// wakes a little late (within late_tolerance) does not move the grid and lateness does not
+// accumulate. A header that goes out later than that — a header call that ran long, a wait
+// that overshot — is sent at once and the grid continues from when it went out, so the slots
+// after it are not sent in a burst. A switched-to table takes over at the next slot boundary.
+// The bus going away (transport.CarrierGone) ends the run.
 @[heap]
 pub struct HostScheduler {
 mut:
@@ -103,14 +105,26 @@ pub fn new_scheduler(bus HeaderSender, slots []Slot, opts SchedOpts) !&HostSched
 	}
 }
 
+// A slot's delay: at least 0.1 ms, at most an hour.
+const min_delay_ms = 0.1
+const max_delay_ms = 3_600_000.0
+
+// late_tolerance is how late a wait may wake before the grid moves: at most 1 ms, and at most a
+// quarter of the slot.
+fn late_tolerance(slot_len i64) i64 {
+	q := slot_len / 4
+	return if q < 1_000_000 { q } else { 1_000_000 }
+}
+
 fn check_slots(slots []Slot) ! {
 	if slots.len == 0 {
 		return error('lin: a schedule needs at least one slot')
 	}
 	for i, s in slots {
 		check_id(s.id)!
-		if !(s.delay_ms > 0) {
-			return error('lin: slot ${i} (0x${s.id:02X}) has delay ${s.delay_ms} ms; it must be above 0')
+		// Written so a NaN or an infinity fails it too.
+		if !(s.delay_ms >= min_delay_ms && s.delay_ms <= max_delay_ms) {
+			return error('lin: slot ${i} (0x${s.id:02X}) has delay ${s.delay_ms} ms; it must be from 0.1 ms to 1 hour')
 		}
 	}
 }
@@ -204,19 +218,10 @@ fn (mut s HostScheduler) run() {
 		s.mu.unlock()
 		s.done.close()
 	}
-	s.take_pending()
 	mut k := 0
 	mut start := s.clock.now_ns()
-	mut first := true
 	for !s.stopped() {
 		mut now := s.clock.now_ns()
-		if !first && now > start {
-			// The slot's time passed before it was waited for: send now, take the grid up from here.
-			start = now
-			s.mu.lock()
-			s.late++
-			s.mu.unlock()
-		}
 		for now < start {
 			if s.stopped() {
 				return
@@ -228,8 +233,19 @@ fn (mut s HostScheduler) run() {
 		if s.stopped() {
 			return
 		}
-		first = false
+		// The slot boundary: a switched-to table takes over before the next header is chosen.
+		if s.take_pending() {
+			k = 0
+		}
 		slot := s.slots[k]
+		slot_len := slot_ns(slot)
+		if now - start > late_tolerance(slot_len) {
+			// Later than a late wake: the grid continues from when this header goes out.
+			start = now
+			s.mu.lock()
+			s.late++
+			s.mu.unlock()
+		}
 		mut ok := true
 		mut gone := false
 		s.bus.header(slot.id) or {
@@ -248,10 +264,7 @@ fn (mut s HostScheduler) run() {
 			s.sent++
 			s.mu.unlock()
 		}
-		start += slot_ns(slot)
+		start += slot_len
 		k = (k + 1) % s.slots.len
-		if s.take_pending() {
-			k = 0
-		}
 	}
 }

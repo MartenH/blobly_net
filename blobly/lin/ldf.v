@@ -22,6 +22,34 @@ pub fn expects_of(l &lindb.Ldf) map[u8]Expect {
 			model: model_of(m)
 		}
 	}
+	// An event-triggered frame's id is answered by one of the frames it carries; it is read by
+	// them where they agree on length and model, as the LIN spec requires them to.
+	for e in l.event_frames {
+		mut exp := ?Expect(none)
+		mut agree := e.frames.len > 0
+		for n in e.frames {
+			f := l.frame(n) or {
+				agree = false
+				break
+			}
+			x := out[f.id] or {
+				agree = false
+				break
+			}
+			if prev := exp {
+				if prev != x {
+					agree = false
+					break
+				}
+			}
+			exp = x
+		}
+		if agree {
+			if x := exp {
+				out[e.id] = x
+			}
+		}
+	}
 	return out
 }
 

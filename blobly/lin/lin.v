@@ -16,10 +16,11 @@ pub enum Errs {
 	no_response // a header nobody answered
 	collision   // this handle's response lost arbitration to another publisher's
 	bit         // a publisher read back a bit other than the one it sent
+	long        // more bytes than the frame's length
 }
 
 const err_names = ['sync', 'parity', 'checksum', 'framing', 'short', 'no_response', 'collision',
-	'bit']
+	'bit', 'long']
 
 // names is each error in the set, in declaration order.
 pub fn (e Errs) names() []string {
@@ -238,6 +239,9 @@ fn check_entry(e Entry) ! {
 	}
 	if e.len < 1 || e.len > max_data {
 		return error('lin: entry 0x${e.id:02X} length ${e.len} is outside 1..8')
+	}
+	if (e.id == master_req || e.id == slave_resp) && e.len != max_data {
+		return error('lin: entry 0x${e.id:02X} length ${e.len}: MasterReq and SlaveResp carry 8 data bytes')
 	}
 	if e.dir == .publish && e.data.len != e.len {
 		return error('lin: entry 0x${e.id:02X} has ${e.data.len} data bytes for length ${e.len}')

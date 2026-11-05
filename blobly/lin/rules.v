@@ -78,3 +78,13 @@ pub fn reading(f Frame) string {
 	}
 	return s
 }
+
+// clone is the frame with its own copies of `data` and `raw`, for a reader that may keep or
+// change it while another reads the same frame.
+pub fn (f Frame) clone() Frame {
+	return Frame{
+		...f
+		data: f.data.clone()
+		raw:  f.raw.clone()
+	}
+}

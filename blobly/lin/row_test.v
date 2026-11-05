@@ -242,24 +242,21 @@ fn test_the_load_of_a_quiet_bus_falls_to_zero() {
 		address:  'inproc:row-load'
 		ldf:      demo_ldf
 		role:     .master
-		simulate: ['CEM', 'LSM', 'RSM']
-		schedule: 'NormalTable'
+		simulate: ['CEM']
 	}, RowOpts{
-		clock:   clk
-		sleeper: clk
+		clock: clk
 	})!
 	defer {
 		r.stop()
 	}
 	mut t := r.tap()!
-	for {
-		f := t.recv(2000)!
-		if f.t_ns > 2_100_000_000 {
-			break
-		}
+	// ten 3-byte frames in the first second, then one that closes it
+	for _ in 0 .. 11 {
+		r.header(0x02)!
+		t.recv(2000)!
+		clk.sleep_ns(100_000_000)
 	}
-	assert r.view().load_percent > 20
-	assert r.stop_schedule()
+	assert r.view().load_percent == f64(10 * frame_bits(3)) * 100.0 / 19200.0
 	clk.sleep_ns(3_000_000_000)
 	assert r.view().load_percent == 0
 }
@@ -369,4 +366,70 @@ fn test_an_event_triggered_response_is_named_by_its_carried_frame() {
 	empty := l.response_for(0x3A, []) or { panic('no response') }
 	assert empty.name == 'Node_Status_Event' && empty.frame == none
 	assert l.response_for(0x30, [u8(1)]) == none
+}
+
+fn test_a_monitor_reads_the_bus_by_its_ldf() {
+	mut r := start_row(RowSpec{
+		name:    'BODY'
+		address: 'inproc:row-monitor'
+		ldf:     demo_ldf
+		role:    .monitor
+	}, RowOpts{})!
+	defer {
+		r.stop()
+	}
+	mut t := r.tap()!
+	// an outside master answering CEM_Frm2 with a classic checksum, where the LDF says enhanced
+	mut m := open('inproc:row-monitor', Config{
+		role: .master
+	})!
+	defer {
+		m.close()
+	}
+	m.set_entry(Entry{
+		id:    0x02
+		dir:   .publish
+		len:   3
+		model: .classic
+		data:  [u8(0x78), 0xEB, 0xC3]
+	})!
+	m.header(0x02)!
+	f := t.recv(2000)!
+	assert f.id == 0x02 && f.errs.has(.checksum), reading(f)
+	assert r.view().frames[0].errors == 1
+}
+
+fn test_an_event_triggered_id_is_read_by_the_frames_it_carries() {
+	l := demo()
+	exp := expects_of(&l)
+	assert exp[0x3A] == Expect{
+		len:   2
+		model: .enhanced
+	}
+}
+
+fn test_time_zero_is_a_time() {
+	clk := &RowClock{}
+	mut r := start_row(RowSpec{
+		name:     'BODY'
+		address:  'inproc:row-zero'
+		ldf:      demo_ldf
+		role:     .master
+		simulate: ['CEM']
+	}, RowOpts{
+		clock: clk
+	})!
+	defer {
+		r.stop()
+	}
+	mut t := r.tap()!
+	r.header(0x01)!
+	t.recv(2000)!
+	clk.sleep_ns(500_000_000)
+	r.header(0x01)!
+	t.recv(2000)!
+	assert r.view().frames[0].cadence_ms == 500.0
+	clk.sleep_ns(600_000_000)
+	// the first second held two one-byte frames
+	assert r.view().load_percent == f64(2 * frame_bits(1)) * 100.0 / 19200.0
 }

@@ -221,7 +221,7 @@ fn arbitrate(pubs []Publisher) ([]u8, []bool) {
 
 // resolve turns the publishers of one header into the frame every handle receives: none is no
 // response; several arbitrate, and the wire carries the winner's response, read against the
-// winner's entry. A loser's own copy carries `bit` and `collision`; nobody else can tell.
+// winner's entry, or by a handle with a subscribe entry for the id against its own. A loser's own copy carries `bit` and `collision`; nobody else can tell.
 fn (mut hub LinHub) resolve(master &InprocBus, id u8, pubs []Publisher) {
 	mut f := Frame{}
 	wire, lost := arbitrate(pubs)
@@ -270,12 +270,19 @@ fn (mut hub LinHub) resolve(master &InprocBus, id u8, pubs []Publisher) {
 				}
 			}
 		}
+		// A subscriber reads the wire by its own length and model.
+		if e := h.entries[id] {
+			if e.dir == .subscribe {
+				c = reread(c, Expect{ len: e.len, model: e.model })
+			}
+		}
 		h.push(c)
 	}
 }
 
 fn (mut h InprocBus) push(f Frame) {
-	if h.queue.try_push(f) != .success {
+	// A copy of its own: a channel copies the struct, not the arrays behind data and raw.
+	if h.queue.try_push(f.clone()) != .success {
 		stdatomic.add_u64(&h.dropped, 1)
 	}
 }
