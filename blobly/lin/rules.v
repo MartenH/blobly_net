@@ -79,6 +79,30 @@ pub fn reading(f Frame) string {
 	return s
 }
 
+// flags_text is a frame's flags as a trace's one column: its checksum model when it has a
+// response, the event when it is one (`wakeup`, `sleep`), `no response`, and each error as
+// `!name` — the parts of `reading` that are not the id and the bytes.
+pub fn flags_text(f Frame) string {
+	if f.event == .wakeup {
+		return 'wakeup'
+	}
+	mut parts := []string{}
+	if f.errs.has(.no_response) {
+		parts << 'no response'
+	} else if f.raw.len > 0 && !f.errs.has(.short) {
+		parts << f.model.str()
+	}
+	if f.event == .sleep {
+		parts << 'sleep'
+	}
+	for name in f.errs.names() {
+		if name != 'no_response' {
+			parts << '!${name}'
+		}
+	}
+	return parts.join(' ')
+}
+
 // clone is the frame with its own copies of `data` and `raw`, for a reader that may keep or
 // change it while another reads the same frame.
 pub fn (f Frame) clone() Frame {

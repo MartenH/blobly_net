@@ -316,7 +316,7 @@ fn (mut app App) dbc_refresh_trace_names() {
 		// is keyed on (id, ext) alone — so editing an unrelated DBC would rename NOTIFICATION to
 		// whatever CAN frame happens to share the number, or to `unknown`, corrupting a capture
 		// that is already taken.
-		if r.someip {
+		if !r.can() {
 			continue
 		}
 		base := if r.tp {

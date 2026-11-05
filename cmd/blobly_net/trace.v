@@ -69,6 +69,11 @@ struct TraceRow {
 	// a group after its newest row, so an anomaly sharing a key with valid traffic is announced
 	// and then silently unannounced by the next good message.
 	someip_bad_fixed bool
+	// A LIN frame (blobly/lin), not a CAN frame — a KIND as `someip` is: `id` is a LIN id
+	// (0..63, or 0xFF for a wakeup, which names none), `name` its LDF frame, and `lin_flags` the
+	// flags column (lin.flags_text: its checksum model, an event, its errors).
+	lin       bool
+	lin_flags string
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands
@@ -150,6 +155,13 @@ mut:
 // so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
 // One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
 // instead of rediscovering it (codex #127 r2).
+// can is whether the row is a CAN frame: what every consumer of (id, ext) asks before it reads
+// one — the filter, a plot, Send, a DBC decode — since a SOME/IP message's id is a
+// service:method and a LIN frame's a LIN id.
+fn (r TraceRow) can() bool {
+	return !r.someip && !r.lin
+}
+
 fn (r TraceRow) has_payload() bool {
 	return !r.rtr && r.data.len > 0
 }

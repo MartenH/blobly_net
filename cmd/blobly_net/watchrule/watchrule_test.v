@@ -111,7 +111,7 @@ fn test_an_unbound_watch_binds_to_the_oldest_wire_that_defines_its_message() {
 			id: eec1
 			ext: true
 			wire: 'can1'
-			someip: true // not a CAN frame at all
+			not_can: true // not a CAN frame at all
 		},
 		Row{
 			id: eec1
@@ -166,7 +166,7 @@ fn test_an_unbound_watch_binds_to_the_oldest_wire_that_defines_its_message() {
 	}) == 'can0'
 }
 
-fn test_nothing_matches_a_someip_row() {
+fn test_nothing_matches_a_row_that_is_not_can() {
 	// no DBC message behind it; its payload layout is the deployment's
 	for i in [frame('EngineSpeed'), rejoined('can0', 'EngineSpeed')] {
 		assert i.covers(row(i))
@@ -175,7 +175,7 @@ fn test_nothing_matches_a_someip_row() {
 			ext: i.ext
 			tp: i.tp
 			wire: i.wire
-			someip: true
+			not_can: true
 		})
 	}
 }

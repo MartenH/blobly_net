@@ -47,7 +47,7 @@ fn (mut app App) plot_auto_step(rows []TraceRow, frame int) {
 	mut seen := map[string]bool{}
 	for i := rows.len - 1; i >= 0; i-- {
 		r := rows[i]
-		if r.someip || r.id != app.plot_auto.id || !r.has_payload() {
+		if !r.can() || r.id != app.plot_auto.id || !r.has_payload() {
 			continue
 		}
 		k := r.gkey()

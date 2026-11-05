@@ -78,7 +78,7 @@ pub:
 	ext    bool
 	tp     bool
 	wire   string
-	someip bool
+	not_can bool // a SOME/IP message or a LIN frame: no wire's CAN frame
 	da     int = -1
 }
 
@@ -88,8 +88,8 @@ pub:
 // asks "is this row mine" — because the answer drifting between them is what put a series'
 // samples on one wire and its x-axis on another's traffic.
 pub fn (i Ident) covers(r Row) bool {
-	if r.someip {
-		return false // no DBC message behind it; its payload is the deployment's
+	if r.not_can {
+		return false // no DBC message behind it
 	}
 	if r.id != i.id || r.ext != i.ext || r.tp != i.tp {
 		return false
@@ -124,7 +124,7 @@ pub fn (i Ident) bind(n int, at fn (int) Row, configured fn (string) bool, defin
 	mut asked := map[string]bool{}
 	for k in 0 .. n {
 		r := at(k)
-		if r.someip || r.wire == '' || r.id != i.id || r.ext != i.ext || r.tp != i.tp
+		if r.not_can || r.wire == '' || r.id != i.id || r.ext != i.ext || r.tp != i.tp
 			|| r.da != i.da {
 			continue
 		}

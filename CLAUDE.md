@@ -14,7 +14,7 @@ An automotive bus tester written in **V (vlang)**: exercise a SUT over **CAN**, 
 **Ethernet** via the automotive protocols on it (**DoIP**, **SOME/IP**) — run diagnostics, script
 tests, simulate ECUs, read back logs. **Virtual first** (Linux `vcan0`); real hardware is a
 drop-in. Ethernet here is ordinary TCP/UDP sockets: automotive PHYs (100BASE-T1) and TSN are NOT
-supported. LIN is being built in its own modules (`blobly/lin`, `blobly/lindb`), outside the CAN rows: a project's LIN rows (`adapter: lin`, `RowKind.lin`) run headless, from Lua, C and Python, and in the GUI (View ▸ LIN, `cmd/blobly_net/lin_panel.v`), not yet in its trace.
+supported. LIN is being built in its own modules (`blobly/lin`, `blobly/lindb`), outside the CAN rows: a project's LIN rows (`adapter: lin`, `RowKind.lin`) run headless, from Lua, C and Python, and in the GUI (View ▸ LIN, `cmd/blobly_net/lin_panel.v`), in its trace (`TraceRow.lin`, pushed by `lin_worker`; `TraceRow.can()` is what every CAN consumer of a row asks), not yet in its recordings.
 
 ## Fresh setup / new session — START HERE
 
