@@ -78,6 +78,12 @@ fn chain_walk(mut src ByteSource, link u64, unfin bool, mut out []ChainBlock, at
 		'##DZ' {
 			d := data_off(mut src, link)
 			org_len := u64_at(mut src, d + 8)
+			// dz_decompress's cap, asked before the length is summed: the loader sizes its
+			// buffer from the chain, so a block claiming 4 GB was a 4 GB allocation that aborted
+			// the process before the inflate could refuse it
+			if org_len > max_dz_block {
+				return error('DZ block of ${org_len} bytes exceeds the ${max_dz_block / (1 << 20)} MB a block may inflate to')
+			}
 			if org_len > 0 {
 				out << ChainBlock{
 					off:     link
