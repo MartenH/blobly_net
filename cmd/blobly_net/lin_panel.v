@@ -5,6 +5,7 @@ import sync
 import time
 import vgui
 import blobly.lin
+import blobly.lindb
 import blobly.transport
 
 // LIN (View ▸ LIN): the project's `lin:` buses, run by Start and shown here — apart from the CAN
@@ -15,7 +16,7 @@ import blobly.transport
 // is blobly/lin's.
 
 const lin_recent = 500 // frames each bus keeps for the panel
-const lin_view_ms = 100.0 // how often the open panel takes a bus's view
+const lin_view_ms = 100.0 // how often a bus's worker takes its view for the panel
 const lin_handover_ms = 3000 // the longest a bus waits for the previous run's to let go
 
 // LinRun is one LIN bus of a run: what its worker publishes, read by the panel under `mu`.
@@ -25,10 +26,13 @@ struct LinRun {
 	address string
 	role    string
 	gen     u64
-	// prev is the previous run's bus of this name, which may still be letting go of the port
-	prev ?&LinRun
 mut:
 	mu sync.Mutex
+	// prev is the previous run's bus of this name, which may still be letting go of the port;
+	// dropped once this one's wait for it is over, so the runs do not chain for ever
+	prev ?&LinRun
+	// owned: this worker started a row (and stops it before done)
+	owned bool
 	// row is the bus once its worker started it; none before, or when it did not start (err).
 	row     ?&lin.Row
 	err     string
@@ -36,8 +40,10 @@ mut:
 	recent  []lin.Frame
 	done    bool // the worker has stopped its row and gone
 	t0_ns   i64
-	view    lin.RowView
-	view_at f64
+	// view is the row's view as the worker last took it: the panel never asks the row, whose
+	// view on a serial bus waits for the lock a write to the port holds
+	view     lin.RowView
+	has_view bool
 	// failed is why the last action the panel sent off (go_lin) did not happen, '' if it did
 	failed string
 	// the panel's own state, GUI thread only
@@ -114,18 +120,22 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 		release_run_worker(app)
 	}
 	gen := run.gen
-	if p := run.prev {
-		mut prev := unsafe { p }
+	run.mu.lock()
+	first := run.prev
+	run.mu.unlock()
+	if p := first {
 		for _ in 0 .. lin_handover_ms / 10 {
-			prev.mu.lock()
-			gone := prev.done
-			prev.mu.unlock()
-			if gone || !a.run_live(gen) {
-				break
+			if !a.run_live(gen) {
+				// stopped while waiting: whoever comes next waits for what this one waited for
+				return
 			}
+			holder_of(p) or { break }
 			time.sleep(10 * time.millisecond)
 		}
 	}
+	run.mu.lock()
+	run.prev = none
+	run.mu.unlock()
 	if !a.run_live(gen) {
 		return
 	}
@@ -149,11 +159,18 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	}
 	run.mu.lock()
 	run.row = row
+	run.owned = true
 	run.mu.unlock()
+	mut viewed := i64(0)
 	sim := if spec.simulate.len > 0 { ', simulating ${spec.simulate.join(', ')}' } else { '' }
 	sched := if spec.schedule != '' { ', schedule ${spec.schedule}' } else { '' }
 	lin_say(app, gen, 'LIN ${spec.name} (${spec.address} @ ${row.baud} baud): ${spec.role}${sim}${sched}')
 	for a.run_live(gen) {
+		now := i64(time.sys_mono_now())
+		if now - viewed >= i64(lin_view_ms * 1e6) {
+			viewed = now
+			publish_view(mut run, mut row)
+		}
 		f := tap.recv(50) or {
 			if err is transport.CarrierGone {
 				run.mu.lock()
@@ -174,10 +191,43 @@ fn lin_worker(app &App, lr &LinRun, spec lin.RowSpec) {
 	if !row.stop() {
 		lin_say(app, gen, 'LIN ${spec.name}: its schedule or reader outlived its bound')
 	}
+	publish_view(mut run, mut row) // the view as the run ended
 	d := row.diagnostics()
 	if d.dropped > 0 || d.bus_errors > 0 || d.decode_errors > 0 {
 		lin_say(app, gen, 'LIN ${spec.name}: ${d.dropped} dropped, ${d.bus_errors} bus errors, ${d.decode_errors} undecodable')
 	}
+}
+
+// publish_view takes the row's view and puts it where the panel reads it.
+fn publish_view(mut run LinRun, mut row lin.Row) {
+	v := row.view()
+	run.mu.lock()
+	run.view = v
+	run.has_view = true
+	run.mu.unlock()
+}
+
+// holder_of is the bus that may still hold the port a run's bus is about to open: `p` while its
+// worker is out; none once a worker that started a row is done; and, for a worker that is done
+// without having started one (stopped while it waited), what that worker was waiting for.
+fn holder_of(p &LinRun) ?&LinRun {
+	mut cur := unsafe { p }
+	for {
+		cur.mu.lock()
+		done := cur.done
+		owned := cur.owned
+		prev := cur.prev
+		cur.mu.unlock()
+		if !done {
+			return cur
+		}
+		if owned {
+			return none
+		}
+		next := prev or { return none }
+		cur = unsafe { next }
+	}
+	return none
 }
 
 // lin_say puts a LIN bus's line in the Log unless a later run has started, whose Log it is not
@@ -239,12 +289,14 @@ fn draw_lin_run(mut app App, i int, mut lr LinRun) {
 		vgui.text_dim('starting…')
 		return
 	}
-	now_ms := f64(time.sys_mono_now()) / 1e6
-	if lr.view_at == 0 || now_ms - lr.view_at >= lin_view_ms {
-		lr.view_at = now_ms
-		lr.view = row.view()
-	}
+	lr.mu.lock()
 	v := lr.view
+	has_view := lr.has_view
+	lr.mu.unlock()
+	if !has_view {
+		vgui.text_dim('starting…')
+		return
+	}
 	if ended != '' {
 		vgui.text_colored_wrapped(220, 120, 80, 'ended: ${ended}')
 	}
@@ -355,22 +407,22 @@ fn (mut app App) draw_lin_controls(i int, mut lr LinRun, mut row lin.Row, v lin.
 				lr.pick = vgui.combo('##linsched${i}', names, lr.pick)
 				vgui.same_line()
 				if vgui.small_button('run schedule##linrun${i}') {
-					go_lin(mut lr, mut row, 'schedule', names[lr.pick])
+					go_lin(mut lr, mut row, 'schedule', names[lr.pick], lindb.Value(u64(0)))
 				}
 				vgui.same_line()
 			}
 		}
 		if vgui.small_button('stop schedule##linstop${i}') {
-			go_lin(mut lr, mut row, 'stop schedule', '')
+			go_lin(mut lr, mut row, 'stop schedule', '', lindb.Value(u64(0)))
 		}
 		vgui.same_line()
 		if vgui.small_button('go to sleep##linsleep${i}') {
-			go_lin(mut lr, mut row, 'go to sleep', '')
+			go_lin(mut lr, mut row, 'go to sleep', '', lindb.Value(u64(0)))
 		}
 		vgui.same_line()
 	}
 	if vgui.small_button('wakeup##linwake${i}') {
-		go_lin(mut lr, mut row, 'wakeup', '')
+		go_lin(mut lr, mut row, 'wakeup', '', lindb.Value(u64(0)))
 	}
 	lr.mu.lock()
 	if lr.failed != '' {
@@ -384,17 +436,18 @@ fn (mut app App) draw_lin_controls(i int, mut lr LinRun, mut row lin.Row, v lin.
 	}
 }
 
-// go_lin does what a button asks off the GUI thread: a wakeup or a go-to-sleep waits for the slot
-// before it, and stopping a schedule for the header it may be sending.
-fn go_lin(mut lr LinRun, mut row lin.Row, what string, schedule string) {
+// go_lin does what the panel asks off the GUI thread: a wakeup or a go-to-sleep waits for the slot
+// before it, stopping a schedule for the header it may be sending, and a signal set for the bus's
+// lock, which a serial bus holds across a write to the port.
+fn go_lin(mut lr LinRun, mut row lin.Row, what string, arg string, val lindb.Value) {
 	lr.said = ''
-	spawn fn (r &lin.Row, run &LinRun, what string, schedule string) {
+	spawn fn (r &lin.Row, run &LinRun, what string, arg string, val lindb.Value) {
 		mut rr := unsafe { r }
 		mut lrr := unsafe { run }
 		mut why := ''
 		match what {
 			'schedule' {
-				rr.schedule(schedule) or { why = err.msg() }
+				rr.schedule(arg) or { why = err.msg() }
 			}
 			'stop schedule' {
 				if !rr.stop_schedule() {
@@ -404,8 +457,11 @@ fn go_lin(mut lr LinRun, mut row lin.Row, what string, schedule string) {
 			'go to sleep' {
 				rr.sleep() or { why = err.msg() }
 			}
-			else {
+			'wakeup' {
 				rr.wakeup() or { why = err.msg() }
+			}
+			else {
+				rr.set_signal(arg, val) or { why = err.msg() }
 			}
 		}
 		if why != '' {
@@ -413,7 +469,7 @@ fn go_lin(mut lr LinRun, mut row lin.Row, what string, schedule string) {
 			lrr.failed = '${what}: ${why}'
 			lrr.mu.unlock()
 		}
-	}(row, lr, what, schedule)
+	}(row, lr, what, arg, val)
 }
 
 // draw_lin_signals edits what the row's simulated nodes publish: a value per signal, typed as
@@ -465,11 +521,7 @@ fn (mut app App) draw_lin_signals(i int, mut lr LinRun, mut row lin.Row, sims []
 						lr.said = err.msg()
 						continue
 					}
-					row.set_signal(m.name, val) or {
-						lr.said = err.msg()
-						continue
-					}
-					lr.said = ''
+					go_lin(mut lr, mut row, 'set ${m.name}', m.name, val)
 				}
 				lr.edits[key] = buf
 			}
