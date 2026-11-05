@@ -400,13 +400,15 @@ fn (mut b SerialBus) send_header(w Wrote, bytes []u8) ! {
 		b.pending.delete(0)
 	}
 	b.pending << w
-	b.slot_end_ns = i64(time.sys_mono_now()) + frame_ns_max(b.expected_len(w.id), b.cfg.baud)
 	b.put(true, bytes, false) or {
 		if !b.brk_out && b.pending.len > 0 {
 			b.pending.delete_last()
 		}
 		return err
 	}
+	// From when the header has gone out, so the break and the write's own time (seconds of USB
+	// round trips on an adapter) never eat into the response window.
+	b.slot_end_ns = i64(time.sys_mono_now()) + frame_ns_max(b.expected_len(w.id), b.cfg.baud)
 }
 
 // wakeup sends a dominant pulse of 250 us .. 5 ms (wake_byte) once the previous slot has ended.

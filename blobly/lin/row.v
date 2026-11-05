@@ -320,6 +320,24 @@ fn (mut r Row) bring_up(master_entries []Entry, slaves []string, slave_entries [
 	for e in master_entries {
 		r.bus.set_entry(e)!
 	}
+	// The frames the row does not publish, by their LDF length and model, so a backend that
+	// times a response window by length (serial) does not wait out eight bytes for each.
+	if r.spec.role != .monitor {
+		mut published := master_entries.map(it.id)
+		for es in slave_entries {
+			published << es.map(it.id)
+		}
+		for id, exp in r.expects {
+			if id !in published {
+				r.bus.set_entry(Entry{
+					id:    id
+					dir:   .subscribe
+					len:   exp.len
+					model: exp.model
+				})!
+			}
+		}
+	}
 	if one_handle_per_device(r.spec.address) {
 		for k, n in slaves {
 			for e in slave_entries[k] {

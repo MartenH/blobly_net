@@ -724,3 +724,45 @@ fn test_a_wakeup_is_not_written_over_one_unconfirmed() {
 		assert got(mut s).event == .wakeup
 	}
 }
+
+fn test_a_serial_master_times_external_frames_by_the_ldf() {
+	mut link := pty_link()!
+	defer {
+		link.close()
+	}
+	mut slave := start_row(RowSpec{
+		name:     'S'
+		address:  'pty:${link.b}'
+		ldf:      serial_ldf
+		role:     .slave
+		simulate: ['LSM', 'RSM']
+	}, RowOpts{})!
+	// FastTable gives the 2-byte LSM_Frm1 and RSM_Frm1 5 ms slots: an 8-byte window would
+	// make each of them late
+	mut master := start_row(RowSpec{
+		name:     'M'
+		address:  'pty:${link.a}'
+		ldf:      serial_ldf
+		role:     .master
+		simulate: ['CEM']
+		schedule: 'FastTable'
+	}, RowOpts{})!
+	mut t := master.tap()!
+	// the gap from each RSM_Frm1 header to the LSM_Frm1 header after it: the slot is 5 ms, an
+	// eight-byte window at 19200 baud 9 ms
+	mut gaps := []i64{}
+	mut prev := i64(-1)
+	for gaps.len < 15 {
+		f := t.recv(1000)!
+		if f.id == 0x21 {
+			prev = f.t_ns
+		} else if f.id == 0x11 && prev >= 0 {
+			gaps << f.t_ns - prev
+			prev = -1
+		}
+	}
+	master.stop()
+	slave.stop()
+	gaps.sort()
+	assert gaps[gaps.len / 2] < 7_000_000, 'median gap ${gaps[gaps.len / 2]} ns'
+}
