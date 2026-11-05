@@ -716,7 +716,7 @@ fn watch_row(r TraceRow) watchrule.Row {
 		ext:    r.ext
 		tp:     r.tp
 		wire:   r.wire
-		someip: r.someip
+		not_can: !r.can()
 		da:     r.tp_da
 	}
 }
@@ -871,7 +871,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	for r in rows {
 		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
 		// inject a zero sample into the middle of the series
-		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
+		// not a CAN frame (`not_can`), for latest_data's reason: a plotted series must not take its points from a
 		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
 		if w.covers(watch_row(r)) && r.has_payload() && c.carried_by(r.data) {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)

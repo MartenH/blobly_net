@@ -131,8 +131,23 @@ its LDF notes go to the Log:
 - the last 500 frames, newest first.
 
 A script run from the Script panel while the run is on reaches its LIN buses by name.
-LIN is not in the trace, the Buses panel or a recording; that comes when a LIN bus is a row
-like the others.
+
+A LIN bus is in the Buses panel, in a LIN group, running while its bus is up. Its frames are in
+the trace beside the CAN ones, under the bus's name:
+- the id column reads `LIN 0x21` (`LIN —` where the record names no frame: a wakeup, or a header
+  that broke before its id), the name is the
+  LDF's, and the origin is who published the response (`TX-S` our simulation, `TX` our tester,
+  `RX` another node);
+- the flags column is the checksum model, an event (`wakeup`, `sleep`), `no response`, and each
+  error as `!name`; a frame with an error is grouped apart from the good ones of its id;
+- an expanded group shows the frame's signals, decoded through the LDF its bus read it through;
+  a frame with an error is not decoded, and its group says why;
+- the bus's `last RX` and the RX counts move only for an error-free response another node published,
+  so the master's own unanswered headers never make a dead slave look alive.
+
+A LIN frame is not a CAN frame to anything that reads one: the trace's filter, a plot, Send and a
+DBC decode leave it alone. LIN is not recorded yet: a recording holds CAN frames, and the Log says
+so when one is made while a LIN bus runs.
 
 ## From Lua
 
@@ -164,7 +179,6 @@ calls are in [scripting_python.md](scripting_python.md#lin), and
 ## What comes next
 
 Each step is its own pull request:
-1. The project's buses restructured so a kind of bus is one row kind; then a LIN bus as a row
-   like the others, in the trace, the Buses panel and recordings.
+1. LIN in recordings.
 2. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
 3. A real LIN node on a system_full board.

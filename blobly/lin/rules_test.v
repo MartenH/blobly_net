@@ -77,3 +77,19 @@ fn test_has_id() {
 		errs: .parity
 	})
 }
+
+fn test_a_frames_flags_are_its_reading_without_id_and_bytes() {
+	ok := interpret(0x21, [u8(1), 2, checksum(.enhanced, pid(0x21), [u8(1), 2])], Expect{
+		len:   2
+		model: .enhanced
+	})
+	assert flags_text(ok) == 'enhanced'
+	mut bad := ok
+	bad.errs.set(.checksum)
+	assert flags_text(bad) == 'enhanced !checksum'
+	assert flags_text(Frame{ id: 0x30, errs: Errs.no_response }) == 'no response'
+	assert flags_text(Frame{ event: .wakeup }) == 'wakeup'
+	sleep := interpret(0x3C, [u8(0), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+		checksum(.classic, pid(0x3C), [u8(0), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])], none)
+	assert flags_text(sleep) == 'classic sleep'
+}

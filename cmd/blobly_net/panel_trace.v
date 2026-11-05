@@ -5,6 +5,7 @@ import blobly.transport
 import blobly.candb
 import blobly.j1939
 import vgui
+import blobly.lin
 import watchrule
 
 // trace_capture_chips renders the latched capture states — recording destination, and the
@@ -186,12 +187,12 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	}
 	trace_capture_chips(mut app)
 	// restrict to watched frames + optional bus, then apply the optional text find
-	// `!it.someip` as well as the watch: the filter's identity is (id, ext) with no kind, so a
+	// a CAN frame (`it.can()`) as well as the watch: the filter's identity is (id, ext) with no kind, so a
 	// SOME/IP message id that happens to equal a watched CAN id would otherwise be pulled into
 	// this view — and from here into Signals and Graphics, which decode whatever they find.
 	// Gating the grouped row's menu (where this started) covered making a watch, not matching
 	// one; a row can be watched by an id that was added from a real CAN frame.
-	frows := app.filter_bus(rows.filter(!it.someip && app.is_fwatched(it.id, it.ext)),
+	frows := app.filter_bus(rows.filter(it.can() && app.is_fwatched(it.id, it.ext)),
 		app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
@@ -303,7 +304,10 @@ fn hex_shown(b []u8) string {
 // idstr_row renders the row's id AS ITS KIND reads it: a SOME/IP message id is a service and a
 // method, which is how a dissector, the standard and blobly_emb's config all spell it, and
 // rendering it as one 32-bit number invites reading it as a CAN id.
-fn idstr_row(id u32, ext bool, someip bool) string {
+fn idstr_row(id u32, ext bool, someip bool, is_lin bool) string {
+	if is_lin {
+		return if id <= 0x3F { 'LIN 0x${id:02X}' } else { 'LIN —' }
+	}
 	if someip {
 		return '0x${u16(id >> 16):04X}:${u16(id):04X}'
 	}
@@ -319,6 +323,9 @@ fn idstr_row(id u32, ext bool, someip bool) string {
 // neighbouring column teaches the reader to skip both. (This absorbed kind_mark, whose leading
 // space existed only for the data-cell suffix the flags column replaced.)
 fn flags_str(r TraceRow) string {
+	if r.lin {
+		return r.lin_flags
+	}
 	if r.rtr {
 		return 'RTR'
 	}
@@ -378,7 +385,7 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// bytes, and formatting all of them for every row on every repaint while a filter is typed
 	// is the per-repaint allocation #299 removed, 28 times over.
 	hay :=
-		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip, r.lin)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${flags_str(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -467,7 +474,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_row()
 			trace_idx_t_cells(r)
 			vgui.table_cell(r.ch)
-			vgui.table_cell(idstr_row(r.id, r.ext, r.someip))
+			vgui.table_cell(idstr_row(r.id, r.ext, r.someip, r.lin))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
@@ -492,6 +499,11 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	}
 }
 
+// can is whether the group is of CAN frames (TraceRow.can).
+fn (g GAgg) can() bool {
+	return !g.someip && !g.lin
+}
+
 struct GAgg {
 mut:
 	origin string
@@ -499,6 +511,7 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	lin    bool // a LIN group (TraceRow.lin), for the same reason
 	// The group's key, so the comparator can be TOTAL: everything above it in that function
 	// gives the reader an order, and this decides what is merely distinct.
 	key string
@@ -593,6 +606,13 @@ fn (r TraceRow) gkey() string {
 	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr, r.tp, r.wire, r.tp_da)
 }
 
+// gkey_lin: a LIN frame's group identity — prefixed like SOME/IP's so it never meets a CAN group
+// of the same number, and keyed on lin.key_suffix (an errored frame, a wakeup, a sleep), so a
+// checksum error is a row of its own beside the good frames.
+fn gkey_lin(origin string, ch string, id u32, suffix string) string {
+	return 'lin|${origin}|${ch.len}:${ch}|${id}|${suffix}'
+}
+
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
 // its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
 fn gkey_frame(origin string, ch string, wire string, f transport.CanFrame) string {
@@ -659,6 +679,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				id:     r.id
 				ext:         r.ext
 				someip:       r.someip
+				lin:          r.lin
 				someip_type:  r.someip_type
 				someip_iface:     r.someip_iface
 				someip_proto:     r.someip_proto
@@ -733,6 +754,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// equal would let them swap places between redraws (the groups come from a map).
 		if a.someip != b.someip {
 			return if !a.someip { -1 } else { 1 }
+		}
+		if a.lin != b.lin {
+			return if !a.lin { -1 } else { 1 }
 		}
 		// the frame before the message rejoined from frames like it (a node may send one PGN
 		// both short and over TP) — in the key since #171, so here
@@ -815,7 +839,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if lb.label.len == 0 || lb.name != name_now {
 				lb = GLabel{
 					name:  name_now
-					label: '${idstr_row(g.id, g.ext, g.someip)}  ${name_now}###${k}'
+					label: '${idstr_row(g.id, g.ext, g.someip, g.lin)}  ${name_now}###${k}'
 					ctx:   'rowctx##${k}'
 				}
 				app.glabels[k] = lb
@@ -825,7 +849,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// NOT a SOME/IP row: `sel_id`/`sel_ext` are a CAN arbitration id and feed the Send
 			// panel, so selecting a service:method there would offer to transmit it as a 29-bit
 			// CAN frame on whatever bus Send is pointed at.
-			if vgui.is_item_clicked() && !g.someip {
+			if vgui.is_item_clicked() && g.can() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 				app.sel_tp = r.tp
@@ -838,7 +862,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// id that happens to equal an extended CAN id would offer to decode a service
 			// payload with that frame's signal layout; and the filter is keyed on the CAN
 			// identity, so watching one would also match the CAN frame.
-			if !g.someip && vgui.begin_popup_context_item(lb.ctx) {
+			if g.can() && vgui.begin_popup_context_item(lb.ctx) {
 				// group_message, not find_message: a rejoined J1939 message is looked up by its
 				// PGN against the databases on ITS OWN wire.
 				if m := app.group_message(r) {
@@ -921,7 +945,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
 				// group decodes nothing because its payload layout is the deployment's, not a
 				// DBC's (decoding it from an emb node's config is the next rung).
-				if m := app.group_message_kind(r, g.someip) {
+				if m := app.group_message_kind(r, !g.can()) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
@@ -947,6 +971,22 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						}
 						vgui.table_set_col(gcol_data)
 						vgui.text('${s.physical(r.data):.3}${unit}${extra}')
+					}
+				}
+				// a LIN frame decodes through its bus's LDF
+				if g.lin {
+					if r.lin_flags.contains('!') {
+						vgui.table_row()
+						vgui.table_set_col(gcol_name)
+						vgui.text_dim('not decoded: the frame has errors (${r.lin_flags})')
+					} else {
+						for sv in lin_signals(r) {
+							vgui.table_row()
+							vgui.table_set_col(gcol_name)
+							vgui.text(sv.name)
+							vgui.table_set_col(gcol_data)
+							vgui.text(lin.value_text(sv))
+						}
 					}
 				}
 				vgui.tree_pop()
