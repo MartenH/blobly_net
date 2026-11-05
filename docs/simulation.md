@@ -1077,6 +1077,6 @@ See [scripting.md](scripting.md) for the test API.
   not affect the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
-- **No LIN.** CAN, CAN-FD and DoIP; LIN is on the roadmap.
+- **No LIN in a project yet.** CAN, CAN-FD and DoIP; LIN runs in its own modules and `lin_monitor`, and joins projects step by step ([lin.md](lin.md)).
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.

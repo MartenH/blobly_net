@@ -92,8 +92,13 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   `blobly/doip/net_test.v`), so they stay findable only by an address you name. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
-- 🧭 **LIN** — `blobly/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
-  `EthFrame` rather than faked behind a generic frame.
+- 🚧 **LIN** — contained in its own modules, never a CAN row (`docs/lin.md`). Built: `blobly/lin`
+  (frame, codec, the in-process bus, schedules, `Row`) and `blobly/lindb` (LDF), `cmd/lin_monitor`.
+  Next, each its own PR: a serial tty/pty backend (Linux), the `lin:` project section with the
+  headless run and Lua, the C ABI and Python; then PEAK PLIN on Windows (the bench PCAN-USB Pro FD's
+  two LIN channels), a LIN panel in the GUI, and a real LIN node on a system_full board (zone_a,
+  USART2 in LIN mode, behind a transceiver). After v1, the row model is restructured so a fourth
+  kind of bus is one row kind, not an audit of every site that reads `Project.channels`.
 - 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: per-concern
   files (44 today, 27,111 lines between them, `main.v` itself 525), pure moves, build targets
   the directory. What remains here is the second half below — the app state and the
