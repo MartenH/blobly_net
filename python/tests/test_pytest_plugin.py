@@ -120,6 +120,27 @@ def test_neither(diag):
 '''
 
 
+# a LIN bus is tapped afresh for each test: what an earlier test left queued is not read
+LIN_SUITE = '''import time
+
+import blobly
+
+
+def test_a_reads_the_bus(project):
+    project.lin.BODY.expect("CEM_Frm1", 500)
+
+
+def test_b_leaves_frames_queued():
+    time.sleep(1.5)
+
+
+def test_c_reads_nothing_from_before_it(project):
+    began = blobly.now_ms()
+    f = project.lin.BODY.expect("CEM_Frm1", 500)
+    assert f.t_ms > began - 500, (began - f.t_ms)
+'''
+
+
 def write_all(d, files):
     for name, text in files.items():
         write(d, name, text)
@@ -192,6 +213,14 @@ class TestPlugin:
         # one warning names every channel that got no fixture, and why
         assert ("blobly: no fixture for 'Body Bus', 'body-bus' (as 'body_bus'); 'class' (as 'class'); "
                 "'project' (as 'project'); '_blobly_run' (as '_blobly_run'); 'tmp_path' (as 'tmp_path')") in out
+
+    def test_a_lin_bus_starts_each_test_fresh(self, tmp_path):
+        write_all(tmp_path, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\n", "test_lin.py": LIN_SUITE})
+        lin_demo = os.path.join(REPO, "projects", "lin-demo.blobnet")
+        r = pytest_run(tmp_path, f"--blobly-project={lin_demo}")
+        out = r.stdout + r.stderr
+        assert r.returncode == 0, out
+        assert "3 passed" in out, out
 
     def test_diag_on_a_node_of_the_system_model(self, tmp_path):
         # the ini makes tmp_path the run's root, so the child does not look above it into the

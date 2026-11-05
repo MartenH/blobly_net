@@ -27,6 +27,7 @@ from .e2e import E2eStatus, _passed, status_of
 from .cyclic import CyclicSender, _period, _start_message, _start_raw
 
 if TYPE_CHECKING:
+    from .lin import LinBuses
     from .nodes import Nodes
 
 # a frame's stated format (bb.h's enum bb_format, the Lua bus.send's `format =`); None states none
@@ -1022,6 +1023,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         self._gens, self._gens_run = None, None  # the generators, as the run of _gens_run lists them
         self._nodes, self._nodes_run = None, None  # the system model's nodes, as the run of _nodes_run has them
         self._senders: list[CyclicSender] = []  # the background senders this run started
+        self._lin, self._lin_run = None, None  # the run's LIN buses, as the run of _lin_run has them
 
     def load(self) -> Self:
         """Reads the project into the library, which holds one load at a time: another project's
@@ -1172,6 +1174,20 @@ class Project(EventLoop[Channel | str], Faults, Replays):
                 self._nodes = listed(self, list(self._nodes) if self._nodes is not None else None)
                 self._nodes_run = _lib.state["run"]
             return self._nodes
+
+    @property
+    def lin(self) -> "LinBuses":
+        """The run's LIN buses (blobly.LinBuses), the project's `lin:` list — never channels:
+        `net.lin.BODY` is a LinBus. Empty for a project with none. BloblyError (code -3) when the
+        project is not started."""
+        with _lib.state_lock:
+            if not self.started:
+                raise BloblyError("the project is not started: its LIN buses are the run's", _lib.BB_ERR_STATE)
+            if self._lin_run != _lib.state["run"]:
+                from .lin import listed as listed_lin  # lin.py builds on this module's Named
+                self._lin = listed_lin(self, list(self._lin) if self._lin is not None else None)
+                self._lin_run = _lib.state["run"]
+            return self._lin
 
     def _stop_senders(self) -> None:
         """Stops every background sender the run started (the pytest plugin, after a test)."""

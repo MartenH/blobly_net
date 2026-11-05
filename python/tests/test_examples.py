@@ -32,6 +32,7 @@ SCRIPTS = {
     "background_send.py": [],
     "j1939_listen.py": [],
     "nm_monitor.py": [],
+    "lin_monitor.py": [],
     "someip_node.py": None,  # against a node: SomeipNode's
 }
 

@@ -137,3 +137,12 @@ pub fn schedule_of(l &lindb.Ldf, name string) !LdfSchedule {
 		notes: notes
 	}
 }
+
+// has_physical is whether a signal's encoding has a physical range: where it has, a number sets
+// the signal's physical value, else its raw one. Every face's rule for a number it is given.
+pub fn has_physical(ldf ?lindb.Ldf, signal string) bool {
+	x := ldf or { return false }
+	s := x.signal(signal) or { return false }
+	e := x.encoding(s.encoding) or { return false }
+	return e.rules.any(it.kind == .physical)
+}

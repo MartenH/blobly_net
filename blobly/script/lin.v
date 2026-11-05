@@ -359,7 +359,7 @@ fn l_lin_set(l lua.State) i32 {
 			lindb.Value(l.arg_str(4))
 		}
 		'num' {
-			if lin_physical(h.ldf, signal) {
+			if lin.has_physical(h.ldf, signal) {
 				lindb.Value(l.arg_num(4))
 			} else {
 				lindb.Value(u64(int_arg(l, 4, 'the raw value of ${signal}', 0, max_i64) or {
@@ -375,14 +375,6 @@ fn l_lin_set(l lua.State) i32 {
 	}
 	h.row.set_signal(signal, v) or { return l.fail('lin.set: ${err.msg()}') }
 	return 0
-}
-
-// lin_physical says whether the signal's encoding has a physical range.
-fn lin_physical(ldf ?lindb.Ldf, signal string) bool {
-	x := ldf or { return false }
-	s := x.signal(signal) or { return false }
-	e := x.encoding(s.encoding) or { return false }
-	return e.rules.any(it.kind == .physical)
 }
 
 // __lin_schedule(h, name)

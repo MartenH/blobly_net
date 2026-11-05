@@ -454,6 +454,58 @@ pub mut:
 	last_interval_ms f64
 }
 
+// LIN (lin.v)
+pub struct C.bb_lin_bus {
+pub mut:
+	role i32
+	baud i32
+}
+
+pub struct C.bb_lin_frame {
+pub mut:
+	id       u8
+	pid      u8
+	len      u8
+	checksum u8
+	data     [8]u8
+	model    i32
+	errs     u32
+	event    i32
+	origin   i32
+	t_ns     i64
+}
+
+pub struct C.bb_lin_signal {
+pub mut:
+	raw          u64
+	physical     f64
+	has_physical u8
+	is_array     u8
+	bytes        i32
+}
+
+pub struct C.bb_lin_status {
+pub mut:
+	role          i32
+	state         i32
+	frames        i32
+	notes         i32
+	load          f64
+	dropped       u64
+	sched_sent    u64
+	sched_failed  u64
+	sched_late    u64
+	sched_running u8
+}
+
+pub struct C.bb_lin_id {
+pub mut:
+	id         u8
+	count      u64
+	errors     u64
+	cadence_ms f64
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 

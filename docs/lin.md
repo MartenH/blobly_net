@@ -104,13 +104,30 @@ bus of the script's own, closed when the script ends; the LDF path is relative t
 the GUI's Script panel `lin.open` takes an address only. The calls are in
 [scripting.md](scripting.md#lin--lin).
 
+## From C and Python
+
+The C ABI's LIN block (`cmd/libblobly/bb.h`) is `bb_lin_count` / `bb_lin_info` / `bb_lin_text`
+over the run's LIN buses, and `bb_lin_open`: a tap on one of them (row >= 0), or a bus of the
+handle's own on an address (row -1) with or without a project. A handle reads every frame
+(`bb_lin_recv`, a `bb_lin_frame` with its errors as `BB_LIN_ERR_*` bits), decodes one through the
+LDF (`bb_lin_decode`, then `bb_lin_signal_info` / `_signal_text` / `_signal_bytes` by index),
+controls the bus as its role allows (`bb_lin_header`, `bb_lin_set_signal`, `bb_lin_schedule`,
+`bb_lin_stop_schedule`, `bb_lin_wakeup`, `bb_lin_sleep`), reads its view (`bb_lin_read_status`,
+`bb_lin_status_id`, `bb_lin_status_text`) and counts (`bb_lin_diagnostics`), and is let go by
+`bb_lin_close`, which may come from another thread and ends a receive there.
+
+From Python, `net.lin.BODY` is a `LinBus` on a run's bus and `blobly.lin.open("inproc:x",
+"master", ldf="x.ldf")` one of the script's own; `recv`, `expect` (by id or frame name, its
+`Timeout` naming what came instead), `set`, `header`, `schedule`, `sleep`, `wakeup`, `status`. The
+calls are in [scripting_python.md](scripting_python.md#lin), and
+[python/examples/lin_monitor.py](../python/examples/lin_monitor.py) is a complete script.
+
 ## What comes next
 
 Each step is its own pull request:
-1. The same from C and Python.
-2. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
-3. A LIN panel in the GUI.
-4. A real LIN node on a system_full board.
+1. PEAK PLIN on Windows: the two LIN channels of a PCAN-USB Pro FD.
+2. A LIN panel in the GUI.
+3. A real LIN node on a system_full board.
 
 Until the LIN panel exists, LIN does not appear in the GUI's trace, its Buses panel or its
 recordings.
