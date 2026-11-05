@@ -102,8 +102,22 @@ fn pty_bytes(brk bool, data []u8) []u8 {
 // response a frame may take (TFrame_Maximum of 8 data bytes) and a margin for the host — a USB
 // adapter delivers in packets, a pty's other end answers from a thread.
 fn serial_idle_ns(kind SerialKind, baud int) i64 {
-	margin := if kind == .tty { i64(20_000_000) } else { i64(50_000_000) }
-	return i64(frame_bits_max(max_data)) * 1_000_000_000 / i64(baud) + margin
+	return i64(frame_bits_max(max_data)) * 1_000_000_000 / i64(baud) + serial_rx_margin_ns(kind)
+}
+
+// serial_rx_margin_ns is how long bytes already on the wire may take to reach this process.
+fn serial_rx_margin_ns(kind SerialKind) i64 {
+	return if kind == .tty { i64(20_000_000) } else { i64(50_000_000) }
+}
+
+// response_end is when a begun response is ended by its slot: a response that reached its
+// length at once; one of no stated length on a tty only after the receive margin, since its
+// last bytes may still be in an adapter's packet (a pty's decoder is current).
+fn response_end(kind SerialKind, length_reached bool, slot_end_ns i64) i64 {
+	if length_reached || kind == .pty {
+		return slot_end_ns
+	}
+	return slot_end_ns + serial_rx_margin_ns(kind)
 }
 
 // break_ns is the break a master sends: 13 bit times, LIN's minimum; delimiter_ns the recessive

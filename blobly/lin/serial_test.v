@@ -116,3 +116,9 @@ fn test_a_port_counter_counts_across_its_wrap() {
 	assert wrap_delta(7, 7) == 0
 	assert wrap_delta(10, 4) == 6
 }
+
+fn test_an_unknown_length_tty_response_waits_for_its_last_packet() {
+	assert response_end(.tty, true, 1000) == 1000
+	assert response_end(.pty, false, 1000) == 1000
+	assert response_end(.tty, false, 1000) == 1000 + serial_rx_margin_ns(.tty)
+}

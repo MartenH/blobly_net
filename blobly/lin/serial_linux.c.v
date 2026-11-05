@@ -553,8 +553,11 @@ fn (b &SerialBus) end_at() i64 {
 		return b.last_byte_ns + wake_quiet_ns
 	}
 	idle_at := b.last_byte_ns + b.idle_ns
-	if b.dec.response_begun() && b.slot_end_ns < idle_at {
-		return b.slot_end_ns
+	if b.dec.response_begun() {
+		end := response_end(b.addr.kind, b.dec.st == .tail, b.slot_end_ns)
+		if end < idle_at {
+			return end
+		}
 	}
 	return idle_at
 }
