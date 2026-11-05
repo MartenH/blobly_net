@@ -371,6 +371,7 @@ jobs:
     needs: [checks-msys2, build-msys2, wheel-windows]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Every mingw job passed
         env:
