@@ -189,8 +189,8 @@ mut:
 	// SPLIT IN TWO, because the drain covers one of them and must never cover the other.
 	//
 	// run_workers are the workers a RUN owns — rx_loop, sim_loop, gen_loop, the diagnostic and
-	// UDS node servers, a replay group, the DoIP watcher and the Diagnostics panel's connection
-	// holder (diag_hold.v). stop() ENDS them but does not wait;
+	// UDS node servers, a replay group, the DoIP watcher, the Diagnostics panel's connection
+	// holder (diag_hold.v) and a LIN bus's worker (lin_panel.v). stop() ENDS them but does not wait;
 	// rebuild_from_proj waits, because that is the operation that replaces what they read, and
 	// waiting in stop() would put ~200 ms — or seconds, against an adapter that has gone — on
 	// the GUI thread for every Stop. So `!app.running` is not on its own a licence to replace
@@ -334,6 +334,7 @@ mut:
 	show_stats    bool
 	show_perf     bool
 	show_nm       bool
+	show_lin      bool
 	perf          PerfView // the Performance panel's samples (panel_perf.v)
 	show_log      bool = true
 	show_replay   bool
@@ -420,6 +421,9 @@ mut:
 	// holding a server Stop already closed — and then deregisters the LIVE supervisor's target
 	// and competes with it to bind. Incremented by every Start; a worker exits when it differs.
 	run_gen u64
+	// The run's LIN buses (lin_panel.v), one per enabled `lin:` entry: replaced by Start on the GUI
+	// thread, each one's worker publishing into its own under its lock.
+	lin_runs []&LinRun
 	// The Configuration window's File tab: the project's own TEXT, edited in place.
 	//
 	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
@@ -1288,6 +1292,12 @@ fn (mut app App) rebuild_from_proj() {
 	// the run's workers; this waits for them to actually go — ~200 ms measured, bounded, and on
 	// the GUI thread only for a project switch or a Save, never for a plain Stop.
 	app.wait_for_run_workers()
+	// the last run's LIN views are of the project being replaced; their workers have gone
+	app.mu.lock()
+	if !app.running {
+		app.lin_runs = []&LinRun{}
+	}
+	app.mu.unlock()
 	// THROUGH THE RULE, not a fourth open-coded copy of it: drainrule is the tested statement of
 	// when this is safe, and a rule production code never calls is a rule that can drift from
 	// the code it describes. ONE Census answers both halves — the verdict, and the words for it —

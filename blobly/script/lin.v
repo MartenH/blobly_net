@@ -134,7 +134,8 @@ fn role_of(s string) !lin.Role {
 fn l_lin_open(l lua.State) i32 {
 	mut env := env_of(l)
 	target := l.arg_str(1)
-	if rows := env.lin_rows {
+	run_rows := if f := env.lin_rows { ?[]&lin.Row(f()) } else { ?[]&lin.Row(none) }
+	if rows := run_rows {
 		for row in rows {
 			if row.spec.name != target {
 				continue
@@ -148,15 +149,15 @@ fn l_lin_open(l lua.State) i32 {
 		}
 	}
 	if !target.contains(':') {
-		if rows := env.lin_rows {
+		if rows := run_rows {
 			names := rows.map(it.spec.name)
-			return l.fail('lin.open: no LIN row `${target}` in this run (${if names.len > 0 {
+			return l.fail('lin.open: no LIN row `${target}` running (${if names.len > 0 {
 				names.join(', ')
 			} else {
-				'it has none'
+				'none is'
 			}}), and it is not an address')
 		}
-		return l.fail('lin.open: `${target}` is not an address, and the GUI does not run LIN rows yet (docs/lin.md); give lin.open an address such as inproc:<name>')
+		return l.fail('lin.open: `${target}` is not an address, and this script was given no run\'s LIN buses; give lin.open an address such as inproc:<name>')
 	}
 	role := role_of(l.arg_str(2)) or { return l.fail('lin.open: ${err.msg()}') }
 	baud := int_arg(l, 4, 'baud', 0, 20000) or { return l.fail('lin.open: ${err.msg()}') }

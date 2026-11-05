@@ -15,7 +15,9 @@ fn lin_env(bus string) !(&Env, &lin.Row) {
 		schedule: 'NormalTable'
 	}, lin.RowOpts{})!
 	mut env := new_env([])!
-	env.lin_rows = [row]
+	env.lin_rows = fn [row] () []&lin.Row {
+		return [row]
+	}
 	return env, row
 }
 
@@ -61,7 +63,7 @@ test("expect names what came", function()
   check.truthy(not ok)
   check.truthy(e:find("no 0x30 within 100 ms; came instead: 0x", 1, true) ~= nil, e)
   ok, e = pcall(lin.open, "NOPE")
-  check.truthy(e:find("no LIN row `NOPE` in this run (BODY)", 1, true) ~= nil, e)
+  check.truthy(e:find("no LIN row `NOPE` running (BODY)", 1, true) ~= nil, e)
   ok, e = pcall(lin.open, "BODY", { role = "slave" })
   check.truthy(e:find("its role, LDF and rate are the project file", 1, true) ~= nil, e)
 end)
@@ -99,15 +101,15 @@ end)
 	m.close()
 }
 
-// Without the run's rows (the GUI), a row name is refused saying so.
-fn test_lin_names_need_a_headless_run() {
+// Without a run's rows, a row name is refused saying so.
+fn test_lin_names_need_a_run() {
 	mut env := new_env([])!
 	defer {
 		env.close()
 	}
 	env.run_source('test("gui", function()
   local ok, e = pcall(lin.open, "BODY")
-  check.truthy(e:find("the GUI does not run LIN rows yet", 1, true) ~= nil, e)
+  check.truthy(e:find("was given no run", 1, true) ~= nil, e)
 end)')!
 	assert env.failed() == 0, env.results.filter(!it.ok).map('${it.name}: ${it.msg}').str()
 }

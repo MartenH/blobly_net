@@ -307,6 +307,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_NM') != '' {
 		app.show_nm = true
 	}
+	// And the LIN panel.
+	if os.getenv('BLOBLY_SHOW_LIN') != '' {
+		app.show_lin = true
+	}
 	// And the Replay panel.
 	if os.getenv('BLOBLY_SHOW_REPLAY') != '' {
 		app.show_replay = true
@@ -518,6 +522,9 @@ fn main() {
 		}
 		if app.show_nm {
 			draw_nm(mut app)
+		}
+		if app.show_lin {
+			draw_lin(mut app)
 		}
 		if app.show_gen {
 			draw_gen(mut app)
