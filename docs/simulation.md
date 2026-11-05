@@ -450,7 +450,8 @@ selected row's snapshot (0x19 04) and extended data below it; Refresh, an auto-r
 confirmation) and **DTC setting off / on** (0x85, switching to the extended session first when the
 connection is in the default one). Every request goes through the held connection and is timed in
 the log. **Names come from blobly_emb**: when a `system.toml` sits beside the project, beside one
-of its databases, or in the project's parent folder (or one is loaded in the System panel), each
+of its databases, or in the project's parent folder (or one is loaded in the System panel — offered
+once **View ▸ blobly_emb panels** is ticked), each
 of its nodes is listed as a target on the running channel named after its bus, and a target
 whose addressing matches a node — CAN request and response ids, or a DoIP entity's logical
 address — shows that node's `[[fault]]` names and decodes snapshot DIDs through its `[[did]]`s

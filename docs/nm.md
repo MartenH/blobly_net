@@ -86,7 +86,7 @@ gets 300 ms. An ARXML cluster gets 2 s, since the system description does not ca
 timeout. The header says when the timeout is a default.
 
 While stopped, the open panel follows the configuration once a second, so a `system.toml`
-loaded in the System panel shows its declared nodes, all missing, before anything is heard.
+loaded in the System panel (View ▸ blobly_emb panels) shows its declared nodes, all missing, before anything is heard.
 At Start the configuration is fixed for the run.
 
 ## From a script

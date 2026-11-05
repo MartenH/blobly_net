@@ -246,11 +246,6 @@ fn main() {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}
 	if !headless {
-		// the startup project was loaded before the profile was read, so its system.toml
-		// opened no System panel; it does where the blobly_emb panels are offered
-		if app.prefs.emb_panels && app.sys_loaded {
-			app.show_sys = true
-		}
 		// the dragged panes are per-user state too: a headless render keeps the defaults (r13)
 		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
@@ -293,6 +288,16 @@ fn main() {
 	// And the Trace Chart panel, whose target line names what Record / Dump address.
 	if os.getenv('BLOBLY_SHOW_TCHART') != '' {
 		app.show_tchart = true
+	}
+	// The blobly_emb panels offered, for a headless render, which reads no profile — so the
+	// preference is not written back from here.
+	if headless && os.getenv('BLOBLY_EMB_PANELS') != '' {
+		app.prefs.emb_panels = true
+	}
+	// The startup project was loaded before the profile was read, so its system.toml opened no
+	// System panel; it does where the blobly_emb panels are offered.
+	if app.prefs.emb_panels && app.sys_loaded {
+		app.show_sys = true
 	}
 	// And the Performance panel, which samples only while it is open.
 	if os.getenv('BLOBLY_SHOW_PERF') != '' {

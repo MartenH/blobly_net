@@ -187,7 +187,8 @@ single click away; the buttons are not guarded, since they do not move under the
 double click on `.. up` is two ups) — and where `..`
 goes from a Windows drive root (the drives view, so `D:` is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
 runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.config/blobly_net/settings.toml`:
-the external editor command and the UI scale) and how an editor command becomes an argv (#306) — plus `headless_size`, the fixed window a headless render gets (1500x850, or `VGUI_SIZE=2400x1350` for a screenshot that needs room); and `cmd/blobly_net/panerule/`, the persisted
+the external editor command, the UI scale, and `emb_panels` — whether the activity bar and View menu offer the
+blobly_emb panels, off by default and written only when on) and how an editor command becomes an argv (#306) — plus `headless_size`, the fixed window a headless render gets (1500x850, or `VGUI_SIZE=2400x1350` for a screenshot that needs room); and `cmd/blobly_net/panerule/`, the persisted
 divider — how tall a dragged pane is THIS frame (clamped before it is drawn, from what the container
 has now) and what a drag changes (a drag persists, a clamp does not; stored unscaled) — one rule
 for the panes that had it written per pane in two shapes (#305 r2, #306) — seven now, the Diagnostics panel's DTC/DIDs content over its log among them; and `cmd/blobly_net/gaterule/`, WHICH J1939 READING A RECORDED BUS TAKES — which of the
@@ -761,7 +762,7 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   multi-viewport, so panels are not pinned. A symbol the main font lacks is drawn from
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
-  `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it.
+  `settings.toml` (editor command, UI scale, the blobly_emb panels' switch, dragged panes) and ImGui's `imgui.ini` beside it.
   **Both are last-writer-wins between two instances of one user** (#308, #309), and **the app
   writes both**: `save_prefs` and `save_layout` put the whole file out through a temp file and
   `replace_file`, so a write that fails part-way never truncates the file it replaces. ImGui's

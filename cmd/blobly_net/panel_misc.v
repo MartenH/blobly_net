@@ -133,16 +133,11 @@ fn draw_activity_emb(mut app App) {
 	vgui.set_item_tooltip('System viewer — blobly_emb system.toml / ecu.toml')
 }
 
-// set_emb_panels offers or withdraws the blobly_emb panels, remembered across runs. Withdrawn,
-// the open ones close, since nothing would be left on screen to reopen or find them by.
+// set_emb_panels offers or withdraws the blobly_emb panels' buttons, remembered across runs. A
+// panel open when they are withdrawn stays open until its X — a flash or a shell session in it
+// may still be running.
 fn (mut app App) set_emb_panels(on bool) {
 	app.prefs.emb_panels = on
-	if !on {
-		app.show_tchart = false
-		app.show_flash = false
-		app.show_shell = false
-		app.show_sys = false
-	}
 	app.prefs_dirty = true
 	app.save_prefs(false)
 }
