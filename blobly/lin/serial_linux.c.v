@@ -55,12 +55,13 @@ __global (
 	lin_serial_reg shared SerialRegistry
 )
 
-// Wrote is what this handle wrote after a header: the response (none for no response) and whom
-// the trace attributes it to.
+// Wrote is what this handle wrote for a frame: the response (none for no response), whom the
+// trace attributes it to, and whether this handle wrote the header too.
 struct Wrote {
-	id    u8
-	bytes []u8
-	src   Src
+	id     u8
+	bytes  []u8
+	src    Src
+	header bool
 }
 
 // Answer is what an entry makes this handle do after a header: bytes to write, or none when its
@@ -74,7 +75,14 @@ struct Answer {
 // unread (a tty whose echo has stopped).
 const most_pending = 4
 
-// Counts are what TIOCGICOUNT says.
+// wake_quiet_ns is the quiet after a lone pulse that makes it a wakeup: far below the 150 ms a
+// node waits after a wakeup, and above a USB adapter's usual packet gap within one burst.
+const wake_quiet_ns = i64(10_000_000)
+
+// drain_reads bounds one drain, so a port that never runs dry cannot hold the lock for ever.
+const drain_reads = 4
+
+// Counts are the port's error counters: TIOCGICOUNT's 32-bit values, or totals of their moves.
 struct Counts {
 mut:
 	frame   u64
@@ -92,12 +100,19 @@ mut:
 	queue   chan Frame
 	dropped u64
 	closed  u64
+	// lost_flag is set once `lost` is: the port is gone.
+	lost_flag u64
+	// waiting counts callers waiting for mu; the reader lets them in before it locks again.
+	waiting u64
 	reader  thread
-	base    Counts // the port's counts at open
 	// mu guards the rest: the port, the decoder, the entries, and what this handle has sent.
-	mu      sync.Mutex
-	fd      i32 = -1 // -1 once closed
-	final   Counts // the port's counts when it closed
+	mu sync.Mutex
+	fd i32 = -1 // -1 once closed
+	// counted: the port keeps counters; last is their value at the last read, total what they
+	// moved since open.
+	counted bool
+	last    Counts
+	total   Counts
 	dec     Decoder
 	entries map[u8]Entry
 	// armed: the last MasterReq addressed this handle's NAD, so its SlaveResp entry may answer.
@@ -115,8 +130,9 @@ mut:
 	pending []Wrote
 	// sent is what this handle wrote for the frame being read, until that frame ends.
 	sent ?Wrote
-	// woke: this handle sent a wakeup that has not been read yet.
-	woke bool
+	// woke: this handle sent a wakeup that has not been read yet; woke_ns when it went out.
+	woke    bool
+	woke_ns i64
 	// brk_out: the last put's break reached the line (tty) or this handle's decoder (pty).
 	brk_out bool
 	// lost is why the port stopped, '' while it works.
@@ -158,7 +174,11 @@ fn open_serial(a SerialAddr, cfg Config) !Bus {
 		queue:   chan Frame{cap: serial_queue_cap}
 		dec:     new_decoder(map[u8]Expect{}, baud)
 	}
-	b.base = b.counts()
+	mut at_open := Counts{}
+	if C.bl_ser_icount(fd, &at_open.frame, &at_open.parity, &at_open.overrun) == 0 {
+		b.counted = true
+		b.last = at_open
+	}
 	b.reader = spawn b.read_loop()
 	return b
 }
@@ -173,20 +193,33 @@ fn (b &SerialBus) is_closed() bool {
 	return stdatomic.load_u64(&b.closed) != 0
 }
 
-// gone_locked is the error of a handle that is closed or whose port is lost. The caller holds mu.
+// lock takes mu for a caller other than the reader, which steps aside for it.
+fn (mut b SerialBus) lock() {
+	stdatomic.add_u64(&b.waiting, 1)
+	b.mu.lock()
+	stdatomic.sub_u64(&b.waiting, 1)
+}
+
+// reader_lock takes mu for the reader once nobody else is waiting for it: a port that never runs
+// dry would otherwise let the reader take it back every time.
+fn (mut b SerialBus) reader_lock() {
+	for stdatomic.load_u64(&b.waiting) > 0 && !b.is_closed() {
+		time.sleep(50 * time.microsecond)
+	}
+	b.mu.lock()
+}
+
+fn (b &SerialBus) is_lost() bool {
+	return stdatomic.load_u64(&b.lost_flag) != 0
+}
+
+// gone_locked is the error of a handle that is closed or whose port is lost. `lost` is written
+// once, before lost_flag, so it may be read without mu once the flag is seen.
 fn (b &SerialBus) gone_locked() IError {
-	if b.lost != '' {
+	if b.is_lost() {
 		return transport.carrier_gone('lin ${b.addr.address}: ${b.lost}')
 	}
 	return transport.carrier_gone('lin ${b.addr.address}: handle is closed')
-}
-
-fn (mut b SerialBus) gone() IError {
-	b.mu.lock()
-	defer {
-		b.mu.unlock()
-	}
-	return b.gone_locked()
 }
 
 // live refuses a call on a handle that is closed or whose port is lost. The caller holds mu.
@@ -201,6 +234,7 @@ fn (b &SerialBus) live() ! {
 fn (mut b SerialBus) fail(why string) {
 	if b.lost == '' {
 		b.lost = why
+		stdatomic.store_u64(&b.lost_flag, 1)
 	}
 	b.queue.close()
 }
@@ -239,7 +273,7 @@ fn (b &SerialBus) expected_len(id u8) int {
 pub fn (mut b SerialBus) set_entry(e Entry) ! {
 	b.usable('set_entry', false)!
 	check_entry(e)!
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
@@ -254,7 +288,7 @@ pub fn (mut b SerialBus) set_entry(e Entry) ! {
 pub fn (mut b SerialBus) update(id u8, data []u8) ! {
 	b.usable('update', false)!
 	check_id(id)!
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
@@ -307,7 +341,7 @@ fn (mut b SerialBus) consume(id u8, e Entry) {
 pub fn (mut b SerialBus) header(id u8) ! {
 	b.usable('header', true)!
 	check_id(id)!
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
@@ -322,25 +356,26 @@ pub fn (mut b SerialBus) header(id u8) ! {
 			src = a.entry.src_on(b.cfg.src)
 		}
 	}
-	// A MasterReq this handle writes arms its SlaveResp now, not when its echo is read.
+	// A MasterReq this handle writes arms its SlaveResp now, not when its echo is read, and only
+	// a whole one with its checksum right.
 	if id == master_req && resp.len == 0 {
 		b.armed = false
 	}
 	mut bytes := [u8(0x55), pid(id)]
 	bytes << resp
-	b.send_header(Wrote{ id: id, bytes: resp, src: src }, bytes)!
+	b.send_header(Wrote{ id: id, bytes: resp, src: src, header: true }, bytes)!
 	if a := ans {
 		b.consume(id, a.entry)
 	}
 	if id == master_req && resp.len > 0 {
-		b.armed = names_nad(b.cfg.nad, resp[..resp.len - 1])
+		b.armed = request_valid(resp) && names_nad(b.cfg.nad, resp)
 	}
 }
 
 // sleep sends the go-to-sleep command: a MasterReq of 0x00 and seven 0xFF, classic checksum.
 pub fn (mut b SerialBus) sleep() ! {
 	b.usable('sleep', true)!
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
@@ -350,21 +385,24 @@ pub fn (mut b SerialBus) sleep() ! {
 	resp << checksum(.classic, pid(master_req), resp)
 	mut bytes := [u8(0x55), pid(master_req)]
 	bytes << resp
-	b.send_header(Wrote{ id: master_req, bytes: resp, src: b.cfg.src }, bytes)!
+	b.send_header(Wrote{ id: master_req, bytes: resp, src: b.cfg.src, header: true }, bytes)!
 	b.armed = false
 }
 
-// send_header notes a header as this handle's, opens its slot and writes it. A header whose
-// break did not get out is forgotten, so the next break read is not matched to it. The caller
-// holds mu.
+// send_header notes a header as this handle's, opens its slot and writes it. What the port
+// holds is decoded before the header is noted, so a break read in between cannot take it. A
+// header whose break did not get out is forgotten, so the next break read is not matched to it.
+// The caller holds mu.
 fn (mut b SerialBus) send_header(w Wrote, bytes []u8) ! {
+	b.drain()
+	b.live()!
 	if b.pending.len == most_pending {
 		b.pending.delete(0)
 	}
 	b.pending << w
 	b.slot_end_ns = i64(time.sys_mono_now()) + frame_ns_max(b.expected_len(w.id), b.cfg.baud)
-	b.put(true, bytes, true) or {
-		if !b.brk_out {
+	b.put(true, bytes, false) or {
+		if !b.brk_out && b.pending.len > 0 {
 			b.pending.delete_last()
 		}
 		return err
@@ -374,13 +412,14 @@ fn (mut b SerialBus) send_header(w Wrote, bytes []u8) ! {
 // wakeup sends a dominant pulse of 250 us .. 5 ms (wake_byte) once the previous slot has ended.
 pub fn (mut b SerialBus) wakeup() ! {
 	b.usable('wakeup', false)!
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
 	b.live()!
 	b.wait_slot(true)!
 	b.woke = true
+	b.woke_ns = i64(time.sys_mono_now())
 	b.put(false, [wake_byte(b.cfg.baud)], true) or {
 		b.woke = false
 		return err
@@ -388,27 +427,41 @@ pub fn (mut b SerialBus) wakeup() ! {
 }
 
 // wait_slot waits, with mu released, until the last header's slot has ended. Before a wakeup,
-// which has no break to end what is open, the open frame is ended too: at once on a pty, whose
-// decoder is current; on a tty once the reader has its echo, or after idle_ns. The caller holds
-// mu.
+// which has no break to end what is open, an open frame or wakeup pulse is ended too: on a pty,
+// whose decoder is current, once two byte times (a pulse: twice wake_quiet_ns, so another
+// receiver has confirmed it) have passed since the last byte; on a tty once the reader has the echo,
+// or after idle_ns. The caller holds mu.
 fn (mut b SerialBus) wait_slot(ends_frame bool) ! {
 	for {
 		b.drain()
 		b.live()!
 		now := i64(time.sys_mono_now())
 		mut until := b.slot_end_ns
-		if ends_frame && b.frame_open() {
-			if b.addr.kind == .pty && now >= until {
-				b.finish(b.dec.idle(b.cfg.clock.now_ns()))
-				return
-			}
-			if b.addr.kind == .tty {
+		if ends_frame && (b.frame_open() || b.dec.st == .wake) {
+			if b.addr.kind == .pty {
+				quiet := b.last_byte_ns + if b.dec.st == .wake {
+					2 * wake_quiet_ns
+				} else {
+					i64(20) * 1_000_000_000 / i64(b.cfg.baud)
+				}
+				if quiet > until {
+					until = quiet
+				}
+				if now >= until {
+					b.finish(b.dec.idle(b.cfg.clock.now_ns()))
+					return
+				}
+			} else {
 				if now >= until + b.idle_ns {
 					b.finish(b.dec.idle(b.cfg.clock.now_ns()))
 					return
 				}
 				until = if now >= until { now + 1_000_000 } else { until }
 			}
+		} else if ends_frame && b.woke && b.addr.kind == .tty
+			&& now < b.woke_ns + b.idle_ns + 20_000_000 {
+			// this handle's last wakeup has not come back yet
+			until = now + 1_000_000
 		}
 		if now >= until {
 			return
@@ -416,7 +469,7 @@ fn (mut b SerialBus) wait_slot(ends_frame bool) ! {
 		left := until - now
 		b.mu.unlock()
 		time.sleep(if left < 1_000_000 { left } else { 1_000_000 })
-		b.mu.lock()
+		b.lock()
 	}
 }
 
@@ -469,13 +522,14 @@ fn (mut b SerialBus) port_error(what string, errno int) IError {
 	return error('lin ${b.addr.address}: ${msg}')
 }
 
-// drain reads and decodes what the port holds now, without waiting. The caller holds mu.
+// drain reads and decodes what the port holds now, without waiting, at most drain_reads reads.
+// The caller holds mu.
 fn (mut b SerialBus) drain() {
 	if b.lost != '' || b.fd < 0 {
 		return
 	}
 	mut buf := []u8{len: 256}
-	for {
+	for _ in 0 .. drain_reads {
 		n := C.bl_ser_read(b.fd, buf.data, i32(buf.len), 0)
 		if n < 0 {
 			b.fail(os.get_error_msg(-int(n)))
@@ -490,11 +544,14 @@ fn (mut b SerialBus) drain() {
 }
 
 // end_at is when the decoder's open frame, or a stray byte's hold on the next wakeup, ends: once
-// the line has been quiet for idle_ns, or a frame at its length when its slot ends. The caller
-// holds mu.
+// the line has been quiet for idle_ns (a wakeup pulse for wake_quiet_ns), or, for a response that has begun and has either reached
+// its length or has none stated, when its slot ends. The caller holds mu.
 fn (b &SerialBus) end_at() i64 {
+	if b.dec.st == .wake {
+		return b.last_byte_ns + wake_quiet_ns
+	}
 	idle_at := b.last_byte_ns + b.idle_ns
-	if b.dec.st == .tail && b.slot_end_ns < idle_at {
+	if b.dec.response_begun() && b.slot_end_ns < idle_at {
 		return b.slot_end_ns
 	}
 	return idle_at
@@ -504,7 +561,7 @@ fn (b &SerialBus) end_at() i64 {
 // the port fails; what is open is ended at end_at.
 fn (mut b SerialBus) read_loop() {
 	for {
-		b.mu.lock()
+		b.reader_lock()
 		if b.is_closed() || b.lost != '' {
 			b.mu.unlock()
 			return
@@ -520,7 +577,7 @@ fn (mut b SerialBus) read_loop() {
 		fd := b.fd
 		b.mu.unlock()
 		r := C.bl_ser_wait(fd, i32(wait))
-		b.mu.lock()
+		b.reader_lock()
 		if r < 0 {
 			b.fail(os.get_error_msg(-int(r)))
 		} else if r > 0 {
@@ -598,9 +655,9 @@ fn (mut b SerialBus) finish(frames []Frame) {
 			b.state = .active
 			f.src = if f.ours { b.cfg.src } else { Src.remote }
 		} else {
-			f.header = b.cfg.role == .master
 			mut resp_src := ?Src(none)
 			if sent := b.sent {
+				f.header = sent.header
 				if sent.bytes.len > 0 && has_id(f) && f.id == sent.id {
 					f.ours = true
 					resp_src = sent.src
@@ -614,7 +671,12 @@ fn (mut b SerialBus) finish(frames []Frame) {
 			b.sent = none
 			if has_id(f) {
 				b.last_id = f.id
-				if f.id == master_req && !(f.header && f.ours) {
+				// this handle's own MasterReq armed at its write, and is only undone by a bad echo
+				if f.id == master_req && f.header && f.ours {
+					if f.errs != Errs.zero() || f.event != .frame {
+						b.armed = false
+					}
+				} else if f.id == master_req {
 					b.armed = f.errs == Errs.zero() && f.event == .frame
 						&& names_nad(b.cfg.nad, f.data)
 				}
@@ -635,19 +697,25 @@ fn (mut b SerialBus) finish(frames []Frame) {
 }
 
 // recv: a closed handle is gone, whatever is still queued on it; so is one whose port failed.
+// It takes no lock, so a look is immediate whatever a writer is waiting on.
 pub fn (mut b SerialBus) recv(timeout_ms int) !Frame {
-	if b.is_closed() {
-		return b.gone()
+	if b.is_closed() || b.is_lost() {
+		return b.gone_locked()
 	}
-	f := queue_pop(b.queue, timeout_ms, b.gone())!
-	if b.is_closed() {
-		return b.gone()
+	f := queue_pop(b.queue, timeout_ms) or {
+		if err is QueueClosed {
+			return b.gone_locked()
+		}
+		return err
+	}
+	if b.is_closed() || b.is_lost() {
+		return b.gone_locked()
 	}
 	return f
 }
 
 pub fn (mut b SerialBus) status() Status {
-	b.mu.lock()
+	b.lock()
 	defer {
 		b.mu.unlock()
 	}
@@ -657,38 +725,41 @@ pub fn (mut b SerialBus) status() Status {
 	}
 }
 
-// counts reads the port's counters, zero where it keeps none. The caller holds mu (or is open).
-fn (b &SerialBus) counts() Counts {
-	mut c := Counts{}
-	if b.fd < 0 || C.bl_ser_icount(b.fd, &c.frame, &c.parity, &c.overrun) < 0 {
-		return Counts{}
+// count adds what the port's 32-bit counters moved since the last read to the totals. The
+// caller holds mu.
+fn (mut b SerialBus) count() {
+	if !b.counted || b.fd < 0 {
+		return
 	}
-	return c
+	mut c := Counts{}
+	if C.bl_ser_icount(b.fd, &c.frame, &c.parity, &c.overrun) < 0 {
+		return
+	}
+	b.total.frame += wrap_delta(c.frame, b.last.frame)
+	b.total.parity += wrap_delta(c.parity, b.last.parity)
+	b.total.overrun += wrap_delta(c.overrun, b.last.overrun)
+	b.last = c
 }
 
 // diagnostics: frames the queue had no room for and bytes the port overran, as dropped; framing
 // and parity errors the port counted since open, as bus errors; bytes read outside any frame, as
 // decode errors. A pty keeps no port counts; a closed handle reports the counts it closed with.
 pub fn (mut b SerialBus) diagnostics() transport.BusDiagnostics {
-	b.mu.lock()
-	c := if b.fd >= 0 { b.counts() } else { b.final }
+	b.lock()
+	b.count()
+	t := b.total
 	stray := b.dec.stray
 	b.mu.unlock()
 	return transport.BusDiagnostics{
-		dropped:       stdatomic.load_u64(&b.dropped) + since(c.overrun, b.base.overrun)
-		bus_errors:    since(c.frame, b.base.frame) + since(c.parity, b.base.parity)
+		dropped:       stdatomic.load_u64(&b.dropped) + t.overrun
+		bus_errors:    t.frame + t.parity
 		decode_errors: stray
 	}
 }
 
-// since is a count's growth from its value at open; a port that no longer answers counts nothing.
-fn since(now u64, base u64) u64 {
-	return if now >= base { now - base } else { 0 }
-}
-
 // close ends the reader, closes the port and frees the device for another open.
 pub fn (mut b SerialBus) close() {
-	b.mu.lock()
+	b.lock()
 	if b.is_closed() {
 		b.mu.unlock()
 		return
@@ -697,8 +768,8 @@ pub fn (mut b SerialBus) close() {
 	b.entries.clear()
 	b.mu.unlock()
 	b.reader.wait()
-	b.mu.lock()
-	b.final = b.counts()
+	b.lock()
+	b.count()
 	C.bl_ser_close(b.fd)
 	b.fd = -1
 	b.mu.unlock()

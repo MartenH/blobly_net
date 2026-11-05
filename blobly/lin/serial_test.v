@@ -110,3 +110,9 @@ fn test_serial_is_refused_by_name_where_it_is_not_built() {
 		assert false
 	}
 }
+
+fn test_a_port_counter_counts_across_its_wrap() {
+	assert wrap_delta(1, 0xFFFF_FFFE) == 3
+	assert wrap_delta(7, 7) == 0
+	assert wrap_delta(10, 4) == 6
+}

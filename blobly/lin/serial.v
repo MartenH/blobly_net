@@ -143,3 +143,15 @@ pub fn rate_refusal(address string, role Role, asked int, got int) ?string {
 	}
 	return 'lin: `${address}` runs at ${got} baud, not ${asked}: the adapter cannot produce this rate within the ${f64(permille) / 10:.1f} % a ${role} may be off'
 }
+
+// wrap_delta is how far a 32-bit kernel counter moved from `last` to `now`, across a wrap.
+fn wrap_delta(now u64, last u64) u64 {
+	return u64(u32(now) - u32(last))
+}
+
+// request_valid is whether a MasterReq response as written (8 data bytes and the checksum) is a
+// whole, correct one.
+fn request_valid(resp []u8) bool {
+	return resp.len == max_data + 1
+		&& checksum(.classic, pid(master_req), resp[..max_data]) == resp[max_data]
+}

@@ -242,19 +242,24 @@ pub fn one_handle_per_device(address string) bool {
 	return is_serial(address)
 }
 
+// QueueClosed is a handle's queue found closed; the handle says why (queue_pop's caller maps it).
+struct QueueClosed {
+	Error
+}
+
 // queue_pop is a handle's next queued frame within timeout_ms (0 a look, < 0 for ever): Timeout
-// when none came, `gone` once the queue is closed.
-fn queue_pop(q chan Frame, timeout_ms int, gone IError) !Frame {
+// when none came, QueueClosed once the queue is closed.
+fn queue_pop(q chan Frame, timeout_ms int) !Frame {
 	if timeout_ms == 0 {
 		mut f := Frame{}
 		return match q.try_pop(mut f) {
 			.success { f }
-			.closed { gone }
+			.closed { QueueClosed{} }
 			.not_ready { Timeout{} }
 		}
 	}
 	if timeout_ms < 0 {
-		f := <-q or { return gone }
+		f := <-q or { return QueueClosed{} }
 		return f
 	}
 	// The select is an expression: its false is the closed channel.
@@ -272,7 +277,7 @@ fn queue_pop(q chan Frame, timeout_ms int, gone IError) !Frame {
 		return frame
 	}
 	if !chan_open {
-		return gone
+		return QueueClosed{}
 	}
 	return Timeout{}
 }

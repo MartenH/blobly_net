@@ -341,7 +341,12 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !Frame {
 }
 
 fn (mut b InprocBus) pop(timeout_ms int) !Frame {
-	return queue_pop(b.queue, timeout_ms, b.gone())
+	return queue_pop(b.queue, timeout_ms) or {
+		if err is QueueClosed {
+			return b.gone()
+		}
+		return err
+	}
 }
 
 pub fn (mut b InprocBus) status() Status {

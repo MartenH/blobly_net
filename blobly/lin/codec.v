@@ -247,9 +247,12 @@ mut:
 	esc     int  // 1: FF seen, 2: FF 00 seen
 	st      DecState
 	id      u8
-	buf     []u8
-	errs    Errs
-	last_t  i64
+	// exp is what the open frame is read by, taken from lengths when its PID came in, so a
+	// change to lengths does not change how a frame already open is read.
+	exp    ?Expect
+	buf    []u8
+	errs   Errs
+	last_t i64
 }
 
 pub fn new_decoder(lengths map[u8]Expect, baud int) Decoder {
@@ -308,6 +311,19 @@ pub fn (mut d Decoder) feed(chunk []u8, t_ns i64) []Frame {
 		}
 	}
 	return out
+}
+
+// response_begun is whether a response has begun and can only end at a break or idle: it has
+// reached its expected length, or none is stated for its id.
+pub fn (d &Decoder) response_begun() bool {
+	if d.st == .tail {
+		return true
+	}
+	if d.st != .response || d.buf.len == 0 {
+		return false
+	}
+	_ := d.exp or { return true }
+	return false
 }
 
 // wants_idle is whether the decoder is waiting on the line going quiet: a frame or a wakeup pulse
@@ -380,6 +396,7 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 				return
 			}
 			d.id = id
+			d.exp = if e := d.lengths[id] { ?Expect(e) } else { ?Expect(none) }
 			d.st = .response
 		}
 		.response {
@@ -388,7 +405,7 @@ fn (mut d Decoder) symbol(s Sym, b u8, t_ns i64, mut out []Frame) {
 			if s == .ferr {
 				d.errs.set(.framing)
 			}
-			if e := d.lengths[d.id] {
+			if e := d.exp {
 				if d.buf.len >= e.len + 1 {
 					d.st = .tail
 				}
@@ -426,8 +443,7 @@ fn (mut d Decoder) end_open(mut out []Frame) {
 			d.emit(Frame{ errs: errs }, mut out)
 		}
 		.response, .tail {
-			exp := if e := d.lengths[d.id] { ?Expect(e) } else { ?Expect(none) }
-			mut f := interpret(d.id, d.buf, exp)
+			mut f := interpret(d.id, d.buf, d.exp)
 			if d.errs.has(.framing) {
 				f.errs.set(.framing)
 				if f.event == .sleep {

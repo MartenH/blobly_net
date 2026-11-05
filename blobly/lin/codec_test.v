@@ -384,3 +384,18 @@ fn test_decode_a_response_past_its_length_is_long() {
 	gs := ended(mut d, v, 5)
 	assert gs.len == 1 && gs[0].event == .frame && gs[0].errs.has(.long)
 }
+
+fn test_decode_an_open_frame_keeps_the_expectation_it_began_with() {
+	mut d := new_decoder({
+		u8(0x10): Expect{
+			len: 1
+		}
+	}, 19200)
+	// enhanced 0x10 [D7] with its checksum inverted, which happens to be D7's classic checksum
+	cs := checksum(.enhanced, pid(0x10), [u8(0xD7)]) ^ 0xFF
+	assert d.feed(wire(0x10, [u8(0xD7), cs]), 1).len == 0
+	// the entry that stated the length goes before the frame is finished
+	d.lengths = map[u8]Expect{}
+	fs := d.idle(2)
+	assert fs.len == 1 && fs[0].errs == Errs.checksum && fs[0].model == .enhanced
+}
