@@ -33,9 +33,10 @@ pub fn split_database_ref(ref string) (string, string) {
 
 // is_arxml_path reports whether a path (without fragment) names an ARXML file.
 // A model file (`<name>.arxmodel.toml`: the files of one system description and the schema they
-// are merged by) is one too.
+// are merged by) is one too, and so is an ExtractEditor project file (`<name>.e3proj`, the files
+// one ECU extract is edited as).
 pub fn is_arxml_path(path string) bool {
-	return path.to_lower().ends_with('.arxml') || arxmodel.is_model_file(path)
+	return path.to_lower().ends_with('.arxml') || arxmodel.is_model_file(path) || is_e3proj(path)
 }
 
 // is_arxml_ref reports whether a database reference names an ARXML, fragment or not.

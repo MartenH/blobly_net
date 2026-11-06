@@ -5,7 +5,7 @@
 > deliberately NOT editors.
 >
 > An **ARXML-backed** database (a `databases:` entry naming an `.arxml`, with or without a `#Cluster`
-> fragment, or an `.arxmodel.toml` model file; #272, #461) opens in the
+> fragment, an `.arxmodel.toml` model file, or an ExtractEditor `.e3proj` project; #272, #461) opens in the
 > editor **read-only**: Save serialises DBC text to the selected path, and that path is the
 > customer's system description. Export with `cmd/arxml2dbc` and edit the DBC it produces.
 

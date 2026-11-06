@@ -465,7 +465,7 @@ fn take(args []string, i int, flag string) string {
 }
 
 fn usage() {
-	eprintln('usage: arxml2dbc <file.arxml|dir|@list>...|<model.arxmodel.toml> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>|-] [--list] [--dump]')
+	eprintln('usage: arxml2dbc <file.arxml|dir|@list>...|<model.arxmodel.toml>|<project.e3proj> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>|-] [--list] [--dump]')
 }
 
 // dump_cluster prints the database in the line-per-fact form sut/arxml_oracle.py also

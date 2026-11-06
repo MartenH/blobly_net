@@ -982,6 +982,11 @@ fn test_selectors_never_collide_with_a_documented_short_name() {
 	assert e.report.notes.any(it.contains('/A/Node: ECU name Node is used by another package too; this one is A_Node_2'))
 	assert e.report.notes.any(it.contains('/B/Node: ECU name Node is used by another package too; this one is B_Node'))
 	assert !e.report.notes.any(it.contains('/C/A_Node'))
+	// and the read says which name each path got: an ECU named by its path (an E3 project's
+	// EcuInstance) is found by it, never by guessing a spelling from the path
+	assert e.ecu_names['/A/Node'] == 'A_Node_2'
+	assert e.ecu_names['/B/Node'] == 'B_Node'
+	assert e.ecu_names['/C/A_Node'] == 'A_Node'
 }
 
 fn test_shapes_reported_rather_than_misread() {

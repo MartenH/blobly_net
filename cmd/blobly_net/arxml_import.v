@@ -24,6 +24,9 @@ mut:
 	err      string
 	ignored  string // what the file holds that is not imported, one line
 	adapters []string
+	// a new project of this name is what Import makes (an .e3proj opened): the current project
+	// stays until Import, so a bad file or a Cancel loses nothing; '' imports into the current one
+	fresh string
 }
 
 struct ArxmlImportRow {
@@ -68,7 +71,7 @@ fn default_address(adapter string, bus string, taken []string) string {
 // taken_addresses is what default_address must not reuse: the project's interfaces and the
 // addresses the dialog's other rows hold.
 fn (app &App) taken_addresses(skip int) []string {
-	mut out := app.proj.channels.map(it.iface)
+	mut out := if app.arxml_import.fresh != '' { []string{} } else { app.proj.channels.map(it.iface) }
 	for k, r in app.arxml_import.rows {
 		if k != skip && r.adapter > 0 {
 			out << vgui.buf_str(r.addr_buf).trim_space()
@@ -95,7 +98,21 @@ fn (ui ArxmlImportUi) import_ecus() []string {
 	return out
 }
 
+// open_e3proj starts a project from an E3 project file: the import dialog over its extract (its
+// ECU ticked under test), whose Import replaces the current project with a new, unsaved one named
+// after the file, so a Save writes a .blobnet whose channels read the .e3proj.
+fn (mut app App) open_e3proj(path string) {
+	stem := os.file_name(path).all_before_last('.')
+	app.open_arxml_import_as(path, if stem != '' { stem } else { 'untitled' })
+}
+
 fn (mut app App) open_arxml_import(path string) {
+	app.open_arxml_import_as(path, '')
+}
+
+// open_arxml_import_as opens the import dialog; `fresh` names the new project Import makes, '' to
+// import into the current one.
+fn (mut app App) open_arxml_import_as(path string, fresh string) {
 	a, sha := candb.load_arxml_content(path) or {
 		app.notify('${os.file_name(path)}: ${err}')
 		return
@@ -106,7 +123,7 @@ fn (mut app App) open_arxml_import(path string) {
 	}
 	adapters := import_adapters()
 	mut rows := []ArxmlImportRow{}
-	mut taken := app.proj.channels.map(it.iface)
+	mut taken := if fresh != '' { []string{} } else { app.proj.channels.map(it.iface) }
 	for c in a.clusters {
 		// the first offered adapter: virtual, so an import runs with no hardware
 		addr := default_address(adapters[1], c.bus, taken)
@@ -123,12 +140,25 @@ fn (mut app App) open_arxml_import(path string) {
 	}
 	mut kinds := a.report.ignored.keys()
 	kinds.sort()
+	// an E3 project names the ECU its extract is of: that one is under test
+	mut sut := map[string]bool{}
+	if candb.is_e3proj(path) {
+		ecu := candb.e3proj_ecu(path) or { '' }
+		name := a.ecu_names[ecu] or { '' }
+		if name != '' && rows.any(name in it.ecus) {
+			sut[name] = true
+		} else if ecu != '' {
+			app.notify('${os.file_name(path)}: its ECU ${ecu} is not a node of any cluster; tick the ECUs under test by hand')
+		}
+	}
 	app.arxml_import = ArxmlImportUi{
 		open:     true
 		path:     path
 		a:        a
 		sha:      sha
 		rows:     rows
+		sut:      sut
+		fresh:    fresh
 		ignored:  kinds.map('${a.report.ignored[it]} × ${it}').join(', ')
 		adapters: adapters
 	}
@@ -138,6 +168,10 @@ fn (mut app App) open_arxml_import(path string) {
 // stays open with the reason.
 fn (mut app App) arxml_import_confirm() bool {
 	ui := app.arxml_import
+	if app.running && ui.fresh != '' {
+		// an opened .e3proj replaces the project, as File ▸ Open of a .blobnet does: the run ends
+		app.stop()
+	}
 	if app.running {
 		// closed at Start already (run.v); kept so a new path to this cannot rebuild mid-run
 		app.arxml_import.err = 'a measurement is running: Stop to import'
@@ -164,16 +198,25 @@ fn (mut app App) arxml_import_confirm() bool {
 		}
 	}
 	sut := ui.import_ecus().filter(ui.sut[it])
-	// the panel's unsaved edits first: import_arxml names the new rows clear of the existing ones
-	app.commit_cfg()
+	// into a new project (fresh): built against none and referenced as from an unsaved project,
+	// and the current project replaced only once the import holds, so a refusal loses nothing.
+	// Else the panel's unsaved edits first: import_arxml names the new rows clear of them
+	if ui.fresh == '' {
+		app.commit_cfg()
+	}
+	existing := if ui.fresh != '' { []project.Channel{} } else { app.proj.channels }
+	ref := if ui.fresh != '' { project.asset_ref('', ui.path) } else { app.asset_ref(ui.path) }
 	chans, notes := project.import_arxml(ui.a, project.ArxmlImport{
-		ref:      app.asset_ref(ui.path)
+		ref:      ref
 		clusters: plans
 		sut:      sut
 		restbus:  ui.restbus
-	}, app.proj.channels) or {
+	}, existing) or {
 		app.arxml_import.err = err.msg()
 		return false
+	}
+	if ui.fresh != '' {
+		app.new_project_named(ui.fresh, 'new project from ${os.file_name(ui.path)}')
 	}
 	app.add_channels(chans)
 	for n in notes {

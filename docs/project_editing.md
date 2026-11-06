@@ -300,7 +300,7 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 | Item | Action |
 |------|--------|
 | **New** | `app.proj = Project{ name: 'untitled' }`, `proj_path = ''`, rebuild → blank (0 buses) |
-| **Open…** | file browser → `load_project(path)` |
+| **Open…** | file browser → `load_project(path)`; an ExtractEditor `.e3proj` opens **Import ARXML...** over its extract (`open_e3proj`), whose **Import** replaces the project with a new, unsaved one named after the file (**Cancel** keeps the open one); an `.e3proj` on the command line does the same over the project the app starts with |
 | **Save** (Ctrl+S) | File tab showing dirty text → save that text; else `proj_path == ''` → Save As; else `app.proj.save(proj_path)`, clear dirty. The toolbar answers with `saved` beside the project name for three seconds |
 | **Save As…** | file browser (save) → set `proj_path`, save |
 | **Configure…** | open the Configuration editor (disabled while running) |
@@ -379,8 +379,8 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
 | j1939 | `checkbox` | CAN only — read this wire as SAE J1939 ([j1939.md](j1939.md)) |
-| **Import ARXML...** | one channel per CAN cluster of an AUTOSAR system description, mapped to an interface; the ECUs under test; rest-bus `simulate:` for the others (`cmd/blobly_net/arxml_import.v`, rows from `project.import_arxml`) | appends `buses` |
-| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml` / `*.arxmodel.toml`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
+| **Import ARXML...** | one channel per CAN cluster of an AUTOSAR system description, mapped to an interface; the ECUs under test (an ExtractEditor `.e3proj` ticks its `EcuInstance`); rest-bus `simulate:` for the others (`cmd/blobly_net/arxml_import.v`, rows from `project.import_arxml`) | appends `buses` |
+| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml` / `*.arxmodel.toml` / `*.e3proj`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |
 | Replay: source / speed / loop, plus **Scan recording** — pick the recorded bus (`bus:`) and tick nodes to subtract (`exclude:`) | inputs + dialog | mode==replay only |

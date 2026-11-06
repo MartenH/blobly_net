@@ -19,23 +19,25 @@ fn is_recording_target(t string) bool {
 }
 
 // open_browser opens the file browser for a target action:
-//   'open'          — load a project (.blobnet)
+//   'open'          — load a project (.blobnet), or start one from an E3 project (.e3proj)
 //   'saveas'        — Save As (.blobnet, filename input)
 //   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
 //   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
 //   'script'        — the Script panel's .lua (#270)
-//   'arxml_import'  — Import system from ARXML (.arxml, arxml_import.v)
+//   'arxml_import'  — Import system from ARXML (.arxml, .arxmodel.toml, .e3proj; arxml_import.v)
 fn (mut app App) open_browser(target string) {
 	app.fb_target = target
 	app.fb_save = target == 'saveas'
-	app.fb_ext = if target == 'open' || target == 'saveas' {
+	app.fb_ext = if target == 'open' {
+		['.blobnet', '.yml', '.yaml', '.e3proj']
+	} else if target == 'saveas' {
 		['.blobnet', '.yml', '.yaml']
 	} else if target == 'arxml_import' {
-		['.arxml', '.arxmodel.toml']
+		['.arxml', '.arxmodel.toml', '.e3proj']
 	} else if target.starts_with('dbc') {
-		// a multi-cluster ARXML asks which cluster (arxml_pick.v); a model file is one system
-		// description made of several ARXML files
-		['.dbc', '.arxml', '.arxmodel.toml']
+		// a multi-cluster ARXML asks which cluster (arxml_pick.v); a model file or an E3 project
+		// is one system description made of several ARXML files
+		['.dbc', '.arxml', '.arxmodel.toml', '.e3proj']
 	} else if target.starts_with('manifest') {
 		['.csv']
 	} else if target == 'system' {
@@ -180,7 +182,11 @@ fn (mut app App) browser_confirm(path string) {
 	t := app.fb_target
 	app.fb_open = false
 	if t == 'open' {
-		app.load_project(path)
+		if candb.is_e3proj(path) {
+			app.open_e3proj(path)
+		} else {
+			app.load_project(path)
+		}
 	} else if t == 'saveas' {
 		app.save_as(path)
 	} else if t == 'arxml_import' {

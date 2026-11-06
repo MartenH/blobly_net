@@ -10,12 +10,14 @@
 //   v -enable-globals -cc gcc -path "@vlib|libs|@vmodules" run cmd/blobly_net/
 // (the DIRECTORY — the app is many files in one `module main`; naming one file fails on the
 // first cross-file reference)
-// Project: argv[1] (a .blobnet path — the Windows file association passes it), else
+// Project: argv[1] (a .blobnet path — the Windows file association passes it — or an E3
+// .e3proj, which starts a new project from it), else
 // BLOBLY_PROJECT, else projects/sim-demo.blobnet (driver-free, runs on a clean machine —
 // the old trace-demo default needed vcan0 + a blobly_emb target). Env: VGUI_WAKE_MS cap.
 module main
 
 import os
+import blobly.candb
 import blobly.player
 import blobly.transport
 import blobly.wiretap
@@ -80,6 +82,10 @@ fn main() {
 		proj_path = env
 		caller_supplied = true
 	}
+	mut e3_path := ''
+	if os.args.len > 1 && candb.is_e3proj(os.args[1]) {
+		e3_path = os.abs_path(os.args[1])
+	}
 	if os.args.len > 1 && os.args[1].to_lower().ends_with('.blobnet') {
 		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
 		// this the association opened the app but silently ignored the chosen project.
@@ -129,7 +135,7 @@ fn main() {
 	app.trace_filter_buf = mkbuf('', 64)
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
-	app.open_session_log(proj_path)
+	app.open_session_log(if e3_path != '' { e3_path } else { proj_path })
 	// A CAN bridge on the LAN dials in to the listener BLOBLY_BRIDGE_LISTEN asks for (#587). A
 	// setting that cannot be used stops the app, where the operator sees it.
 	bridge_at := transport.bridge_listen_configured() or {
@@ -317,15 +323,22 @@ fn main() {
 	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
-	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
-	// for the screenshot harness, which can neither drive the picker nor click.
+	// An .e3proj on the command line opens its import dialog over the project loaded above, once
+	// the window exists: the dialog is a popup, closed by what the startup does before the first
+	// frame. Import replaces that project; Cancel keeps it.
+	if e3_path != '' {
+		app.open_e3proj(e3_path)
+	}
+	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults —
+	// on that dialog or the one an .e3proj opened — for the screenshot harness, which can neither
+	// drive the picker nor click.
 	if imp := os.getenv_opt('BLOBLY_IMPORT_ARXML') {
 		if imp != '' {
 			app.open_arxml_import(imp)
-			if os.getenv('BLOBLY_IMPORT_ARXML_GO') != '' && app.arxml_import_confirm() {
-				app.arxml_import.open = false
-			}
 		}
+	}
+	if os.getenv('BLOBLY_IMPORT_ARXML_GO') != '' && app.arxml_import.open && app.arxml_import_confirm() {
+		app.arxml_import.open = false
 	}
 	// Attach a database to the first bus, the way + Add DBC would — the picker cannot be driven
 	// headless, and a multi-cluster ARXML opens the cluster dialog from there.

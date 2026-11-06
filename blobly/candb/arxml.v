@@ -260,6 +260,9 @@ pub struct Arxml {
 pub:
 	clusters []ArxmlCluster
 	report   ArxmlReport
+	// ECU-INSTANCE path -> the name it goes by in the databases (package-qualified when shared,
+	// suffixed past a collision): how an ECU named by its path is found among a cluster's nodes
+	ecu_names map[string]string
 }
 
 // cluster selects a CAN cluster by SHORT-NAME or by AUTOSAR path; '' means "the only one".
@@ -596,7 +599,7 @@ pub:
 	files    []string
 	deps     []string
 	opts     arxmodel.OpenOptions
-	warnings []string // paths of the input set that named nothing
+	warnings []string // paths of the input set that named nothing, and what an E3 project selects that cannot be read
 mut:
 	// what they were expanded from, to expand them again (again): the paths named, and, for
 	// an input set opened with options of its own (load_arxml_set), those options
@@ -604,27 +607,51 @@ mut:
 	given ?arxmodel.OpenOptions
 }
 
-// arxml_inputs is the inputs of the description the paths name: one model file, or an input set
-// of ARXML files (arxmodel's rules: files, directories, globs, @FILE lists, sorted by path).
+// arxml_inputs is the inputs of the description the paths name: one model file, one E3 project
+// file (`e3proj.v`: the files it selects, by E3's rules), or an input set of ARXML files
+// (arxmodel's rules: files, directories, globs, @FILE lists, sorted by path).
 pub fn arxml_inputs(paths []string) !ArxmlInputs {
 	mut deps := []string{}
 	mut set_paths := paths.clone()
 	mut opts := arxmodel.OpenOptions{}
-	if paths.len == 1 && arxmodel.is_model_file(paths[0]) {
+	mut notes := []string{}
+	mut walked := []string{}
+	if paths.len == 1 && is_e3proj(paths[0]) {
+		proj := load_e3proj(paths[0])!
+		if proj.files.len == 0 {
+			return error('${paths[0]}: selects no .arxml file')
+		}
+		deps << paths[0]
+		set_paths = proj.files
+		notes = proj.notes
+		walked = proj.folders
+	} else if paths.len == 1 && arxmodel.is_model_file(paths[0]) {
 		mf := arxmodel.load_model_file(paths[0])!
 		deps << paths[0]
 		set_paths = mf.paths
 		opts = mf.options()!
 	} else {
 		for p in paths {
-			if arxmodel.is_model_file(p) {
-				return error('${p}: a model file describes a whole system; name it alone')
+			if arxmodel.is_model_file(p) || is_e3proj(p) {
+				return error('${p}: a project or model file describes a whole system; name it alone')
 			}
 		}
 	}
+	found := inputs_of(set_paths, opts, deps)!
+	mut warnings := notes.clone()
+	warnings << found.warnings
+	// an E3 project's files come from the folders it walks: an .arxml written into one of them is
+	// read next time, which is what arxml2dbc's guard asks of the roots
+	mut roots := found.opts.roots.clone()
+	roots << walked
 	return ArxmlInputs{
-		...inputs_of(set_paths, opts, deps)!
-		named: paths.clone()
+		...found
+		opts:     arxmodel.OpenOptions{
+			...found.opts
+			roots: roots
+		}
+		warnings: warnings
+		named:    paths.clone()
 	}
 }
 
@@ -981,8 +1008,9 @@ pub fn read_arxml(srcs []arxmodel.Source, opts arxmodel.OpenOptions) !Arxml {
 	}
 	named := r.name_clusters(clusters)
 	return Arxml{
-		clusters: named
-		report:   r.report
+		clusters:  named
+		report:    r.report
+		ecu_names: r.ecus.clone()
 	}
 }
 

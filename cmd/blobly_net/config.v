@@ -1682,6 +1682,11 @@ fn (mut app App) save_as(path string) {
 
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
+	app.new_project_named('untitled', 'new project — add buses in Configure…')
+}
+
+// new_project_named is new_project with the project's name and what to tell the operator.
+fn (mut app App) new_project_named(name string, note string) {
 	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
 	app.stop()
 	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
@@ -1692,6 +1697,6 @@ fn (mut app App) new_project() {
 	app.sys_loaded = false
 	app.sel_ecu = ''
 	app.show_sys = false
-	app.set_project(project.Project{ name: 'untitled' }, '')
-	app.notify('new project — add buses in Configure…')
+	app.set_project(project.Project{ name: name }, '')
+	app.notify(note)
 }

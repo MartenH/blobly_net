@@ -91,8 +91,9 @@ with several CAN clusters is refused until the entry names one (`"net.arxml#Body
 Configuration panel's **+ Add DBC** asks which cluster when there are several, and an attached
 ARXML's **cluster...** button changes it.
 
-**Import ARXML...** in the Configuration panel builds the channels from the file instead: each
-CAN cluster is put on an interface or left out, the ECUs under test are ticked, and the import
+**Import ARXML...** in the Configuration panel builds the channels from the file instead (an
+`.arxml`, an `.arxmodel.toml`, or an ExtractEditor `.e3proj`, which also ticks the ECU its extract
+is of): each CAN cluster is put on an interface or left out, the ECUs under test are ticked, and the import
 adds one channel per mapped cluster, reading `"net.arxml#<Cluster>"`, at the cluster's rate (FD
 when the cluster carries an FD frame), with every other ECU that sends on it under `simulate:`
 when the rest-bus box is ticked. References only: frames, timing and E2E stay in the file. The
