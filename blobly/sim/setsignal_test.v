@@ -226,6 +226,122 @@ fn test_a_set_multiplexed_signal_follows_its_switch() {
 	assert data == [u8(1), 7]
 }
 
+// a message with a switch and two pages sharing byte 1
+fn two_page_message() candb.Message {
+	return candb.Message{
+		name:    'Mux'
+		id:      0x200
+		dlc:     2
+		signals: [
+			candb.Signal{
+				name:              'Page1'
+				start_bit:         8
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 1
+			},
+			candb.Signal{
+				name:              'Page2'
+				start_bit:         8
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 2
+			},
+			candb.Signal{
+				name:           'Mode'
+				start_bit:      0
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexor: true
+			},
+		]
+	}
+}
+
+// a generator on a page the switch does not select writes nothing, whichever is listed last
+fn test_an_off_page_generator_writes_nothing() {
+	for mode in [1, 2] {
+		for order in [['Page1', 'Page2'], ['Page2', 'Page1']] {
+			mut gens := [SimSignal{'Mode', gen_const(mode)}]
+			for name in order {
+				gens << SimSignal{name, gen_const(if name == 'Page1' { 11 } else { 22 })}
+			}
+			mut m := SimMessage{
+				msg:     two_page_message()
+				signals: gens
+			}
+			want := if mode == 1 { u8(11) } else { u8(22) }
+			assert m.build(0).data == [u8(mode), want], 'mode ${mode}, ${order}'
+		}
+	}
+}
+
+// a switch a script sets picks the page the generators write, whichever page is listed last
+fn test_a_set_switch_picks_the_generated_page() {
+	for order in [['Page1', 'Page2'], ['Page2', 'Page1']] {
+		mut gens := [SimSignal{'Mode', gen_const(1)}]
+		for name in order {
+			gens << SimSignal{name, gen_const(if name == 'Page1' { 11 } else { 22 })}
+		}
+		mut m := SimMessage{
+			msg:     two_page_message()
+			signals: gens
+			set:     [SetValue{'Mode', 2}]
+		}
+		assert m.build(0).data == [u8(2), 22], '${order}'
+		m.set = [SetValue{'Mode', 2}, SetValue{'Page2', 33}]
+		assert m.build(0).data == [u8(2), 33], '${order}'
+	}
+}
+
+// a simulated node and a `senders:` generator encode one message alike: an off page and a plain
+// signal the payload does not hold whole write nothing
+fn test_a_node_and_a_sender_encode_alike() {
+	db := candb.parse_dbc('BO_ 512 Mux: 2 T
+ SG_ Mode M : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Page1 m1 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Page2 m2 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 513 Short: 2 T
+ SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Past : 8|16@1+ (1,0) [0|65535] "" Vector__XXX
+') or { panic(err) }
+	cases := {
+		'Mux':   {
+			'Mode':  1.0
+			'Page2': 22.0
+			'Page1': 11.0
+		}
+		'Short': {
+			'A':    7.0
+			'Past': 0x1234
+		}
+	}
+	for name, vals in cases {
+		mut sigs := []project.SenderSig{}
+		mut gens := []SimSignal{}
+		for sig, v in vals {
+			sigs << project.SenderSig{
+				name:  sig
+				value: v
+			}
+			gens << SimSignal{sig, gen_const(v)}
+		}
+		sent := sender_message_frame(project.Sender{ message: name, signals: sigs }, [db], 0,
+			0.0) or { panic(err) }
+		mut m := SimMessage{
+			msg:     db.messages.filter(it.name == name)[0]
+			signals: gens
+		}
+		assert m.build(0).data == sent.data, name
+		assert sent.data == [u8(if name == 'Mux' { 1 } else { 7 }), if name == 'Mux' { 11 } else { 0 }], name
+	}
+}
+
 // a response rule's message carries the value set as a cyclic one does
 fn test_a_response_carries_a_set_value() {
 	mut e := Engine{
