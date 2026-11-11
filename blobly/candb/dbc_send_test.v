@@ -72,8 +72,8 @@ fn test_start_values_per_signal() {
 	assert temp.has_start && temp.start_raw == 0xFE // -2 in 8 bits
 	assert temp.start()? == -41.0
 	plain := door.signal_named('Plain')?
-	assert !plain.has_start // a default of 0 states nothing
-	assert plain.start() == none
+	assert plain.has_start && plain.start_raw == 0 // the file-wide default of 0
+	assert plain.start()? == 0.0
 	lvl := db.message_named('Event')?.signal_named('Level')?
 	assert lvl.start_raw == 7
 	assert door.initial(none) == [u8(3), 0xFE, 0, 0, 0, 0, 0, 0]
@@ -159,9 +159,55 @@ fn test_send_type_of_reads_the_common_spellings() {
 	assert send_type_of('spontaneousWithRepetition') == .event
 	assert send_type_of('OnChange') == .event
 	assert send_type_of('cyclicAndSpontaneousWithDelay') == .mixed
+	assert send_type_of('Mixed') == .mixed
+	assert send_type_of('POE') == .mixed
+	assert send_type_of('Periodic') == .cyclic
 	assert send_type_of('NoMsgSendType') == .not_sent
 	assert send_type_of('NotUsed') == .other
 	assert send_type_of('') == .unstated
+}
+
+fn test_records_laid_out_as_candb_plus_plus_writes_them() {
+	db := parse_dbc('BU_: Body
+BO_ 256 Door: 1 Body
+ SG_ S : 0|8@1+ (1,0) [0|255] "" X
+BO_ 257 Event: 1 Body
+ SG_ E : 0|8@1+ (1,0) [0|255] "" X
+BA_DEF_ BO_  "GenMsgSendType" ENUM  "Periodic","Event","Mixed","IfActive","POE","PA";
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_  "GenMsgSendType" "Periodic";
+BA_DEF_DEF_  "GenMsgCycleTime" 10;
+BA_DEF_DEF_  "GenSigStartValue" 2;
+BA_ "GenMsgSendType" BO_ 257 2;
+')!
+	assert db.read_notes == []
+	door := db.message_named('Door')?
+	assert door.cycle_ms == 10
+	assert door.send_type == .cyclic
+	assert door.signal_named('S')?.start_raw == 2
+	ev := db.message_named('Event')?
+	assert ev.send_type_name == 'Mixed'
+	assert ev.send_type == .mixed
+	assert ev.cyclic_period() == 10
+	// a quoted string keeps its own blanks
+	assert attr_record('BA_  "X"  BO_ 1  "a  b";') == 'BA_ "X" BO_ 1 "a  b";'
+}
+
+fn test_a_start_default_of_zero_is_stated_and_saved_without_records() {
+	db := parse_dbc('BO_ 1 M: 2 N
+ SG_ A : 0|8@1+ (1,-40) [0|0] "" X
+ SG_ B : 8|8@1+ (1,0) [0|0] "" X
+BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_ "GenSigStartValue" SG_ 1 B 4;
+')!
+	a := db.messages[0].signal_named('A')?
+	assert a.has_start && a.start()? == -40.0
+	text := db.to_dbc()
+	assert !text.contains('SG_ 1 A ')
+	assert text.contains('BA_ "GenSigStartValue" SG_ 1 B 4;')
+	again := parse_dbc(text)!
+	assert again.messages[0].signal_named('A')?.has_start
+	assert again.to_dbc() == text
 }
 
 fn test_initial_fills_the_branch_its_switch_selects() {

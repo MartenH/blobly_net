@@ -27,6 +27,31 @@ mut:
 	start_default string            // its BA_DEF_DEF_ value
 }
 
+// attr_record is an attribute record (BA_, BA_DEF_, BA_DEF_DEF_) with every run of blanks outside
+// its quoted strings made one space, as the record readers match it: CANdb++ writes
+// `BA_DEF_ BO_  "GenMsgSendType" ENUM  "cyclic",...` and `BA_DEF_DEF_  "GenMsgCycleTime" 0;`.
+// Any other line is returned as it is.
+fn attr_record(line string) string {
+	if !line.starts_with('BA_') || (!line.contains('  ') && !line.contains('\t')) {
+		return line
+	}
+	mut b := []u8{cap: line.len}
+	mut quoted := false
+	for c in line {
+		if c == `"` {
+			quoted = !quoted
+		} else if !quoted && (c == ` ` || c == `\t`) {
+			if b.len > 0 && b[b.len - 1] == ` ` {
+				continue
+			}
+			b << ` `
+			continue
+		}
+		b << c
+	}
+	return b.bytestr()
+}
+
 // take keeps `line` when it is one of these records.
 fn (mut c SendAttrs) take(line string) bool {
 	if line.starts_with('BA_DEF_DEF_ "') {
@@ -113,12 +138,12 @@ fn (c SendAttrs) resolve(mut msgs []MsgBuilder, by_id map[u32]int) []string {
 			notes << '${msgs[mi].name}.${sb.name}: GenSigStartValue ${f[5]} is not a raw value its ${sb.length} bits hold; not read, and a Save drops it'
 		}
 	}
-	// the file-wide default, where it states a start value other than 0 (the writer's placeholder)
+	// the file-wide default, for every signal that states none
 	if c.start_default != '' {
 		mut misfits := 0
 		if start_raw_of(64, true, c.start_default) == none {
 			notes << 'BA_DEF_DEF_ GenSigStartValue ${c.start_default} is not a raw value; not read'
-		} else if (start_raw_of(64, false, c.start_default) or { u64(1) }) != 0 {
+		} else {
 			for mut mb in msgs {
 				for mut sb in mb.sigs {
 					if sb.has_start {
@@ -279,12 +304,14 @@ fn send_int_attr(msgs []Message, name string) ?DbcAttr {
 	return a
 }
 
-// start_value_lines is GenSigStartValue as the writer declares it: its definition, default and
-// per-signal records, nothing where no signal states one. Signed values are written signed.
+// start_value_lines is GenSigStartValue as the writer declares it: its definition, a default of 0
+// and a record per signal starting elsewhere, nothing where no signal states one. Signed values
+// are written signed.
 fn start_value_lines(msgs []Message) ?[]string {
 	mut vals := []string{}
 	mut lo := i64(0)
 	mut hi := u64(0)
+	mut any := false
 	for m in msgs {
 		mut sigs := m.signals.clone()
 		sigs.sort_with_compare(fn (a &Signal, b &Signal) int {
@@ -294,8 +321,12 @@ fn start_value_lines(msgs []Message) ?[]string {
 			if !s.has_start {
 				continue
 			}
+			any = true
 			mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
 			raw := s.start_raw & mask
+			if raw == 0 {
+				continue
+			}
 			mut text := '${raw}'
 			if s.is_signed && s.length > 0 && raw & (u64(1) << (s.length - 1)) != 0 {
 				v := sext(raw, mask, u64(1) << (s.length - 1))
@@ -309,7 +340,7 @@ fn start_value_lines(msgs []Message) ?[]string {
 			vals << 'BA_ "GenSigStartValue" SG_ ${raw_dbc_id(m)} ${s.name} ${text};'
 		}
 	}
-	if vals.len == 0 {
+	if !any {
 		return none
 	}
 	if hi < 65535 {

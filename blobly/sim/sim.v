@@ -109,11 +109,13 @@ pub mut:
 	last_n    int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
 	// sending on a change (the message's send type event or mixed, Message.on_change): the raw
 	// values its generators gave when last looked at, how many sends a change still owes, the
-	// earliest the next of them may go, and when any frame of it last went out (ms)
+	// earliest the next of them may go, and the earliest any send of it may go by its
+	// GenMsgDelayTime after the last (ms)
 	ev_raws    []u64
 	ev_seen    bool
 	ev_left    int
 	ev_next_ms f64
+	ev_hold_ms f64
 }
 
 // e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
@@ -135,6 +137,12 @@ pub fn (mut m SimMessage) advance_e2e() {
 	// not here: leaving the pointer unadvanced meant the first recovered frame repeated the
 	// frozen value all over again.
 	m.e2e_n = v + 1
+}
+
+// sends is whether the node sends the message on its own: on its cycle, or on a change of a
+// generator of it where its send type sends on a change (step_change).
+pub fn (m SimMessage) sends() bool {
+	return m.period_ms > 0 || (m.msg.on_change() && m.signals.len > 0)
 }
 
 // gen_raws is the raw value each generator gives its signal at time t (s) for send index n.
@@ -287,7 +295,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
-			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms {
+			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev_hold_ms {
 				m.emit(now_ms, send)
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
@@ -311,12 +319,21 @@ fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
 	// recovery shows a gap rather than a stall — the difference a receiver uses to
 	// tell a lost frame from a stuck sender.
 	m.advance_e2e()
+	if m.msg.on_change() {
+		m.ev_hold_ms = now_ms + f64(m.msg.delay_ms)
+	}
 }
 
+// change_gap_ms is the least time between two change sends of a message whose file states
+// neither GenMsgCycleTimeFast nor GenMsgDelayTime: the rate a changing generator is sent at,
+// rather than the simulation loop's.
+pub const change_gap_ms = 10
+
 // step_change sends a message whose send type is event or mixed when a generator changes the raw
-// value of one of its signals: 1 + its repetitions times, the first once the delay since its last
-// change send allows, the rest a fast cycle apart (no closer than the delay), none before its start
-// delay. The values when first looked at are where it starts, not a change.
+// value of one of its signals: 1 + its repetitions times, the repetitions a fast cycle apart, no
+// send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
+// change_gap_ms apart where the file states neither, none before its start delay. The values when
+// first looked at are where it starts, not a change.
 fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) bool) {
 	if !m.msg.on_change() || m.signals.len == 0 || now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
@@ -329,15 +346,14 @@ fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) boo
 		m.ev_raws = raws
 		m.ev_left = 1 + m.msg.repetitions
 	}
-	if m.ev_left <= 0 || now_ms + 1e-6 < m.ev_next_ms {
+	if m.ev_left <= 0 || now_ms + 1e-6 < m.ev_next_ms || now_ms + 1e-6 < m.ev_hold_ms {
 		return
 	}
 	m.emit(now_ms, send)
 	m.ev_left--
-	gap := if m.ev_left > 0 && m.msg.cycle_fast_ms > m.msg.delay_ms {
-		m.msg.cycle_fast_ms
-	} else {
-		m.msg.delay_ms
+	mut gap := if m.ev_left > 0 { m.msg.cycle_fast_ms } else { 0 }
+	if gap <= 0 && m.msg.delay_ms <= 0 {
+		gap = change_gap_ms
 	}
 	m.ev_next_ms = now_ms + f64(gap)
 	// a generator that follows the send index (a counter) moves with the send: not a change

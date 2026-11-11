@@ -136,6 +136,46 @@ fn test_a_mixed_message_keeps_its_cycle_and_adds_change_sends() {
 			'Value': gen_stepmod(0.25, 100, 0)
 		}, [])]
 	}
-	sent := frames_by(mut e, grid(320, 5)).filter(it[1] == '257').map(it[0])
-	assert sent == ['0.0', '100.0', '200.0', '250.0', '280.0', '300.0', '310.0']
+	sent := frames_by(mut e, grid(360, 5)).filter(it[1] == '257').map(it[0])
+	// the change at 250 and its repetitions, every send held 30 ms (the delay) after the one
+	// before, the cyclic one due at 300 too; the cycle stays on its grid
+	assert sent == ['0.0', '100.0', '200.0', '250.0', '280.0', '310.0', '340.0']
+}
+
+// gaps is the time between consecutive sends of `id` over `times`.
+fn gaps(mut e Engine, times []f64, id string) []f64 {
+	at := frames_by(mut e, times).filter(it[1] == id).map(it[0].f64())
+	mut out := []f64{}
+	for i in 1 .. at.len {
+		out << at[i] - at[i - 1]
+	}
+	return out
+}
+
+fn test_no_two_sends_of_a_mixed_message_closer_than_its_delay() {
+	// cycle 100, delay 50, a change at 200 and 400 where the cyclic send is due as well
+	db := candb.parse_dbc(send_type_dbc.replace('BA_ "GenMsgSendType" BO_ 257 1;', 'BA_ "GenMsgSendType" BO_ 257 2;').replace('BO_ 257 30;',
+		'BO_ 257 50;').replace('BA_ "GenMsgNrOfRepetition" BO_ 257 2;', ''))!
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'Body', {
+			'Value': gen_stepmod(0.2, 100, 0)
+		}, [])]
+	}
+	g := gaps(mut e, grid(600, 1), '257')
+	assert g.len > 0
+	assert g.all(it >= 50.0 - 1e-6)
+}
+
+fn test_a_change_send_with_no_stated_spacing_keeps_the_change_gap() {
+	// spontaneous with 2 repetitions, no fast cycle and no delay, a value changing every step
+	db := candb.parse_dbc(send_type_dbc.replace('BA_ "GenMsgCycleTimeFast" BO_ 257 10;', '').replace('BA_ "GenMsgDelayTime" BO_ 257 30;',
+		''))!
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'Body', {
+			'Value': gen_sawtooth(0, 255, 0.256)
+		}, [])]
+	}
+	g := gaps(mut e, grid(200, 1), '257')
+	assert g.len > 0
+	assert g.all(it >= f64(change_gap_ms) - 1e-6)
 }

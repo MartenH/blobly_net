@@ -109,7 +109,7 @@ fn main() {
 			if !runnable && i < engine.ecus.len {
 				runnable = engine.ecus[i].rules.len > 0
 				for m in engine.ecus[i].messages {
-					if m.period_ms > 0 {
+					if m.sends() {
 						runnable = true
 						break
 					}
@@ -122,7 +122,7 @@ fn main() {
 				why := if cfg.uds != none {
 					'its uds server did not start (its rx/tx is claimed by another node)'
 				} else {
-					'no cyclic messages, no response rules and no uds'
+					'no message sent on a cycle or a generator change, no response rules and no uds'
 				}
 				eprintln('  ${ch.name}: node "${cfg.name}" will never transmit — ${why}')
 				failed++

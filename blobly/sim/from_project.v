@@ -123,15 +123,10 @@ pub fn unsent_note(ecu SimEcu) string {
 	mut names := []string{}
 	mut on_change := false
 	for m in ecu.messages {
-		if m.period_ms > 0 || ecu.rules.any(it.resp_id == m.msg.id && it.resp_ext == m.msg.ext) {
+		if m.sends() || ecu.rules.any(it.resp_id == m.msg.id && it.resp_ext == m.msg.ext) {
 			continue
 		}
-		if m.msg.on_change() {
-			if m.signals.len > 0 {
-				continue
-			}
-			on_change = true
-		}
+		on_change = on_change || m.msg.on_change()
 		names << m.msg.name
 	}
 	if names.len == 0 {

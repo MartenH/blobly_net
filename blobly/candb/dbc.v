@@ -475,10 +475,9 @@ pub fn parse_dbc(text string) !Database {
 	mut send := SendAttrs{} // the send attributes and start values, resolved after the loop
 
 	for raw_line in text.split_into_lines() {
-		line := raw_line.trim_space()
-		// an attribute record matched with its whitespace collapsed: CANdb++ writes two spaces
-		// after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
-		attr := if line.starts_with('BA_') { line.fields().join(' ') } else { '' }
+		// an attribute record matched with its blanks collapsed (attr_record): CANdb++ writes two
+		// spaces after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
+		line := attr_record(raw_line.trim_space())
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
 			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
@@ -501,28 +500,28 @@ pub fn parse_dbc(text string) !Database {
 			nodes = line[4..].fields()
 		} else if send.take(line) {
 			// read below, once every message, signal and enum is known
-		} else if attr.starts_with('BA_ "GenMsgCycleTime"') {
+		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
-		} else if attr.starts_with('BA_ "E2E') {
+		} else if line.starts_with('BA_ "E2E') {
 			apply_e2e_attr(mut msgs, by_id, line)
-		} else if attr.starts_with('BA_DEF_DEF_ "E2E') {
+		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
 			// a file-wide default is a declaration too, as for VFrameFormat: applied below to
 			// every message that states any E2E attribute of its own
 			e2e_defaults << line
-		} else if attr.starts_with('BA_ "VFrameFormat"') || attr.starts_with('BA_ "CANFD_BRS"') {
-			fmt_lines << attr
-		} else if attr.starts_with('BA_DEF_DEF_ "CANFD_BRS"') {
+		} else if line.starts_with('BA_ "VFrameFormat"') || line.starts_with('BA_ "CANFD_BRS"') {
+			fmt_lines << line
+		} else if line.starts_with('BA_DEF_DEF_ "CANFD_BRS"') {
 			brs_default = default_attr_value(line)
-		} else if attr.starts_with('BA_DEF_ BO_ "CANFD_BRS"') {
+		} else if line.starts_with('BA_DEF_ BO_ "CANFD_BRS"') {
 			brs_choices = frame_format_choices(line)
-		} else if attr.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
+		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
 			// THE FILE-WIDE DEFAULT IS A DECLARATION TOO. A DBC states an attribute's default
 			// once and then overrides only the exceptions, so a J1939 database can declare
 			// J1939PG here and carry no per-message BA_ at all — read as "no declaration", every
 			// frame in it came back not-J1939, which is the same explicit-file-answered-wrongly
 			// case the both-spellings rule exists to prevent (codex on #289).
 			fmt_default = default_attr_value(line)
-		} else if attr.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
+		} else if line.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
 			fmt_choices = frame_format_choices(line)
 		}
 		// other records (BA_DEF_, blank, …) are ignored.

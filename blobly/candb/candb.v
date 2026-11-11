@@ -140,7 +140,7 @@ pub enum SendType {
 	unstated // the file gives none
 	cyclic   // on its cycle (cyclic, cyclicIfActive, …)
 	event    // when a signal changes (spontaneous, OnChange, OnWrite, …)
-	mixed    // on its cycle and when a signal changes (cyclicAndSpontaneous, …)
+	mixed    // on its cycle and when a signal changes (cyclicAndSpontaneous, Mixed, POE, …)
 	not_sent // NoMsgSendType: the node does not send it
 	other    // a choice this reader does not recognise: read as unstated
 }
@@ -153,6 +153,10 @@ pub fn send_type_of(choice string) SendType {
 	}
 	if c in ['nomsgsendtype', 'none', 'nosendtype'] {
 		return .not_sent
+	}
+	// Mixed and POE (periodic or on event) are the OEM spellings of both
+	if c in ['mixed', 'poe'] {
+		return .mixed
 	}
 	cyc := c.contains('cyclic') || c.contains('periodic') || c.contains('ifactive')
 	ev := c.contains('spontan') || c.contains('event') || c.contains('onchange')

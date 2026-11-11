@@ -119,7 +119,11 @@ with signals held at their start values. A message whose `GenMsgSendType` is eve
 (`spontaneous`, `OnChange`, …) or `NoMsgSendType` is not sent on its cycle. An **event** or
 **mixed** message (`cyclicAndSpontaneous`, …) is sent when a generator changes the raw value of one
 of its signals: `1 + GenMsgNrOfRepetition` times, the repetitions `GenMsgCycleTimeFast` apart and
-no two closer than `GenMsgDelayTime` (a mixed one keeps its cycle as well); the values at the start
+no two sends of the message closer than `GenMsgDelayTime` — a mixed one's cyclic sends included,
+which keeps its cycle as well and is held back by the delay where a change send came just before;
+where the file states neither a fast cycle nor a delay, change sends are 10 ms apart
+(`sim.change_gap_ms`), so a generator that changes all the time is not sent at the rate the
+simulation loop runs. The values at the start
 are not a change, and a `counter` generator, which moves with each send, does not trigger one. A
 message with no cycle and nothing to change it is **not** transmitted, and the node's line in the
 Simulation panel (and the headless runner's output) says how many such messages it has. Send
