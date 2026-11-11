@@ -1181,7 +1181,8 @@ fn l_uds_functional(l lua.State) i32 {
 	defer {
 		tap.close()
 	}
-	mut fch := isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
+	// the request sent as the row's emitter, in the row's format as the targets' requests are
+	mut fch := isotp.Channel(isotp.on_bus(env.row_bus(info.iface, name) or {
 		return l.fail('uds.functional: ${err}')
 	}, info.iface, u32(fid), u32(fid), ext) or { return l.fail('uds.functional: ${err}') })
 	defer {

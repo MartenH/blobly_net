@@ -25,8 +25,9 @@ pub:
 	port   int
 	tester u16
 	ecu    u16
-	// fd is whether a CAN row declares CAN-FD (on an adapter that carries it): its ISO-TP frames
-	// go out FD unless they state classic, so a TX_DL above 8 is taken there (isotp.Settings)
+	// fd is whether an enabled CAN row declares CAN-FD on an adapter that carries it
+	// (Channel.emitter_framing): its ISO-TP channel sends as the row's emitter (open_isotp), so its
+	// frames go out FD unless they state classic, and a TX_DL above 8 is taken there (isotp.Settings)
 	fd bool
 }
 
@@ -44,7 +45,7 @@ pub fn carrier_of(ch project.Channel) Carrier {
 	return match ch.kind() {
 		.can {
 			Carrier{
-				fd: ch.can_carry_fd() && ch.origination_framing().fd
+				fd: ch.emitter_framing().fd
 			}
 		}
 		.lin {
@@ -169,7 +170,7 @@ pub mut:
 
 // open opens `t` on row `name`: the row's DoIP connection, or an ISO-TP channel on the bus
 // `opener` gives for `iface` (and the row's name: two rows may share one interface, and a host
-// attributing traffic must know which was meant), framed as the wire declares — a CAN-FD row
+// attributing traffic must know which was meant), sending as that row's emitter — a CAN-FD row
 // stamps its frames FD.
 pub fn open(t Target, name string, iface string, car Carrier, opener fn (string, string) !transport.Bus) !Conn {
 	ch := if t.doip {

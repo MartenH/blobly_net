@@ -18,10 +18,13 @@ pub fn resolve_isotp(a Ask, name string, car Carrier) !Target {
 }
 
 // open_isotp is the ISO-TP channel of CAN target `t` on row `name`: the software state machine on
-// the bus `opener` gives for `iface` (and the row's name), framed as the wire declares, with the
-// target's settings — a UDS connection's channel and a raw one alike.
+// the bus `opener` gives for `iface` (and the row's name), sending as that row's own emitter
+// (transport.row_framed: a frame stating no format goes out in the row's declared one, as
+// Carrier.fd says), with the target's settings — a UDS connection's channel and a raw one alike.
 pub fn open_isotp(t Target, name string, iface string, opener fn (string, string) !transport.Bus) !&isotp.SoftChannel {
-	bus := opener(iface, name) or { return error('isotp open failed on ${name}: ${err}') }
+	bus := transport.row_framed(opener(iface, name) or {
+		return error('isotp open failed on ${name}: ${err}')
+	}, iface, name)
 	mut ch := isotp.on_bus(bus, iface, t.tx, t.rx, t.ext) or {
 		return error('isotp open failed on ${name}: ${err}')
 	}

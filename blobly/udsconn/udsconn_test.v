@@ -297,3 +297,41 @@ fn test_a_long_tx_dl_needs_a_can_fd_row_or_format() {
 	}
 	assert false, 'tx_dl 64 resolved on a classic row'
 }
+
+// on a wire an FD row and a classic row dispute (left undeclared), the FD row's ISO-TP channel
+// sends as the row's emitter: its long frames go out FD, as Carrier.fd promised resolve
+fn test_an_fd_row_on_a_disputed_wire_sends_its_isotp_frames_fd() {
+	rows := [
+		project.Channel{
+			name:  'FD1'
+			iface: 'inproc:UDSCONN-DISPUTE'
+			fd:    true
+		},
+		project.Channel{
+			name:  'C1'
+			iface: 'inproc:UDSCONN-DISPUTE'
+		},
+	]
+	project.apply_listen_only(rows)
+	defer {
+		project.apply_listen_only([]project.Channel{})
+	}
+	car := carrier_of(rows[0])
+	assert car.fd && !carrier_of(rows[1]).fd
+	assert !carrier_of(project.Channel{ ...rows[0], enabled: false }).fd
+	t := resolve(Ask{
+		what:     'uds.open'
+		settings: isotp.settings_with(0, 0, 0, 64, .wire)!
+	}, 'FD1', car)!
+	mut wire := transport.open('inproc:UDSCONN-DISPUTE')!
+	defer {
+		wire.close()
+	}
+	mut c := open_isotp(t, 'FD1', 'inproc:UDSCONN-DISPUTE', opener)!
+	defer {
+		c.close()
+	}
+	c.send([]u8{len: 20, init: u8(index)})!
+	f := wire.recv(1000)!
+	assert f.fd && f.data.len == 24 && f.data[0] == 0x00 && f.data[1] == 20
+}
