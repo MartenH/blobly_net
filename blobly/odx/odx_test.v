@@ -118,6 +118,15 @@ fn test_gates_are_the_state_chart_preconditions() {
 	assert did_of(v, 0x0130).read_gate == Gate{}
 }
 
+fn test_a_state_two_session_services_enter_gates_on_both() {
+	v := variant_with('twoenter', fn (s string) string {
+		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToDefault" />',
+			'<STATE-TRANSITION-REF ID-REF="ST_ToDefault" /><STATE-TRANSITION-REF ID-REF="ST_ToExtended" />')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x01), 0x03], 1, []}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x01), 0x03], 0, []}
+}
+
 fn test_a_state_no_service_enters_is_said_and_left_out() {
 	v := variant_with('noenter', fn (s string) string {
 		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToExtended" />', '')

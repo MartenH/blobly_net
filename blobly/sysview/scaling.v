@@ -68,9 +68,9 @@ fn (s Scaling) text(raw i64, lim Range) !string {
 	return error('raw ${raw} is in no scale of the description')
 }
 
-// raw is a text's raw value: a number through the first segment that holds it, rounded to the
-// nearest raw value — one between two segments' values to the nearer of them —, or a label's value
-// (a decimal integer stands for itself where it is no label).
+// raw is a text's raw value: a number as the raw value whose physical value is nearest it — the
+// first segment's on a tie, one between two segments' values the nearer of them —, or a label's
+// value (a decimal integer stands for itself where it is no label).
 fn (s Scaling) raw(text string, lim Range) !i64 {
 	t := text.trim_space()
 	if s.segments.len == 0 {
@@ -99,24 +99,27 @@ fn (s Scaling) raw(text string, lim Range) !i64 {
 	}
 	mut best := i64(0)
 	mut best_d := math.inf(1)
+	mut held := false
 	for g in s.segments {
 		a, b := g.within(lim) or { continue }
 		r := (p * g.d - g.v0) / g.v1
+		// the segment's raw value nearest the text: the rounded one where the segment holds it,
+		// else its end on the side the text lies
+		mut near := if r < f64(a) { a } else { b }
 		if math.abs(r) <= 9.0e18 {
 			raw := i64(math.round(r))
 			if raw >= a && raw <= b {
-				return raw
+				near = raw
+				held = true
 			}
 		}
-		// the segment's raw value nearest the text: its end on the side the text lies
-		near := if r < f64(a) { a } else { b }
 		d := math.abs(g.physical(near) - p)
 		if d < best_d {
 			best, best_d = near, d
 		}
 	}
 	lo, hi := s.bounds(lim)
-	if p >= lo && p <= hi {
+	if held || (p >= lo && p <= hi) {
 		return best
 	}
 	return error('${t} is outside ${s.span(lim)}')

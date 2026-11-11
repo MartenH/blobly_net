@@ -664,9 +664,9 @@ fn state_named(chart flatxml.Node, name string) ?flatxml.Node {
 }
 
 // gate_of is what a service's PRE-CONDITION-STATE-REFS ask for. A state of a SESSION chart is the
-// session a 0x10 transition enters it by (its chart's start state: the default session); one of a
-// SECURITY chart the level a 0x27 sendKey transition enters it by (its start state: locked, no
-// level). States of one chart are alternatives: the sessions are each listed, the lowest level is
+// sessions every 0x10 transition entering it establishes (its chart's start state: the default
+// session); one of a SECURITY chart the levels the 0x27 sendKey transitions entering it unlock
+// (its start state: locked, no level). States of one chart are alternatives: the sessions are each listed, the lowest level is
 // needed. A state it cannot give a meaning, or a precondition on a parameter's value, is said and
 // left out of the gate; a session or security state left out with no other of its kind beside it
 // is `unresolved`, since leaving it out would open the gate.
@@ -694,29 +694,30 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 		m := states[node_key(st)] or { StateMeaning{} }
 		start := chart.child('START-STATE-SNREF').attr('SHORT-NAME') == short_name(st)
 		if sem.contains('SESSION') {
-			s := if m.sessions.len > 0 {
-				m.sessions[0]
+			entered := if m.sessions.len > 0 {
+				m.sessions
 			} else if start {
-				u8(0x01)
+				[u8(0x01)]
 			} else {
 				r.notes << '${what}: session state ${short_name(st)} is entered by no 0x10 service; not read'
 				lost_sessions << short_name(st)
 				continue
 			}
-			if s !in sessions {
-				sessions << s
+			for s in entered {
+				if s !in sessions {
+					sessions << s
+				}
 			}
 		} else if sem.contains('SECURITY') {
-			l := if m.levels.len > 0 {
-				m.levels[0]
+			if m.levels.len > 0 {
+				levels << m.levels
 			} else if start {
-				0
+				levels << 0
 			} else {
 				r.notes << '${what}: security state ${short_name(st)} is entered by no 0x27 sendKey; not read'
 				lost_levels << short_name(st)
 				continue
 			}
-			levels << l
 		} else {
 			r.notes << '${what}: state ${short_name(st)} of chart ${short_name(chart)} (SEMANTIC "${sem}") is no session or security state; not read'
 		}

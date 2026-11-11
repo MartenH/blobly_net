@@ -46,8 +46,8 @@ included. A layer reached on two ways passes on what either way passes on.
   `UNIT-REF` names; `TEXTTABLE` is a **label**, each `COMPU-SCALE`'s `COMPU-CONST`/`VT` naming the
   raw values in its limits (no `UPPER-LIMIT`: the lower one alone), the `COMPU-DEFAULT-VALUE` naming
   the rest. A limit's `INTERVAL-TYPE` is read (`OPEN` excludes it, `INFINITE` is unbounded). A
-  number is written through the inverse — the first scale whose limits hold the result, rounded to
-  the nearest raw value; one between two scales' values to the nearer of them — and a raw value in
+  number is written as the raw value whose physical value is nearest it — the first scale's on a
+  tie, so one between two scales' values goes to the nearer of them — and a raw value in
   no scale is refused, never shown as a number; a
   label is written as its `COMPU-INVERSE-VALUE`, else its lower limit, and a decimal integer that is
   no label as itself (a raw value no label names reads as the default's label, else as its
@@ -56,9 +56,9 @@ included. A layer reached on two ways passes on what either way passes on.
   are said and not read.
 - **Gates** — a DID's read gate is its read service's `PRE-CONDITION-STATE-REFS`, its write gate its
   write service's. A state of a `STATE-CHART` whose `SEMANTIC` names `SESSION` is the session the
-  sub-function of a `0x10` service whose `STATE-TRANSITION-REFS` enter it (its chart's start state:
-  the default session); one of a `SECURITY` chart is the level of a `0x27` sendKey (sub-function 2L)
-  whose transitions enter it (its start state: locked). States of one chart are alternatives: each
+  sub-function of every `0x10` service whose `STATE-TRANSITION-REFS` enter it (its chart's start
+  state: the default session); one of a `SECURITY` chart is the level of every `0x27` sendKey
+  (sub-function 2L) whose transitions enter it (its start state: locked). States of one chart are alternatives: each
   session is listed (one ISO does not name by its sub-function, `0x40`), the lowest level is
   needed. A write is then refused until the connection has
   switched and unlocked as the gate asks (`WriteGated` in Python, the error's words in Lua); no
