@@ -12,7 +12,7 @@ what it registers on the project or arms is dropped after it. The fixtures' para
 annotated, so an editor completes them (docs/vscode.md)."""
 import pytest
 
-from blobly import Channel, Project, UdsClient
+from blobly import Channel, Project, UdsClient, now_ms
 
 
 def test_the_project_has_its_channels(project: Project):
@@ -51,6 +51,13 @@ def test_the_gear_steps_each_second(can1: Channel):
     _, gear = can1.expect_signal("Powertrain", "Gear", lambda g: 1 <= g <= 6, timeout_ms=500)
     _, after = can1.expect_signal("Powertrain", "Gear", lambda g: g != gear, timeout_ms=1500)
     assert after == gear % 6 + 1
+
+
+def test_the_gear_is_read_as_it_is_now(project: Project, can1: Channel):
+    project.wait(250)  # time passes while can1 is read: Powertrain comes every 100 ms
+    frame = can1.latest(can1.messages.Powertrain)
+    assert frame is not None and frame.t_ms is not None and now_ms() - frame.t_ms < 250
+    assert 1 <= can1.value("Powertrain", "Gear") <= 6
 
 
 def test_powertrain_stays_in_its_dbc_range(can1: Channel):

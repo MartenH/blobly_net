@@ -104,11 +104,18 @@ class EventLoop(Generic[_C]):
         """Whether a channel's ladder moves only while it is read. Unknown here: read it."""
         return True
 
-    def _to_read(self, needs):
+    def _open(self):
+        """The channels wait() reads besides the handlers' ones. None here."""
+        return []
+
+    def _to_read(self, needs, everything=False):
         """What one wait reads, built at each wait so a handler registered inside a callback is
         read in this run(): every channel an on_message names, and a health handler's where its
-        ladder needs a reader (`needs` holds this run()'s answers)."""
+        ladder needs a reader (`needs` holds this run()'s answers); with `everything` (wait()),
+        every open channel too."""
         read = list(self._listened)
+        if everything:
+            read += [k for k in self._open() if not any(r is k or r == k for r in read)]
         for h in self._on_health:
             if any(k is h.channel or k == h.channel for k in read):
                 continue
@@ -195,9 +202,20 @@ class EventLoop(Generic[_C]):
     def run(self, duration_ms: float = 1000) -> None:
         """The event loop for duration_ms (a finite number, zero or more). It reads every channel a
         handler names; a frame it reads is consumed, whether or not a handler matched it."""
+        self._loop("run", duration_ms, False)
+
+    def wait(self, duration_ms: float) -> None:
+        """duration_ms pass (a finite number, zero or more) while every open channel is read — the
+        replacement for time.sleep in a test: each channel's newest frames (latest, value) stay
+        current and its queue does not fill with old frames. It is run() reading every open
+        channel besides the handlers' ones, so handlers and timers run as in run()."""
+        self._loop("wait", duration_ms, True)
+
+    def _loop(self, who, duration_ms, everything):
+        """run(), and with `everything` wait()."""
         if not _finite(duration_ms) or duration_ms < 0:
             # NaN would make every deadline comparison false: a loop that never ends
-            raise ValueError("run: the duration must be a finite number of milliseconds, zero or more")
+            raise ValueError(f"{who}: the duration must be a finite number of milliseconds, zero or more")
         deadline = self._now() + duration_ms
         next_health = self._now()
         # whether a health handler's channel needs reading, asked once per run() and channel — not
@@ -228,7 +246,7 @@ class EventLoop(Generic[_C]):
                 wake = next_health
             # the exact budget, fractions included: the wait never reads past the deadline; and at
             # most a second, so a long run() is many waits
-            got = self._wait_frame(self._to_read(needs), min(max(0, wake - now), LONGEST_WAIT_MS))
+            got = self._wait_frame(self._to_read(needs, everything), min(max(0, wake - now), LONGEST_WAIT_MS))
             if got is not None:
                 key, frame = got
                 handlers = [fn for ch, want, fn in self._on_msg

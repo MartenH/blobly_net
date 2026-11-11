@@ -44,17 +44,6 @@ def count(ch: blobly.Channel, frame_id: int, seconds: float) -> int:
     return n
 
 
-def last_value(ch: blobly.Channel, msg: blobly.Message, signal: str, seconds: float) -> float | None:
-    """`signal` in the last frame of `msg` on `ch` in the next `seconds`: the frames already queued
-    when the window opens were sent before it."""
-    end, value = time.monotonic() + seconds, None
-    while (left := end - time.monotonic()) > 0:
-        f = ch.recv(left * 1000)
-        if f is not None and f.id == msg.id and f.ext == msg.ext:
-            value = ch.decode(f)[signal]
-    return value
-
-
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("project", nargs="?", default=SIM_DEMO, help="a .blobnet project (default: sim-demo)")
@@ -82,11 +71,16 @@ def main(argv: list[str]) -> int:
 
         pedal = brake.signals.BrakePedal
         print(f"out_of_range: BrakePedal is declared {pedal.minimum:g}..{pedal.maximum:g}")
-        before = last_value(can1, brake, "BrakePedal", 0.3)
+        # each value is the newest BrakeStatus's once 300 ms have passed (every 50 ms on the wire),
+        # the channel read meanwhile
+        net.wait(300)
+        before = can1.value(brake, pedal)
         net.fault(can1, "ChassisECU", brake, FaultKind.OUT_OF_RANGE, signal=pedal)
-        during = last_value(can1, brake, "BrakePedal", 0.3)
+        net.wait(300)
+        during = can1.value(brake, pedal)
         net.clear_fault(can1, "ChassisECU", brake)
-        after = last_value(can1, brake, "BrakePedal", 0.3)
+        net.wait(300)
+        after = can1.value(brake, pedal)
         print(f"  before {before}, during {during}, after the clear {after}")
         if during is None or during <= pedal.maximum:
             fail(f"BrakePedal was {during} under out_of_range, inside its declared range")
