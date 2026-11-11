@@ -33,13 +33,16 @@ fn is_ns_entry(line string) bool {
 }
 
 // end is told every line after it is dispatched: a line with an odd number of unescaped quotes
-// opens or closes a string that runs over lines.
+// opens or closes a string that runs over lines. A quote is escaped by an odd run of backslashes
+// before it (`\"` does not close a string, `\\"` does).
 fn (mut u Unread) end(line string) {
 	mut quotes := 0
-	for i, c in line {
-		if c == `"` && (i == 0 || line[i - 1] != `\\`) {
+	mut slashes := 0
+	for c in line {
+		if c == `"` && slashes % 2 == 0 {
 			quotes++
 		}
+		slashes = if c == `\\` { slashes + 1 } else { 0 }
 	}
 	if quotes % 2 == 1 {
 		u.in_str = !u.in_str

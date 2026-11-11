@@ -383,7 +383,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	// one opener for the whole run, behind a pointer: a closure copies a struct it captures (maps
 	// included), and the check and the row databases must share this one
 	db_files := &DbFiles{
-		err: o.err
+		err:  o.err
+		said: proj.notes
 	}
 	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), fn [db_files] (ref string) ?candb.Database {
 		mut f := unsafe { db_files }
@@ -1052,10 +1053,10 @@ fn load_channel_db(ch project.Channel, proj_dir string, files &DbFiles) candb.Da
 		fn [files] (ref string) !candb.Loaded {
 			mut f := unsafe { files }
 			l := f.open(ref)!
-			// the records a DBC does not read were said at the load (databases_unread)
+			// the records a DBC does not read, unless the load said these (databases_unread)
 			return candb.Loaded{
 				...l
-				notes: l.notes.filter(it !in l.unread)
+				notes: l.notes.filter(it !in l.unread || it !in f.said)
 			}
 		})
 	// what could not be opened, and what the ARXML reader had to skip: on stderr, because a
@@ -1072,7 +1073,8 @@ fn load_channel_db(ch project.Channel, proj_dir string, files &DbFiles) candb.Da
 // the SAME parse for every question asked of it — the rate check before the run and the row
 // databases the run uses, so a file replaced between the two cannot make them disagree.
 struct DbFiles {
-	err fn (string) @[required]
+	err  fn (string) @[required]
+	said []string // what the load said, which the run does not say again
 mut:
 	refs         map[string]candb.Loaded // by canonical reference
 	failed       map[string]string

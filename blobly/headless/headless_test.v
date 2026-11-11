@@ -578,6 +578,15 @@ fn test_a_strict_load_refuses_what_this_build_does_not_read() {
 	said := lines.err.filter(it.contains('not read: SIG_VALTYPE_')).len
 	lines.mu.unlock()
 	assert said == 1, 'the start repeated what the load said'
+	// a record added after the load is said by the start
+	os.write_file(os.join_path(root, 'u.dbc'), 'BU_: A\nBO_ 256 M: 8 A\n SG_ S : 0|8@1+ (1,0) [0|255] "" A\nSIG_VALTYPE_ 256 S : 1;\nSIG_VALTYPE_ 256 S : 1;\n')!
+	r = start(proj, path, lines.options())!
+	r.stop()
+	lines.mu.lock()
+	again := lines.err.filter(it.contains('u.dbc: not read: SIG_VALTYPE_ × 2')).len
+	lines.mu.unlock()
+	assert again == 1, 'the start kept quiet about what the load never said'
+	os.write_file(os.join_path(root, 'u.dbc'), 'BU_: A\nBO_ 256 M: 8 A\n SG_ S : 0|8@1+ (1,0) [0|255] "" A\nSIG_VALTYPE_ 256 S : 1;\n')!
 	if _ := load(path, Options{
 		strict: true
 		err:    fn (s string) {}

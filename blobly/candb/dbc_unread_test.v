@@ -70,6 +70,18 @@ CM_
 	assert db.unread == ['SIG_VALTYPE_ × 1'], '${db.unread}'
 }
 
+// A quote after an escaped backslash closes its string, so the records after it are counted.
+fn test_a_quote_after_an_escaped_backslash_closes_the_string() {
+	db := parse_dbc('BU_: A
+BO_ 256 M: 8 A
+ SG_ S : 0|32@1- (1,0) [0|0] "" A
+CM_ BO_ 256 "kept in C:\\\\";
+CM_ BO_ 256 "a \\"quoted\\" word";
+SIG_VALTYPE_ 256 S : 1;
+')!
+	assert db.unread == ['SIG_VALTYPE_ × 1'], '${db.unread}'
+}
+
 fn test_open_database_says_the_unread_records_in_one_note() {
 	dir := os.join_path(os.vtmp_dir(), 'unread_${os.getpid()}')
 	os.mkdir_all(dir)!
