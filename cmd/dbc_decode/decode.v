@@ -24,7 +24,8 @@ fn main() {
 		eprintln('no message 0x${id:X} in DBC')
 		exit(1)
 	}
-	for s in msg.signals {
+	// a signal past the 64-bit scalar model carries no number (candb.Signal.is_scalar)
+	for s in msg.signals.filter(it.is_scalar()) {
 		// fixed 6-decimal format keeps the comparison exact across languages
 		println('${s.name}=${s.physical(data):.6f}')
 	}

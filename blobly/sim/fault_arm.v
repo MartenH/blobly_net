@@ -71,6 +71,7 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 				}
 			}
 			past_payload_refusal(m, sg, 'out_of_range')!
+			wide_refusal(m, sg, 'out_of_range')!
 			if !m.any(can_force_out_of_range(it, sg, prot)) {
 				return error('"${sg}" on "${msg}" has no value outside its declared range')
 			}
@@ -102,6 +103,17 @@ fn past_payload_refusal(msgs []candb.Message, field string, kind string) ! {
 	for m in msgs {
 		if why := past_payload(m, field) {
 			return error('${why} — ${kind} would change nothing')
+		}
+	}
+}
+
+// wide_refusal refuses a fault `kind` on a signal past the 64-bit scalar model, which nothing writes.
+fn wide_refusal(msgs []candb.Message, field string, kind string) ! {
+	for m in msgs {
+		for sig in m.signals {
+			if sig.name == field && !sig.is_scalar() {
+				return error('${sig.scalar_refusal()} — ${kind} would change nothing')
+			}
 		}
 	}
 }

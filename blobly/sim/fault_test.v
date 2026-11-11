@@ -380,6 +380,37 @@ fn test_out_of_range_chooses_or_checks_its_signal() {
 	assert refusal(t, 'ECU', 'Plain', 'out_of_range', 'Beyond') == '"Beyond" lies past the 1-byte payload of Plain, so nothing writes it — out_of_range would change nothing'
 }
 
+// a signal wider than 64 bits is never written, so it is neither chosen nor accepted for out_of_range
+fn test_out_of_range_refuses_a_wide_signal() {
+	t := arm_target()
+	wide := candb.Message{
+		name:    'Wide'
+		id:      0x125
+		dlc:     24
+		sender:  'ECU'
+		signals: [
+			candb.Signal{
+				name:       'Key'
+				start_bit:  8
+				length:     128
+				byte_order: .little_endian
+				factor:     1
+				maximum:    1
+			},
+		]
+	}
+	assert !can_force_out_of_range(wide, 'Key', E2e{})
+	wt := FaultTarget{
+		...t
+		db: candb.Database{
+			...t.db
+			messages: [wide]
+		}
+	}
+	assert refusal(wt, 'ECU', 'Wide', 'out_of_range', '') == 'no signal on "Wide" has a value outside its declared range'
+	assert refusal(wt, 'ECU', 'Wide', 'out_of_range', 'Key') == 'Key is 128 bits wide: a value is encoded into 1 .. 64 — out_of_range would change nothing'
+}
+
 // a fault that could not take effect is refused, and nothing is stored
 fn test_a_fault_that_cannot_take_effect_is_refused() {
 	clear_all()
