@@ -1195,7 +1195,9 @@ the same rule in the engine.
 - `net.set_signal(channel, node, message, signal, value)` holds `signal` (a `Signal` or its name)
   of the simulated `node`'s `message` at the physical `value` from its next frame, until it is
   changed or cleared. It goes over the node's own source for that signal and under its E2E
-  protection, so the checksum covers it. Keyed by the message's name, as a fault is.
+  protection, so the checksum covers it. Keyed by the message's name, as a fault is. On an event
+  or mixed message, a set or clear that changes the raw value it carries sends it as a change
+  (`1 + GenMsgNrOfRepetition` times, no closer than `GenMsgDelayTime`).
 - `net.clear_signal(channel, node, message, signal=None)` lets go of it (`None`: every signal of
   the message), which goes out from the project's source again; `net.clear_signals()` lets go of
   every one. A start clears them too; `clear_faults()` leaves them.

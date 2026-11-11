@@ -130,6 +130,7 @@ pub mut:
 pub struct ChangeState {
 pub mut:
 	raws    []u64
+	set     []SetValue // the values set when last looked at (setsignal.v)
 	seen    bool
 	left    int
 	next_ms f64
@@ -188,7 +189,7 @@ pub fn (m SimMessage) sends() bool {
 }
 
 // change_raws is the raw value each generator that moves with time (Gen.follows_time) gives its
-// signal at time t (s): what a change is a change of.
+// signal at time t (s), a value set on the signal standing in for it: what a change is a change of.
 fn (m SimMessage) change_raws(t f64) []u64 {
 	mut out := []u64{cap: m.signals.len}
 	for s in m.signals {
@@ -198,13 +199,70 @@ fn (m SimMessage) change_raws(t f64) []u64 {
 		mut raw := u64(0)
 		for sig in m.msg.signals {
 			if sig.name == s.name {
-				raw = sig.raw_from_phys(s.gen.value(t, 0))
+				raw = sig.raw_from_phys(set_value_of(m.set, s.name) or { s.gen.value(t, 0) })
 				break
 			}
 		}
 		out << raw
 	}
 	return out
+}
+
+// set_value_of is the value `set` holds `signal` at, none where it holds none.
+fn set_value_of(set []SetValue, signal string) ?f64 {
+	for v in set {
+		if v.signal == signal {
+			return v.value
+		}
+	}
+	return none
+}
+
+// Carried is a signal's raw value in a frame, or that the frame does not carry the signal.
+struct Carried {
+	on  bool
+	raw u64
+}
+
+// raw_under is the raw value signal `name` carries in the next frame at time t (s) under the values
+// set `set`: the value set, else its generator's, else its start value; not carried for a signal
+// the message does not have or a multiplexed one of a page its switch does not select.
+fn (m SimMessage) raw_under(name string, t f64, set []SetValue) Carried {
+	sig := m.msg.signal_named(name) or { return Carried{} }
+	if sig.is_multiplexed && !sig.is_multiplexor {
+		sw := m.msg.multiplexor_index()
+		if sw >= 0 {
+			on := m.raw_under(m.msg.signals[sw].name, t, set)
+			if !on.on || on.raw != u64(sig.multiplexor_value) {
+				return Carried{}
+			}
+		}
+	}
+	if v := set_value_of(set, name) {
+		return Carried{true, sig.raw_from_phys(v)}
+	}
+	for s in m.signals {
+		if s.name == name {
+			return Carried{true, sig.raw_from_phys(s.gen.value(t, m.send_n))}
+		}
+	}
+	return Carried{true, if sig.has_start { sig.start_raw } else { u64(0) }}
+}
+
+// set_moves is whether the values set going from `before` to m.set changes, at time t (s), the raw
+// value of a signal either names that the next frame carries.
+fn (m SimMessage) set_moves(before []SetValue, t f64) bool {
+	for v in before {
+		if m.raw_under(v.signal, t, before) != m.raw_under(v.signal, t, m.set) {
+			return true
+		}
+	}
+	for v in m.set {
+		if m.raw_under(v.signal, t, before) != m.raw_under(v.signal, t, m.set) {
+			return true
+		}
+	}
+	return false
 }
 
 // build encodes the message's signals at time t into a CAN frame (payload_of): its generators'
@@ -539,24 +597,26 @@ fn (mut m SimMessage) emit(now_ms f64, mut e Engine, ecu string, send fn (f tran
 // rather than the simulation loop's.
 pub const change_gap_ms = 10
 
-// step_change sends a message whose send type is event or mixed when a generator that moves with
-// time changes the raw value of one of its signals (a counter moving with a send is no change): 1 + its repetitions times, the repetitions a fast cycle apart, no
-// send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
-// change_gap_ms apart where the file states neither, none before its start delay. The values when
-// first looked at are where it starts, not a change.
+// step_change sends a message whose send type is event or mixed when the raw value of one of its
+// signals changes — by a generator that moves with time (a counter moving with a send is no
+// change), or by a value a script sets or lets go of (setsignal.v): 1 + its repetitions times, the
+// repetitions a fast cycle apart, no send of it (a cyclic one of a mixed message included) closer
+// than the delay to the one before, change_gap_ms apart where the file states neither, none before
+// its start delay. The values when first looked at are where it starts, not a change.
 fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, ecu string, send fn (f transport.CanFrame) bool) {
-	if !m.msg.on_change() || !m.signals.any(it.gen.follows_time())
-		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
+	if !m.msg.on_change() || now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
 	}
-	raws := m.change_raws(now_ms / 1000.0)
+	t := now_ms / 1000.0
+	raws := m.change_raws(t)
 	if !m.ev.seen {
 		m.ev.seen = true
 		m.ev.raws = raws
-	} else if raws != m.ev.raws {
+	} else if raws != m.ev.raws || m.set_moves(m.ev.set, t) {
 		m.ev.raws = raws
 		m.ev.left = 1 + m.msg.repetitions
 	}
+	m.ev.set = m.set
 	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
 		return
 	}

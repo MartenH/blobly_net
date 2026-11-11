@@ -124,7 +124,7 @@ pub fn validate_cfg(db candb.Database, cfg project.NodeCfg) []string {
 
 // unsent_note says how many of an ECU's messages it never sends, '' for none: no cycle
 // (Message.cyclic_period), no response rule answering with it, and no generator to change it
-// where its send type sends it on a change.
+// where its send type sends it on a change (a value a script sets sends it too).
 pub fn unsent_note(ecu SimEcu) string {
 	mut names := []string{}
 	mut on_change := false
@@ -139,7 +139,7 @@ pub fn unsent_note(ecu SimEcu) string {
 		return ''
 	}
 	shown := if names.len > 5 { names[..5].join(', ') + ', …' } else { names.join(', ') }
-	hint := if on_change { '; an event message is sent when a generator changes one of its signals' } else { '' }
+	hint := if on_change { '; an event message is sent when a generator or a value set changes one of its signals' } else { '' }
 	return '${names.len} of its ${ecu.messages.len} messages are never sent, with no cycle to send them on (${shown})${hint}'
 }
 
