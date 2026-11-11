@@ -7,6 +7,7 @@ import time
 import blobly.project
 import blobly.transport
 import blobly.isotp
+import blobly.uds
 
 // Lines is what a run said, kept for the assertions. HEAP, and locked: the sinks are called from
 // the run's worker threads (Options says so), and the test reads while they are still starting.
@@ -505,4 +506,52 @@ channels:
 	}
 	assert lines.said('generator "Ok": not sent')
 	assert r.loops().map(it.state) == [LoopState.up]
+}
+
+// A UDS node answering a functional id is up once it is on the wire's functional listener: while
+// another joiner's open of that listener is in progress, the node is still opening.
+fn test_a_functional_uds_node_is_up_once_it_listens() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_func_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'func.blobnet')
+	os.write_file(path, 'project:
+  name: func
+  version: 8
+channels:
+  - name: Here
+    type: can
+    interface: inproc:HFUNC
+    simulation:
+      - name: Ecu
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          functional: "0x7DF"
+')!
+	opening := chan bool{}
+	release := chan bool{}
+	held := spawn fn [opening, release] () !&uds.FuncSub {
+		return uds.functional_join('inproc:HFUNC', 0x7DE, false, fn [opening, release] () !transport.Bus {
+			opening <- true
+			_ := <-release
+			return transport.open('inproc:HFUNC')!
+		})!
+	}()
+	_ := <-opening
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(300)
+	assert ls.filter(it.state == .opening).map(it.name) == ['Here: uds node 0x7E0'], ls.str()
+	release <- true
+	mut sub := held.wait()!
+	assert ready_note(r.wait_ready(2000)) == ''
+	sub.leave()
 }

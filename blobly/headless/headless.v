@@ -742,7 +742,6 @@ fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool,
 		r.open_failed(ready, 'cannot open ${iface}: ${err}')
 		return
 	}
-	r.loop_is(ready, '')
 	// a run worker: Stop abandons an answer still being segmented (#347)
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
@@ -762,6 +761,7 @@ fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool,
 			r.say('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
 		}
 	}
+	r.loop_is(ready, '') // up once it hears its functional id too, or knows it cannot
 	mut s := srv
 	for r.ctl.running {
 		s.serve_step(mut link, 50) or { time.sleep(50 * time.millisecond) }

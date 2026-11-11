@@ -88,3 +88,29 @@ def test_the_wait_leaves_the_state_lock_free(monkeypatch):
         monkeypatch.setattr(lib, "bb_wait_ready", spy)
         assert net.wait_ready(5000) is None
     assert free and all(free), free
+
+
+def test_a_wait_across_a_stop_and_start_is_not_the_new_runs(monkeypatch):
+    lib = _lib.lib()
+    real = lib.bb_wait_ready
+    other = blobly.Project(SIM_DEMO)
+
+    def restart(part):  # another thread stops this run and starts another before the wait
+        def swap():
+            net.stop()
+            other.start()
+        t = threading.Thread(target=swap)
+        t.start()
+        t.join()
+        return real(part)
+
+    net = blobly.Project(SIM_DEMO)
+    net.start()
+    try:
+        monkeypatch.setattr(lib, "bb_wait_ready", restart)
+        with pytest.raises(blobly.BloblyError) as e:
+            net.wait_ready(5000)
+        assert e.value.code == _lib.BB_ERR_STATE
+    finally:
+        net.stop()
+        other.stop()
