@@ -106,6 +106,48 @@ fn test_the_receiver_announces_its_flow_control_and_paces_blocks() {
 	peer.close()
 }
 
+// A block size changed while a transfer waits between receives applies from the next Flow
+// Control: the sender is following the one already sent, so the current block ends where it said.
+fn test_a_changed_block_size_waits_for_the_next_flow_control() {
+	mut peer := transport.open('inproc:isotp-rx-bs') or { panic(err) }
+	mut ch := open_software('inproc:isotp-rx-bs', 0x7E8, 0x7E0, false) or { panic(err) }
+	ch.settings = settings_of(no_padding, 1, 0)!
+	want := []u8{len: 34, init: u8(index + 7)}
+	peer.send(transport.CanFrame{ id: 0x7E0, data: [u8(0x10), 34, 7, 8, 9, 10, 11, 12] })!
+	// the receive answers the First Frame with BS=1 and is cut by its deadline, the transfer kept
+	if got := ch.recv(50) {
+		assert false, 'a whole PDU from a First Frame alone: ${got}'
+	}
+	fc := next_on(mut peer, 0x7E8, 1000) or { panic('no Flow Control for the First Frame') }
+	assert fc.data == [u8(0x30), 1, 0]
+	ch.settings = settings_of(no_padding, 2, 0)!
+	// the sender keeps BS=1: one Consecutive Frame, then it waits for a Flow Control
+	peer.send(cf_of(0x7E0, 1, want, 6))!
+	mut r := &Received{
+		ch: ch
+	}
+	t := spawn r.run()
+	mut sn := u8(2)
+	mut off := 13
+	for block in 0 .. 2 {
+		next := next_on(mut peer, 0x7E8, 2000) or { panic('no Flow Control before block ${block}') }
+		assert next.data == [u8(0x30), 2, 0]
+		for _ in 0 .. 2 {
+			if off >= want.len {
+				break
+			}
+			peer.send(cf_of(0x7E0, sn, want, off))!
+			sn++
+			off += 7
+		}
+	}
+	t.wait()
+	assert r.err == ''
+	assert r.got == want
+	ch.close()
+	peer.close()
+}
+
 // cf_of is Consecutive Frame `sn` on `id`, carrying the next up-to-seven bytes of `pdu` from
 // `off`: the last one short, unpadded.
 fn cf_of(id u32, sn u8, pdu []u8, off int) transport.CanFrame {

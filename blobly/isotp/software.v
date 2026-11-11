@@ -65,7 +65,8 @@ mut:
 	held []u8
 pub mut:
 	// The padding of the frames this channel sends and the Flow Control it answers a First Frame
-	// with (settings_of); read at each frame, so a change holds from the next one.
+	// with (settings_of); read at each frame, so a change holds from the next one — a block size
+	// from the next Flow Control, since the sender follows the last one until then.
 	settings Settings
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
@@ -502,7 +503,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				total: total
 				sn:    1
 			}
-			c.tx(c.flow_control()) or {
+			c.send_flow_control() or {
 				c.rx = Reassembly{}
 				return err
 			}
@@ -533,12 +534,24 @@ mut:
 	sn       u8
 	idle_ns  u64 // time a recv spent blocked with no Consecutive Frame since the last one
 	in_block int // Consecutive Frames since the last Flow Control this channel sent
+	// The block size that Flow Control asked for: the sender follows it until the next one, so a
+	// change of settings in between applies from the next Flow Control, not to this block.
+	block u8
 }
 
 // flow_control is the Flow Control this channel answers with as a receiver: clear to send, at the
 // block size and STmin of its settings.
 fn (c &SoftChannel) flow_control() []u8 {
 	return [u8(0x30), c.settings.block_size, c.settings.stmin]
+}
+
+// send_flow_control sends that Flow Control for the transfer in `rx` and starts its block at the
+// block size it asked for.
+fn (mut c SoftChannel) send_flow_control() ! {
+	fc := c.flow_control()
+	c.tx(fc)!
+	c.rx.block = fc[1]
+	c.rx.in_block = 0
 }
 
 // reassemble collects the Consecutive Frames of the transfer in `rx`. The 4-bit sequence number
@@ -629,10 +642,9 @@ fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
 		c.rx.idle_ns = 0
 		// a block received with more to come: the sender waits for the next Flow Control
 		c.rx.in_block++
-		bs := int(c.settings.block_size)
+		bs := int(c.rx.block)
 		if bs > 0 && c.rx.in_block >= bs && c.rx.buf.len < c.rx.total {
-			c.rx.in_block = 0
-			c.tx(c.flow_control()) or {
+			c.send_flow_control() or {
 				c.rx = Reassembly{}
 				return err
 			}
