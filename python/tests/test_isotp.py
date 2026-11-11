@@ -28,6 +28,20 @@ channels:
 """
 
 
+def _isotp_wire(ch):
+    """The ISO-TP frames on 0x7E0/0x7E8 the channel has heard since it was last asked, in wire
+    order: each one's PCI type, and the Flow Controls' bytes."""
+    kinds, fcs = [], []
+    while True:
+        f, spent = ch.look()
+        if f is None and not spent:
+            return kinds, fcs
+        if f is not None and f.id in (0x7E0, 0x7E8):
+            kinds.append(("SF", "FF", "CF", "FC")[f.data[0] >> 4])
+            if kinds[-1] == "FC":
+                fcs.append(f.data)
+
+
 @pytest.fixture(scope="class")
 def can1(sim_demo):
     return sim_demo.channels.CAN1
@@ -85,8 +99,13 @@ class TestSimDemo:
             sim_demo.channels.DoIP1.uds(padding=0xAA)
 
     def test_a_multi_frame_answer_in_blocks_and_spacing(self, can1):
+        _isotp_wire(can1)  # the channel hears the wire from here, and nothing before
         with can1.uds(block_size=1, stmin_ms=2, padding=0xCC) as diag:
             assert diag.read_did(0xF190) == VIN_ANSWER[3:]
+        # 20 bytes: the First Frame carries 6, two Consecutive Frames the rest, one per block
+        kinds, fcs = _isotp_wire(can1)
+        assert kinds == ["SF", "FF", "FC", "CF", "FC", "CF"]
+        assert fcs == [b"\x30\x01\x02" + b"\xcc" * 5] * 2
 
     def test_a_closed_channel_refuses(self, can1):
         tp = can1.isotp(0x7E0, 0x7E8)

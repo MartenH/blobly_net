@@ -117,6 +117,19 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 	if stop_asked(targets) {
 		return error(abandoned_note)
 	}
+	// the one frame padded as the targets' own requests are
+	if mut fch is isotp.SoftChannel {
+		for t in targets {
+			if p := target_padding(t) {
+				fch.settings = isotp.Settings{
+					...fch.settings
+					padded: p.padded
+					pad:    p.pad
+				}
+				break
+			}
+		}
+	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
 	sent_ns := time.sys_mono_now()
 	for t in targets {
@@ -300,9 +313,30 @@ pub fn functional_refusal(targets []FunctionalTarget, req []u8) ?string {
 			if targets[j].rsp_id == t.rsp_id && targets[j].ext == t.ext {
 				return 'UDS: two functional targets answer on 0x${t.rsp_id:X}'
 			}
+			if p := target_padding(t) {
+				if q := target_padding(targets[j]) {
+					if p.padded != q.padded || p.pad != q.pad {
+						return 'UDS: a functional request is one frame, and its targets pad theirs differently (${padding_name(q)}, ${padding_name(p)})'
+					}
+				}
+			}
 		}
 	}
 	return none
+}
+
+// target_padding is how a target's own requests are padded, where its client rides a software
+// channel: what the functional request's one frame takes too.
+fn target_padding(t FunctionalTarget) ?isotp.Settings {
+	ch := t.client.ch
+	if ch is isotp.SoftChannel {
+		return ch.settings
+	}
+	return none
+}
+
+fn padding_name(s isotp.Settings) string {
+	return if s.padded { '0x${s.pad:02X}' } else { 'none' }
 }
 
 // stop_asked: a stop was asked of a target's client.

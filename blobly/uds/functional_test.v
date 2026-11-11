@@ -133,6 +133,45 @@ fn test_functional_refuses_what_it_cannot_send_or_tell_apart() {
 	assert false, 'an 8-byte functional request was accepted'
 }
 
+fn padded_client(bus string, req_id u32, rsp_id u32, s isotp.Settings) &Client {
+	mut ch := isotp.open_software(bus, req_id, rsp_id, false) or { panic(err) }
+	ch.settings = s
+	return &Client{
+		ch: ch
+	}
+}
+
+fn test_the_functional_frame_is_padded_as_its_targets_requests_are() {
+	bus := 'inproc:FUNCPAD'
+	cc := isotp.settings_of(0xCC, 0, 0) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	mut wire := transport.open(bus) or { panic(err) }
+	t := FunctionalTarget{
+		client: padded_client(bus, 0x7E0, 0x7E8, cc)
+		rsp_id: 0x7E8
+	}
+	functional(mut fch, mut tap, [t], [u8(0x3E), 0x80], 20) or { panic(err) }
+	f := wire.recv(100) or { panic(err) }
+	assert f.id == 0x7DF && f.data == [u8(0x02), 0x3E, 0x80, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC]
+
+	none_ := isotp.settings_of(isotp.no_padding, 0, 0) or { panic(err) }
+	u := FunctionalTarget{
+		client: padded_client(bus, 0x7E1, 0x7E9, none_)
+		rsp_id: 0x7E9
+	}
+	functional(mut fch, mut tap, [u], [u8(0x3E), 0x80], 20) or { panic(err) }
+	g := wire.recv(100) or { panic(err) }
+	assert g.data == [u8(0x02), 0x3E, 0x80]
+
+	// one frame cannot carry two paddings
+	functional(mut fch, mut tap, [t, u], [u8(0x3E), 0x80], 20) or {
+		assert err.msg().contains('pad theirs differently (0xCC, none)')
+		return
+	}
+	assert false, 'targets padding differently were accepted'
+}
+
 // A carrier for functional_addressed: what send_to was asked, and the answers recv hands back in
 // order — an error string as `!` followed by the message, a timeout once they run out.
 struct ScriptedCarrier {

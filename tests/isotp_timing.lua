@@ -71,18 +71,43 @@ test("an ISO-TP channel pads with the byte asked for, or sends frames unpadded",
   tp:close()
 end)
 
+-- the ISO-TP frames on the pair 0x7E0/0x7E8 the script has heard since its last call, in wire
+-- order, each its PCI type (SF, FF, CF or FC) and the Flow Controls as hex
+local function isotp_wire()
+  local kinds, fcs = {}, {}
+  while true do
+    local f = bus.recv("CAN1", 0)
+    if f == nil then return table.concat(kinds, " "), fcs end
+    if f.id == 0x7E0 or f.id == 0x7E8 then
+      local k = ({ [0] = "SF", "FF", "CF", "FC" })[f.data:byte(1) >> 4]
+      kinds[#kinds + 1] = k
+      if k == "FC" then fcs[#fcs + 1] = tohex(f.data) end
+    end
+  end
+end
+
 test("a multi-frame answer comes in the blocks and spacing the channel asks for", function()
+  isotp_wire()                         -- the script hears the wire from here, and nothing before
   local diag = uds.open("CAN1", { block_size = 1, stmin_ms = 2, padding = 0xCC })
   check.equal(diag:read_did(0xF190), "BLOBLYNETV0SUT001")
   diag:close()
+  -- 20 bytes: the First Frame carries 6, two Consecutive Frames the rest, one per block
+  local kinds, fcs = isotp_wire()
+  check.equal(kinds, "SF FF FC CF FC CF")
+  check.equal(fcs[1], "30 01 02 CC CC CC CC CC")
+  check.equal(fcs[2], "30 01 02 CC CC CC CC CC")
   local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, stmin_ms = 0.5 })
   tp:send("\x22\xF1\x90")
   check.equal(tp:recv(1000), "\x62\xF1\x90BLOBLYNETV0SUT001")
   tp:close()
+  kinds, fcs = isotp_wire()
+  check.equal(kinds, "SF FF FC CF CF", "no block size: one Flow Control for the whole answer")
+  check.equal(fcs[1], "30 00 F5 00 00 00 00 00")
 end)
 
 test("ISO-TP settings out of range are refused before the channel opens", function()
-  local bad = { { padding = 256 }, { padding = true }, { block_size = -1 }, { block_size = 256 },
+  local bad = { { padding = 256 }, { padding = -1 }, { padding = true }, { block_size = -1 },
+    { block_size = 256 },
     { stmin_ms = 1.5 }, { stmin_ms = 128 }, { stmin_ms = "5" } }
   for _, o in ipairs(bad) do
     o.tx, o.rx = 0x7E0, 0x7E8

@@ -348,7 +348,8 @@ local rs = uds.functional("compute", 0x7DF, { dom, gw }, "\x22\xF1\x90" [, windo
 ```
 
 The request goes out **once**, as a Single Frame on the functional id (at most 7 bytes: a
-functional request cannot be segmented). Each ECU answers on its own physical response id, and a
+functional request cannot be segmented), padded as the connections' own requests are
+(`opts.padding`; connections padding differently raise). Each ECU answers on its own physical response id, and a
 multi-frame answer is reassembled on that connection, its Flow Control going to that ECU's physical
 request id. Several ECUs may answer multi-frame to one request; their transfers are reassembled one
 after another, so a second ECU's Flow Control waits for the first transfer to end, which takes

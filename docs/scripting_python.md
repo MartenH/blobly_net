@@ -1334,7 +1334,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 ```
 
 **Functional addressing.** `ch.uds_functional(functional_id, clients, request)` sends `request`
-once, a Single Frame (7 bytes at most) on the functional id, and each client answers on its own
+once, a Single Frame (7 bytes at most) on the functional id, padded as the clients' own requests
+are (`padding=`; clients padding differently are refused), and each client answers on its own
 response id, a multi-frame answer included. It returns a `FunctionalReply` per client, in their
 order: `outcome` is `"positive"`, `"negative"`, `"silent"` (nothing within the window, which is
 normal for a functional request: ISO 14229-1 has a server not refuse one with 0x11, 0x12, 0x31,

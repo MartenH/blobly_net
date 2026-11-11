@@ -79,7 +79,7 @@ fn isotp_settings_arg(l lua.State, i int) !isotp.Settings {
 	if l.arg_is_bool(i) && !l.arg_bool(i) {
 		padding = isotp.no_padding
 	} else if !l.arg_absent(i) {
-		padding = read_int(l, i, 'padding', min_i64, max_i64, true) or {
+		padding = read_int(l, i, 'padding', 0, 0xFF, true) or {
 			return error('padding is ${l.arg_given(i)}, not a byte or false')
 		}
 	}
