@@ -7,6 +7,29 @@ module uds
 // did_active_session is ISO 14229-1's ActiveDiagnosticSessionDataIdentifier.
 pub const did_active_session = u16(0xF186)
 
+// The bytes a positive answer puts before a value: 0x62 and the identifier for 0x22, 0x6F, the
+// identifier and the control parameter for 0x2F, 0x63 for 0x23. What a declared value may hold is
+// the carrier's longest answer less its service's header, the one rule a server's builder and its
+// validation both ask (did_value_max, io_value_max, memory_read_max).
+pub const did_answer_header = 3
+pub const io_answer_header = 4
+pub const memory_answer_header = 1
+
+// did_value_max is the longest DID value a 0x22 answer of at most `cap` bytes carries.
+pub fn did_value_max(cap int) int {
+	return cap - did_answer_header
+}
+
+// io_value_max is the longest IO DID value a 0x2F answer of at most `cap` bytes carries.
+pub fn io_value_max(cap int) int {
+	return cap - io_answer_header
+}
+
+// memory_read_max is the most bytes one 0x23 answer of at most `cap` bytes carries.
+pub fn memory_read_max(cap int) int {
+	return cap - memory_answer_header
+}
+
 // MemRange is one declared memory range: its start address and its contents.
 pub struct MemRange {
 pub:
@@ -137,7 +160,7 @@ fn (mut s Server) read_memory(req []u8) []u8 {
 		return neg(0x23, 0x13)
 	}
 	ri, off := s.mem_range(m.address, m.size) or { return neg(0x23, 0x31) }
-	if m.size + 1 > u64(s.spec.resp_cap()) {
+	if m.size > u64(memory_read_max(s.spec.resp_cap())) {
 		return neg(0x23, 0x31)
 	}
 	mut resp := [u8(0x63)]

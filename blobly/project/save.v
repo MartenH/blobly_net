@@ -191,7 +191,12 @@ pub fn (p Project) to_yaml() string {
 					if u.memory.len > 0 {
 						b.writeln('          memory:')
 						for m in u.memory {
-							b.writeln('            - { address: "0x${m.address:X}", size: ${m.size} }')
+							addr := if m.address_text != '' {
+								yaml_flow_scalar(m.address_text)
+							} else {
+								'"0x${m.address:X}"'
+							}
+							b.writeln('            - { address: ${addr}, size: ${m.size} }')
 						}
 					}
 				}

@@ -454,3 +454,29 @@ fn test_validate_uds_reports_overlapping_memory_and_io_listed_twice() {
 	mut srv := uds_nodes(nodes)[0].server
 	assert srv.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00], '0x22 reads the IO value'
 }
+
+// An IO DID's value is bounded by the 0x2F answer's four-byte header, not 0x22's three: at the
+// DID limit a freeze answer would be one byte past what one ISO-TP transfer carries.
+fn test_io_did_size_is_bounded_by_the_0x2f_header() {
+	io_max := max_response - 4
+	nodes := [project.NodeCfg{
+		name: 'BCM'
+		uds:  project.UdsCfg{
+			rx: 0x7E1
+			tx: 0x7E9
+			io: [project.IoCfg{
+				id:   0x1234
+				size: u32(io_max)
+			}, project.IoCfg{
+				id:   0x1235
+				size: u32(io_max + 1)
+			}]
+		}
+	}]
+	mut srv := uds_nodes(nodes)[0].server
+	assert srv.io_start.keys() == [u16(0x1234)]
+	assert srv.handle([u8(0x2F), 0x12, 0x34, 0x02]).len == max_response
+	warns := validate_uds(nodes)
+	assert warns.any(it.contains('IO DID 0x1235 size ${io_max + 1} is not 1..${io_max} bytes'))
+	assert !warns.any(it.contains('IO DID 0x1234'))
+}

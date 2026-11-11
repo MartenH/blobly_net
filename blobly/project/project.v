@@ -17,6 +17,7 @@ import os
 import yaml
 import blobly.doip
 import blobly.player
+import strconv
 
 // schema_version is the newest project-file format version this build understands. Bump it when
 // the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
@@ -291,6 +292,9 @@ pub struct MemCfg {
 pub mut:
 	address u64
 	size    u32
+	// the address as written when it is not a 64-bit number (a stray character, or past 2^64):
+	// the entry is malformed and a Save writes this back, never a number it was not
+	address_text string
 }
 
 // DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
@@ -1474,11 +1478,17 @@ fn parse_node(n yaml.Any) NodeCfg {
 		}
 		if ms := u.value_opt('memory') {
 			for m in ms.array() {
-				if !hex_id_is_clean(m.value('address').str()) {
-					ucfg.malformed << 'memory ${m.value('address').str()}'
+				text := m.value('address').str()
+				address := parse_id_exact(text) or {
+					ucfg.malformed << 'memory ${text}'
+					ucfg.memory << MemCfg{
+						address_text: text
+						size:         clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
+					}
+					continue
 				}
 				ucfg.memory << MemCfg{
-					address: parse_id_wide(m.value('address').str())
+					address: address
 					size:    clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
 				}
 			}
@@ -1845,6 +1855,20 @@ pub fn parse_id_wide(s string) u64 {
 		return v
 	}
 	return t.u64()
+}
+
+// parse_id_exact reads an identifier or address that must be all of 64 bits: hex after 0x, else
+// decimal, none for a character that is not a digit or a value past 2^64-1 — where
+// parse_id_wide skips the one and saturates the other, which for a 64-bit field is a valid value.
+pub fn parse_id_exact(s string) ?u64 {
+	t := s.trim_space().trim('"')
+	if !hex_id_is_clean(t) {
+		return none
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return strconv.parse_uint(t[2..], 16, 64) or { return none }
+	}
+	return strconv.parse_uint(t, 10, 64) or { return none }
 }
 
 fn parse_id(s string) u32 {
