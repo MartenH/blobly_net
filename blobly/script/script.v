@@ -561,6 +561,7 @@ fn (c ChanInfo) fault_target() sim.FaultTarget {
 		iface:    c.fault_iface()
 		db:       c.db
 		nodes:    c.nodes
+		nm:       c.nm
 	}
 }
 

@@ -1085,7 +1085,8 @@ end
 -- awake. A channel reads it from its first frame where its wire has an NM configuration (a
 -- system.toml bus named like a row on it, the wire ARXML NM-PDU frames, or a row nm:), the
 -- Network Management panel rule; nothing guesses a frame is NM. A reading is as of the latest
--- read on the channel, never the wall clock now. Nothing is sent.
+-- read on the channel, never the wall clock now. The reading sends nothing; release and request
+-- act on the simulated nodes of the row.
 --   nm.listen(ch [, { lo, hi, ext, timeout_ms }])  read ch as NM from now on: by its wire
 --                                             configuration, or by the range given (a new reading)
 --   nm.reading(ch [, window_ms])              -> the reading, after reading ch for window_ms
@@ -1104,7 +1105,12 @@ end
 --                                             is in state (kept awake by exactly those names, in
 --                                             any order); an error saying what it was otherwise
 --   nm.expect_asleep(ch [, timeout_ms])       -> nm.expect_state(ch, "asleep", timeout_ms)
+--   nm.release(ch)                            -> how many: the nodes simulated on ch that announce
+--                                             NM stop announcing (refused where none announces)
+--   nm.request(ch)                            -> how many: they announce again, at once
 nm = {}
+function nm.release(channel) return __nm_request(channel, false) end
+function nm.request(channel) return __nm_request(channel, true) end
 local nm_states = { awake = true, releasing = true, asleep = true }
 function nm.listen(channel, opts)
   if opts == nil then __nm_listen(channel, -1, 0, false, 0) return end

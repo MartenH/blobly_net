@@ -5,6 +5,7 @@
 module sim
 
 import blobly.candb
+import blobly.nm
 import blobly.project
 
 // FaultTarget is one channel a fault may be armed on, as the front end that arms it knows it.
@@ -15,6 +16,7 @@ pub:
 	iface    string // the logical interface faults are keyed on (fault_key)
 	db       candb.Database
 	nodes    []project.NodeCfg // the simulated nodes on it
+	nm       ?nm.Config        // its wire's NM cluster, which says who announces (nm_request)
 }
 
 // fault_kind_of is a fault kind as a script spells it; clear, none and '' are no fault.

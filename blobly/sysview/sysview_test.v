@@ -17,7 +17,7 @@ interface = "can0"
 fd        = false
 bitrate   = 500000
 dbc       = "compute.dbc"
-nm        = { peers = [0x500, 0x53F], timeout_ms = 300 }
+nm        = { peers = [0x500, 0x53F], timeout_ms = 300, msg_cycle_ms = 100 }
 
 [bus.tel]
 kind    = "someip"
@@ -106,6 +106,7 @@ fn test_load_and_derive() {
 	assert sys.buses.len == 2
 	compute := sys.buses.filter(it.name == 'compute')[0]
 	assert compute.nm_lo == 0x500 && compute.kind == 'can'
+	assert compute.nm_timeout_ms == 300 && compute.nm_cycle_ms == 100
 	assert sys.nodes.len == 2
 	assert sys.nodes[0].ecu_err == '' && sys.nodes[1].ecu_err == ''
 

@@ -1,7 +1,9 @@
 # Network Management
 
 **View ▸ Network Management** shows, for each CAN bus with an NM cluster, who reports in and who
-keeps the network awake. It only listens: Blobly Net sends no NM frames.
+keeps the network awake. The panel only listens. The simulated nodes of a row are what sends NM:
+each one the cluster knows announces its PDU on the cluster's cycle while the run is up
+([below](#simulated-nodes-announce)).
 
 The frame is AUTOSAR CanNm's default layout, the one blobly_emb's `comm/nm` sends:
 
@@ -96,6 +98,57 @@ timeout. The header says when the timeout is a default.
 While stopped, the open panel follows the configuration once a second, so a `system.toml`
 loaded in the System panel (View ▸ blobly_emb panels) shows its declared nodes, all missing, before anything is heard.
 At Start the configuration is fixed for the run.
+
+## Simulated nodes announce
+
+A node the row simulates (`simulate:` or `simulation:`) sends its NM PDU every cycle while the run
+is up, in the GUI and headless alike, so a rest bus keeps an ECU under test awake without a
+hand-written cyclic frame. The PDU is the node's NID and a control bit vector of 0x00 (the network
+requested, nothing else said), in an 8-byte frame (the one blobly_emb's `comm/nm` sends and the
+shortest it reads), zeros elsewhere; an ARXML NM-PDU sits at its byte, as long as the file says.
+
+- **Its id and NID** come from the cluster's declaration of that node: the system model (a node on
+  the bus with an `nm` offset announces on `lo + offset` with the offset as its NID), or the ARXML
+  (the NM frame whose sender is the node, which gives the id and not the NID). What the declaration
+  does not state comes from the node's own entry, which is also the whole of it on a cluster that
+  declares nobody (a row's own range):
+
+  ```yaml
+  channels:
+    - name: CAN1
+      interface: can0
+      nm: { lo: 0x500, hi: 0x53F, timeout_ms: 2000, cycle_ms: 200 }
+      simulation:
+        - name: BodyController
+          nm: { id: 0x511, nid: 0x11 }
+  ```
+
+  An id above 0x7FF is a 29-bit frame; `ext: true` says so below it. An id that is not one of the
+  cluster's NM frames announces nothing, since nothing would read it.
+- **The cycle** is the system model's bus `msg_cycle_ms` (blobly_emb's key, `nm = { peers = [lo,
+  hi], timeout_ms = 300, msg_cycle_ms = 100 }`), else a row's `nm:` `cycle_ms`. A row may state the
+  cycle alone, `nm: { cycle_ms: 200 }`, for a cluster a system model or an ARXML gives. With no
+  cycle stated, nothing announces: the run says which members would have.
+
+At Start the Log (headless: stdout) names each node announcing, its id, NID and cycle, and says why
+a node meant to announce does not. Both keys need schema v13: an older build refuses a range-less
+`nm:` and drops the rest on its next save.
+
+A script releases the network for the row's simulated nodes, and they stop announcing, as an
+AUTOSAR CanNm node releases by falling silent; a request makes them announce again at once. A run
+starts with every node requesting.
+
+```python
+with blobly.Project("projects/nm-demo/nm-sim.blobnet") as net:
+    nm = net.channels.body.nm()
+    nm.release()               # the simulated nodes stop announcing
+    nm.expect_asleep(2000)
+    nm.request()               # they announce again
+```
+
+Lua's `nm.release(channel)` / `nm.request(channel)` and the C ABI's `bb_nm_request(row, request)`
+are the same. `projects/nm-demo/nm-sim.blobnet` is the demo: sysnode and domain announce every
+100 ms on the ids the system.toml gives them.
 
 ## From a script
 

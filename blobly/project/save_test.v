@@ -710,3 +710,73 @@ channels:
 		assert err.msg().contains('Ethernet'), err.msg()
 	}
 }
+
+// The simulated nodes' NM announcements: a row's cycle_ms (with a range, or alone for a cluster
+// a system model or an ARXML gives) and a node's own `nm:` survive a save and raise the version.
+fn test_nm_cycle_and_node_nm_round_trip_and_raise_the_version() {
+	p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 2000, cycle_ms: 200 }
+    simulation:
+      - name: Body
+        nm: { id: 0x511, nid: 0x11 }
+      - name: Gw
+        nm: { nid: 3 }
+  - name: CAN2
+    interface: vcan1
+    nm: { cycle_ms: 100 }
+')!
+	n := p.channels[0].nm or { panic('no nm') }
+	assert n.ranged && n.cycle_ms == 200 && n.timeout_ms == 2000
+	body := p.channels[0].nodes[0].nm or { panic('no node nm') }
+	assert body.id == 0x511 && body.nid == 0x11 && !body.ext
+	gw := p.channels[0].nodes[1].nm or { panic('no node nm') }
+	assert gw.id == -1 && gw.nid == 3
+	alone := p.channels[1].nm or { panic('no nm') }
+	assert !alone.ranged && alone.cycle_ms == 100
+	assert version_for(p) == 13
+	out := p.to_yaml()
+	assert out.contains('    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 2000, cycle_ms: 200 }'), out
+	assert out.contains('        nm: { id: 0x511, nid: 0x11 }'), out
+	assert out.contains('        nm: { nid: 0x03 }'), out
+	assert out.contains('    nm: { cycle_ms: 100 }'), out
+	back := parse(out)!
+	assert (back.channels[1].nm or { panic('') }).cycle_ms == 100
+	assert (back.channels[0].nodes[0].nm or { panic('') }).id == 0x511
+	assert version_for(back) == 13
+}
+
+fn test_nm_cycle_and_node_nm_are_checked() {
+	for bad in ['{ cycle_ms: 0 }', '{ cycle_ms: soon }', '{ cycle_ms: 100, timeout_ms: 300 }',
+		'{ lo: 0x500, hi: 0x53F, cycle_ms: 70000 }'] {
+		if _ := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: ${bad}
+') {
+			assert false, '${bad} must be refused'
+		} else {
+			assert err.msg().contains('nm'), err.msg()
+		}
+	}
+	for bad in ['{}', '{ id: zz }', '{ nid: 0x100 }', '{ id: 0x20000000 }'] {
+		if _ := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    simulation:
+      - name: Body
+        nm: ${bad}
+') {
+			assert false, '${bad} must be refused'
+		} else {
+			assert err.msg().contains('Body: nm'), err.msg()
+		}
+	}
+}

@@ -1,5 +1,6 @@
-// nm — CAN network management, the READ side: who reports in on a bus's NM cluster and who
-// keeps the network awake. It listens and sends nothing.
+// nm — CAN network management: who reports in on a bus's NM cluster and who keeps the network
+// awake, a reading that sends nothing; and what a simulated node announces (announce.v), which
+// blobly/sim sends.
 //
 // The PDU is blobly_emb's comm/nm frame (its docs/nm.md is the reference), which keeps AUTOSAR
 // CanNm's default byte positions:

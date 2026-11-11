@@ -1,6 +1,7 @@
 // Network management on a row's frames (bb.h's "Network management on a row's frames" block): a
 // bus handle's received frames fed to an nm.Listener once bb_nm_attach binds it to a row, by the
-// row's wire's configuration (nm.configure, the panel's rule) or a range the host states.
+// row's wire's configuration (nm.configure, the panel's rule) or a range the host states; and
+// bb_nm_request, the network released or requested for the row's simulated nodes.
 module main
 
 import blobly.headless
@@ -110,6 +111,26 @@ pub fn bb_nm_attach_range(h i32, row i32, lo i64, hi i64, ext i32, timeout_ms i3
 	}
 	ok()
 	return 1
+}
+
+// bb_nm_request requests (request 1) or releases (0) the network for the nodes simulated on row
+// `row` that announce NM (sim.FaultTarget.nm_request, the rule Lua's nm.release asks), answering
+// how many; BB_ERR where none announces. Any thread: the rows are under bb_mu, as a fault's are.
+@[export: 'bb_nm_request']
+pub fn bb_nm_request(row i32, request i32) i32 {
+	bb_mu.lock()
+	defer {
+		bb_mu.unlock()
+	}
+	if !bb_dbs_live {
+		return fail(bb_err_state, 'not started: the simulated nodes announce in the run, from bb_start until bb_stop')
+	}
+	if row < 0 || int(row) >= bb_fault_rows.len {
+		return fail(bb_err, 'no channel ${row}')
+	}
+	n := bb_fault_rows[int(row)].nm_request(request != 0) or { return fail(bb_err, err.msg()) }
+	ok()
+	return i32(n)
 }
 
 // nm_feed gives a frame the handle read to its listener, at its receive time `t_ns` (bb_frame.t_ns).

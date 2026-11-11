@@ -1458,7 +1458,7 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
 /* Network management on a row's frames (cmd/libblobly/nm.v, blobly/nm): who reports in on the
  * row's NM cluster and who keeps the network awake, read from the frames a bus handle reads — a
  * frame is still consumed once, by whoever reads it, and what the handle sends is never in it. A
- * LISTENER: nothing is sent.
+ * LISTENER: the reading sends nothing.
  *
  * bb_nm_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start) by the row's
  * wire's NM configuration, nm.configure's rule, the Network Management panel's: the system model's
@@ -1475,7 +1475,12 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
  * handle nobody has read for a while reads as it was then, not as asleep, since what the bus
  * carried meanwhile is still queued. bb_nm_node_info gives row k of that reading: the reporters in the
  * order first heard, then the declared nodes never heard (missing). All on the thread that uses
- * the handle. */
+ * the handle.
+ *
+ * bb_nm_request acts on the simulation, not the reading: the nodes simulated on row `row` that
+ * announce NM (a cluster with a cycle, and a node it declares or one with its own nm: entry) stop
+ * announcing (request 0) or announce again at once (1). It answers how many; BB_ERR where none
+ * announces, BB_ERR_STATE before bb_start. Any thread; a bb_start requests the network for all. */
 #define BB_NM_TEXT 256      /* the texts of bb_nm_view and bb_nm_node, NUL included */
 enum bb_nm_state {
 	BB_NM_ASLEEP = 0,       /* nothing heard within the timeout (or nothing yet) */
@@ -1536,6 +1541,7 @@ int bb_nm_attach(int h, int row);  /* 1 listening, 0 the row's wire has no NM co
 int bb_nm_attach_range(int h, int row, int64_t lo, int64_t hi, int ext, int timeout_ms);
 int bb_nm_read_view(int h, bb_nm_view *out);
 int bb_nm_node_info(int h, int k, bb_nm_node *out);
+int bb_nm_request(int row, int request);  /* how many nodes */
 #endif /* BB_FROM_V */
 
 /* LIN (cmd/libblobly/lin.v, blobly/lin; docs/lin.md). A LIN bus is a row of the project

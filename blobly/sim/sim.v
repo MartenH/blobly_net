@@ -235,6 +235,7 @@ pub mut:
 	name     string
 	messages []SimMessage
 	rules    []ResponseRule
+	nm_tx    []NmTx // its NM announcement, when it announces (nm_tx.v)
 }
 
 // Engine drives a set of ECUs against a logical clock.
@@ -358,6 +359,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 			m.step_change(now_ms, send)
 		}
 	}
+	e.step_nm(now_ms, send)
 }
 
 // emit builds the message's frame at now_ms and hands it to `send`.
@@ -482,6 +484,7 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 // transmit sends what is due on `bus` and publishes what a described server's live DIDs read,
 // each pass of serve_pass.
 pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, chan_name string) {
+	apply_nm_requests(iface, mut e)
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }
 		return true

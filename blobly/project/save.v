@@ -71,8 +71,13 @@ pub fn (p Project) to_yaml() string {
 			b.writeln('    builtin_uds: false')
 		}
 		if n := ch.nm {
-			ext := if n.ext && n.hi <= 0x7FF { ', ext: true' } else { '' }
-			b.writeln('    nm: { lo: 0x${n.lo:X}, hi: 0x${n.hi:X}${ext}, timeout_ms: ${n.timeout_ms} }')
+			cycle := if n.cycle_ms > 0 { ', cycle_ms: ${n.cycle_ms}' } else { '' }
+			if n.ranged {
+				ext := if n.ext && n.hi <= 0x7FF { ', ext: true' } else { '' }
+				b.writeln('    nm: { lo: 0x${n.lo:X}, hi: 0x${n.hi:X}${ext}, timeout_ms: ${n.timeout_ms}${cycle} }')
+			} else {
+				b.writeln('    nm: { cycle_ms: ${n.cycle_ms} }')
+			}
 		}
 		b.writeln('    enabled: ${ch.enabled}')
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
@@ -210,6 +215,19 @@ pub fn (p Project) to_yaml() string {
 					for pr in node.protect {
 						b.writeln('          - ${protect_inline(pr)}')
 					}
+				}
+				if nn := node.nm {
+					mut parts := []string{}
+					if nn.id >= 0 {
+						parts << 'id: 0x${nn.id:X}'
+						if nn.ext && nn.id <= 0x7FF {
+							parts << 'ext: true'
+						}
+					}
+					if nn.nid >= 0 {
+						parts << 'nid: 0x${nn.nid:02X}'
+					}
+					b.writeln('        nm: { ${parts.join(', ')} }')
 				}
 			}
 		}

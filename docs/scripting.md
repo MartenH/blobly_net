@@ -817,7 +817,8 @@ reads (`bus.recv`, `run()`, `expect`, the waits below), so a frame is still cons
 script's own sends are never in it. A channel reads it from its first frame where its wire has an
 NM configuration, the panel's rule: the system model's bus named like a row on the wire, else the
 wire's ARXML NM-PDU frames, else a row's own `nm:`. A wire with none has no reading unless the
-script states a range. Nothing is sent.
+script states a range. The reading sends nothing; `nm.release` and `nm.request` act on the row's
+simulated nodes, which announce in the run ([nm.md](nm.md#simulated-nodes-announce)).
 
 | function | returns |
 |---|---|
@@ -826,6 +827,8 @@ script states a range. Nothing is sent.
 | `nm.state(channel)` | `"awake"`, `"releasing"` or `"asleep"` |
 | `nm.expect_state(channel, state [, timeout_ms [, kept_awake_by]])` | the reading, the channel read until it is in `state` (and kept awake by exactly the names in `kept_awake_by`, in any order) within `timeout_ms` (default 1000), asked after every read so a state reached by silence is seen; an error saying what the reading was otherwise |
 | `nm.expect_asleep(channel [, timeout_ms])` | `nm.expect_state(channel, "asleep", timeout_ms)` |
+| `nm.release(channel)` | how many: the nodes simulated on the channel that announce NM stop announcing; an error where none announces |
+| `nm.request(channel)` | how many: they announce again, at once (a run starts with every node requesting) |
 
 A reading is `{ state, kept_awake_by, woken_by, woken_active, woken_ms, repeat_requested_by,
 nodes, missing, unknown, heard, last_heard_ms, frames, malformed, last_error, dropped, timeout_ms,
@@ -848,7 +851,8 @@ r:stop()
 ```
 
 `tests/nm.lua` is the suite: the demo's wake-up, release and sleep, a wait not met, a stated
-range.
+range. `tests/nm_sim.lua` releases and requests the network for the simulated nodes of
+`projects/nm-demo/nm-sim.blobnet`.
 
 ### LIN — lin.*
 

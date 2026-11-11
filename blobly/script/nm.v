@@ -1,7 +1,8 @@
 // Network management on a script's frames: every frame its handle on a channel reads goes
 // through that channel's nm.Listener, made at its first frame where the host gave the channel an
 // NM configuration (ChanInfo.nm: nm.configure, the panel's rule), or by nm.listen with a range the
-// script states. The reading is as of the handle's latest read. Nothing is sent.
+// script states. The reading is as of the handle's latest read and sends nothing; nm.release and
+// nm.request act on the row's simulated nodes, which announce in the simulation (blobly/sim).
 module script
 
 import time
@@ -13,6 +14,21 @@ fn (mut env Env) register_nm() {
 	env.st.register('__nm_listen', l_nm_listen)
 	env.st.register('__nm_reading', l_nm_reading)
 	env.st.register('__nm_wait', l_nm_wait)
+	env.st.register('__nm_request', l_nm_request)
+}
+
+// __nm_request(channel, request) -> count: requests or releases the network for the nodes
+// simulated on the channel that announce NM (sim.FaultTarget.nm_request)
+fn l_nm_request(l lua.State) i32 {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	request := l.arg_bool(2)
+	what := if request { 'nm.request' } else { 'nm.release' }
+	n := env.chans[ci].fault_target().nm_request(request) or {
+		return l.fail('${what}: ${err.msg()}')
+	}
+	l.push_int(n)
+	return 1
 }
 
 // nm_saw feeds a frame the script's handle on `name` read, received at `t_ns`, to the channel's

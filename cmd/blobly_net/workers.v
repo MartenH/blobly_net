@@ -174,7 +174,7 @@ fn notify_gen(app &App, gen u64, msg string) {
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
-fn sim_loop(app &App, sc SimCfg, gen u64) {
+fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 	// This loop resolves its tap through open_tap_on, whose bitrate_iface walks app.chans
 	// UNLOCKED — the thing open_tap_phys's comment (bus.v) forbids a worker from doing — so it
 	// holds a census slot like every rx_loop does. (The still-on check further down is under
@@ -252,6 +252,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
+			engine.attach_announcements(anns)
 			engine.restore_state(carry)
 		}
 		// serve_pass applies ONE fault source, the module's table — Lua's sim.fault() writes it too.

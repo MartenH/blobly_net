@@ -1180,6 +1180,7 @@ fn (mut app App) start() {
 	sim.clear_live()
 	// and the values a script held signals at, which a run starts without, as a headless one does
 	sim.clear_signal_values()
+	sim.clear_nm_requests() // a run starts with every simulated node requesting the network
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
@@ -1189,9 +1190,21 @@ fn (mut app App) start() {
 			continue
 		}
 		if sc.nodes.len > 0 {
+			// the nodes that announce on the wire's NM cluster, published for the run above
+			mut wire_nm := ?nm.Config(none)
+			if c := app.nm_cfg[transport.destination_key_for(sc.pch.adapter, sc.iface)] {
+				wire_nm = c
+			}
+			anns, nm_notes := nm.announcements(wire_nm, sc.nodes)
+			for n in nm_notes {
+				app.notify('${sc.who}: ${n}')
+			}
+			for a in anns {
+				app.notify('${sc.who}: ${a.node} announces NM on 0x${a.id:X} (NID 0x${a.nid:02X}) every ${a.cycle_ms} ms')
+			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker()
-			spawn sim_loop(app, sc, start_gen) // a verify-only channel has nothing to transmit
+			spawn sim_loop(app, sc, start_gen, anns) // a verify-only channel has nothing to transmit
 		}
 	}
 	// Diagnostics are per BUS, decided ONCE. Two channel entries may share an interface, and

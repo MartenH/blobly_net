@@ -173,6 +173,26 @@ A generator naming a signal the node does not send is reported rather than silen
 `counter` is a *signal* generator and is unrelated to the alive counter in
 [protection](#end-to-end-protection-counter--checksum) — use that one for E2E.
 
+### Network management
+
+A simulated node on a CAN bus with an NM cluster also announces its NM PDU — its NID and a
+control bit vector of 0x00 — on the cluster's cycle while the run is up, whatever the DBC says
+about its NM message's cycle time (CanNm takes the cycle from the NM configuration, so an NM
+message usually carries none). Its id and NID come from the cluster's declaration of it (the
+system model, an ARXML), else from its own entry; the cycle from the system bus's `msg_cycle_ms`,
+else the row's `nm:` `cycle_ms`:
+
+```yaml
+    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 2000, cycle_ms: 200 }
+    simulation:
+      - name: BodyController
+        nm: { id: 0x511, nid: 0x11 }
+```
+
+No cycle stated, no announcements. A script releases the network for the row's simulated nodes
+(Python `ch.nm().release()`, Lua `nm.release(ch)`), which then fall silent, and requests it again.
+[nm.md](nm.md#simulated-nodes-announce) has the rules.
+
 ### Answering requests
 
 ```yaml
