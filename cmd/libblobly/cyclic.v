@@ -3,6 +3,7 @@
 module main
 
 import blobly.cyclic
+import blobly.headless
 import blobly.transport
 
 struct CyclicHandle {
@@ -60,7 +61,11 @@ fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 		open:  fn [iface, name] () !transport.Bus {
 			return transport.row_framed(transport.open(iface)!, iface, name)
 		}
-	}, spec) or { return fail(bb_err_state, '${ch.name}: ${err.msg()}') }
+	}, spec) or {
+		// a stopped run is the state's; a wire that cannot be opened, the row's refusal
+		code := if err is headless.RunStopped { bb_err_state } else { bb_err }
+		return fail(code, '${ch.name}: ${err.msg()}')
+	}
 	bb_mu.lock()
 	c := bb_cyclic_next
 	bb_cyclic_next++

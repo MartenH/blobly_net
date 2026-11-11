@@ -662,15 +662,17 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   reaches a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
 - **Background senders.** `bus.send_cyclic` sends a frame every `period_ms` (1 .. 3600000),
   the first at once, and `bus.send_message_cyclic` a DBC message encoded from `sigs`, its declared
-  E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — from a
-  thread of its own, so the frame keeps going while the script waits in `expect`, a UDS exchange
+  E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — in the
+  background, so the frame keeps going while the script waits in `expect`, a UDS exchange
   or `sleep_ms`. `s:update(data)` / `s:update(sigs)` (the other signals keep theirs) and
   `s:period(ms)` apply from the next frame; `s:status()` is `{sent, failed, error, period_ms,
   running}` (`failed` the sends refused, `error` the last refusal: a listen-only row refuses every
   one); `s:stop()` stops it (true once its loop is out). A sender runs until then, the end of the
-  script, or the end of the run (cmd/script). It sends on a **bus handle of its own**, never the
-  script's (no handle is touched from a second thread), so the script's handle hears its frames as
-  it hears another node's and `bus.load` counts them only as received. `tests/cyclic_send.lua` is
+  script, or the end of the run (cmd/script). It sends on a **send-only handle**, never the
+  script's (no handle is touched from a second thread): in cmd/script the run's one sending loop
+  and handle for the wire, beside the run's generators there; in the GUI a loop and handle of its
+  own. The script's handle hears its frames as it hears another node's and `bus.load` counts them
+  only as received. `tests/cyclic_send.lua` is
   the suite. A frame computed afresh each period is `on_timer` + `bus.send` inside `run()`; there
   is no `on_send` callback, since a Lua function cannot run on the sender's thread.
 

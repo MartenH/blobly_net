@@ -11,7 +11,16 @@ import pytest
 
 import blobly
 from blobly import CyclicStatus, KeepAliveWarning, NegativeResponse, Refused
-from conftest import REPO, SIM_DEMO
+from conftest import REPO, SIM_DEMO, write
+
+ABSENT = """project:
+  name: absent
+  version: 2
+channels:
+  - name: GONE
+    type: can
+    interface: blobly_absent0
+"""
 
 pytestmark = pytest.mark.usefixtures("engine")
 
@@ -121,6 +130,14 @@ class TestProjectStop:
             drain(net.channels.CAN1)
             assert frames(net.channels.CAN1, 0x333, 80) == []
             assert s.stop()  # of the stopped run: nothing to do
+        finally:
+            net.stop()
+
+    def test_a_row_that_cannot_be_opened_is_refused(self, tmp_path):
+        net = blobly.Project(write(tmp_path, "absent.blobnet", ABSENT)).start()
+        try:
+            with pytest.raises(Refused, match="cannot open"):
+                net.channels.GONE.send_cyclic(0x10, b"")
         finally:
             net.stop()
 

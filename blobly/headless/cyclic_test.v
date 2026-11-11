@@ -63,3 +63,58 @@ fn test_a_background_sender_is_sent_by_the_runs_wire() {
 	}
 	assert false, 'a stopped run started a sender'
 }
+
+@[heap]
+struct Device {
+mut:
+	up bool
+}
+
+// a wire whose open failed is opened again by the next source on it: a sender refused while the
+// device was absent starts once it is there
+fn test_a_sender_after_a_failed_open_opens_the_wire_again() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_cyc_retry_${os.getpid()}')
+	os.mkdir_all(dir)!
+	path := os.join_path(dir, 'cyc.blobnet')
+	os.write_file(path, cyclic_project)!
+	mut r := start(load(path, Options{})!, path, Options{})!
+	defer {
+		r.stop()
+	}
+	mut dev := &Device{}
+	r.gen_opener = fn [dev] (iface string) !transport.Bus {
+		if !dev.up {
+			return error('no such device')
+		}
+		return transport.open(iface)
+	}
+	spec := cyclic.Spec{
+		id:        0x78
+		data:      [u8(1)]
+		period_ms: 10
+	}
+	mut why := ''
+	r.start_cyclic(target('inproc:HCYC'), spec) or { why = err.msg() }
+	assert why.contains('no such device'), why
+	dev.up = true
+	mut rx := transport.open('inproc:HCYC')!
+	defer {
+		rx.close()
+	}
+	mut s := r.start_cyclic(target('inproc:HCYC'), spec)!
+	assert s.info().running
+	mut heard := false
+	until := time.ticks() + 500
+	for time.ticks() < until && !heard {
+		f := rx.recv(10) or { continue }
+		heard = f.id == 0x78
+	}
+	assert heard
+	// the stopped run's refusal is typed, the state's and not the wire's
+	r.stop()
+	r.start_cyclic(target('inproc:HCYC'), spec) or {
+		assert err is RunStopped
+		return
+	}
+	assert false, 'a stopped run started a sender'
+}

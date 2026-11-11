@@ -90,6 +90,15 @@ pub fn (mut w Wire) add(e Entry) ! {
 	w.wake.try_push(true)
 }
 
+// failed is whether the wire's open failed: it takes no entries, and a new wire may be opened.
+pub fn (mut w Wire) failed() bool {
+	w.mu.lock()
+	defer {
+		w.mu.unlock()
+	}
+	return w.state == .failed
+}
+
 // poke wakes the loop: something became due sooner than it waits for.
 pub fn (mut w Wire) poke() {
 	w.wake.try_push(true)

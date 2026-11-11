@@ -1078,8 +1078,9 @@ int bb_bus_error_counters(int h, int *tx, int *rx);
 /* Generators: the project's `senders:` in the run (blobly/headless generators.v), as the Lua
  * gen.* has them — every CAN row's, a disabled row's included, in project order, `g` 0 ..
  * bb_gen_count - 1. From bb_start until bb_stop (BB_ERR_STATE otherwise, and for a call a stop
- * overtook); any (attached) thread. Each generator has a loop of its own that holds its bus: a
- * cyclic one's starts with the run, any other's at its first fire or start.
+ * overtook); any (attached) thread. The run sends every generator and background sender on a wire
+ * from ONE loop and one send-only handle for that wire; a generator joins it with the run if it
+ * is cyclic, else at its first fire or start.
  *
  * bb_gen_fire sends its current frame once and returns once the bus took it — generator g of run
  * `run` (bb_gen_run's number, 0 for whichever is started: BB_ERR_STATE when another run is, so a
@@ -1374,10 +1375,11 @@ int bb_vector_release(int app);                     /* >= 0: 1 cleared, 0 it poi
 #endif /* BB_FROM_V */
 
 /* Background cyclic senders (blobly/cyclic, cmd/libblobly/cyclic.v), as the Lua bus.send_cyclic: a
- * frame sent on a period by a thread of its own while the host does something else. Each owns a bus
- * handle of its own on the row, opened for it and only sent on — never a host's handle, which stays
- * one thread's — so a background send never touches a handle the host reads. From bb_start: a
- * sender is one of the run's loops, ended by bb_stop within its bound (a handle of a stopped run
+ * frame sent on a period while the host does something else, by the run's one sending loop for its
+ * row's wire, beside the generators there, on that loop's send-only handle — never a host's handle,
+ * which stays one thread's — so a background send never touches a handle the host reads; a wire
+ * that cannot be opened is BB_ERR. From bb_start: a sender is sent by the run's loops, ended by
+ * bb_stop within its bound (a handle of a stopped run
  * still answers bb_cyclic_status, until bb_cyclic_free or the next bb_start). Every send goes
  * through the wire policy (a listen-only row refuses it, counted in `failed`); a message's declared
  * E2E is stamped per frame, its counter the sender's own from 0. Its frames are counted by the

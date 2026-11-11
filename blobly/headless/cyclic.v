@@ -2,6 +2,15 @@ module headless
 
 import blobly.cyclic
 
+// RunStopped is start_cyclic's refusal once the run is stopping: nothing was started.
+pub struct RunStopped {
+	Error
+}
+
+pub fn (e RunStopped) msg() string {
+	return 'the run is stopped: nothing is sent'
+}
+
 // start_cyclic starts a background sender (cyclic.Sender) to `to` on the run's wire there, which
 // sends it beside the generators and other senders on that wire and ends with the run's stop;
 // returned once the wire's handle is open. Refused once the run is stopping, or when the wire
@@ -11,7 +20,7 @@ pub fn (mut r Run) start_cyclic(to cyclic.Target, spec cyclic.Spec) !&cyclic.Sen
 	r.mu.lock()
 	if r.stopping {
 		r.mu.unlock()
-		return error('the run is stopped: nothing is sent')
+		return RunStopped{}
 	}
 	mut w := r.wire_for(to.iface)
 	s.join(mut w) or {
@@ -21,7 +30,7 @@ pub fn (mut r Run) start_cyclic(to cyclic.Target, spec cyclic.Spec) !&cyclic.Sen
 	r.mu.unlock()
 	w.wait_opened() or {
 		s.ask_stop()
-		return if r.is_stopping() { error('the run is stopped: nothing is sent') } else { err }
+		return if r.is_stopping() { IError(RunStopped{}) } else { err }
 	}
 	return s
 }
