@@ -46,6 +46,9 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// The nodes this row itself simulates, where `nodes` is every node on its wire (the GUI's
+	// faults are keyed by the wire): what nm.release / nm.request act on.
+	row_nodes []project.NodeCfg
 	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
 	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
@@ -568,6 +571,15 @@ fn (c ChanInfo) fault_target() sim.FaultTarget {
 		db:       c.db
 		nodes:    c.nodes
 		nm:       c.nm
+	}
+}
+
+// nm_target is this channel as sim.FaultTarget.nm_request releases and requests its nodes: the
+// row's own simulated nodes, never another row's on the same wire.
+fn (c ChanInfo) nm_target() sim.FaultTarget {
+	return sim.FaultTarget{
+		...c.fault_target()
+		nodes: c.row_nodes
 	}
 }
 

@@ -1606,9 +1606,13 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}
+		mut row_nodes := []project.NodeCfg{}
 		for sc in a.sims {
 			if sc.iface == ch.iface {
 				sim_nodes << sc.nodes
+			}
+			if sc.proj_idx == ch.proj_idx {
+				row_nodes << sc.nodes
 			}
 		}
 		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `someip`
@@ -1654,6 +1658,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			db:      db
 			sources: sources
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
+			row_nodes: row_nodes // what nm.release / nm.request act on
 			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)

@@ -206,6 +206,7 @@ pub fn (c ArxmlCluster) nm_frames() []ArxmlNmFrame {
 			ecu:  if senders.len > 0 { senders[0] } else { '' }
 			byte: f.nm_byte
 			len:  f.nm_len
+			frame_len: m.dlc
 		}
 	}
 	out.sort_with_compare(fn (a &ArxmlNmFrame, b &ArxmlNmFrame) int {

@@ -16,11 +16,14 @@ pub:
 }
 
 // payload is the frame's bytes: the PDU at its byte — the NID, then a control bit vector of 0x00
-// (the network requested, nothing else said) — zeros elsewhere. As long as the ARXML's PDU where
-// it states one, else 8 bytes (the frame blobly_emb's comm/nm sends and the shortest it reads),
-// or to the control bit vector's byte where the PDU starts too late for that.
+// (the network requested, nothing else said) — zeros elsewhere. As long as the ARXML's frame where
+// it states one (FRAME-LENGTH), else to the end of its PDU where it states that, else 8 bytes (the
+// frame blobly_emb's comm/nm sends and the shortest it reads), or to the control bit vector's byte
+// where the PDU starts too late for that.
 pub fn (a Announce) payload() []u8 {
-	n := if a.at.len > 0 {
+	n := if a.at.frame > a.at.byte {
+		a.at.frame
+	} else if a.at.len > 0 {
 		a.at.byte + a.at.len
 	} else if a.at.byte + 2 > 8 {
 		a.at.byte + 2

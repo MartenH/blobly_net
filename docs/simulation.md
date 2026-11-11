@@ -192,6 +192,9 @@ else the row's `nm:` `cycle_ms`, else blobly_emb's 100 ms for a system model's c
 
 On an ARXML's cluster or a row's own range, no cycle stated is no announcements. A script releases the network for the row's simulated nodes
 (Python `ch.nm().release()`, Lua `nm.release(ch)`), which then fall silent, and requests it again.
+A `drop` fault on the DBC message of the announced id drops the announcement; any other fault
+there is refused, since the announcement goes out in that message's place. An ARXML frame keeps
+its `FRAME-LENGTH`, the PDU placed at its byte.
 [nm.md](nm.md#simulated-nodes-announce) has the rules.
 
 ### Answering requests

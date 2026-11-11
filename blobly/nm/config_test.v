@@ -381,6 +381,35 @@ fn test_an_own_entry_fills_what_the_arxml_does_not_state() {
 	assert none_notes.len == 1 && none_notes[0].contains('no NID'), none_notes[0]
 }
 
+// a PDU that ends before its frame does is sent in a frame of the frame's declared length
+fn test_an_announcement_keeps_the_frame_length_the_arxml_declares() {
+	base := arxml_db()
+	db := candb.Database{
+		arxml: candb.ArxmlBus{
+			...base.arxml
+			nm: [candb.ArxmlNmFrame{
+				id:        0x601
+				ecu:       'ECU_A'
+				byte:      4
+				len:       3
+				frame_len: 8
+			}]
+		}
+	}
+	r := project.Channel{
+		name: 'Body'
+		nm:   project.NmCfg{
+			cycle_ms: 500
+			ranged:   false
+		}
+	}
+	empty := sysview.System{}
+	c := configure(&empty, [r], [db]) or { panic('no configuration') }
+	anns, _ := announcements(c, [node_nm('ECU_A', -1, 0x21)])
+	assert anns.len == 1
+	assert anns[0].payload() == [u8(0), 0, 0, 0, 0x21, 0, 0, 0]
+}
+
 fn test_an_own_entry_on_a_range_cluster_and_its_refusals() {
 	r := project.Channel{
 		name: 'CAN1'

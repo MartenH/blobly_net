@@ -53,6 +53,7 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 	if m.len == 0 {
 		return error('"${node}" does not send "${msg}" on ${t.channel}')
 	}
+	t.announced_refusal(node, m[0], k)!
 	prot := t.protection(node, msg)
 	mut sg := signal
 	match k {

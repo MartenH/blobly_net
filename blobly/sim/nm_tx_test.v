@@ -155,3 +155,87 @@ fn test_the_dbc_message_on_the_announced_id_is_not_sent_beside_the_announcement(
 		assert nm_frames_at(mut e, t).map(it.id) == [u32(0x300)]
 	}
 }
+
+// a drop armed on the database message of the announced frame holds the announcement back, on
+// its cycle, and the announcement resumes once the drop is lifted
+fn test_a_drop_on_the_announced_message_drops_the_announcement() {
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'Body'
+			messages: [SimMessage{
+				msg:       candb.Message{
+					name: 'NM_Body'
+					id:   0x511
+					dlc:  8
+				}
+				period_ms: 100
+			}]
+		}]
+	}
+	e.attach_announcements([nm.Announce{
+		node:     'Body'
+		id:       0x511
+		nid:      0x11
+		cycle_ms: 200
+	}])
+	assert nm_frames_at(mut e, 0).len == 1
+	e.ecus[0].messages[0].fault = Fault{
+		kind: .drop
+	}
+	assert nm_frames_at(mut e, 200).len == 0
+	assert nm_frames_at(mut e, 400).len == 0
+	e.ecus[0].messages[0].fault = Fault{}
+	assert nm_frames_at(mut e, 500).len == 0 // the cycle kept through the drop
+	assert nm_frames_at(mut e, 600).len == 1
+}
+
+// on the announced frame only a drop reaches the wire, so every other kind is refused there
+fn test_a_fault_other_than_drop_on_the_announced_message_is_refused() {
+	clear_all()
+	defer {
+		clear_all()
+	}
+	nm_msg := candb.Message{
+		name:    'NM_Body'
+		id:      0x511
+		dlc:     8
+		sender:  'Body'
+		signals: [
+			candb.Signal{
+				name:       'Level'
+				start_bit:  8
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    100
+			},
+		]
+	}
+	t := FaultTarget{
+		channel: 'CAN1'
+		iface:   'inproc:NMFAULT'
+		db:      candb.Database{
+			nodes:    ['Body']
+			messages: [nm_msg]
+		}
+		nodes:   [project.NodeCfg{
+			name: 'Body'
+			nm:   project.NodeNm{
+				id:  0x511
+				nid: 0x11
+			}
+		}]
+		nm:      nm.Config{
+			lo:       0x500
+			hi:       0x53F
+			cycle_ms: 100
+		}
+	}
+	t.arm('Body', 'NM_Body', 'out_of_range', 0, '') or {
+		assert err.msg() == '"NM_Body" is the frame "Body" announces NM on, sent as its NM PDU — only drop applies to it'
+		t.arm('Body', 'NM_Body', 'drop', 0, '') or { panic(err) }
+		assert injected_fault('inproc:NMFAULT', 'Body', 'NM_Body').kind == .drop
+		return
+	}
+	assert false, 'out_of_range on the announced frame was armed'
+}

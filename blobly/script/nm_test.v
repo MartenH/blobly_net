@@ -134,14 +134,14 @@ fn test_nm_release_is_refused_while_the_run_is_stopped() {
 		ChanInfo{
 			name:  'body'
 			iface: 'inproc:NMRELEASE'
-			nodes: [project.NodeCfg{
+			row_nodes: [project.NodeCfg{
 				name: 'Body'
 				nm:   project.NodeNm{
 					id:  0x511
 					nid: 0x11
 				}
 			}]
-			nm:    nm.Config{
+			nm:        nm.Config{
 				lo:       0x500
 				hi:       0x53F
 				cycle_ms: 100
@@ -170,6 +170,63 @@ fn test_nm_release_is_refused_while_the_run_is_stopped() {
 	')!
 	assert !sim.nm_requested('inproc:NMRELEASE', 'Body')
 	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+}
+
+// two rows on one wire, each simulating its own announcing node: a release on one row silences
+// that row's node alone, though the wire's node list (the faults') holds both
+fn test_nm_release_acts_on_the_row_own_nodes_only() {
+	sim.clear_nm_requests()
+	defer {
+		sim.clear_nm_requests()
+	}
+	body := project.NodeCfg{
+		name: 'Body'
+		nm:   project.NodeNm{
+			id:  0x511
+			nid: 0x11
+		}
+	}
+	gw := project.NodeCfg{
+		name: 'Gw'
+		nm:   project.NodeNm{
+			id:  0x512
+			nid: 0x12
+		}
+	}
+	cfg := nm.Config{
+		lo:       0x500
+		hi:       0x53F
+		cycle_ms: 100
+	}
+	mut env := new_env([
+		ChanInfo{
+			name:      'rowA'
+			iface:     'inproc:NMROWS'
+			nodes:     [body, gw]
+			row_nodes: [body]
+			nm:        cfg
+		},
+		ChanInfo{
+			name:      'rowB'
+			iface:     'inproc:NMROWS'
+			nodes:     [body, gw]
+			row_nodes: [gw]
+			nm:        cfg
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_started = fn () bool {
+		return true
+	}
+	env.run_source('
+		test("a release on rowA", function()
+			check.equal(nm.release("rowA"), 1)
+		end)
+	')!
+	assert !sim.nm_requested('inproc:NMROWS', 'Body')
+	assert sim.nm_requested('inproc:NMROWS', 'Gw')
+	assert env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str()
 }
 
 @[heap]

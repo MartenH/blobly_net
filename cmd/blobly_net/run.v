@@ -1085,6 +1085,9 @@ fn (mut app App) start() {
 	transport.reset_receive_clock() // a new run opens every clock again
 	app.tx_health = map[string]&txhealth.Gate{}
 	app.tx_health_noted = map[string]bool{}
+	// a run starts with every simulated node requesting the network: cleared before the run is
+	// published, so a surviving script's release once it reads the run as started stands
+	sim.clear_nm_requests()
 	app.mu.unlock()
 	app.running = true
 	// the LIN buses, apart from the CAN rows: a worker each, shown in View ▸ LIN
@@ -1180,7 +1183,6 @@ fn (mut app App) start() {
 	sim.clear_live()
 	// and the values a script held signals at, which a run starts without, as a headless one does
 	sim.clear_signal_values()
-	sim.clear_nm_requests() // a run starts with every simulated node requesting the network
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),

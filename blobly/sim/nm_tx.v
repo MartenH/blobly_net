@@ -4,6 +4,7 @@
 module sim
 
 import sync
+import blobly.candb
 import blobly.nm
 import blobly.transport
 
@@ -50,8 +51,20 @@ fn (ecu SimEcu) announces(id u32, ext bool) bool {
 	return false
 }
 
+// announcement_dropped: a drop fault is armed on the ECU's database message of the announced frame,
+// which the announcement goes out in place of, so the announcement is what the drop holds back.
+fn (ecu SimEcu) announcement_dropped(t NmTx) bool {
+	for m in ecu.messages {
+		if m.msg.id == t.ann.id && m.msg.ext == t.ann.ext && m.fault.kind == .drop {
+			return true
+		}
+	}
+	return false
+}
+
 // step_nm sends every announcement due by now_ms. A released one sends nothing and is due again
-// the moment the network is requested, as CanNm transmits at once on a request.
+// the moment the network is requested, as CanNm transmits at once on a request; a dropped one
+// keeps its cycle and sends nothing, a frame lost to the fault.
 fn (mut e Engine) step_nm(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].nm_tx.len; j++ {
@@ -63,7 +76,9 @@ fn (mut e Engine) step_nm(now_ms f64, send fn (f transport.CanFrame) bool) {
 			if now_ms + 1e-6 < t.next_ms {
 				continue
 			}
-			send(t.frame())
+			if !e.ecus[i].announcement_dropped(*t) {
+				send(t.frame())
+			}
 			t.next_ms += f64(t.ann.cycle_ms)
 			if t.next_ms <= now_ms {
 				t.next_ms = now_ms + f64(t.ann.cycle_ms)
@@ -117,6 +132,20 @@ pub fn apply_nm_requests(iface string, mut e Engine) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].nm_tx.len; j++ {
 			e.ecus[i].nm_tx[j].released = !nm_requested(iface, e.ecus[i].name)
+		}
+	}
+}
+
+// announced_refusal refuses a fault `kind` other than drop on `msg`, a frame `node` announces NM
+// on: the announcement goes out in its place, so only a drop reaches the wire.
+fn (t FaultTarget) announced_refusal(node string, msg candb.Message, kind FaultKind) ! {
+	if kind == .drop {
+		return
+	}
+	anns, _ := nm.announcements(t.nm, t.nodes)
+	for a in anns {
+		if a.node == node && a.id == msg.id && a.ext == msg.ext {
+			return error('"${msg.name}" is the frame "${node}" announces NM on, sent as its NM PDU — only drop applies to it')
 		}
 	}
 }

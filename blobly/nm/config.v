@@ -66,12 +66,13 @@ pub:
 	cycle_ms int
 }
 
-// PduAt is where an NM PDU lies in its frame: the byte it starts at, and its length in bytes
-// (0: to the frame's end).
+// PduAt is where an NM PDU lies in its frame: the byte it starts at, its length in bytes (0: to
+// the frame's end), and the frame's own length in bytes (0: not stated).
 pub struct PduAt {
 pub:
-	byte int
-	len  int
+	byte  int
+	len   int
+	frame int
 }
 
 // pdu_of is the NM PDU inside a frame's payload: from its byte to its end, never into padding.
@@ -262,8 +263,9 @@ fn from_arxml(dbs []candb.Database) ?Config {
 				origin = 'ARXML cluster ${db.arxml.name}'
 			}
 			frames[k] = PduAt{
-				byte: f.byte
-				len:  f.len
+				byte:  f.byte
+				len:   f.len
+				frame: f.frame_len
 			}
 			if f.id < lo {
 				lo = f.id

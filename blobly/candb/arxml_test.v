@@ -2504,6 +2504,7 @@ fn test_an_nm_pdu_behind_another_pdu_is_found_with_its_offset_and_length() {
 	assert nm[0].id == 0x511
 	assert nm[0].byte == 4
 	assert nm[0].len == 3
+	assert nm[0].frame_len == 8
 }
 
 // A frame's TX/RX behaviour states its format on the message (#607): CAN-20 classic, CAN-FD with
