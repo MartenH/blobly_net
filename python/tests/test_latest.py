@@ -57,9 +57,34 @@ class TestLatest:
         assert x.latest(0x123, ext=False) == blobly.Frame(0x123, b"\x02")
         assert x.latest(0x123, ext=True) == blobly.Frame(0x123, b"\x03", ext=True)
         assert x.latest(0x123) == blobly.Frame(0x123, b"\x03", ext=True), "either kind: the newer"
-        assert x.recv(0) is None, "what was queued was read by the ask"
+        assert x.recv(0) == blobly.Frame(0x123, b"\x01"), "asking reads nothing off the channel"
         f = x.latest(0x123, ext=False)
         assert f.t_ms is not None and f.t_ms <= blobly.now_ms()
+
+    def test_it_stays_current_while_nothing_reads_the_channel(self, two_rows):
+        net, x, y = two_rows
+        # more than the handle's queue holds (inproc: 8192), with nothing reading it meanwhile
+        for i in range(9000):
+            y.send(0x210, i.to_bytes(2, "little"))
+        assert x.latest(0x210).data == (8999).to_bytes(2, "little")
+
+    def test_what_the_channel_sends_is_not_kept(self, two_rows):
+        net, x, y = two_rows
+        x.send(0x220, b"\x01")
+        y.send(0x221, b"\x02")
+        assert x.latest(0x221) is not None
+        assert x.latest(0x220) is None, "the channel heard its own send"
+        y.send(0x220, b"\x01")
+        assert x.latest(0x220) == blobly.Frame(0x220, b"\x01"), "the same frame from another node"
+
+    def test_the_plugin_forgets_what_an_earlier_test_saw(self, two_rows):
+        net, x, y = two_rows
+        y.send(0x230, b"\x01")
+        assert x.latest(0x230) is not None
+        x._forget_latest()
+        assert x.latest(0x230) is None
+        y.send(0x230, b"\x02")
+        assert x.latest(0x230).data == b"\x02"
 
     def test_every_read_path_fills_it(self, two_rows):
         net, x, y = two_rows
@@ -164,9 +189,9 @@ class FakeLib:
 
 
 def fake_bus():
-    """A Bus whose library is FakeLib: no library behind it."""
+    """A Bus whose library is FakeLib: no library behind it, so no newest-frame view either."""
     bus = object.__new__(blobly.Bus)
-    bus.name, bus._h, bus._latest = "fake", 1, {}
+    bus.name, bus._h, bus._latest, bus._watch = "fake", 1, {}, None
     return bus
 
 
@@ -203,3 +228,11 @@ class TestOnSimDemo:
         f = can1.latest(pt)
         assert f is not None and blobly.now_ms() - f.t_ms < 300
         assert 1 <= can1.value(pt, "Gear") <= 6
+
+    def test_a_cyclic_value_is_current_after_a_sleep_with_no_read(self, sim_demo):
+        can1 = sim_demo.channels.CAN1
+        pt = can1.messages.Powertrain
+        can1.look()  # its handle open, and with it the library's reader
+        time.sleep(0.35)  # nothing reads can1 meanwhile
+        f = can1.latest(pt)
+        assert f is not None and blobly.now_ms() - f.t_ms < 150, "Powertrain comes every 100 ms"

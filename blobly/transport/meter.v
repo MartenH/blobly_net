@@ -95,6 +95,9 @@ mut:
 	inner Bus
 pub mut:
 	meter LoadMeter
+	// the newest-frame view a script asked for on this handle (newest.v): told of each send, so the
+	// echo its own handle hears is not kept
+	view &NewestView = unsafe { nil }
 }
 
 // metered wraps `b`, opened on `iface`, its frames priced at `nominal` and `data` bit/s
@@ -108,7 +111,16 @@ pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 }
 
 pub fn (mut m MeteredBus) send(f CanFrame) ! {
-	m.inner.send(f)!
+	mut tok := u64(0)
+	if !isnil(m.view) {
+		tok = m.view.sending(f, i64(time.sys_mono_now()))
+	}
+	m.inner.send(f) or {
+		if tok != 0 {
+			m.view.unsent(tok)
+		}
+		return err
+	}
 	// priced as it went out: what the bus says it handed on (framed by ITS one policy read), else
 	// the frame as given; then padded or clamped by the backend as wire_frame says
 	inner := m.inner

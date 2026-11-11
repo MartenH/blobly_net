@@ -326,12 +326,12 @@ def _drain(ch: Channel) -> None:
     J1939 messages and faults those frames completed let go, and the E2E counter check begun again
     at the next frame, so what an earlier test did to a sender (a drop fault since cleared) is not
     judged in this one; and the newest frame per id forgotten, so `latest` and `value` answer from
-    what this test reads, as on a handle just opened."""
+    what arrives during this test, as on a handle just opened."""
     end = monotonic_ms() + DRAIN_MS
     while True:
         f, spent = ch.look()
         if (f is None and not spent) or monotonic_ms() >= end:
             break
-    ch._latest = {}
+    ch._forget_latest()
     _discard_j1939(ch, ch._handle())
     ch._judge_afresh()

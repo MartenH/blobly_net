@@ -185,9 +185,10 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
   -12, `.status` the verdict); every received frame carries that verdict as `f.e2e`.
 - **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
 - **A state is the newest frame, not the next one.** `ch.latest(message)` and
-  `ch.value(message, signal)` answer as of the call (what is queued is read first; `f.t_ms` says
-  how old the frame is), and `net.wait(ms)` in place of `time.sleep` keeps every open channel
-  read while time passes.
+  `ch.value(message, signal)` answer as of the call, kept current by a reader in the engine while
+  the script blocks in a UDS request, a flash or a `time.sleep` (`f.t_ms` says how old the frame
+  is); `net.wait(ms)` in place of `time.sleep` also keeps every open channel's queue read, so the
+  next `expect` waits for what comes after.
 - **Send in the background, not from a loop.** A frame the SUT must keep receiving while the
   script waits (a heartbeat, a polled request) is `ch.send_cyclic(id, data, period_ms=...)` or
   `msg.send_cyclic(period_ms, **signals)` in a `with` block; it stops at the block's end, or at
