@@ -98,7 +98,7 @@ jobs:
       # run, so the release binary is the binary everyone has been testing
       - name: Native deps (apt)
         run: |
-          sudo apt-get update
+          sh scripts/ci_apt_direct.sh
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
           # the runtime library the version check below loads (libglfw3-dev depends on it too)

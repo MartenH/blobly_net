@@ -75,7 +75,7 @@ jobs:
         uses: ./.github/actions/setup-v
       - name: Build canbridge (static, musl)
         run: |
-          sudo apt-get update -q
+          sh scripts/ci_apt_direct.sh
           sudo apt-get install -y -q --no-install-recommends musl-tools
           sh scripts/build_canbridge.sh build/canbridge-linux
           file build/canbridge-linux/canbridge
