@@ -1,7 +1,8 @@
 // wire.v — one sending loop and one send-only handle for every periodic source on a wire: a
 // run's generators and background senders, each an Entry on the grid it has alone (sim.next_due),
 // the loop waiting for the earliest one due or a wake-up. The handle is never read, so on a
-// shared-hub wire it is no subscriber.
+// shared-hub wire it is no subscriber. A long J1939 message is a transfer the loop steps (tp.v),
+// each of its frames one more thing due, so it holds no other entry back.
 module cyclic
 
 import sync
@@ -22,6 +23,9 @@ mut:
 	due(now u64) ?u64
 	// serve sends what is due at `now` on the wire's handle; what to say ('' nothing)
 	serve(mut bus transport.Bus, now u64) string
+	// quit ends what it has in progress on the wire's handle (a transfer, tp.v), the handle still
+	// open: called before let_go when the wire, open, lets it go
+	quit(mut bus transport.Bus)
 	// let_go is called once, when the wire lets it go: `failure` why the wire cannot send ('' it
 	// was asked to go, or the wire stopped)
 	let_go(failure string)
@@ -221,6 +225,9 @@ pub fn (mut w Wire) run(open fn (string) !transport.Bus) !transport.BusDiagnosti
 				w.state = .ended
 			}
 			w.mu.unlock()
+			for mut sl in gone {
+				sl.e.quit(mut bus)
+			}
 			if done {
 				last = gone.clone()
 				break
@@ -239,6 +246,12 @@ pub fn (mut w Wire) run(open fn (string) !transport.Bus) !transport.BusDiagnosti
 			i64(wait) * time.millisecond {
 			}
 		}
+	}
+	w.mu.lock()
+	mut held := w.entries.clone()
+	w.mu.unlock()
+	for mut sl in held {
+		sl.e.quit(mut bus)
 	}
 	bus.close()
 	w.mu.lock()

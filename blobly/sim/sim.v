@@ -592,12 +592,22 @@ pub fn since_ms(t0_ns u64) f64 {
 	return f64(time.sys_mono_now() - t0_ns) / 1e6
 }
 
-// next_due_ms is when the engine's next cyclic message, a change send's next repetition or NM
-// announcement is due on its clock, or none. A released announcement is not due: it sends nothing
-// until a request.
+// next_due_ms is when the engine's next cyclic message, a change send's next repetition, NM
+// announcement, BAM frame (its pacer's) or connection frame (one step holds for the next) is due
+// on its clock, or none. A released announcement is not due: it sends nothing until a request.
 pub fn (e &Engine) next_due_ms() ?f64 {
 	mut next := 0.0
 	mut any := false
+	if e.local.len > 0 || e.answer.len > 0 {
+		next = e.now_ms
+		any = true
+	}
+	if t := e.tp.next_ms(e.now_ms) {
+		if !any || t < next {
+			next = t
+			any = true
+		}
+	}
 	for ecu in e.ecus {
 		for m in ecu.messages {
 			// a send is held back to its delay after the one before (ChangeState.hold_ms)

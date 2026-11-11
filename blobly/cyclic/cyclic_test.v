@@ -402,6 +402,8 @@ fn (mut e StopsWire) serve(mut _ transport.Bus, _ u64) string {
 	return ''
 }
 
+fn (mut e StopsWire) quit(mut _ transport.Bus) {}
+
 fn (mut e StopsWire) let_go(_ string) {}
 
 // a stop asked while one entry sends starts no send of the entries after it in that pass
