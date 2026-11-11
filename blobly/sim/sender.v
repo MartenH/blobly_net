@@ -67,6 +67,23 @@ pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f6
 	return error('message "${s.message}" is not in the channel databases')
 }
 
+// sender_messages are the messages a generator whose frame is built from `dbs` (its target rows'
+// databases) can send, in load order, each name once at its first definition: the one
+// sender_message_frame encodes, so the editor offers and describes what a fire sends.
+pub fn sender_messages(dbs []candb.Database) []candb.Message {
+	mut out := []candb.Message{}
+	mut seen := map[string]bool{}
+	for db in dbs {
+		for m in db.messages {
+			if m.name !in seen {
+				seen[m.name] = true
+				out << m
+			}
+		}
+	}
+	return out
+}
+
 // sender_raw_frame is a raw generator's frame (id, kind, payload), its format the generator's
 // `format:`; an error for a payload past it.
 pub fn sender_raw_frame(s project.Sender, id u32, ext bool, data []u8) !transport.CanFrame {

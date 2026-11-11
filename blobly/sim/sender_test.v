@@ -185,3 +185,24 @@ fn test_a_wide_signal_a_generator_lists_is_refused_and_not_sent() {
 	assert f.data[0] == 2
 	assert f.data[1..].all(it == 0)
 }
+
+// the editor's messages over a generator's target rows are what sender_message_frame encodes:
+// each name once, at its first definition
+fn test_sender_messages_are_the_first_definitions() ! {
+	a := candb.parse_dbc('BO_ 256 M: 1 X\n SG_ A : 0|8@1+ (1,0) [0|255] "" X\n')!
+	b := candb.parse_dbc('BO_ 256 M: 1 X\n SG_ B : 0|8@1+ (1,0) [0|255] "" X\nBO_ 257 N: 1 X\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\n')!
+	ms := sender_messages([a, b])
+	assert ms.map(it.name) == ['M', 'N']
+	assert ms[0].signals.map(it.name) == ['A']
+	s := project.Sender{
+		name:    'g'
+		message: 'M'
+		signals: [project.SenderSig{
+			name:  'A'
+			value: 7
+		}]
+	}
+	f := sender_message_frame(s, [a, b], 0, 0)!
+	assert f.data == [u8(7)]
+	assert sender_messages([b]).map(it.name) == ['M', 'N']
+}
