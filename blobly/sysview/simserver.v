@@ -29,7 +29,7 @@ fn unknown_sessions(names []string) []string {
 
 fn gate_spec(g Gate) uds.GateSpec {
 	return uds.GateSpec{
-		sessions: session_mask(g.sessions)
+		sessions: if g.unresolved != '' { closed_mask } else { session_mask(g.sessions) }
 		level:    u8(g.level)
 	}
 }
@@ -145,6 +145,14 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 				notes << 'DID 0x${x.id:04X}: the ECU holds its value; the simulation serves zeros'
 			}
 			.unknown {}
+		}
+		for key, g in {
+			'read':  x.read_gate
+			'write': x.write_gate
+		} {
+			if g.unresolved != '' {
+				notes << 'DID 0x${x.id:04X}: its ${key} gate is not known: ${g.unresolved}; the simulation does not serve that'
+			}
 		}
 		dids << uds.DidSpec{
 			id:           x.id

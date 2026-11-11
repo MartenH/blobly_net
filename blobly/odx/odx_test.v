@@ -7,6 +7,30 @@ import hash.crc32
 
 const fixture = os.join_path(@VMODROOT, 'dbc', 'odx_demo.odx-d')
 
+fn pt(name string, kind PartKind, offset int, size int) Part {
+	return Part{
+		name:   name
+		kind:   kind
+		offset: offset
+		size:   size
+	}
+}
+
+// variant_with reads the fixture's base variant with `edit` applied to its text.
+fn variant_with(name string, edit fn (string) string) !Variant {
+	src := os.read_file(fixture)!
+	changed := edit(src)
+	assert changed != src
+	dir := os.join_path(os.temp_dir(), 'odx_edit_${os.getpid()}_${name}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	p := os.join_path(dir, 'edit.odx-d')
+	os.write_file(p, changed)!
+	return load(p)!.variant('BodyController_Base')!
+}
+
 fn did_of(v Variant, id u16) Did {
 	for d in v.dids {
 		if d.id == id {
@@ -22,29 +46,148 @@ fn test_base_variant_lays_out_each_did() {
 	assert db.variants() == ['BodyController_Base', 'BodyController_V2']
 	v := db.variant('BodyController_Base')!
 	assert v.layer == 'BASE-VARIANT'
-	assert v.dids.map(it.id) == [u16(0x0110), 0x0120, 0x0130, 0xF18C, 0xF190]
+	assert v.dids.map(it.id) == [u16(0x0110), 0x0120, 0x0130, 0x0140, 0x0150, 0xF18C, 0xF190]
 	vin := did_of(v, 0xF190)
 	assert vin.name == 'VIN' && vin.readable && vin.writable && vin.size == 17
-	assert vin.parts == [Part{'VIN', .text, 0, 17}]
+	assert vin.parts == [pt('VIN', .text, 0, 17)]
 	lamp := did_of(v, 0x0110)
 	assert lamp.name == 'LampConfig' && lamp.size == 3 && lamp.writable
-	assert lamp.parts == [Part{'Brightness', .unsigned, 0, 1}, Part{'DelayMs', .unsigned, 1, 2}]
+	assert lamp.parts == [pt('Brightness', .unsigned, 0, 1), pt('DelayMs', .unsigned, 1, 2)]
 	trim := did_of(v, 0x0120)
-	assert trim.parts == [Part{'TrimOffset', .signed, 0, 2}]
+	assert trim.parts == [pt('TrimOffset', .signed, 0, 2)]
 	serial := did_of(v, 0xF18C)
-	assert serial.parts == [Part{'EcuSerial', .bytes, 0, 4}] && !serial.writable
+	assert serial.parts == [pt('EcuSerial', .bytes, 0, 4)] && !serial.writable
 }
 
-fn test_a_scaling_not_read_is_bytes_and_said() {
+fn test_linear_scale_linear_and_texttable_values_carry_their_method() {
 	v := load(fixture)!.variant('BodyController_Base')!
 	temp := did_of(v, 0x0130)
-	// LINEAR is a later step: the value is its two bytes, never a number read as if identical
-	assert temp.name == 'Temperature' && temp.size == 2 && temp.parts.len == 0
-	assert v.notes.any(it.contains('0x0130') && it.contains('COMPU-METHOD LINEAR')
-		&& it.contains('read as 2 bytes'))
-	// the service of another kind and the state chart are counted, not dropped in silence
+	assert temp.name == 'Temperature' && temp.size == 2 && temp.parts.len == 1
+	assert temp.parts[0].kind == .unsigned
+	assert temp.parts[0].compu == Compu{
+		segments: [Segment{
+			v0: -40
+			v1: 0.1
+		}]
+		unit:     '°C'
+	}
+	volts := did_of(v, 0x0150).parts[0].compu
+	// an OPEN lower limit of 100 starts the second segment at 101
+	assert volts.segments == [Segment{0, 100, 0, 1, 10}, Segment{101, 250, -40, 0.5, 1}]
+	assert volts.unit == 'V' && volts.labels.len == 0
+	mode := did_of(v, 0x0140)
+	assert mode.writable && mode.parts[0].compu.labels == [Label{0, 0, 'Off', 0},
+		Label{1, 1, 'On', 1}, Label{2, 2, 'Auto', 2}, Label{16, 31, 'Service', 31}]
+	assert mode.parts[0].compu.fallback == 'Invalid'
+	// the service of another kind is counted, not dropped in silence; the state charts are read
 	assert v.notes.any(it.starts_with('not read:') && it.contains('1 x DIAG-SERVICE 0x11')
-		&& it.contains('1 x STATE-CHARTS'))
+		&& it.contains('1 x DIAG-SERVICE/AUDIENCE') && !it.contains('STATE-CHARTS'))
+}
+
+fn test_a_compu_method_not_held_is_bytes_and_said() {
+	v := variant_with('tabintp', fn (s string) string {
+		return s.replace('<CATEGORY>TEXTTABLE</CATEGORY>', '<CATEGORY>TAB-INTP</CATEGORY>')
+	})!
+	mode := did_of(v, 0x0140)
+	// never a number read as if identical
+	assert mode.size == 1 && mode.parts.len == 0
+	assert v.notes.any(it.contains('0x0140') && it.contains('COMPU-METHOD TAB-INTP')
+		&& it.contains('read as 1 bytes'))
+	w := variant_with('badv', fn (s string) string {
+		return s.replace('<V>0.1</V>', '<V>tenth</V>')
+	})!
+	assert did_of(w, 0x0130).parts.len == 0
+	assert w.notes.any(it.contains('0x0130') && it.contains('"tenth" is not a number'))
+	c := variant_with('constant', fn (s string) string {
+		return s.replace('<V>0.1</V>', '<V>0</V>')
+	})!
+	assert did_of(c, 0x0130).parts.len == 0
+	assert c.notes.any(it.contains('0x0130') && it.contains('a constant scale'))
+}
+
+fn test_gates_are_the_state_chart_preconditions() {
+	v := load(fixture)!.variant('BodyController_Base')!
+	// extended session and the level a 0x27 02 sendKey unlocks
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 1, []}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
+	// no precondition: no gate
+	lamp := did_of(v, 0x0110)
+	assert lamp.writable && lamp.write_gate == Gate{}
+	// the start state of the session chart is the default session
+	assert did_of(v, 0xF18C).read_gate == Gate{true, [u8(0x01), 0x03], 0, []}
+	assert did_of(v, 0x0130).read_gate == Gate{}
+}
+
+fn test_a_state_two_session_services_enter_gates_on_both() {
+	v := variant_with('twoenter', fn (s string) string {
+		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToDefault" />',
+			'<STATE-TRANSITION-REF ID-REF="ST_ToDefault" /><STATE-TRANSITION-REF ID-REF="ST_ToExtended" />')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x01), 0x03], 1, []}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x01), 0x03], 0, []}
+}
+
+// second_trim_write is the fixture with a second 0x2E service of TrimOffset, preconditions `pre`.
+fn second_trim_write(s string, pre string) string {
+	return s.replace('<DIAG-SERVICE ID="DS_HardReset">',
+		'<DIAG-SERVICE ID="DS_TrimOffset_Write2"><SHORT-NAME>TrimOffset_Write2</SHORT-NAME>${pre}<REQUEST-REF ID-REF="RQ_TrimOffset_Write" /><POS-RESPONSE-REFS><POS-RESPONSE-REF ID-REF="PR_TrimOffset_Write" /></POS-RESPONSE-REFS></DIAG-SERVICE><DIAG-SERVICE ID="DS_HardReset">')
+}
+
+// key_l2_request is a 0x27 04 sendKey request.
+const key_l2_request = '<REQUEST ID="RQ_Key_L2"><SHORT-NAME>RQ_Key_L2</SHORT-NAME><PARAMS><PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID"><SHORT-NAME>SID</SHORT-NAME><BYTE-POSITION>0</BYTE-POSITION><CODED-VALUE>39</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></PARAM><PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION"><SHORT-NAME>SecurityAccessType</SHORT-NAME><BYTE-POSITION>1</BYTE-POSITION><CODED-VALUE>4</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></PARAM></PARAMS></REQUEST>'
+
+fn test_several_security_levels_are_alternatives_no_gate_states() {
+	// a second sendKey (0x27 04, level 2) entering Level1 too
+	v := variant_with('twokeys', fn (s string) string {
+		return s.replace('<DIAG-SERVICE ID="DS_HardReset">',
+			'<DIAG-SERVICE ID="DS_Key_L2"><SHORT-NAME>SecurityLevel2_SendKey</SHORT-NAME><STATE-TRANSITION-REFS><STATE-TRANSITION-REF ID-REF="ST_Unlock1" /></STATE-TRANSITION-REFS><REQUEST-REF ID-REF="RQ_Key_L2" /></DIAG-SERVICE><DIAG-SERVICE ID="DS_HardReset">').replace('<REQUEST ID="RQ_Seed_L1">',
+			key_l2_request + '<REQUEST ID="RQ_Seed_L1">')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, [
+		'level 1 or 2, alternatives one gate cannot state',
+	]}
+	assert v.notes.any(it.contains('VIN_Write') && it.contains('security levels 1, 2 are alternatives'))
+	// a gate asking no level is unchanged
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
+}
+
+fn test_two_write_services_serve_a_did_in_either_gate() {
+	// a second write of TrimOffset, in the default session
+	v := variant_with('twowrites', fn (s string) string {
+		return second_trim_write(s, '<PRE-CONDITION-STATE-REFS><PRE-CONDITION-STATE-REF ID-REF="S_Default" /></PRE-CONDITION-STATE-REFS>')
+	})!
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03), 0x01], 0, []}
+	// one with no precondition opens it
+	o := variant_with('openwrite', fn (s string) string {
+		return second_trim_write(s, '')
+	})!
+	assert did_of(o, 0x0120).write_gate == Gate{}
+	// one needing a level the other does not: no gate states both
+	l := variant_with('levelwrite', fn (s string) string {
+		return second_trim_write(s, '<PRE-CONDITION-STATE-REFS><PRE-CONDITION-STATE-REF ID-REF="S_Extended" /><PRE-CONDITION-STATE-REF ID-REF="S_Level1" /></PRE-CONDITION-STATE-REFS>')
+	})!
+	g := did_of(l, 0x0120).write_gate
+	assert g.declared && g.unresolved == [
+		'session 0x03 or session 0x03, level 1, two services\' gates one gate cannot state',
+	]
+	assert l.notes.any(it.contains('0x0120') && it.contains('two services\' gates'))
+}
+
+fn test_a_state_no_service_enters_is_said_and_left_out() {
+	v := variant_with('noenter', fn (s string) string {
+		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToExtended" />', '')
+	})!
+	assert did_of(v, 0x0120).write_gate == Gate{true, []u8{}, 0, ['Extended, a state no 0x10 service enters']}
+	assert v.notes.any(it.contains('TrimOffset_Write')
+		&& it.contains('session state Extended is entered by no 0x10 service'))
+}
+
+fn test_an_unresolved_security_state_leaves_the_level_unknown() {
+	v := variant_with('nokey', fn (s string) string {
+		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_Unlock1" />', '')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, ['Level1, a state no 0x27 sendKey enters']}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
 }
 
 fn test_ecu_variant_inherits_but_what_it_excludes() {
@@ -53,7 +196,7 @@ fn test_ecu_variant_inherits_but_what_it_excludes() {
 	ids := v.dids.map(it.id)
 	assert 0x0200 in ids && 0xF190 in ids && 0x0110 in ids
 	assert u16(0xF18C) !in ids // NOT-INHERITED-DIAG-COMM Serial_Read
-	assert did_of(v, 0x0200).parts == [Part{'Mileage', .unsigned, 0, 4}]
+	assert did_of(v, 0x0200).parts == [pt('Mileage', .unsigned, 0, 4)]
 	assert v.dtcs.map(it.name) == ['CrashSensorFault', 'LampOpenCircuit', 'SupplyLow']
 	assert v.dtcs[1] == Dtc{'LampOpenCircuit', 0x912301, 'B1123-01', 'Lamp open circuit'}
 }
@@ -147,7 +290,7 @@ fn test_a_pdx_is_read_from_its_zip() {
 	assert db.files == [p]
 	assert db.notes.any(it.contains('1 file(s) of the PDX are not ODX'))
 	v := db.variant('BodyController_V2')!
-	assert did_of(v, 0xF190).parts == [Part{'VIN', .text, 0, 17}]
+	assert did_of(v, 0xF190).parts == [pt('VIN', .text, 0, 17)]
 }
 
 fn test_a_broken_zip_is_refused() {

@@ -1,7 +1,8 @@
 -- @project ../projects/odx-demo.blobnet
 -- odx_nodes.lua — a node a project row names by its ODX description (diagnostics: on CAN1): its
--- DIDs listed and read and written by name through the layout the ODX gives them, and its DTCs
--- named by the variant's DTC list. The simulated BodyECU answers at the node's ids.
+-- DIDs listed and read and written by name through the layout the ODX gives them (scaled values
+-- as numbers, text tables as labels, writes gated by the sessions and level its services ask for),
+-- and its DTCs named by the variant's DTC list. The simulated BodyECU answers at the node's ids.
 --   scripts/runtests.sh tests/odx_nodes.lua
 
 test("the row's ODX names the node", function()
@@ -22,7 +23,14 @@ test("its DIDs carry the layout the ODX gives them", function()
   check.equal(lamp.kind, "fields")
   check.equal(lamp.parts[1].label, "Brightness")
   check.equal(lamp.parts[2].hint, "u16 0..65535")
-  check.equal(d:did("Temperature").kind, "data") -- a LINEAR value: its bytes, not a number
+  local temp = d:did("Temperature")
+  check.equal(temp.kind, "fields")
+  check.equal(temp.parts[1].kind, "number")
+  check.equal(temp.parts[1].hint, "number -40..6513.5 °C")
+  check.equal(d:did("LampMode").parts[1].kind, "label")
+  check.equal(d:did("VIN").write.sessions[1], "extended")
+  check.equal(d:did("VIN").write.level, 1)
+  check.equal(d:did("EcuSerial").read.sessions[2], "extended")
 end)
 
 test("a DID is read and written by name", function()
@@ -30,13 +38,30 @@ test("a DID is read and written by name", function()
   check.equal(d:read("VIN"), "WVWZZZ1JZXW000001")
   check.equal(d:read("LampConfig").DelayMs, 1500)
   check.equal(d:read("TrimOffset"), -100)
-  check.equal(tohex(d:read("Temperature")), "0B B8")
-  d:write("TrimOffset", 25)
-  check.equal(d:read("TrimOffset"), 25)
+  check.equal(d:read("Temperature"), 260.0)
+  check.equal(d:read("SupplyVoltage"), 30.0)
+  check.equal(d:read("LampMode"), "Auto")
+  d:write("LampMode", "On")
+  check.equal(d:read("LampMode"), "On")
   d:write("LampConfig", { Brightness = 10, DelayMs = 250 })
   check.equal(d:read("LampConfig").Brightness, 10)
   local ok, err = pcall(d.write, d, "EcuSerial", "00 00 00 01")
   check.truthy(not ok and string.find(tostring(err), "not writable", 1, true), tostring(err))
+end)
+
+test("a write is gated by the sessions and level its ODX service asks for", function()
+  local d = uds.node("BodyController")
+  d:session(0x01)
+  local ok, err = pcall(d.write, d, "TrimOffset", 25)
+  check.truthy(not ok and string.find(tostring(err), "extended session", 1, true), tostring(err))
+  d:session(0x03)
+  d:write("TrimOffset", 25)
+  check.equal(d:read("TrimOffset"), 25)
+  ok, err = pcall(d.write, d, "VIN", "WVWZZZ1JZXW000002")
+  check.truthy(not ok and string.find(tostring(err), "unlock level 1", 1, true), tostring(err))
+  d:security_access(1)
+  d:write("VIN", "WVWZZZ1JZXW000002")
+  check.equal(d:read("VIN"), "WVWZZZ1JZXW000002")
 end)
 
 test("DTCs are named by the variant's DTC list", function()

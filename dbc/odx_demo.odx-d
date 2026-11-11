@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- A hand-made ODX 2.2 description for blobly/odx's tests: one BodyController base variant with
      a DID of each layout the reader holds (text, a structure of integers, a signed integer,
-     bytes), one it does not (a LINEAR scaling), a service of another kind, and an ECU variant
-     that inherits all of it but a NOT-INHERITED service and adds a DID and a DTC. -->
+     bytes, a LINEAR, a SCALE-LINEAR and a TEXTTABLE value), session and security state charts
+     whose preconditions gate the writes, a service of another kind, and an ECU variant that
+     inherits all of it but a NOT-INHERITED service and adds a DID and a DTC. -->
 <ODX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" MODEL-VERSION="2.2.0">
   <DIAG-LAYER-CONTAINER ID="DLC_BodyController">
     <SHORT-NAME>DLC_BodyController</SHORT-NAME>
@@ -102,11 +103,109 @@
               <SHORT-NAME>TemperatureC</SHORT-NAME>
               <COMPU-METHOD>
                 <CATEGORY>LINEAR</CATEGORY>
+                <COMPU-INTERNAL-TO-PHYS>
+                  <COMPU-SCALES>
+                    <COMPU-SCALE>
+                      <COMPU-RATIONAL-COEFFS>
+                        <COMPU-NUMERATOR>
+                          <V>-40</V>
+                          <V>0.1</V>
+                        </COMPU-NUMERATOR>
+                      </COMPU-RATIONAL-COEFFS>
+                    </COMPU-SCALE>
+                  </COMPU-SCALES>
+                </COMPU-INTERNAL-TO-PHYS>
               </COMPU-METHOD>
               <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
                 <BIT-LENGTH>16</BIT-LENGTH>
               </DIAG-CODED-TYPE>
               <PHYSICAL-TYPE BASE-DATA-TYPE="A_FLOAT64" />
+              <UNIT-REF ID-REF="U_degC" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_VOLTAGE">
+              <SHORT-NAME>SupplyVolts</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>SCALE-LINEAR</CATEGORY>
+                <COMPU-INTERNAL-TO-PHYS>
+                  <COMPU-SCALES>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>0</LOWER-LIMIT>
+                      <UPPER-LIMIT>100</UPPER-LIMIT>
+                      <COMPU-RATIONAL-COEFFS>
+                        <COMPU-NUMERATOR>
+                          <V>0</V>
+                          <V>1</V>
+                        </COMPU-NUMERATOR>
+                        <COMPU-DENOMINATOR>
+                          <V>10</V>
+                        </COMPU-DENOMINATOR>
+                      </COMPU-RATIONAL-COEFFS>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT INTERVAL-TYPE="OPEN">100</LOWER-LIMIT>
+                      <UPPER-LIMIT>250</UPPER-LIMIT>
+                      <COMPU-RATIONAL-COEFFS>
+                        <COMPU-NUMERATOR>
+                          <V>-40</V>
+                          <V>0.5</V>
+                        </COMPU-NUMERATOR>
+                      </COMPU-RATIONAL-COEFFS>
+                    </COMPU-SCALE>
+                  </COMPU-SCALES>
+                </COMPU-INTERNAL-TO-PHYS>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>8</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_FLOAT64" />
+              <UNIT-REF ID-REF="U_volt" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_LAMPMODE">
+              <SHORT-NAME>LampModes</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>TEXTTABLE</CATEGORY>
+                <COMPU-INTERNAL-TO-PHYS>
+                  <COMPU-SCALES>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>0</LOWER-LIMIT>
+                      <UPPER-LIMIT>0</UPPER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>Off</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>1</LOWER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>On</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>2</LOWER-LIMIT>
+                      <UPPER-LIMIT>2</UPPER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>Auto</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>16</LOWER-LIMIT>
+                      <UPPER-LIMIT>31</UPPER-LIMIT>
+                      <COMPU-INVERSE-VALUE>
+                        <V>31</V>
+                      </COMPU-INVERSE-VALUE>
+                      <COMPU-CONST>
+                        <VT>Service</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                  </COMPU-SCALES>
+                  <COMPU-DEFAULT-VALUE>
+                    <VT>Invalid</VT>
+                  </COMPU-DEFAULT-VALUE>
+                </COMPU-INTERNAL-TO-PHYS>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>8</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
             </DATA-OBJECT-PROP>
           </DATA-OBJECT-PROPS>
           <STRUCTURES>
@@ -127,6 +226,18 @@
               </PARAMS>
             </STRUCTURE>
           </STRUCTURES>
+          <UNIT-SPEC>
+            <UNITS>
+              <UNIT ID="U_degC">
+                <SHORT-NAME>degC</SHORT-NAME>
+                <DISPLAY-NAME>°C</DISPLAY-NAME>
+              </UNIT>
+              <UNIT ID="U_volt">
+                <SHORT-NAME>volt</SHORT-NAME>
+                <DISPLAY-NAME>V</DISPLAY-NAME>
+              </UNIT>
+            </UNITS>
+          </UNIT-SPEC>
         </DIAG-DATA-DICTIONARY-SPEC>
         <DIAG-COMMS>
           <DIAG-SERVICE ID="DS_VIN_Read">
@@ -138,6 +249,10 @@
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS_VIN_Write">
             <SHORT-NAME>VIN_Write</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+              <PRE-CONDITION-STATE-REF ID-REF="S_Level1" />
+            </PRE-CONDITION-STATE-REFS>
             <REQUEST-REF ID-REF="RQ_VIN_Write" />
             <POS-RESPONSE-REFS>
               <POS-RESPONSE-REF ID-REF="PR_VIN_Write" />
@@ -166,6 +281,10 @@
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS_TrimOffset_Write">
             <SHORT-NAME>TrimOffset_Write</SHORT-NAME>
+            <AUDIENCE IS-AFTERSALES="false" />
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
             <REQUEST-REF ID-REF="RQ_TrimOffset_Write" />
             <POS-RESPONSE-REFS>
               <POS-RESPONSE-REF ID-REF="PR_TrimOffset_Write" />
@@ -180,10 +299,68 @@
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS_Serial_Read">
             <SHORT-NAME>Serial_Read</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Default" />
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
             <REQUEST-REF ID-REF="RQ_Serial_Read" />
             <POS-RESPONSE-REFS>
               <POS-RESPONSE-REF ID-REF="PR_Serial_Read" />
             </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_LampMode_Read">
+            <SHORT-NAME>LampMode_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_LampMode_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_LampMode_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_LampMode_Write">
+            <SHORT-NAME>LampMode_Write</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_LampMode_Write" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_LampMode_Write" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Voltage_Read">
+            <SHORT-NAME>SupplyVoltage_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_Voltage_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_Voltage_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_DefaultSession">
+            <SHORT-NAME>DefaultSession_Start</SHORT-NAME>
+            <STATE-TRANSITION-REFS>
+              <STATE-TRANSITION-REF ID-REF="ST_ToDefault" />
+              <STATE-TRANSITION-REF ID-REF="ST_Relock" />
+            </STATE-TRANSITION-REFS>
+            <REQUEST-REF ID-REF="RQ_DefaultSession" />
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_ExtendedSession">
+            <SHORT-NAME>ExtendedSession_Start</SHORT-NAME>
+            <STATE-TRANSITION-REFS>
+              <STATE-TRANSITION-REF ID-REF="ST_ToExtended" />
+              <STATE-TRANSITION-REF ID-REF="ST_Relock" />
+            </STATE-TRANSITION-REFS>
+            <REQUEST-REF ID-REF="RQ_ExtendedSession" />
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Seed_L1">
+            <SHORT-NAME>SecurityLevel1_RequestSeed</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ_Seed_L1" />
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Key_L1">
+            <SHORT-NAME>SecurityLevel1_SendKey</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
+            <STATE-TRANSITION-REFS>
+              <STATE-TRANSITION-REF ID-REF="ST_Unlock1" />
+            </STATE-TRANSITION-REFS>
+            <REQUEST-REF ID-REF="RQ_Key_L1" />
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS_HardReset">
             <SHORT-NAME>HardReset</SHORT-NAME>
@@ -370,6 +547,158 @@
                 <CODED-VALUE>61836</CODED-VALUE>
                 <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
                   <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_LampMode_Read">
+            <SHORT-NAME>RQ_LampMode_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>320</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_LampMode_Write">
+            <SHORT-NAME>RQ_LampMode_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>46</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>320</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>LampMode</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_LAMPMODE" />
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Voltage_Read">
+            <SHORT-NAME>RQ_Voltage_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>336</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_DefaultSession">
+            <SHORT-NAME>RQ_DefaultSession</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>16</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>SessionType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>1</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_ExtendedSession">
+            <SHORT-NAME>RQ_ExtendedSession</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>16</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>SessionType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>3</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Seed_L1">
+            <SHORT-NAME>RQ_Seed_L1</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>39</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>SecurityAccessType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>1</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Key_L1">
+            <SHORT-NAME>RQ_Key_L1</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>39</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>SecurityAccessType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>2</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
                 </DIAG-CODED-TYPE>
               </PARAM>
             </PARAMS>
@@ -574,11 +903,124 @@
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_LampMode_Read">
+            <SHORT-NAME>PR_LampMode_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>LampMode</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_LAMPMODE" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_LampMode_Write">
+            <SHORT-NAME>PR_LampMode_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>110</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_Voltage_Read">
+            <SHORT-NAME>PR_Voltage_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>SupplyVoltage</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_VOLTAGE" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
         </POS-RESPONSES>
         <STATE-CHARTS>
           <STATE-CHART ID="SC_Session">
             <SHORT-NAME>Session</SHORT-NAME>
             <SEMANTIC>SESSION</SEMANTIC>
+            <STATE-TRANSITIONS>
+              <STATE-TRANSITION ID="ST_ToDefault">
+                <SHORT-NAME>ToDefault</SHORT-NAME>
+                <SOURCE-SNREF SHORT-NAME="Extended" />
+                <TARGET-SNREF SHORT-NAME="Default" />
+              </STATE-TRANSITION>
+              <STATE-TRANSITION ID="ST_ToExtended">
+                <SHORT-NAME>ToExtended</SHORT-NAME>
+                <SOURCE-SNREF SHORT-NAME="Default" />
+                <TARGET-SNREF SHORT-NAME="Extended" />
+              </STATE-TRANSITION>
+            </STATE-TRANSITIONS>
+            <START-STATE-SNREF SHORT-NAME="Default" />
+            <STATES>
+              <STATE ID="S_Default">
+                <SHORT-NAME>Default</SHORT-NAME>
+              </STATE>
+              <STATE ID="S_Extended">
+                <SHORT-NAME>Extended</SHORT-NAME>
+              </STATE>
+            </STATES>
+          </STATE-CHART>
+          <STATE-CHART ID="SC_Security">
+            <SHORT-NAME>SecurityAccess</SHORT-NAME>
+            <SEMANTIC>SECURITY</SEMANTIC>
+            <STATE-TRANSITIONS>
+              <STATE-TRANSITION ID="ST_Unlock1">
+                <SHORT-NAME>UnlockLevel1</SHORT-NAME>
+                <SOURCE-SNREF SHORT-NAME="Locked" />
+                <TARGET-SNREF SHORT-NAME="Level1" />
+              </STATE-TRANSITION>
+              <STATE-TRANSITION ID="ST_Relock">
+                <SHORT-NAME>Relock</SHORT-NAME>
+                <SOURCE-SNREF SHORT-NAME="Level1" />
+                <TARGET-SNREF SHORT-NAME="Locked" />
+              </STATE-TRANSITION>
+            </STATE-TRANSITIONS>
+            <START-STATE-SNREF SHORT-NAME="Locked" />
+            <STATES>
+              <STATE ID="S_Locked">
+                <SHORT-NAME>Locked</SHORT-NAME>
+              </STATE>
+              <STATE ID="S_Level1">
+                <SHORT-NAME>Level1</SHORT-NAME>
+              </STATE>
+            </STATES>
           </STATE-CHART>
         </STATE-CHARTS>
       </BASE-VARIANT>

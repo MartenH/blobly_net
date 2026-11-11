@@ -1,7 +1,9 @@
 module sysview
 
 import os
+import blobly.odx
 import blobly.project
+import blobly.uds
 
 // The nodes a project row names by ODX, against dbc/odx_demo.odx-d.
 
@@ -35,6 +37,8 @@ fn test_an_odx_node_is_named_reached_and_laid_out() {
 	d := node.desc
 	vin := d.listed_did('VIN') or { panic(err) }
 	assert vin.kind == .text && vin.size == 17 && vin.write_gate.declared
+	assert vin.write_gate.sessions == ['extended'] && vin.write_gate.level == 1
+	assert vin.write == 'extended, level 1'
 	assert vin.texts('WVWZZZ1JZXW000001'.bytes())! == ['WVWZZZ1JZXW000001']
 	lamp := d.listed_did('LampConfig') or { panic(err) }
 	assert lamp.kind == .fields && lamp.by_label()
@@ -45,13 +49,115 @@ fn test_an_odx_node_is_named_reached_and_laid_out() {
 	serial := d.listed_did('EcuSerial') or { panic(err) }
 	assert serial.kind == .data && serial.size == 4 && !serial.write_gate.declared
 	assert serial.write_refusal() != none
-	// a LINEAR value is its bytes, said, never a number read as if identical
-	temp := d.listed_did('Temperature') or { panic(err) }
-	assert temp.kind == .data && temp.size == 2 && temp.parts()[0].kind == .bytes
-	assert notes.any(it.starts_with('CAN1: diagnostics Body:') && it.contains('LINEAR'))
+	assert notes.all(!it.contains('LINEAR'))
 	assert d.fault(0x912301) or { panic('no fault') }.name == 'LampOpenCircuit'
 	// the ISO identification DIDs it does not declare are listed beside its own
 	assert d.listed_dids().any(it.id == 0xF187)
+}
+
+fn body_did(name string) DidDesc {
+	sys, _ := odx_system([body('BodyController_Base')])
+	return sys.nodes[0].desc.listed_did(name) or { panic(err) }
+}
+
+fn test_a_linear_value_reads_and_writes_as_its_physical_number() {
+	temp := body_did('Temperature')
+	assert temp.kind == .fields && temp.parts() == [
+		Part{'Temperature', .number, 'number -40..6513.5 °C'},
+	]
+	// -40 + 0.1 * 3000, its binary noise dropped
+	assert temp.read_texts([u8(0x0B), 0xB8])! == ['260']
+	assert temp.read_texts([u8(0x0B), 0xB9])! == ['260.1']
+	assert temp.read_part([u8(0x00), 0x00], 0)! == '-40'
+	assert temp.encode(['260.1'])! == [u8(0x0B), 0xB9]
+	// a value between two raw values is written as the nearest
+	assert temp.encode(['260.04'])! == [u8(0x0B), 0xB8]
+	temp.encode(['7000']) or {
+		assert err.msg() == 'Temperature: 7000 is outside -40..6513.5 °C'
+		temp.encode(['warm']) or {
+			assert err.msg().contains('"warm" is not a number')
+			return
+		}
+	}
+	assert false
+}
+
+fn test_a_scale_linear_value_reads_through_its_segment() {
+	volts := body_did('SupplyVoltage')
+	assert volts.parts()[0].hint == 'number 0..85 V'
+	assert volts.read_texts([u8(100)])! == ['10']
+	assert volts.read_texts([u8(101)])! == ['10.5']
+	assert volts.encode(['30'])! == [u8(140)]
+	// between the segments' values (10 and 10.5): the nearer one
+	assert volts.encode(['10.2'])! == [u8(100)]
+	assert volts.encode(['10.3'])! == [u8(101)]
+	if _ := volts.encode(['86']) {
+		assert false
+	} else {
+		assert err.msg().contains('86 is outside 0..85 V')
+	}
+	// 251..255 are in no segment: refused, never read as a number
+	volts.read_texts([u8(255)]) or {
+		assert err.msg().contains('raw 255 is in no scale')
+		return
+	}
+	assert false
+}
+
+fn test_a_texttable_value_reads_and_writes_as_its_label() {
+	mode := body_did('LampMode')
+	assert mode.parts() == [Part{'LampMode', .label, 'one of Off, On, Auto, Service'}]
+	assert mode.read_texts([u8(2)])! == ['Auto']
+	assert mode.read_texts([u8(20)])! == ['Service']
+	// a raw value no entry names reads as the table's default
+	assert mode.read_texts([u8(9)])! == ['Invalid']
+	assert mode.encode(['On'])! == [u8(1)]
+	assert mode.encode(['Service'])! == [u8(31)]
+	assert mode.encode(['7'])! == [u8(7)]
+	mode.encode(['Invalid']) or {
+		assert err.msg().contains('names no value to write')
+		mode.encode(['Dim']) or {
+			assert err.msg().contains('"Dim" is not one of Off, On, Auto, Service')
+			return
+		}
+	}
+	assert false
+}
+
+fn test_a_gate_plans_the_write_it_asks_for() {
+	trim := body_did('TrimOffset')
+	assert trim.write == 'extended'
+	plan := trim.plan_write(uds.ConnState{}, true)
+	assert plan.session == 0x03 && plan.unlock == 0 && plan.refusal == ''
+	serial := body_did('EcuSerial')
+	assert serial.read_gate.sessions == ['default', 'extended'] && serial.read == 'default/extended'
+	lamp := body_did('LampConfig')
+	assert lamp.write == 'open' && lamp.write_gate.declared && lamp.write_gate.sessions.len == 0
+}
+
+fn test_a_session_with_no_name_is_planned_by_its_sub_function() {
+	x := DidDesc{
+		id:         0x0120
+		write_gate: Gate{
+			declared: true
+			sessions: ['extended', '0x40']
+		}
+	}
+	assert x.write_sessions()! == [u8(0x03), 0x40]
+	assert x.plan_write(uds.ConnState{ session: 0x03 }, true).refusal == ''
+	assert x.plan_write(uds.ConnState{ session: 0x40 }, true).session == 0
+}
+
+fn test_an_unresolved_gate_plans_no_write() {
+	x := DidDesc{
+		id:         0x0120
+		write_gate: odx_gate(odx.Gate{
+			declared:   true
+			unresolved: ['Extended, a state no 0x10 service enters']
+		}, true)
+	}
+	assert x.write_gate.words() == 'unresolved (Extended, a state no 0x10 service enters)'
+	assert x.write_refusal() or { '' } == 'not writable: its write gate is not known: Extended, a state no 0x10 service enters'
 }
 
 fn test_an_odx_node_on_two_rows_is_one_node_and_a_clash_is_refused() {

@@ -18,12 +18,12 @@ if TYPE_CHECKING:
     from .project import Channel, Project
 
 # what read() returns: one part's value, or a value of several parts by label
-DidValue: TypeAlias = int | bool | str | bytes | dict[str, int | bool]
+DidValue: TypeAlias = int | bool | float | str | bytes | dict[str, int | bool | float | str]
 
 # enum bb_did_kind and enum bb_part_kind, as the ecu.toml and the codec name them
 DID_KINDS = {0: "ascii", 1: "bytes", 2: "signal", 3: "param", 4: "param_status", 5: "tx_saturations",
              6: "unknown", 7: "fields", 8: "text", 9: "data"}
-PART_KINDS = {0: "int", 1: "bool", 2: "text", 3: "bytes"}
+PART_KINDS = {0: "int", 1: "bool", 2: "text", 3: "bytes", 4: "number", 5: "label"}
 
 
 @dataclass(frozen=True)
@@ -42,10 +42,12 @@ class Gate:
 @dataclass(frozen=True)
 class DidPart:
     """One part of a DID's value, as read() returns it and write() takes it: `label` (a field's
-    name, else "text" or "bytes"), `kind` "int", "bool", "text" or "bytes", and `hint` what it
-    accepts, as the engine says it ("u16 0..360", "up to 18 characters", "1 bytes, hex")."""
+    name, else "text" or "bytes"), `kind` "int", "bool", "text", "bytes", "number" (a physical
+    value the description scales: a float) or "label" (a text-table label: a str), and `hint` what
+    it accepts, as the engine says it ("u16 0..360", "up to 18 characters", "1 bytes, hex",
+    "number -40..6513.5 °C", "one of Off, On, Auto")."""
     label: str
-    kind: Literal["int", "bool", "text", "bytes"]
+    kind: Literal["int", "bool", "text", "bytes", "number", "label"]
     hint: str
 
 
@@ -271,7 +273,9 @@ def _value(part: DidPart, text: str) -> int | bool | str | bytes:
         return int(text)
     if part.kind == "bool":
         return text == "true"
-    if part.kind == "text":
+    if part.kind == "number":
+        return float(text)
+    if part.kind in ("text", "label"):
         return text
     return bytes.fromhex(text)
 
@@ -285,7 +289,13 @@ def _text(did: Did, part: DidPart, v: object) -> str:
         if isinstance(v, int) and not isinstance(v, bool):
             return str(v)
         raise TypeError(f"{where} is {'an integer' if part.kind == 'int' else 'True or False'}, not {v!r}")
-    if part.kind == "text":
+    if part.kind == "number":
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return repr(float(v)) if isinstance(v, float) else str(v)
+        raise TypeError(f"{where} is a number, not {v!r}")
+    if part.kind == "label" and isinstance(v, int) and not isinstance(v, bool):
+        return str(v)
+    if part.kind in ("text", "label"):
         if not isinstance(v, str):
             raise TypeError(f"{where} is a text, not {v!r}")
         if "\0" in v:
@@ -376,9 +386,10 @@ class NodeClient(UdsClient):
 
     def read(self, did: int | str) -> DidValue:
         """0x22 of DID `did` (its name, or its identifier), decoded by the node's layout: an
-        integer or a bool for a value of one field, a str for a text, bytes for fixed bytes or a DID
-        of no known layout, and {label: value} where the Did is by_label. UndecodableAnswer when
-        the answer is not the size the description lays out."""
+        integer or a bool for a value of one field (a float for one the description scales, a str
+        for one of its text table's labels), a str for a text, bytes for fixed bytes or a DID of no
+        known layout, and {label: value} where the Did is by_label. UndecodableAnswer when the
+        answer is not the size the description lays out, or a scaled value no scale reads."""
         n, d, run = self._resolved(did)
         data = self.read_did(_int("did", did) if d is None else d.id)
         lib = _lib.lib()
@@ -399,8 +410,9 @@ class NodeClient(UdsClient):
 
     def write(self, did: int | str, value: object = _UNSET, /, **fields: object) -> None:
         """0x2E of DID `did` (its name, or its identifier) with `value` — one field's integer or
-        bool, a text, bytes, or a mapping of every part by label (or the parts as keywords: `x=1,
-        y=2`) — encoded by the node's layout. Nothing is sent, and Refused raised, for a DID with
+        bool (a number for a scaled one, rounded to the nearest raw value; a label, or an integer
+        raw value, for a text table's), a text, bytes, or a mapping of every part by label (or the
+        parts as keywords: `x=1, y=2`) — encoded by the node's layout. Nothing is sent, and Refused raised, for a DID with
         no write gate or a value the layout does not hold (a TypeError for one of the wrong type);
         WriteGated (its `session` and `level`) when this client's connection has not established
         what the gate needs — switch and unlock first (session, security_access): nothing here

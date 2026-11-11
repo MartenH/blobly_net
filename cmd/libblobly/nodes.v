@@ -267,6 +267,8 @@ pub fn bb_did_part(n i32, d i32, p i32, kind &i32, buf &char, cap i32) i32 {
 				.boolean { i32(C.BB_PART_BOOLEAN) }
 				.text { i32(C.BB_PART_TEXT) }
 				.bytes { i32(C.BB_PART_BYTES) }
+				.number { i32(C.BB_PART_NUMBER) }
+				.label { i32(C.BB_PART_LABEL) }
 			}
 		}
 	}

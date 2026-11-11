@@ -526,12 +526,15 @@ typedef struct bb_did {
 } bb_did;
 
 /* What one part of a DID's value holds (bb_did_part): its text is an integer in decimal, true or
- * false, a text, or bytes in hex. */
+ * false, a text, bytes in hex, a physical number in decimal (a value the description scales), or a
+ * label of the description's text table. */
 enum bb_part_kind {
 	BB_PART_INTEGER = 0,
 	BB_PART_BOOLEAN = 1,
 	BB_PART_TEXT = 2,
-	BB_PART_BYTES = 3
+	BB_PART_BYTES = 3,
+	BB_PART_NUMBER = 4,
+	BB_PART_LABEL = 5
 };
 
 /* What a gated write needs first (bb_uds_write_described, BB_ERR_GATED). */

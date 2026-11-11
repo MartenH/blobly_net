@@ -344,12 +344,15 @@ pub fn (x DidDesc) label() string {
 	return if x.name == '' { '0x${x.id:04X}' } else { '0x${x.id:04X} ${x.name}' }
 }
 
-// write_sessions is the write gate's sessions as 0x10 sub-functions (session_id); refused for one
-// no tester here knows.
+// write_sessions is the write gate's sessions as 0x10 sub-functions (gate_session); refused for
+// one no tester here knows, or a gate the description leaves unresolved.
 pub fn (x DidDesc) write_sessions() ![]u8 {
+	if x.write_gate.unresolved != '' {
+		return error('its write gate is not known: ${x.write_gate.unresolved}')
+	}
 	mut out := []u8{}
 	for s in x.write_gate.sessions {
-		out << session_id(s) or { return error('written in the "${s}" session, which no tester here knows') }
+		out << gate_session(s) or { return error('written in the "${s}" session, which no tester here knows') }
 	}
 	return out
 }
@@ -462,7 +465,12 @@ pub fn (x DidDesc) read_part(data []u8, p int) !string {
 			resp: data.clone()
 		}
 	}
-	return field_value(x.fields[p], data[at..at + w])
+	return x.field_text(x.fields[p], data[at..at + w]) or {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${err.msg()}'
+			resp: data.clone()
+		}
+	}
 }
 
 // readable refuses a value that is not what the description says: not its declared size, or a text
