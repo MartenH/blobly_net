@@ -252,7 +252,7 @@ pub fn (f MsgFormat) is_fd() bool {
 }
 
 // E2eDecl is a message's declared E2E contract: the counter and CRC SIGNALS (so positions come
-// from the layout), the profile (`autosar_p01`, or one of the primitives in e2e_profiles) and
+// from the layout), the profile (`autosar_p01`, `autosar_p05`, or a primitive in e2e_profiles) and
 // the Data ID.
 pub struct E2eDecl {
 pub mut:
@@ -272,16 +272,28 @@ pub mut:
 // e2e_p01_dbc is how a DBC spells AUTOSAR E2E Profile 1 in `E2EProfile` (docs/dbc_attributes.md).
 pub const e2e_p01_dbc = 'P01'
 
+// e2e_p05_dbc is how a DBC spells AUTOSAR E2E Profile 5 in `E2EProfile`.
+pub const e2e_p05_dbc = 'P05'
+
 // profile_from_dbc is the profile an `E2EProfile` value names: Profile 1 under any of its
 // spellings — `P01`, AUTOSAR's `PROFILE_01`, and `autosar_p01`, the name the simulation uses —
-// and anything else as written, for the validators to refuse or accept.
+// Profile 5 under `P05`, `PROFILE_05` and `autosar_p05`, and anything else as written, for the
+// validators to refuse or accept.
 pub fn profile_from_dbc(v string) string {
-	return if v in ['P01', 'PROFILE_01', 'autosar_p01'] { 'autosar_p01' } else { v }
+	return match v {
+		'P01', 'PROFILE_01', 'autosar_p01' { 'autosar_p01' }
+		'P05', 'PROFILE_05', 'autosar_p05' { 'autosar_p05' }
+		else { v }
+	}
 }
 
 // profile_to_dbc is the `E2EProfile` value a profile is written as.
 pub fn profile_to_dbc(p string) string {
-	return if profile_from_dbc(p) == 'autosar_p01' { e2e_p01_dbc } else { p }
+	return match profile_from_dbc(p) {
+		'autosar_p01' { e2e_p01_dbc }
+		'autosar_p05' { e2e_p05_dbc }
+		else { p }
+	}
 }
 
 // declared: the file said anything about this message's E2E at all.

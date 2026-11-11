@@ -946,6 +946,16 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
                        int counter, const char *mode);           /* in place: `counter` (0..14)
                                                                     into counter_pos's low nibble,
                                                                     then the CRC at crc_pos */
+/* AUTOSAR E2E Profile 5 for a frame of n bytes the host built, computed as the simulation stamps
+ * it: CRC-16/CCITT-FALSE (poly 0x1021, start 0xFFFF, no final XOR) over every byte but the CRC's
+ * own two, then the Data ID low byte and high byte. The header is 3 bytes at `offset`: the CRC
+ * low byte, its high byte, the 8-bit counter. `data_id` is 0..0xFFFF and the header lies in the
+ * frame; anything else is refused with BB_ERR. */
+int bb_e2e_p05_crc(const uint8_t *data, int n, int data_id, int offset); /* >= 0: the CRC */
+int bb_e2e_p05_protect(uint8_t *data, int n, int data_id, int counter,
+                       int offset);                              /* in place: `counter` (0..255)
+                                                                    at offset + 2, then the CRC at
+                                                                    offset, low byte first */
 /* E2E on a row's frames (cmd/libblobly/e2e.v), the rules the Lua prelude's frame.e2e and
  * bus.send_message follow (blobly/sim e2e_script.v). From bb_start until bb_stop (BB_ERR_STATE
  * otherwise).

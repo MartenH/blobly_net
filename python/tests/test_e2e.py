@@ -69,3 +69,39 @@ class TestRefusals:
                      lambda: e2e.p01_crc(BASE, DATA_ID, 4, 5, None)):
             with pytest.raises(TypeError):
                 call()
+
+
+# Profile 5, the vectors blobly/sim/e2e_p05_test.v pins (autosar-e2e): a 12-byte CAN-FD frame with
+# the header at byte 3, Data ID 0x0BEE, and an 8-byte frame with the header at byte 0, Data ID 0x1234
+P05_COUNTERS = [0, 1, 2, 3, 127, 128, 254, 255]
+P05_FD = [0x8D87, 0x66A4, 0x4BE0, 0xA0C3, 0xBE08, 0x3235, 0xEA99, 0x01BA]
+P05_FD_BASE = bytes.fromhex("E8035A000000102030405060")
+P05_CLASSIC_BASE = bytes.fromhex("0000001122334455")
+
+
+class TestProfile5:
+    def test_crc_and_protect_are_the_reference(self):
+        for n, want in zip(P05_COUNTERS, P05_FD):
+            out = e2e.p05_protect(P05_FD_BASE, 0x0BEE, n, offset=3)
+            assert out == P05_FD_BASE[:3] + bytes([want & 0xFF, want >> 8, n]) + P05_FD_BASE[6:], f"counter {n}"
+            assert e2e.p05_crc(out, 0x0BEE, 3) == want
+
+    def test_offset_defaults_to_0_and_the_input_is_left(self):
+        src = bytearray(P05_CLASSIC_BASE)
+        out = e2e.p05_protect(src, 0x1234, 1)
+        assert isinstance(out, bytes)
+        assert out[:3] == bytes([0xF2, 0x4F, 1])
+        assert src == bytearray(P05_CLASSIC_BASE), "the caller's bytes were written"
+
+    def test_what_profile_5_cannot_be_is_a_value_error_naming_it(self):
+        cases = [
+            (lambda: e2e.p05_protect(P05_CLASSIC_BASE, 0x1234, 256), "a Profile 5 counter is 0..255, not 256"),
+            (lambda: e2e.p05_crc(P05_CLASSIC_BASE, 0x10000), "data_id 65536 does not fit its 16 bits"),
+            (lambda: e2e.p05_crc(P05_CLASSIC_BASE, 0x1234, 6), "offset 6 leaves no room for the 3-byte header"),
+            (lambda: e2e.p05_crc(b"\x00\x00", 0x1234), "in the 2-byte frame"),
+        ]
+        for call, want in cases:
+            with pytest.raises(ValueError, match=re.escape(want)):
+                call()
+        with pytest.raises(TypeError):
+            e2e.p05_crc(P05_CLASSIC_BASE, 0x1234, 1.5)

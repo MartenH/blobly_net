@@ -219,6 +219,10 @@ function sleep_ms(ms) __sleep(ms) end
 --   e2e.p01_protect(frame, data_id, crc_pos, counter_pos, counter [, mode]) -> the frame with the
 --     counter (0..14) in the low nibble of counter_pos and the CRC stamped
 -- Positions are 0-based byte offsets, as the [[frame]].e2e of blobly_emb writes them.
+-- AUTOSAR E2E Profile 5 likewise, its header (CRC low byte, CRC high byte, counter) at `offset`:
+--   e2e.p05_crc(frame, data_id [, offset])  -> the 16-bit CRC for the frame as it stands
+--   e2e.p05_protect(frame, data_id, counter [, offset]) -> the frame with the counter (0..255)
+--     after the CRC and the CRC stamped, low byte first
 e2e = {}
 -- errors name the function the script called, at the line that called it (not a tail call, so
 -- level 3 is that line)
@@ -235,6 +239,14 @@ function e2e.p01_crc(frame, data_id, crc_pos, counter_pos, mode)
 end
 function e2e.p01_protect(frame, data_id, crc_pos, counter_pos, counter, mode)
   local f = e2e_call("e2e.p01_protect", __e2e_p01_protect, frame, data_id, crc_pos, counter_pos, counter, mode or "")
+  return f
+end
+function e2e.p05_crc(frame, data_id, offset)
+  local crc = e2e_call("e2e.p05_crc", __e2e_p05_crc, frame, data_id, offset or 0)
+  return crc
+end
+function e2e.p05_protect(frame, data_id, counter, offset)
+  local f = e2e_call("e2e.p05_protect", __e2e_p05_protect, frame, data_id, counter, offset or 0)
   return f
 end
 

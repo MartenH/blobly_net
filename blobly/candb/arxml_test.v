@@ -529,17 +529,62 @@ fn test_sub_millisecond_timing_is_said_never_zeroed() {
 }
 
 fn test_fixed_header_profile_is_named_not_approximated() {
-	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_05', '<OFFSET>0</OFFSET>') + arxml_tail) or { panic(err) }
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_04', '<OFFSET>0</OFFSET>') + arxml_tail) or { panic(err) }
 	c := a.cluster('') or { panic(err) }
 	m := c.db.messages[0]
 	e := (c.frame_of(m) or { panic('no frame info') }).e2e or { panic('unprotected') }
 	assert !e.has_crc_counter
-	assert e.profile == 'PROFILE_05'
+	assert e.profile == 'PROFILE_04'
 	// nothing invents a CRC signal, the attributes stay out, the fragment says why
 	assert c.e2e_signals(m) == none
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2E')
-	assert c.frame_toml('').contains('# E2E PROFILE_05 (data_id 0x7, header at bit 8): a fixed-header profile')
-	assert a.report.notes.any(it.contains('PROFILE_05 declares no CRC-OFFSET/COUNTER-OFFSET'))
+	assert c.frame_toml('').contains('# E2E PROFILE_04 (data_id 0x7, header at bit 8): a fixed-header profile')
+	assert a.report.notes.any(it.contains('PROFILE_04 declares no CRC-OFFSET/COUNTER-OFFSET'))
+}
+
+// a whole 4-byte frame: a byte, then Profile 5's header at byte 1 — the 16-bit CRC low byte
+// first, the 8-bit counter after it
+const p05_pdu_xml = '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>
+<FRAME-LENGTH>4</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME>
+<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>0</START-POSITION>
+</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS><I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>
+<I-SIGNAL-TO-PDU-MAPPINGS>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MC</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>8</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MN</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Ctr</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>24</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+</I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>Sig</SHORT-NAME><ELEMENTS>
+<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>
+<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>
+<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>
+</ELEMENTS></AR-PACKAGE>'
+
+// PROFILE_05 is read from its OFFSET: the CRC signal at the offset, the counter 16 bits on, both
+// carried onto the model as the DBC attributes carry them
+fn test_profile_5_is_applied_from_its_offset() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p05_pdu_xml + e2e_xml('PROFILE_05', '<OFFSET>8</OFFSET>') + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	e := (c.frame_of(m) or { panic('no frame info') }).e2e or { panic('unprotected') }
+	assert e.p05_header()
+	assert e.crc_byte() == 1 && e.counter_byte() == 3
+	assert e2e_export_refusal(m, e) == ''
+	s := c.e2e_signals(m) or { panic('Profile 5 is exported') }
+	assert s.crc == 'Crc' && s.counter == 'Ctr' && s.profile == 'autosar_p05' && s.data_id == 7
+	assert m.e2e.profile == 'autosar_p05' && m.e2e.crc == 'Crc' && m.e2e.counter == 'Ctr'
+	assert c.export_dbc(ArxmlProvenance{}, a.report).contains('BA_ "E2EProfile" BO_ 256 "P05";')
+	assert c.frame_toml('').contains("blobly_emb's [[frame]].e2e is Profile 1 only")
+	assert !a.report.notes.any(it.contains('PROFILE_05'))
+	// a CRC signal mapped most-significant byte first is not Profile 5's low-byte-first field
+	be := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p05_pdu_xml.replace('/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>8', '/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-FIRST</PACKING-BYTE-ORDER><START-POSITION>8') + e2e_xml('PROFILE_05', '<OFFSET>8</OFFSET>') + arxml_tail) or { panic(err) }
+	bc := be.cluster('') or { panic(err) }
+	assert bc.e2e_signals(bc.db.messages[0]) == none
+	// with no OFFSET it is a fixed-header profile with no position, and said so
+	no := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p05_pdu_xml + e2e_xml('PROFILE_05', '') + arxml_tail) or { panic(err) }
+	nc := no.cluster('') or { panic(err) }
+	assert nc.e2e_signals(nc.db.messages[0]) == none
+	assert no.report.notes.any(it.contains('PROFILE_05 declares no CRC-OFFSET/COUNTER-OFFSET'))
 }
 
 fn secoc_xml(fresh_tx int) string {
@@ -1704,8 +1749,9 @@ fn example_cluster() ArxmlCluster {
 // profile to nothing, rather than to a primitive under blobly's own coverage rule
 fn test_e2e_profile_primitive_is_held_to_the_shared_list() {
 	assert e2e_profile_primitive('PROFILE_01') == 'autosar_p01'
-	assert 'autosar_p01' in e2e_profiles
-	for p in ['PROFILE_11', 'PROFILE_02', 'PROFILE_22', 'PROFILE_05'] {
+	assert e2e_profile_primitive('PROFILE_05') == 'autosar_p05'
+	assert 'autosar_p01' in e2e_profiles && 'autosar_p05' in e2e_profiles
+	for p in ['PROFILE_11', 'PROFILE_02', 'PROFILE_22', 'PROFILE_04'] {
 		assert e2e_profile_primitive(p) == '', p
 	}
 }
@@ -1723,7 +1769,6 @@ fn test_e2e_signals_from_offsets() {
 	assert c.e2e_signals(pt) == none
 	// a profile this app does not implement maps to '' — nothing pretends
 	assert e2e_profile_primitive('PROFILE_02') == ''
-	assert e2e_profile_primitive('PROFILE_05') == ''
 }
 
 fn test_export_dbc_carries_provenance_and_attributes() {

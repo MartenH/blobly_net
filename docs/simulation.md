@@ -222,12 +222,13 @@ treat the sender as faulty, which looks exactly like a bug in your bench setup.
 ```yaml
         protect:
           - { message: BrakeStatus, counter: BrakeCounter, crc: BrakeCrc, profile: autosar_p01, data_id: 0x44 }
+          - { message: EngineData, counter: Engine_Counter, crc: Engine_CRC, profile: autosar_p05, data_id: 0x1234 }
           - { message: Powertrain, counter: AliveCounter, crc: CRC, profile: crc8_j1850, data_id: 42 }
           - { message: DoorStatus, counter: Cnt }
 ```
 
 **The DBC can declare it instead** (#271), once for every tool on the bench: a message carrying
-`BA_ "E2ECounterSignal"`, `"E2ECrcSignal"`, `"E2EProfile"` (`"P01"`) and `"E2EDataId"` attributes
+`BA_ "E2ECounterSignal"`, `"E2ECrcSignal"`, `"E2EProfile"` (`"P01"` or `"P05"`) and `"E2EDataId"` attributes
 (as `cmd/arxml2dbc` exports them, and as an ARXML database states them natively) is protected by
 its simulated sender with no `protect:` entry at all. The attributes, and `"E2ETimeout"` for the
 receiving ECU, are defined in [dbc_attributes.md](dbc_attributes.md). A `protect:` entry for that message
@@ -236,7 +237,9 @@ and is reported as differing. A declaration that cannot be applied is reported, 
 message goes out unprotected.
 
 **Against an AUTOSAR receiver, or blobly_emb, use `profile: autosar_p01`**: AUTOSAR E2E Profile 1
-as specified, pinned by vectors from an independent implementation (`sut/e2e_oracle.py`). The
+as specified, pinned by vectors from an independent implementation (`sut/e2e_oracle.py`). **A
+16-bit CRC and an 8-bit counter, as CAN-FD payloads usually carry, is `profile: autosar_p05`**:
+AUTOSAR E2E Profile 5 as specified, pinned the same way (blobly_emb implements Profile 1 only). The
 other profiles are checksum primitives under blobly's own coverage rule, for OEM schemes that no
 AUTOSAR profile describes.
 
@@ -245,8 +248,8 @@ AUTOSAR profile describes.
 | `message` | DBC message name to protect |
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
-| `profile` | `autosar_p01` (also spelled `P01` or `PROFILE_01`, as in a DBC's `E2EProfile`), or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
-| `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums. `autosar_p01` requires one, 16 bits |
+| `profile` | `autosar_p01` (also spelled `P01` or `PROFILE_01`, as in a DBC's `E2EProfile`), `autosar_p05` (also `P05` or `PROFILE_05`), or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8`. A project using `autosar_p05` declares schema v13 |
+| `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums. `autosar_p01` and `autosar_p05` require one, 16 bits |
 | `data_id_mode` | `autosar_p01` only: `both` (default: the low byte, then the high byte), `low`, or `alt` (the low byte when the counter is even, the high byte when it is odd). `nibble` is not supported |
 
 Both are named by **signal**, so width, bit position and byte order come from the DBC.
@@ -263,6 +266,21 @@ Both are named by **signal**, so width, bit position and byte order come from th
   and the counter 4 bits. A layout that breaks either rule, a missing Data ID or one wider than
   16 bits is reported, and a `verify:` entry with one of these problems is ignored rather than
   checking the wrong thing.
+
+### AUTOSAR E2E Profile 5 (`autosar_p05`)
+
+- **Header:** three bytes at the offset — the CRC's low byte, its high byte, then the counter.
+- **Counter:** 8 bits, counting 0..255 and wrapping to 0; `verify:` reads any other step as a skip.
+- **CRC:** CRC-16/CCITT-FALSE — polynomial 0x1021, start value 0xFFFF, no final XOR.
+- **What the CRC covers:** every byte of the frame (its DBC length) except the CRC's own two,
+  bytes before them included, then the Data ID's low byte and high byte. The Data ID is never
+  transmitted.
+- **Positions** come from the DBC signals: the CRC must be one 16-bit little-endian (Intel)
+  signal on a byte boundary — low byte first — and the counter an 8-bit byte-aligned signal in
+  the byte after it. Anything else, a missing Data ID or one wider than 16 bits is reported, and
+  a `verify:` entry with one of these problems is ignored.
+- **From ARXML**, a `PROFILE_05` protection is read from its `OFFSET`: the signals at that bit and
+  16 bits on, when they are exactly those two fields and the PDU is the whole frame.
 
 ### On each send (the primitives)
 
@@ -290,7 +308,7 @@ because a checksum cannot cover itself.
 above, and a Data ID appended as four little-endian bytes. An AUTOSAR receiver rejects every
 frame stamped that way, even with `crc8_j1850`: the measured case is overspeed's BrakeStatus,
 where at counter 1 (payload `E8 03 00 00`, Data ID 0x44) Profile 1 gives CRC 0x1A and the blobly rule 0x42. Use `autosar_p01`
-for Profile 1. Profiles 2 and later are not implemented yet.
+for Profile 1 and `autosar_p05` for Profile 5. Profiles 2, 4 and 6 onwards are not implemented yet.
 
 Picking the wrong algorithm is a separate and equally real bench trap: a profile-2 receiver fed
 `crc8_j1850` computes a different checksum and rejects every frame, indistinguishable from a

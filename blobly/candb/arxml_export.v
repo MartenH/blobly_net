@@ -39,11 +39,12 @@ pub:
 }
 
 // e2e_profile_primitive maps an AUTOSAR E2E profile to the profile blobly implements AS
-// SPECIFIED — PROFILE_01 is `autosar_p01` — and every other to '', so nothing pretends: mapping
+// SPECIFIED — PROFILE_01 is `autosar_p01`, PROFILE_05 `autosar_p05` — and every other to '', so
+// nothing pretends: mapping
 // profile 2 or 11 onto a CRC primitive under blobly's own coverage rule (what this did before
 // autosar_p01 existed) exported a contract no AUTOSAR receiver accepts.
 pub fn e2e_profile_primitive(profile string) string {
-	// the reader's one spelling table: PROFILE_01 is Profile 1, every other AUTOSAR profile none
+	// the reader's one spelling table: PROFILE_01 is Profile 1, PROFILE_05 Profile 5, every other none
 	p := if profile.starts_with('PROFILE_') { profile_from_dbc(profile) } else { '' }
 	// HELD TO THE ONE LIST: a primitive renamed or removed from e2e_profiles must stop being
 	// exported here too, or the DBC attributes and the fragment would carry a checksum the
@@ -81,7 +82,7 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 	if e.malformed != '' {
 		return e.malformed
 	}
-	if !e.has_crc_counter {
+	if !e.has_crc_counter && !e.p05_header() {
 		return 'it declares no CRC and counter offsets'
 	}
 	if e.data_ids.len == 0 {
@@ -91,9 +92,12 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 		return 'its data-id mode ${e.data_id_mode} is not expressible there'
 	}
 	if e2e_profile_primitive(e.profile) == '' {
-		return 'its profile ${e.profile} is not one this app implements (PROFILE_01 is)'
+		return 'its profile ${e.profile} is not one this app implements (PROFILE_01 and PROFILE_05 are)'
 	}
-	if e.data_length > 0 && (e.crc_offset + 8 > e.data_length || e.counter_offset + 4 > e.data_length) {
+	cw, kw := e.field_widths()
+	window := e.data_offset + e.data_length
+	if e.data_length > 0 && (e.crc_bit() - e.pdu_offset + cw > window
+		|| e.counter_bit() - e.pdu_offset + kw > window) {
 		return 'its CRC or counter field lies outside the protected DATA-LENGTH of ${e.data_length} bits'
 	}
 	ci := m.signal_at(e.crc_bit())
@@ -101,8 +105,8 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 	if ci < 0 || ki < 0 || ci == ki {
 		return 'no dedicated signal sits at both its CRC and its counter offset'
 	}
-	if !is_e2e_field(m.signals[ci], e.crc_bit(), 8) || !is_e2e_field(m.signals[ki], e.counter_bit(), 4) {
-		return 'the signals at its CRC and counter offsets are not the byte-aligned 8-bit CRC and 4-bit counter fields'
+	if !is_e2e_field(m.signals[ci], e.crc_bit(), cw) || !is_e2e_field(m.signals[ki], e.counter_bit(), kw) {
+		return 'the signals at its CRC and counter offsets are not the byte-aligned ${cw}-bit CRC and ${kw}-bit counter fields'
 	}
 	// Profile 1 covers the protected PDU; the attributes, the simulation and blobly_emb all
 	// cover the whole frame — which is the same bytes only when the PDU IS the frame
@@ -119,10 +123,14 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 // field's MSB (`bit + width - 1`, candb's Motorola start), and within one byte both cover the
 // same bits — so a CRC byte or a counter nibble mapped MOST-SIGNIFICANT-BYTE-FIRST is the same
 // field, not a different one (codex on #273 round 18). A narrower signal would truncate the
-// checksum or wrap the counter early.
+// checksum or wrap the counter early. A field wider than a byte (Profile 5's CRC, low byte first)
+// is a little-endian signal only.
 fn is_e2e_field(s Signal, bit int, width int) bool {
 	if s.length != width || bit % 8 != 0 {
 		return false
+	}
+	if width > 8 {
+		return s.byte_order == .little_endian && s.start_bit == bit
 	}
 	if s.byte_order == .little_endian {
 		return s.start_bit == bit
@@ -292,9 +300,13 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 			// the SAME contract the DBC attributes carry (e2e_signals): a protection the
 			// export cannot state exactly is named, never approximated into an entry
 			if _ := c.e2e_signals(m) {
-				// blobly_emb's comm/e2e is AUTOSAR E2E Profile 1 (Data ID mode BOTH), which is
-				// the one profile e2e_signals admits
-				b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # AUTOSAR ${e.profile}"
+				// blobly_emb's comm/e2e is AUTOSAR E2E Profile 1 (Data ID mode BOTH) only, so a
+				// Profile 5 contract is carried by the DBC attributes and named here
+				if e.p05_header() {
+					b << "# E2E ${e.profile} (data_id 0x${e.data_id:X}, CRC at byte ${e.crc_byte()}, counter at byte ${e.counter_byte()}): blobly_emb's [[frame]].e2e is Profile 1 only; the DBC attributes carry it"
+				} else {
+					b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # AUTOSAR ${e.profile}"
+				}
 			} else if !e.single_data_id() {
 				ids := e.data_ids.map('0x${it:X}').join(', ')
 				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): this data-id mode is not expressible here'

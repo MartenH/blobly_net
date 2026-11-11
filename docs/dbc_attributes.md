@@ -43,16 +43,17 @@ BA_ "E2ETimeout" BO_ 769 300;
 
 | attribute | type | meaning |
 |---|---|---|
-| `E2ECounterSignal` | STRING | the signal holding the 4-bit alive counter. AUTOSAR lets it sit in either nibble, and blobly_net stamps it wherever its signal is; blobly_emb requires the low nibble of a byte other than the CRC's |
-| `E2ECrcSignal` | STRING | the signal holding the CRC: 8 bits, exactly one byte |
-| `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1, the one both sides implement. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
-| `E2EDataId` | INT | the 16-bit Data ID that goes into the CRC. 0 is a valid Data ID, so a message without this attribute has none, and Profile 1 refuses it |
+| `E2ECounterSignal` | STRING | the signal holding the alive counter: for Profile 1, 4 bits — AUTOSAR lets it sit in either nibble, and blobly_net stamps it wherever its signal is; blobly_emb requires the low nibble of a byte other than the CRC's. For Profile 5, a whole byte, the one after the CRC's two |
+| `E2ECrcSignal` | STRING | the signal holding the CRC: for Profile 1, 8 bits, exactly one byte; for Profile 5, 16 bits little-endian (Intel) on a byte boundary, so its low byte comes first |
+| `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1, the one both sides implement. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. `"P05"` is AUTOSAR E2E Profile 5 (CRC-16/CCITT-FALSE, an 8-bit counter 0..255), which blobly_net implements and blobly_emb does not; `"PROFILE_05"` and `"autosar_p05"` read the same. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
+| `E2EDataId` | INT | the 16-bit Data ID that goes into the CRC. 0 is a valid Data ID, so a message without this attribute has none, and Profiles 1 and 5 refuse it |
 | `E2ETimeout` | INT, ms | the receiver's E2E sender-loss timeout: no *valid* frame within this time and the receiver reports `timeout` (blobly_emb REQ-E2E-002). A sender ignores it. 0 means no timeout. On its own it declares no protection |
 
 Rules both readers follow:
 
 - **Positions come from the signals**, never from numbers in the attributes, so the layout is
-  stated once, in the `SG_` lines. The CRC must be one whole byte and the counter 4 bits. Neither
+  stated once, in the `SG_` lines. For Profile 1 the CRC must be one whole byte and the counter 4
+  bits; for Profile 5 the CRC two bytes (low first) and the counter the byte after them. Neither
   may be a multiplexed signal: it would be stamped into every frame, over another mux branch's
   bits.
 - **A file-wide default (`BA_DEF_DEF_`) fills in only messages that declare protection of their
@@ -73,11 +74,12 @@ Rules both readers follow:
     difference is reported (for example, a wrong Data ID to test a receiver's rejection path).
   - In blobly_emb, `[[frame]].e2e` fields that contradict the DBC are refused unless the table
     says `deviates_from_dbc = true`; a field it leaves out is the DBC's.
-- **Writers emit `"P01"`.** blobly_net's DBC editor and `cmd/arxml2dbc` write the attributes
-  from the model; neither ever writes `autosar_p01`.
+- **Writers emit `"P01"` and `"P05"`.** blobly_net's DBC editor and `cmd/arxml2dbc` write the
+  attributes from the model; neither ever writes `autosar_p01` or `autosar_p05`.
 - **From ARXML**, `cmd/arxml2dbc` exports the contract when the frame's E2E protection is
   PROFILE_01 with DATA-ID-MODE ALL-16-BIT, and its CRC and counter are signals at the declared
-  offsets. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
+  offsets — or PROFILE_05, whose 16-bit CRC signal sits at its `OFFSET` and its 8-bit counter
+  signal 16 bits on. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
   attributes, so they are left out, and the export's notes say so. `E2ETimeout` is not taken
   from an ARXML file: the reader does not take a timeout from the E2E configuration, so the
   export leaves it for the DBC's author to add.

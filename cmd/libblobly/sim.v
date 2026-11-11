@@ -1,6 +1,7 @@
-// Fault injection and signal values on the run's simulated ECUs, and AUTOSAR E2E Profile 1 for
-// frames a host builds (bb.h's "Faults and E2E" block): sim.FaultTarget.arm / set_signal /
-// clear_signal, sim.p01_frame_crc and sim.p01_protect, the rules Lua's sim.* and e2e.* ask.
+// Fault injection and signal values on the run's simulated ECUs, and AUTOSAR E2E Profiles 1 and 5
+// for frames a host builds (bb.h's "Faults and E2E" block): sim.FaultTarget.arm / set_signal /
+// clear_signal, sim.p01_frame_crc, sim.p01_protect, sim.p05_frame_crc and sim.p05_protect, the
+// rules Lua's sim.* and e2e.* ask.
 module main
 
 import blobly.headless
@@ -133,6 +134,22 @@ pub fn bb_e2e_p01_protect(data &u8, n i32, data_id i32, crc_pos i32, counter_pos
 	out := sim.p01_protect(d, data_id, crc_pos, counter_pos, counter, vstr(mode)) or {
 		return fail(bb_err, err.msg())
 	}
+	unsafe { vmemcpy(data, out.data, out.len) }
+	return ok()
+}
+
+@[export: 'bb_e2e_p05_crc']
+pub fn bb_e2e_p05_crc(data &u8, n i32, data_id i32, offset i32) i32 {
+	d := frame_bytes(data, n) or { return fail(bb_err, 'e2e_p05_crc: ${err.msg()}') }
+	crc := sim.p05_frame_crc(d, data_id, offset) or { return fail(bb_err, err.msg()) }
+	ok()
+	return i32(crc)
+}
+
+@[export: 'bb_e2e_p05_protect']
+pub fn bb_e2e_p05_protect(data &u8, n i32, data_id i32, counter i32, offset i32) i32 {
+	d := frame_bytes(data, n) or { return fail(bb_err, 'e2e_p05_protect: ${err.msg()}') }
+	out := sim.p05_protect(d, data_id, counter, offset) or { return fail(bb_err, err.msg()) }
 	unsafe { vmemcpy(data, out.data, out.len) }
 	return ok()
 }

@@ -51,12 +51,18 @@ pub fn version_for(p Project) int {
 	// announcements: a row's `nm:` `cycle_ms` (or an `nm:` with the cycle alone) and a node's own
 	// `nm:`. An older build refuses the range-less `nm:` and drops the rest on its next structured
 	// save, and the nodes stop announcing; and a CAN row's `diagnostics:` (a node described by
-	// ODX), whose names an older build drops the same way, with nothing said.
+	// ODX), whose names an older build drops the same way, with nothing said; and AUTOSAR E2E
+	// Profile 5 (#616), which an older build reads as an unknown profile and stamps sum8 into a
+	// 16-bit field, so the entry goes out with a checksum no receiver accepts and nothing said —
+	// v7's loss for Profile 1.
 	if p.channels.any(it.data_sample_point != 0 || it.diagnostics.len > 0) {
 		return 13
 	}
 	for c in p.channels {
 		if c.kind() == .can && !c.builtin_uds {
+			return 13
+		}
+		if c.verify.any(it.profile == 'autosar_p05') {
 			return 13
 		}
 		if c.senders.any(it.format != .wire) {
@@ -71,6 +77,9 @@ pub fn version_for(p Project) int {
 			return 13
 		}
 		for n in c.nodes {
+			if n.protect.any(it.profile == 'autosar_p05') {
+				return 13
+			}
 			if u := n.uds {
 				if u.io.len > 0 || u.memory.len > 0 {
 					return 13
@@ -367,7 +376,7 @@ pub mut:
 	extended_malformed bool
 	counter            string // signal carrying the alive counter ('' = none)
 	crc                string // signal carrying the checksum ('' = none)
-	profile            string = 'crc8_j1850' // autosar_p01 | crc8_j1850 | crc8_autosar | sum8 | xor8
+	profile            string = 'crc8_j1850' // autosar_p01 | autosar_p05 | crc8_j1850 | crc8_autosar | sum8 | xor8
 	data_id_mode       string // autosar_p01's DataIDMode: both (default) | low | alt
 	// Mixed into the checksum only; never occupies payload. An OPTION rather than a u32 with
 	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three

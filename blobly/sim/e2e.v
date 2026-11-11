@@ -12,6 +12,8 @@
 //  - `autosar_p01`: AUTOSAR E2E Profile 1 as specified — the one to use against an AUTOSAR (or
 //    blobly_emb) receiver. Pinned by vectors taken from an independent implementation
 //    (autosar-e2e, sut/e2e_oracle.py);
+//  - `autosar_p05`: AUTOSAR E2E Profile 5 as specified — a 16-bit CRC and an 8-bit counter, the
+//    profile CAN-FD payloads usually carry. Pinned by vectors from the same implementation;
 //  - the checksum PRIMITIVES (`crc8_j1850`, `crc8_autosar`, `sum8`, `xor8`) under blobly's own
 //    coverage rule (below), for the OEM schemes no AUTOSAR profile describes.
 module sim
@@ -32,6 +34,20 @@ pub fn crc8_j1850(data []u8) u8 {
 // Check value: 0xDF.
 pub fn crc8_autosar(data []u8) u8 {
 	return crc8_with(data, 0x2F, 0xFF, 0xFF)
+}
+
+// crc16_ccitt_false — CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no final XOR, no
+// reflection; AUTOSAR's Crc_CalculateCRC16, which E2E Profile 5 uses. Check value:
+// crc16_ccitt_false('123456789') == 0x29B1, pinned in e2e_p05_test.v.
+pub fn crc16_ccitt_false(data []u8) u16 {
+	mut crc := u16(0xFFFF)
+	for b in data {
+		crc ^= u16(b) << 8
+		for _ in 0 .. 8 {
+			crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 }
+		}
+	}
+	return crc
 }
 
 // crc8_with is CRC-8 over `poly`, unreflected, from `init`, XORed with `xorout` at the end.
@@ -75,9 +91,9 @@ pub struct E2e {
 pub mut:
 	counter string // signal carrying the alive counter ('' = no counter)
 	crc     string // signal carrying the checksum ('' = no checksum)
-	profile string // 'autosar_p01' | 'crc8_j1850' | 'crc8_autosar' | 'sum8' | 'xor8'
+	profile string // 'autosar_p01' | 'autosar_p05' | 'crc8_j1850' | 'crc8_autosar' | 'sum8' | 'xor8'
 	// Mixed into the checksum. For a primitive, as four trailing little-endian bytes; for
-	// autosar_p01, as its 16-bit Data ID per `data_id_mode`. An OPTION, not a plain u32 with
+	// autosar_p01, as its 16-bit Data ID per `data_id_mode`; for autosar_p05, low byte then high. An OPTION, not a plain u32 with
 	// 0 meaning "unset": 0 is a legitimate Data ID, and a receiver using it expects it in the
 	// checksum input — omitting it yields a different CRC and rejects every frame.
 	data_id ?u32
@@ -87,6 +103,12 @@ pub mut:
 }
 
 pub const p01 = 'autosar_p01'
+pub const p05 = 'autosar_p05'
+
+// crc_width is the number of bits the profile's checksum has: Profile 5's 16, every other's 8.
+pub fn crc_width(profile string) int {
+	return if profile == p05 { 16 } else { 8 }
+}
 
 // declared_e2e is the protection a message's DBC declares (#271), if it declares a usable one:
 // what its sender stamps when no protect: entry says otherwise. The reason is returned beside it
@@ -142,8 +164,8 @@ pub fn declared_problem(m candb.Message, e E2e) string {
 		if why := past_payload(m, name) {
 			return why
 		}
-		if name == e.crc && sig[0].length != 8 {
-			return 'its crc "${name}" is ${sig[0].length} bits, and every profile produces 8'
+		if name == e.crc && sig[0].length != crc_width(e.profile) {
+			return 'its crc "${name}" is ${sig[0].length} bits, and its profile produces ${crc_width(e.profile)}'
 		}
 	}
 	if why := e2e_problem(m, e) {
@@ -167,10 +189,16 @@ pub fn e2e_of(p project.ProtectCfg) E2e {
 // p01_counter_span: a Profile 1 counter runs 0..14 and wraps to 0 — 15 is invalid.
 const p01_counter_span = u64(15)
 
-// counter_span is the counter's modulus: P01's, or what the signal's width holds.
+// p05_counter_span: a Profile 5 counter runs 0..255 and wraps to 0.
+const p05_counter_span = u64(256)
+
+// counter_span is the counter's modulus: P01's, P05's, or what the signal's width holds.
 fn (e E2e) counter_span(sig candb.Signal) u64 {
 	if e.profile == p01 {
 		return p01_counter_span
+	}
+	if e.profile == p05 {
+		return p05_counter_span
 	}
 	return if sig.length >= 64 { u64(0) } else { u64(1) << sig.length }
 }
@@ -183,6 +211,15 @@ pub fn crc_byte(sig candb.Signal) ?int {
 	}
 	aligned := if sig.byte_order == .little_endian { sig.start_bit % 8 == 0 } else { sig.start_bit % 8 == 7 }
 	return if aligned { sig.start_bit / 8 } else { none }
+}
+
+// crc16_byte is the first byte of a 16-bit little-endian (Intel), byte-aligned checksum signal —
+// the only shape Profile 5 defines: its CRC goes low byte first, at that byte and the next.
+pub fn crc16_byte(sig candb.Signal) ?int {
+	if sig.length != 16 || sig.byte_order != .little_endian || sig.start_bit % 8 != 0 {
+		return none
+	}
+	return sig.start_bit / 8
 }
 
 // past_payload says that the signal `name` of `m` does not lie whole in the payload the message
@@ -228,7 +265,7 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 // the protect: and verify: validation, a DBC declaration (declared_problem), protection_for and
 // the verifiers ask: a counter or checksum with no number (candb.Signal.is_scalar), which no
 // stamp writes and no check reads, so it would pass as protected and checked while it is neither;
-// then Profile 1's own (p01_problem).
+// then the AUTOSAR profile's own (autosar_problem).
 pub fn e2e_problem(msg candb.Message, e E2e) ?string {
 	for sig in msg.signals {
 		if sig.name != '' && (sig.name == e.counter || sig.name == e.crc) && !sig.is_scalar() {
@@ -236,7 +273,48 @@ pub fn e2e_problem(msg candb.Message, e E2e) ?string {
 			return '${role} ${sig.scalar_refusal()}, so nothing stamps or checks it'
 		}
 	}
-	return p01_problem(msg, e)
+	return autosar_problem(msg, e)
+}
+
+// p05_problem says why `e` cannot be stamped or checked as AUTOSAR Profile 5 on `msg`, if it
+// cannot: a 16-bit Data ID, the CRC a 16-bit little-endian byte-aligned signal, and the counter
+// an 8-bit byte-aligned signal in the byte after the CRC's two.
+pub fn p05_problem(msg candb.Message, e E2e) ?string {
+	if e.profile != p05 {
+		return none
+	}
+	id := e.data_id or { return 'autosar_p05 needs a data_id' }
+	if id > 0xFFFF {
+		return 'autosar_p05 data_id 0x${id:X} does not fit its 16 bits'
+	}
+	if e.crc == '' {
+		return 'autosar_p05 needs a crc signal'
+	}
+	if e.counter == '' {
+		return 'autosar_p05 needs a counter signal (an 8-bit counter is part of the profile)'
+	}
+	crc := msg.signal_named(e.crc) or { return none }
+	ctr := msg.signal_named(e.counter) or { return none }
+	at := crc16_byte(crc) or {
+		return 'autosar_p05 needs "${e.crc}" to be 16 bits, little-endian (low byte first) and byte-aligned'
+	}
+	ctr_at := crc_byte(ctr) or {
+		return 'autosar_p05 needs an 8-bit byte-aligned counter; "${e.counter}" is ${ctr.length} bits at bit ${ctr.start_bit}'
+	}
+	if ctr_at != at + 2 {
+		return 'autosar_p05 needs the counter in the byte after the CRC (byte ${at + 2}); "${e.counter}" is in byte ${ctr_at}'
+	}
+	return none
+}
+
+// autosar_problem says why `e` cannot be stamped or checked as the AUTOSAR profile it names, if
+// it cannot: Profile 1's rule (p01_problem), then Profile 5's (p05_problem). e2e_problem, which
+// every validation, the stamping and the checking ask, asks it after the scalar rule.
+pub fn autosar_problem(msg candb.Message, e E2e) ?string {
+	if why := p01_problem(msg, e) {
+		return why
+	}
+	return p05_problem(msg, e)
 }
 
 // p01_modes are the Data ID modes Profile 1 is implemented for ('' is the default, both).
@@ -256,9 +334,12 @@ pub fn p01_params_problem(data_id u32, mode string) ?string {
 
 // checksum is what `sig` (the checksum signal) must hold for `data` as it stands, whatever the
 // field holds now: the stamping and the checking path both ask this, so the rule exists once.
-fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u8 {
+fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u16 {
 	if e.profile == p01 {
-		return e.p01_crc(msg, sig, data)
+		return u16(e.p01_crc(msg, sig, data))
+	}
+	if e.profile == p05 {
+		return e.p05_crc(msg, sig, data)
 	}
 	// the message's payload, never padding past it: an FD length rounded up is the wire's
 	n := if data.len < msg.payload_len() { data.len } else { msg.payload_len() }
@@ -273,7 +354,7 @@ fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u8 {
 		input << u8((id >> 16) & 0xFF)
 		input << u8((id >> 24) & 0xFF)
 	}
-	return e.checksum_of(input)
+	return u16(e.checksum_of(input))
 }
 
 // p01_crc is AUTOSAR E2E Profile 1's CRC: CRC-8 over poly 0x1D with start value 0x00 and no
@@ -330,6 +411,71 @@ pub fn p01_crc_bytes(data []u8, crc_at int, data_id u16, mode string, counter u8
 		}
 	}
 	return crc8_with(input, 0x1D, 0x00, 0x00)
+}
+
+// p05_crc is AUTOSAR E2E Profile 5's CRC over the message's DLC (bytes past it are not the
+// sender's to have covered), the CRC at the checksum signal's first byte.
+fn (e E2e) p05_crc(msg candb.Message, sig candb.Signal, data []u8) u16 {
+	at := crc16_byte(sig) or { return 0 } // refused by p05_problem; nothing sensible to stamp
+	n := if data.len < msg.dlc { data.len } else { msg.dlc }
+	return p05_crc_bytes(data[..n], at, u16(e.data_id or { u32(0) })) or {
+		0 // refused by p05_problem before anything is stamped
+	}
+}
+
+// p05_crc_bytes is AUTOSAR E2E Profile 5's CRC over a frame's bytes: every byte but the CRC's own
+// two at `offset` (bytes before it included), then the Data ID low byte and high byte —
+// CRC-16/CCITT-FALSE. The frame must hold the 3-byte header (CRC and counter) at `offset`. The
+// ONE computation: the simulation stamps and checks through it, and a script's e2e.p05_crc asks it.
+pub fn p05_crc_bytes(data []u8, offset int, data_id u16) !u16 {
+	if offset < 0 || offset + 3 > data.len {
+		return error('autosar_p05: the header (CRC and counter) at byte ${offset} is not in the ${data.len}-byte frame')
+	}
+	mut input := []u8{cap: data.len}
+	input << data[..offset]
+	input << data[offset + 2..]
+	input << u8(data_id)
+	input << u8(data_id >> 8)
+	return crc16_ccitt_false(input)
+}
+
+// p05_frame_crc is Profile 5's CRC for a frame a script built itself, as it stands: the header
+// (CRC low byte, CRC high byte, counter) at byte `offset`. Lua's e2e.p05_crc and the C ABI's
+// bb_e2e_p05_crc ask it.
+pub fn p05_frame_crc(data []u8, data_id i64, offset i64) !u16 {
+	if why := p05_frame_problem(data.len, data_id, offset) {
+		return error(why)
+	}
+	return p05_crc_bytes(data, int(offset), u16(data_id))
+}
+
+// p05_protect is `data` with `counter` (0..255) in byte `offset` + 2 and then the CRC of
+// p05_frame_crc stamped at `offset`, low byte first.
+pub fn p05_protect(data []u8, data_id i64, counter i64, offset i64) ![]u8 {
+	if counter < 0 || counter > 255 {
+		return error('a Profile 5 counter is 0..255, not ${counter}')
+	}
+	if why := p05_frame_problem(data.len, data_id, offset) {
+		return error(why)
+	}
+	at := int(offset)
+	mut out := data.clone()
+	out[at + 2] = u8(counter)
+	crc := p05_crc_bytes(out, at, u16(data_id))!
+	out[at] = u8(crc)
+	out[at + 1] = u8(crc >> 8)
+	return out
+}
+
+// p05_frame_problem: why a frame of `n` bytes cannot carry Profile 5 as asked.
+fn p05_frame_problem(n int, data_id i64, offset i64) ?string {
+	if data_id < 0 || data_id > 0xFFFF {
+		return 'autosar_p05 data_id ${data_id} does not fit its 16 bits'
+	}
+	if offset < 0 || offset + 3 > n {
+		return 'offset ${offset} leaves no room for the 3-byte header (CRC and counter) in the ${n}-byte frame'
+	}
+	return none
 }
 
 // p01_frame_crc is Profile 1's CRC for a frame a script built itself, as it stands: the CRC at
@@ -396,13 +542,13 @@ fn (e E2e) checksum_of(data []u8) u8 {
 //     that validated the checksum but not the counter's contribution would accept a replayed
 //     frame with a stale counter;
 //  2. the checksum never covers its own bits (`checksum`: zeroed for a primitive, skipped for
-//     autosar_p01), so the result does not depend on what the previous cycle left there;
+//     autosar_p01 and autosar_p05), so the result does not depend on what the previous cycle left there;
 //  3. `data_id` is mixed into the CHECKSUM INPUT ONLY — it never occupies payload space; it
 //     exists so two messages with identical bytes produce different checksums, which is what
 //     stops a frame being replayed onto a different id.
 //
 // `n` is the send index; the counter is `n` modulo `counter_span` — what its DBC signal can
-// hold, or Profile 1's 0..14 — so it wraps exactly where the receiver expects.
+// hold, Profile 1's 0..14 or Profile 5's 0..255 — so it wraps exactly where the receiver expects.
 pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 	if !e.active() {
 		return

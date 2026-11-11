@@ -60,8 +60,8 @@ import time
 // ArxmlE2e is the AUTOSAR end-to-end protection declared for one PDU. Offsets are in BITS as
 // the file states them: `crc_offset`/`counter_offset` within the protected window (profiles
 // 1 and 2), `offset` the window's header position (profiles 4 to 7, which declare ONE offset
-// and a fixed header layout this reader does not model — `has_crc_counter` says which kind
-// was declared). `pdu_offset` is where the PDU sits in its FRAME, so the byte positions below
+// and a fixed header layout — `has_crc_counter` says which kind was declared; of those, only
+// Profile 5's is modelled: a 16-bit CRC at the offset, low byte first, then an 8-bit counter). `pdu_offset` is where the PDU sits in its FRAME, so the byte positions below
 // are frame-relative, which is what blobly_emb's `[[frame]].e2e` and #271's attributes take.
 pub struct ArxmlE2e {
 pub:
@@ -70,6 +70,7 @@ pub:
 	data_ids        []u32 // every declared DATA-ID (profile 1 may alternate between two)
 	data_id_mode    string // DATA-ID-MODE (ALL-16-BIT, LOWER-12-BIT, LOWER-8-BIT, ALTERNATING-8-BIT) or ''
 	has_crc_counter bool // CRC-OFFSET and COUNTER-OFFSET were declared (profiles 1/2/11/22)
+	has_offset      bool // OFFSET was declared (the fixed-header profiles 4/5/6/7)
 	// why the declaration cannot be trusted at all: a DATA-ID or an offset that is not an
 	// integer, which the lenient parser read as 0 — and 0 is a legitimate id and a legitimate
 	// offset, so the export would have published a different contract (round 39). '' when sound
@@ -82,12 +83,30 @@ pub:
 	pdu_offset     int // bits, where the PDU starts in the frame (PDU-TO-FRAME-MAPPING)
 }
 
-// crc_bit is the CRC's frame-relative bit position; crc_byte the byte it starts in.
+// p05_header reports a Profile 5 protection with its header OFFSET declared — the one
+// fixed-header layout this reader models.
+pub fn (e ArxmlE2e) p05_header() bool {
+	return e.profile == 'PROFILE_05' && e.has_offset
+}
+
+// field_widths are the CRC's and the counter's widths in bits: Profile 5's 16 and 8, else 8 and 4.
+pub fn (e ArxmlE2e) field_widths() (int, int) {
+	return if e.p05_header() { 16, 8 } else { 8, 4 }
+}
+
+// crc_bit is the CRC's frame-relative bit position; crc_byte the byte it starts in. Profile 5's
+// CRC is at its header OFFSET and its counter in the byte after the CRC's two.
 pub fn (e ArxmlE2e) crc_bit() int {
+	if e.p05_header() {
+		return e.pdu_offset + e.data_offset + e.offset
+	}
 	return e.pdu_offset + e.data_offset + e.crc_offset
 }
 
 pub fn (e ArxmlE2e) counter_bit() int {
+	if e.p05_header() {
+		return e.crc_bit() + 16
+	}
 	return e.pdu_offset + e.data_offset + e.counter_offset
 }
 
@@ -1293,7 +1312,8 @@ fn (mut r ArxmlReader) load_e2e() {
 			}
 			category := child_text(profile, 'CATEGORY')
 			has_cc := child(profile, 'CRC-OFFSET') != none && child(profile, 'COUNTER-OFFSET') != none
-			if !has_cc {
+			has_off := child(profile, 'OFFSET') != none
+			if !has_cc && !(category == 'PROFILE_05' && has_off) {
 				r.report.notes << '${prot_path}: ${category} declares no CRC-OFFSET/COUNTER-OFFSET (a fixed-header profile); its layout is not modelled'
 			}
 			e := ArxmlE2e{
@@ -1302,6 +1322,7 @@ fn (mut r ArxmlReader) load_e2e() {
 				data_ids: ids
 				data_id_mode: child_text(profile, 'DATA-ID-MODE')
 				has_crc_counter: has_cc
+				has_offset: has_off
 				malformed: malformed
 				crc_offset: crc_off
 				counter_offset: ctr_off
