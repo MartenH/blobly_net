@@ -59,13 +59,16 @@ pub fn canonical_database_ref(ref string) string {
 // Loaded is a database plus what the reader had to say about it: for an ARXML the honesty
 // report (dangling references, ignored element kinds, partial reads), one line each, prefixed
 // with the file; for a DBC the send attributes and start values it refused (`read_notes`), the
-// #271 E2E values it refused (`e2e_notes`) and the signals wider than
-// the scalar model (`scalar_notes`). Every front end prints these — a note only the export
-// tool prints is a note nobody on the bench sees.
+// #271 E2E values it refused (`e2e_notes`), the signals wider than
+// the scalar model (`scalar_notes`) and the records it did not read (`unread`). Every front end
+// prints these — a note only the export tool prints is a note nobody on the bench sees.
 pub struct Loaded {
 pub:
 	db    Database
 	notes []string
+	// the line among `notes` naming the records of the file this load did not read, counted by
+	// kind; empty for an ARXML, whose ignored elements its report says. What a strict load refuses.
+	unread []string
 }
 
 // loaded is what a cluster of this parse loads as: the cluster's messages with its bus facts on
@@ -95,10 +98,23 @@ pub fn open_database(ref string) !Loaded {
 	mut notes := db.read_notes.clone()
 	notes << db.e2e_notes()
 	notes << db.scalar_notes()
+	unread := db.unread_note().map('${base}: ${it}')
+	mut said := notes.map('${base}: ${it}')
+	said << unread
 	return Loaded{
-		db:    db
-		notes: notes.map('${base}: ${it}')
+		db:     db
+		notes:  said
+		unread: unread
 	}
+}
+
+// unread_note is the one line naming the records parse_dbc did not read, by kind and count;
+// none when it read them all.
+pub fn (db Database) unread_note() []string {
+	if db.unread.len == 0 {
+		return []
+	}
+	return ['not read: ${db.unread.join(', ')}']
 }
 
 // load_database is open_database without the notes, for callers that report nothing.

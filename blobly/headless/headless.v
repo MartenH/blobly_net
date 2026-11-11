@@ -49,6 +49,9 @@ pub:
 	// rows attached elsewhere than their file says, by row name, applied by `load` before anything
 	// is checked or opened (project.Project.override_interfaces) — the runner's --interface
 	interfaces []project.IfaceOverride
+	// refuse the load when the file carries a key no section lists, or a DBC a record the reader
+	// does not take (strict_refusals) — the runner's --strict
+	strict bool
 	// progress and warnings: what the runner printed on stdout and stderr. Called from the run's
 	// worker threads as well as from `start` — a sink must take that — and never after `stop`
 	// has returned, which waits for a report in flight. So a sink MUST NOT call `stop`: the
@@ -174,14 +177,73 @@ pub fn load(proj_path string, o Options) !project.Project {
 		return error('cannot load project ${proj_path}: ${err}')
 	}
 	proj.override_interfaces(o.interfaces) or { return error('${proj_path}: ${err}') }
+	unread := databases_unread(proj, os.dir(proj_path))
+	proj.notes << unread
+	refused := if o.strict { strict_refusals(proj, unread) } else { []string{} }
 	o.out('project: ${proj.name}  (${proj_path})')
 	for ov in o.interfaces {
 		o.out('  ${ov.name}: ${ov.iface} (overridden)')
 	}
 	for n in proj.notes {
-		o.err('${proj_path}: ${n}')
+		if n !in refused {
+			o.err('${proj_path}: ${n}')
+		}
+	}
+	if refused.len > 0 {
+		return StrictRefused{
+			path:  proj_path
+			lines: refused
+		}
 	}
 	return proj
+}
+
+// StrictRefused is a strict load's refusal: every line it refused, whole.
+pub struct StrictRefused {
+	Error
+pub:
+	path  string
+	lines []string
+}
+
+pub fn (e StrictRefused) msg() string {
+	return '${e.path}: a strict load refuses what this build does not read:\n  ${e.lines.join('\n  ')}'
+}
+
+// strict_refusals is what a strict load of `proj` refuses: the file's unknown keys (none in a
+// file of a newer schema) and the database records not read (`unread`, databases_unread's).
+fn strict_refusals(proj project.Project, unread []string) []string {
+	mut out := proj.strict_refusals()
+	out << unread
+	return out
+}
+
+// databases_unread is, for every DBC a CAN row of the project names, the line naming the records
+// the reader did not take (candb.Loaded.unread), each file once. Said at the load, so the run's
+// own open of the same file leaves it out (load_channel_db); a file that cannot be opened is the
+// run's to say. An ARXML says what it ignored in its own report, at the run.
+fn databases_unread(proj project.Project, dir string) []string {
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for ch in proj.channels {
+		if ch.kind() != .can {
+			continue
+		}
+		for ref in ch.databases {
+			path := project.resolve_asset(dir, ref)
+			if candb.is_arxml_ref(path) {
+				continue
+			}
+			key := candb.canonical_database_ref(path)
+			if key in seen {
+				continue
+			}
+			seen[key] = true
+			l := candb.open_database(path) or { continue }
+			out << l.unread
+		}
+	}
+	return out
 }
 
 // start brings a loaded project up: refused with the first problem, and nothing is left running
@@ -989,7 +1051,12 @@ fn load_channel_db(ch project.Channel, proj_dir string, files &DbFiles) candb.Da
 	db, notes := candb.merge_files_report_with(ch.databases.map(project.resolve_asset(proj_dir, it)),
 		fn [files] (ref string) !candb.Loaded {
 			mut f := unsafe { files }
-			return f.open(ref)
+			l := f.open(ref)!
+			// the records a DBC does not read were said at the load (databases_unread)
+			return candb.Loaded{
+				...l
+				notes: l.notes.filter(it !in l.unread)
+			}
 		})
 	// what could not be opened, and what the ARXML reader had to skip: on stderr, because a
 	// refused database otherwise surfaces as failing tests with no line saying why

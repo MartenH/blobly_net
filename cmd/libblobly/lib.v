@@ -592,6 +592,7 @@ __global (
 	bb_loaded   bool
 	bb_run      &headless.Run = unsafe { nil }
 	bb_names    []string // the C strings bb_channel_* handed out, kept alive here
+	bb_notes    []string // the last load's notes, or a strict load's refusals, for bb_note
 	bb_rows     []project.Channel // the enabled rows they name, for bb_channel_kind / _health_source
 	bb_handles  map[int]&BusHandle
 	bb_next     int
@@ -706,6 +707,17 @@ pub fn bb_load(path &char) i32 {
 // bb_load_with is bb_load with interface overrides, one NAME=IFACE a line (headless.Options.interfaces).
 @[export: 'bb_load_with']
 pub fn bb_load_with(path &char, interfaces &char) i32 {
+	return bb_load_flags(path, interfaces, 0)
+}
+
+// bb_load_flags is bb_load_with with BB_LOAD_* flags: BB_LOAD_STRICT refuses what this build does
+// not read (headless.Options.strict).
+@[export: 'bb_load_flags']
+pub fn bb_load_flags(path &char, interfaces &char, flags i32) i32 {
+	bb_notes = []string{} // this load's, whether or not it is refused
+	if flags & ~i32(C.BB_LOAD_STRICT) != 0 {
+		return fail(bb_err, 'load: unknown flags 0x${flags:X}')
+	}
 	if isnil(path) {
 		return fail(bb_err, 'load: no path')
 	}
@@ -724,7 +736,13 @@ pub fn bb_load_with(path &char, interfaces &char) i32 {
 		return fail(bb_err_state, 'a previous run is still releasing its wires, under its own wire policy; wait until it has (bb_wait_released)')
 	}
 	p := unsafe { cstring_to_vstring(path) }
-	proj := headless.load(p, headless.Options{ interfaces: overrides }) or {
+	proj := headless.load(p, headless.Options{
+		interfaces: overrides
+		strict:     flags & i32(C.BB_LOAD_STRICT) != 0
+	}) or {
+		if err is headless.StrictRefused {
+			bb_notes = err.lines.clone()
+		}
 		return fail(bb_err, err.msg())
 	}
 	// a name or an interface the host would receive cut at its first NUL names another row, or
@@ -742,6 +760,7 @@ pub fn bb_load_with(path &char, interfaces &char) i32 {
 	bb_proj = proj
 	bb_path = p
 	bb_loaded = true
+	bb_notes = proj.notes.clone()
 	name_rows(proj.channels.filter(it.enabled))
 	return ok()
 }
@@ -872,6 +891,24 @@ pub fn bb_wait_ready(timeout_ms i32) i32 {
 		return ok()
 	}
 	return fail(if ls.any(it.state == .opening) { bb_err_timeout } else { bb_err }, note)
+}
+
+// bb_note_count is how many notes the last bb_load said (project.Project.notes and the DBC records
+// not read), or after a strict load's refusal, how many lines it refused.
+@[export: 'bb_note_count']
+pub fn bb_note_count() i32 {
+	ok()
+	return i32(bb_notes.len)
+}
+
+@[export: 'bb_note']
+pub fn bb_note(i i32) &char {
+	if i < 0 || int(i) >= bb_notes.len {
+		fail(bb_err, 'no note ${i}')
+		return c''
+	}
+	ok()
+	return cstr(bb_notes[i])
 }
 
 @[export: 'bb_channel_count']

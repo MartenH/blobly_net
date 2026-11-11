@@ -5,7 +5,7 @@
 // agent read; docs/scripting.md states both.
 //
 //   v -enable-globals run cmd/script/run.v \
-//       --project projects/sim-demo.blobnet [--interface CAN1=vcan0] [--report run.json] [--timeout 60] \
+//       --project projects/sim-demo.blobnet [--strict] [--interface CAN1=vcan0] [--report run.json] [--timeout 60] \
 //       tests/diag_basic.lua
 //
 // -enable-globals is required for the in-process bus (transport/inproc.v).
@@ -24,7 +24,7 @@ import blobly.script
 import blobly.transport
 import blobly.udsconn
 
-const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--interface <NAME=IFACE>]... [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
+const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--strict] [--interface <NAME=IFACE>]... [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
 
 // how long after its deadline a run that has not ended is exited by the watchdog: past the
 // longest host call the deadline does not cut, a DoIP connection being opened
@@ -96,6 +96,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut explicit := '' // --project as given, distinct from the default above
 	mut project_ports := false // --project-ports: host DoIP entities on the ports the project states
+	mut strict := false // --strict: refuse a project carrying what this build does not read
 	mut interfaces := []project.IfaceOverride{} // --interface NAME=IFACE: a row attached elsewhere
 	// found first, so a refusal of any other argument is reported too
 	mut report_path := ''
@@ -148,6 +149,9 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			'--project-ports' {
 				project_ports = true
 			}
+			'--strict' {
+				strict = true
+			}
 			else {
 				if a.starts_with('-') {
 					o.refused = 'unknown option ${a}\n${usage}'
@@ -192,7 +196,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		eprintln('listening for CAN bridges on ${bridge_at}')
 	}
 
-	proj := headless.load(proj_path, headless.Options{ interfaces: interfaces }) or {
+	proj := headless.load(proj_path, headless.Options{ interfaces: interfaces, strict: strict }) or {
 		o.refused = err.msg()
 		return report_path
 	}

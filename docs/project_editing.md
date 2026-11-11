@@ -25,9 +25,23 @@ model would silently strip every comment in the file.
 **What the check does and does not tell you.** The status line reads *"YAML well-formed · N
 channel(s) — syntax only, not a config check"*, and that wording is deliberate: `project.parse`
 rejects malformed YAML (unterminated flow collections, tab indentation) and little else. A file
-with no `project:` key, an unknown key, a channel with no name or a non-numeric bitrate all parse
-happily — defaulted or ignored. The channel count is shown because it is the number that reveals
-an edit which quietly emptied something.
+with no `project:` key, a channel with no name or a non-numeric bitrate all parse happily —
+defaulted. The channel count is shown because it is the number that reveals an edit which quietly
+emptied something.
+
+**An unknown key is said, not refused.** Every section of a `.blobnet` has one list of the keys it
+may carry (`blobly/project/keys.v`: the top level, `project:`, a CAN, DoIP or SOME/IP row and its
+`timing:`, `replay:`, `nm:`, `diagnostics:`, `verify:`, `simulation:` nodes with their `signals:`,
+`uds:` (`dids:`, `dtcs:`, `io:`, `memory:`), `protect:`, `nm:` and `responses:`, and `senders:` with
+their `signals:`). A key no list names is dropped and its default applies — a misspelt `protec:`
+leaves the node unprotected — so the load says each one, with where it sits:
+`unknown key `cycle_msec` in channel "CAN1" / generator "G" (known: name, key, ...)`. Opening the
+project or applying the File tab puts these in the Log; the headless runner and `bb_load` on
+stderr; Python as `net.notes`. A LIN row is stricter: an unknown key there refuses the file. A
+strict load (`cmd/script --strict`, `blobly.Project(path, strict=True)`, `BB_LOAD_STRICT`) refuses
+every unknown key, and every record of the project's DBCs the reader does not take
+(`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`). A file of a newer schema
+than the build reading it may carry keys that build cannot know: they are said, never refused.
 
 One save is refused outright: text that is well-formed but yields **no channels** over a project
 that had some. That is a truncated buffer or a mangled top level, never an intended edit.

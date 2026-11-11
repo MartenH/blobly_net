@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeAlias, TypeVar
 
 from . import _lib
-from ._lib import BloblyError, ByteData, Timeout
+from ._lib import BloblyError, ByteData, Refused, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _on_thread, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
 from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
@@ -1238,6 +1238,11 @@ def _override_text(interfaces: Mapping[str, str]) -> str:
     return "".join(out)
 
 
+def _notes(lib) -> list[str]:
+    """The library's notes of its last load (bb_note)."""
+    return [_lib.text(lib.bb_note(i)) for i in range(lib.bb_note_count())]
+
+
 class Project(EventLoop[Channel | str], Faults, Replays):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
@@ -1249,19 +1254,26 @@ class Project(EventLoop[Channel | str], Faults, Replays):
     `interfaces` attaches rows elsewhere than the file says, by row name — {"BusA": "inproc:BusA"},
     an interface string without a rate or a mode (not `Channel.iface`'s `...@500000`): the row keeps its
     bitrate, framing and listen_only. Applied at every load before anything is checked or opened;
-    a name no row has, or an interface of another kind than the row's, refuses the load."""
+    a name no row has, or an interface of another kind than the row's, refuses the load.
+    `strict=True` refuses a load (Refused, listing every line) when the file carries what this build
+    does not read: a key no section of the .blobnet lists (in a file of a newer schema, noted, not
+    refused) or a record of one of its DBCs the reader does not take. `notes` is what the last load
+    said, either way."""
     path: str | bytes
     started: bool
     interfaces: dict[str, str]
+    strict: bool
 
     def __init__(self, path: "str | bytes | os.PathLike[str] | os.PathLike[bytes]",
-                 interfaces: Mapping[str, str] | None = None) -> None:
+                 interfaces: Mapping[str, str] | None = None, strict: bool = False) -> None:
         super().__init__()
         p = os.fspath(path)
         if (b"\0" if isinstance(p, bytes) else "\0") in p:
             raise ValueError("a project path cannot carry a NUL: C would read it cut short")
         self.interfaces = dict(interfaces or {})
         _override_text(self.interfaces)
+        self.strict = bool(strict)
+        self._notes: list[str] = []
         self.path = os.path.abspath(path)
         self.started = False
         self._channels = None
@@ -1287,7 +1299,16 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         with _lib.state_lock:
             pairs = _override_text(self.interfaces)
             # the path in the filesystem's bytes, not UTF-8
-            _lib.check(lib.bb_load_with(os.fsencode(self.path), pairs.encode()))
+            rc = lib.bb_load_flags(os.fsencode(self.path), pairs.encode(),
+                                   _lib.BB_LOAD_STRICT if self.strict else 0)
+            if rc < 0:
+                e = _lib.error(rc)
+                if self.strict and isinstance(e, Refused) and lib.bb_note_count() > 0:
+                    # every line the load refused: bb_last_error may be cut short
+                    raise Refused(f"{self.path}: a strict load refuses what this build does not read:\n  "
+                                  + "\n  ".join(_notes(lib)), rc) from None
+                raise e
+            self._notes = _notes(lib)
             old = list(self._channels) if self._channels is not None else []
             for c in old:
                 try:
@@ -1310,6 +1331,15 @@ class Project(EventLoop[Channel | str], Faults, Replays):
                     rows.append(Channel(self, i, name, st["gen"]))
             self._channels = Channels(rows)
         return self._drop_gone(rows)
+
+    @property
+    def notes(self) -> list[str]:
+        """What the last load of this project said about the file, one line each: its unknown keys
+        (`unknown key `cycle_msec` in channel "CAN1" / generator "G" (known: ...)`), references that
+        resolve only from the working directory, and per DBC the records it did not
+        read (`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`). Empty before
+        the first load."""
+        return list(self._notes)
 
     def _drop_gone(self, rows):
         """Drops the registrations on channels this load did not keep, and names them, rather than

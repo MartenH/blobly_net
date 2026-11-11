@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run Lua test scripts headlessly against a project's simulation (no GUI).
-#   scripts/runtests.sh [--project projects/sim-demo.blobnet] [--report run.json] [--timeout 60] \
+#   scripts/runtests.sh [--project projects/sim-demo.blobnet] [--strict] [--report run.json] [--timeout 60] \
 #                       tests/diag_basic.lua [more.lua ...]
 # Defaults to projects/sim-demo.blobnet when --project is omitted. Exits with the runner's status
 # (0 passed, 1 a test failed, 2 refused, 3 a script error, 4 timeout; docs/scripting.md). With no
@@ -33,7 +33,7 @@ for a in "$@"; do
     --project|-p) next=path; args+=("$a") ;;
     --timeout|--interface) next=value; args+=("$a") ;;
     --report)     next=report ;;
-    --project-ports) args+=("$a") ;;
+    --project-ports|--strict) args+=("$a") ;;
     -*)           named=1; args+=("$a") ;;  # one invocation, which refuses it
     *)            named=1; args+=("$(abs "$a")") ;;
   esac

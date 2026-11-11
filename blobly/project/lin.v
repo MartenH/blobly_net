@@ -8,10 +8,6 @@ module project
 
 import yaml
 
-// The keys a LIN row may carry; the legacy `lin:` entries carried the same but `type`/`adapter`.
-const lin_row_keys = ['name', 'network', 'adapter', 'type', 'protocol', 'address', 'interface',
-	'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
-const lin_keys = ['name', 'address', 'bitrate', 'ldf', 'role', 'simulate', 'schedule', 'enabled']
 const lin_roles = ['master', 'slave', 'monitor']
 
 // lin_rows is every LIN row of the project, in row order.
@@ -92,9 +88,10 @@ fn lin_row(name string, network string, address string, bitrate int, ldf string,
 fn parse_lin_row(c yaml.Any, version int) !Channel {
 	m := c.as_map()
 	label := if n := m['name'] { 'channel "${n.string()}"' } else { 'a LIN channel' }
+	keys := known_keys('lin_row')
 	for k, _ in m {
-		if k !in lin_row_keys && version <= schema_version {
-			return error('${label}: unknown key `${k}` for a LIN bus (known: ${lin_row_keys.join(', ')})')
+		if k !in keys && version <= schema_version {
+			return error('${label}: unknown key `${k}` for a LIN bus (known: ${keys.join(', ')})')
 		}
 	}
 	mut address := c.value('address').default_to('').string().trim_space()
@@ -162,9 +159,10 @@ fn parse_lin(v yaml.Any, version int) ![]Channel {
 		}
 		m := e.as_map()
 		label := if n := m['name'] { 'lin ${n.string()}' } else { 'lin entry ${i + 1}' }
+		keys := known_keys('lin')
 		for k, _ in m {
-			if k !in lin_keys && version <= schema_version {
-				return error('${label}: unknown key `${k}` (known: ${lin_keys.join(', ')})')
+			if k !in keys && version <= schema_version {
+				return error('${label}: unknown key `${k}` (known: ${keys.join(', ')})')
 			}
 		}
 		out << lin_fields(e, label, e.value('address').default_to('').string().trim_space(),

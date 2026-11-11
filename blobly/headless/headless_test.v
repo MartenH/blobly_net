@@ -555,3 +555,43 @@ channels:
 	assert ready_note(r.wait_ready(2000)) == ''
 	sub.leave()
 }
+
+// A load says what of the file it does not use — a key no section lists, a DBC record the reader
+// does not take — once, at the load and not again at the start; a strict load refuses them all.
+fn test_a_strict_load_refuses_what_this_build_does_not_read() {
+	root := os.join_path(os.vtmp_dir(), 'headless_strict_${os.getpid()}')
+	os.mkdir_all(root)!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.write_file(os.join_path(root, 'u.dbc'), 'BU_: A\nBO_ 256 M: 8 A\n SG_ S : 0|8@1+ (1,0) [0|255] "" A\nSIG_VALTYPE_ 256 S : 1;\n')!
+	path := os.join_path(root, 'p.blobnet')
+	os.write_file(path, 'project:\n  name: t\nbuses:\n  - name: CAN1\n    interface: inproc:STRICT_HL\n    bitrat: 500000\n    databases: [u.dbc]\n')!
+	mut lines := &Lines{}
+	proj := load(path, lines.options())!
+	assert proj.notes.len == 2
+	assert proj.notes[1] == 'u.dbc: not read: SIG_VALTYPE_ × 1'
+	assert lines.said('unknown key `bitrat` in channel "CAN1"')
+	mut r := start(proj, path, lines.options())!
+	r.stop()
+	lines.mu.lock()
+	said := lines.err.filter(it.contains('not read: SIG_VALTYPE_')).len
+	lines.mu.unlock()
+	assert said == 1, 'the start repeated what the load said'
+	if _ := load(path, Options{
+		strict: true
+		err:    fn (s string) {}
+		out:    fn (s string) {}
+	})
+	{
+		assert false, 'a strict load must refuse'
+	} else {
+		assert err is StrictRefused
+		if err is StrictRefused {
+			assert err.lines.len == 2
+			assert err.lines[0].starts_with('unknown key `bitrat`')
+			assert err.lines[1] == 'u.dbc: not read: SIG_VALTYPE_ × 1'
+		}
+		assert err.msg().contains('a strict load refuses what this build does not read')
+	}
+}
