@@ -77,6 +77,13 @@ class TestLatest:
         y.send(0x220, b"\x01")
         assert x.latest(0x220) == blobly.Frame(0x220, b"\x01"), "the same frame from another node"
 
+    def test_forgetting_takes_what_was_queued_before_it_too(self, two_rows):
+        net, x, y = two_rows
+        for i in range(50):
+            y.send(0x240 + i, b"\x01")
+            x._forget_latest()
+            assert x.latest(0x240 + i) is None, "a frame sent before the clear outlived it"
+
     def test_the_plugin_forgets_what_an_earlier_test_saw(self, two_rows):
         net, x, y = two_rows
         y.send(0x230, b"\x01")
@@ -234,5 +241,7 @@ class TestOnSimDemo:
         pt = can1.messages.Powertrain
         can1.look()  # its handle open, and with it the library's reader
         time.sleep(0.35)  # nothing reads can1 meanwhile
+        assert can1._watch == can1._h, "latest answers from the library's reader"
         f = can1.latest(pt)
         assert f is not None and blobly.now_ms() - f.t_ms < 150, "Powertrain comes every 100 ms"
+        assert can1.recv(0) is not None, "latest read the frames queued during the sleep off the channel"

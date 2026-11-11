@@ -15,7 +15,7 @@ pub fn bb_bus_watch(h i32) i32 {
 		return ok()
 	}
 	bus := transport.open(hd.iface) or { return fail(bb_err, 'watch: ${hd.iface}: ${err.msg()}') }
-	view := transport.watch_newest(bus)
+	view := transport.watch_newest(bus, hd.iface)
 	bb_mu.lock()
 	hd.bus.view = view
 	bb_mu.unlock()
@@ -58,6 +58,7 @@ pub fn bb_bus_latest_clear(h i32) i32 {
 		hd.leave()
 	}
 	mut view := hd.view() or { return fail(bb_err_state, 'latest_clear: handle ${h} is not watched (bb_bus_watch)') }
+	view.settle() // what was queued before the call forgotten with the rest
 	view.clear()
 	return ok()
 }

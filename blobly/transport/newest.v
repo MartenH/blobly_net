@@ -50,6 +50,9 @@ mut:
 	next   u64
 	failed string
 	stop   bool
+	// whether the view's handle hears the script handle's sends (echoes_own_sends): where it does
+	// not, a send is not noted, since a note would claim a peer's frame in its place
+	hears_sends bool
 	// settles asked for (`settle`) and the newest one the reader has answered: every frame queued
 	// on its handle when that one was asked has been kept
 	asked    u64
@@ -60,15 +63,19 @@ mut:
 
 // new_newest is a view no reader feeds: the table and its echo rule, for `watch_newest` and tests.
 pub fn new_newest() &NewestView {
-	return &NewestView{}
+	return &NewestView{
+		hears_sends: true
+	}
 }
 
-// watch_newest starts a view read from `bus`, a handle opened for it alone, which it closes at
-// `close`. One look is taken first, so a shared-hub handle is subscribed before this returns.
-pub fn watch_newest(bus Bus) &NewestView {
+// watch_newest starts a view read from `bus`, a handle opened for it alone on `iface`, which it
+// closes at `close`. One look is taken first, so a shared-hub handle is subscribed before this
+// returns.
+pub fn watch_newest(bus Bus, iface string) &NewestView {
 	mut b := bus
 	mut v := &NewestView{
-		bus: b
+		bus:         b
+		hears_sends: echoes_own_sends(iface)
 	}
 	if f := b.recv(0) {
 		v.keep(f, received_now(f), i64(time.sys_mono_now()))
@@ -93,12 +100,15 @@ fn (mut v NewestView) read() {
 	}
 	mut b := v.bus or { return }
 	for {
+		// a settle asked before this receive began is answered by its timeout; a later one waits
+		// for the next receive
+		before := v.asked_now()
 		f := recv_sliced(mut b, newest_slice_ms, newest_slice_ms, stop) or {
 			if err.code() == sliced_stop_code {
 				return
 			}
 			if err.msg() == 'timeout' {
-				v.answer(v.asked_now())
+				v.answer(before)
 				continue
 			}
 			v.fail(err.msg())
@@ -207,21 +217,31 @@ pub fn (mut v NewestView) keep(f CanFrame, t_ns i64, now_ns i64) {
 	}
 }
 
-// echoed_by: the echo carries the id, kind and remote bit sent, and the payload sent at its start
-// (a software bus pads an FD payload up to a length a DLC expresses).
+// echoed_by: the echo carries the id, kind, remote bit and payload sent, an FD one zero-padded up
+// to the length a DLC expresses.
 fn (n EchoNote) echoed_by(f CanFrame) bool {
 	if f.id != n.id || f.extended != n.ext || f.rtr != n.rtr || f.data.len < n.data.len {
 		return false
 	}
-	return f.data[..n.data.len] == n.data
+	if f.data.len != n.data.len && !(f.fd && f.data.len == fd_padded_len(n.data.len)) {
+		return false
+	}
+	if f.data[..n.data.len] != n.data {
+		return false
+	}
+	return f.data[n.data.len..].all(it == 0)
 }
 
 // sending notes a frame the script's handle is about to send, at `now_ns`, so its echo is not
-// kept; the token undoes it (`unsent`) when the send fails.
+// kept; the token undoes it (`unsent`) when the send fails. 0, and no note, where the view's
+// handle does not hear the send.
 pub fn (mut v NewestView) sending(f CanFrame, now_ns i64) u64 {
 	v.mu.lock()
 	defer {
 		v.mu.unlock()
+	}
+	if !v.hears_sends {
+		return 0
 	}
 	v.next++
 	if v.notes.len >= newest_notes_max {

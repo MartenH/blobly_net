@@ -674,8 +674,8 @@ int bb_bus_close(int h);  /* a send or recv on another thread ends first (a recv
  * 11-bit, 1: 29-bit) into *out — its t_ns when it arrived, its e2e BB_E2E_NONE — reading nothing
  * off h, as of the call (what the view's handle holds queued is kept first, waited for at most
  * 50 ms; on a quiet wire 2 ms at most); BB_NONE before the first; BB_ERR_STATE on a handle not watched, BB_ERR once the view's
- * handle failed (its reason). bb_bus_latest_clear forgets what the view kept. Both may come from
- * any thread. */
+ * handle failed (its reason). bb_bus_latest_clear forgets what the view kept, what its handle held
+ * queued at the call included. Both may come from any thread. */
 int bb_bus_watch(int h);
 int bb_bus_latest(int h, uint32_t id, int ext, bb_frame *out); /* 0: a frame; BB_NONE: none yet */
 int bb_bus_latest_clear(int h);

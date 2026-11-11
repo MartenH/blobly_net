@@ -3027,6 +3027,5 @@ policy for this package, and possibly an MCP server.
 
 Not planned: Python inside the GUI, or a console panel there. VS Code is the console
 ([vscode.md](vscode.md)), and this package brings a project up in your own process. Also not
-built: removing a handler, a reader in the engine that keeps a channel's newest frames current
-while the script is inside a UDS exchange or a flash ([The value now](#the-value-now)), and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
+built: removing a handler, and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
 [#506](https://github.com/MartenH/blobly_net/issues/506).
