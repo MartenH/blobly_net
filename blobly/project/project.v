@@ -50,8 +50,9 @@ pub fn version_for(p Project) int {
 	// frames go out in the row's format again with nothing said; and the simulated nodes' NM
 	// announcements: a row's `nm:` `cycle_ms` (or an `nm:` with the cycle alone) and a node's own
 	// `nm:`. An older build refuses the range-less `nm:` and drops the rest on its next structured
-	// save, and the nodes stop announcing.
-	if p.channels.any(it.data_sample_point != 0) {
+	// save, and the nodes stop announcing; and a CAN row's `diagnostics:` (a node described by
+	// ODX), whose names an older build drops the same way, with nothing said.
+	if p.channels.any(it.data_sample_point != 0 || it.diagnostics.len > 0) {
 		return 13
 	}
 	for c in p.channels {
@@ -510,6 +511,8 @@ pub mut:
 	// nm is the wire's NM cluster when neither a system model nor an ARXML states one
 	// (`nm: { lo: 0x500, hi: 0x53F, timeout_ms: 300 }`; blobly/nm's configure is the rule)
 	nm           ?NmCfg
+	// the diagnostic servers on this CAN row that an imported description names (`diagnostics:`)
+	diagnostics []DiagNodeCfg
 	enabled      bool = true
 	databases    []string
 	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
@@ -1327,6 +1330,18 @@ fn parse_channel(c yaml.Any) !Channel {
 			ch.senders << parse_sender(s)!
 		}
 	}
+	if v := c.value_opt('diagnostics') {
+		if ch.kind() != .can {
+			return error('diagnostics: a node named by an imported description is reached on a CAN row; ${ch.name} is not one')
+		}
+		for e in v.array() {
+			d := parse_diag_node(e)!
+			if ch.diagnostics.any(it.node == d.node) {
+				return error('diagnostics: node ${d.node} is named twice on ${ch.name}')
+			}
+			ch.diagnostics << d
+		}
+	}
 	if v := c.value_opt('nm') {
 		if ch.kind() != .can {
 			return error('nm: an NM cluster is a CAN bus property; ${ch.name} is an Ethernet channel')
@@ -1731,6 +1746,48 @@ fn parse_eid(s string) ![]u8 {
 		out << (nibbles[i] << 4) | nibbles[i + 1]
 	}
 	return out
+}
+
+// DiagNodeCfg is one `diagnostics:` entry of a CAN row: a diagnostic server on it, described by an
+// ODX source (a .pdx, an ODX file or a folder of them, relative to the project) and one base or
+// ECU variant of it, reached at the request id `tx` and the response id `rx` (29-bit past 0x7FF).
+pub struct DiagNodeCfg {
+pub:
+	node    string
+	odx     string
+	variant string
+	tx      u32
+	rx      u32
+}
+
+// parse_diag_node reads `{ node, odx, variant, tx, rx }`, every key required and each id a CAN id.
+fn parse_diag_node(v yaml.Any) !DiagNodeCfg {
+	mut words := map[string]string{}
+	for key in ['node', 'odx', 'variant', 'tx', 'rx'] {
+		t := v.value(key).default_to('').str().trim_space()
+		if t == '' {
+			return error('diagnostics: an entry needs node, odx, variant, tx and rx; ${key} is missing')
+		}
+		words[key] = t
+	}
+	mut ids := []u32{}
+	for key in ['tx', 'rx'] {
+		raw := words[key]
+		if !nm_id_is_clean(raw) || parse_id_wide(raw) > 0x1FFFFFFF {
+			return error('diagnostics: ${words['node']}: ${key} "${raw}" is not a CAN id')
+		}
+		ids << u32(parse_id_wide(raw))
+	}
+	if ids[0] == ids[1] {
+		return error('diagnostics: ${words['node']}: tx and rx are both 0x${ids[0]:X}')
+	}
+	return DiagNodeCfg{
+		node:    words['node']
+		odx:     words['odx']
+		variant: words['variant']
+		tx:      ids[0]
+		rx:      ids[1]
+	}
 }
 
 // NmCfg is a channel's own NM cluster: the inclusive id range its nodes announce in, the

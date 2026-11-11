@@ -440,7 +440,8 @@ typedef struct bb_record_report {
 	int64_t missed;  /* frames this process sent that never came back to the recorder (not written) */
 	int64_t dropped; /* frames the recorder's own handles lost before it read them (Bus.diagnostics) */
 } bb_record_report;
-/* The system model: a node of the run's system.toml (bb_node_info). Its name is bb_node_name's. */
+/* The system model: a node of the run's system.toml, or one a row names by ODX (bb_node_info). Its
+ * name is bb_node_name's. */
 typedef struct bb_node {
 	int32_t dids;           /* the DIDs it lists, bb_did_*'s d 0 .. dids - 1: its description's own,
 	                           then the ISO identification DIDs it does not declare */
@@ -464,7 +465,7 @@ typedef struct bb_reach {
 	uint32_t rx;    /* its response id */
 } bb_reach;
 
-/* Where a DID's value comes from (bb_did.kind), as the ecu.toml declares it. */
+/* Where a DID's value comes from (bb_did.kind), as the ecu.toml (or a row's ODX) declares it. */
 enum bb_did_kind {
 	BB_DID_ASCII = 0,           /* a fixed text */
 	BB_DID_BYTES = 1,           /* fixed bytes */
@@ -472,7 +473,10 @@ enum bb_did_kind {
 	BB_DID_PARAM = 3,           /* a coded parameter */
 	BB_DID_PARAM_STATUS = 4,    /* one status byte per parameter: 0 default, 1 coded, 2 reverted */
 	BB_DID_TX_SATURATIONS = 5,  /* how many sent values were held to their DBC range */
-	BB_DID_UNKNOWN = 6          /* none of these, or not declared: its bytes, of no known layout */
+	BB_DID_UNKNOWN = 6,         /* none of these, or not declared: its bytes, of no known layout */
+	BB_DID_FIELDS = 7,          /* the ECU's values, laid out by an ODX description */
+	BB_DID_TEXT = 8,            /* the ECU's text, of the size an ODX description gives */
+	BB_DID_DATA = 9             /* the ECU's bytes, of the size an ODX description gives, if any */
 };
 
 /* A DID a node lists (bb_did_info). Its name is bb_did_name's, a gate's sessions bb_did_session's. */
@@ -1180,7 +1184,8 @@ int bb_uds_check_wait(int which, int ms);
 int bb_uds_retarget(int u, const int64_t *address);
 /* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
  * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read
- * them — the description its simulated diagnostic servers answer by — from bb_start until bb_stop
+ * them — the description its simulated diagnostic servers answer by —, then the nodes a CAN row
+ * names by ODX (its `diagnostics:`, docs/odx.md), from bb_start until bb_stop
  * (BB_ERR_STATE otherwise). A tester reaches a node by its name, the model supplying the row and the
  * ids, and reads and writes its DIDs by name, through the node's layout. Every call here but
  * bb_uds_write_described only reads, and may come from any (attached) thread. Strings go into the

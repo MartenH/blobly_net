@@ -126,6 +126,10 @@ written as v13). Edited in the File tab. A Vector channel honours both, and refu
 clock cannot place; PCAN and CANsub refuse anything but the point they use, and a data-phase point
 on any adapter but Vector (see [windows_can_hardware.md](windows_can_hardware.md)).
 
+A CAN row may name the diagnostic servers on it by their ODX description: `diagnostics:`, a list
+of `{ node, odx, variant, tx, rx }` (a project that has one is written as v13). It is edited in the
+File tab; what it reads and what a script then names is in [odx.md](odx.md).
+
 ## Example configurations
 
 How a range of setups look under the merged **Bus + `network` label** model. A subgraph is

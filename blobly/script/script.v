@@ -187,7 +187,8 @@ pub mut:
 	// it; nobody in the GUI, where the script's close stops it.
 	cyclic_host cyclic.Host = cyclic.Free{}
 	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
-	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
+	// one the GUI's Diagnostics panel reads, with the nodes the rows name by ODX
+	// (sysview.System.with_odx_nodes); empty when neither describes a node.
 	sys sysview.System
 	// The run's LIN rows lin.open reaches by name (lin.v), asked at each open: cmd/script's headless
 	// run, or the GUI's run while it is on (lin_panel.v).

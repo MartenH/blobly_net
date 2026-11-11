@@ -33,7 +33,7 @@ pub enum PartKind {
 // laid_out: the value is its fields, back to back.
 // A parameter status of no parameters is laid out too: zero fields, zero bytes.
 fn (x DidDesc) laid_out() bool {
-	return (x.kind == .param_status || (x.kind in [.signal, .param, .tx_saturations]
+	return (x.kind == .param_status || (x.kind in [.signal, .param, .tx_saturations, .fields]
 		&& x.fields.len > 0)) && x.fields.all(it.width() > 0)
 }
 
@@ -46,7 +46,7 @@ pub fn (x DidDesc) parts() []Part {
 			hint:  field_hint(it, x.limit(it), it.name in x.ranges)
 		})
 	}
-	if x.kind == .ascii {
+	if x.is_text() {
 		return [Part{
 			label: 'text'
 			kind:  .text
@@ -78,7 +78,7 @@ pub fn (x DidDesc) texts(data []u8) ![]string {
 		}
 		return out
 	}
-	if x.kind == .ascii {
+	if x.is_text() {
 		// a fixed-size text is padded with NULs, which an edit field cannot hold: they are what
 		// `encode` pads a shorter text with
 		mut n := data.len
@@ -105,7 +105,7 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 				return error('${f.name}: ${err.msg()}')
 			}
 		}
-	} else if x.kind == .ascii {
+	} else if x.is_text() {
 		out = texts[0].bytes()
 		// printable ASCII only, 0x20..0x7E: a text DID is ASCII, so `é` (C3 A9 in UTF-8) is not
 		// one character of it; and a control character is nothing an edit field can show back, so

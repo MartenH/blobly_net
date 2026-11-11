@@ -1711,6 +1711,11 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			a.script_push('${ss.path} could not be read (${err}); uds.node names no nodes')
 		}
 	}
+	with_odx, odx_notes := env.sys.with_odx_nodes(ss.proj_dir, ss.rows)
+	env.sys = with_odx
+	for note in odx_notes {
+		a.script_push(note)
+	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.
 	env.opener = fn [a] (iface string, chan_name string) !transport.Bus {

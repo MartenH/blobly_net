@@ -1,0 +1,34 @@
+# ODX demo — a node named by its ODX description (dbc/odx_demo.odx-d), reached on CAN1 at
+# 0x7E0/0x7E8. The simulated BodyECU answers there with the bytes the description lays out, so a
+# script reads and writes the DIDs by name and sees DTCs named by the variant's DTC list:
+#   scripts/runtests.sh tests/odx_nodes.lua
+#   BLOBLY_LIB=build/libblobly.so python3 -m pytest python/tests/test_odx_nodes.py
+project:
+  name: ODX demo
+  version: 13
+
+channels:
+  - name: CAN1
+    type: can
+    interface: inproc:ODX1
+    mode: monitor
+    diagnostics:
+      - node: BodyController
+        odx: ../dbc/odx_demo.odx-d
+        variant: BodyController_Base
+        tx: "0x7E0"
+        rx: "0x7E8"
+    simulation:
+      - name: BodyECU
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          dids:
+            - { id: "0xF190", text: "WVWZZZ1JZXW000001" }
+            - { id: "0x0110", bytes: "C8 05 DC" }
+            - { id: "0x0120", bytes: "FF 9C" }
+            - { id: "0x0130", bytes: "0B B8" }
+            - { id: "0xF18C", bytes: "00 01 E2 40" }
+          dtcs:
+            - { code: "0x912301", status: 9 }
+            - { code: "0xD10016", status: 8 }

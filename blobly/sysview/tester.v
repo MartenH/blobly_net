@@ -11,10 +11,10 @@ import blobly.uds
 // node_for).
 
 // node_named is the index of the node called `name`: refused for a name no node has (naming those
-// there are) or two share, and when no system.toml describes the project.
+// there are) or two share, and when neither a system.toml nor a row's `diagnostics:` describes one.
 pub fn (sys &System) node_named(name string) !int {
-	if sys.path == '' {
-		return error("no system.toml describes this project (none beside it, beside one of its databases, or in its folder's parent), so it names no nodes")
+	if sys.path == '' && sys.nodes.len == 0 {
+		return error("no system.toml describes this project (none beside it, beside one of its databases, or in its folder's parent), and no row names one by `diagnostics:`, so it names no nodes")
 	}
 	mut found := -1
 	for i, n in sys.nodes {
@@ -22,16 +22,21 @@ pub fn (sys &System) node_named(name string) !int {
 			continue
 		}
 		if found >= 0 {
-			return error('two nodes of ${sys.path} are named "${name}"; nothing here can tell which you mean')
+			return error('two nodes of ${sys.where()} are named "${name}"; nothing here can tell which you mean')
 		}
 		found = i
 	}
 	if found < 0 {
 		names := sys.nodes.map(it.name)
 		there := if names.len > 0 { '; there are: ${names.join(', ')}' } else { '' }
-		return error('no node "${name}" in ${sys.path}${there}')
+		return error('no node "${name}" in ${sys.where()}${there}')
 	}
 	return found
+}
+
+// where names what describes the nodes: the system.toml, else the project's own rows (odxnodes.v).
+fn (sys &System) where() string {
+	return if sys.path != '' { sys.path } else { 'the project' }
 }
 
 // RowRef is one of a project's rows a node may be reached on: its name, its carrier's kind, and on
@@ -104,7 +109,7 @@ fn (sys &System) can_target(n int, r RowRef, i int) ?RowTarget {
 		return none
 	}
 	s := sys.can_server(sys.nodes[n])?
-	if r.name !in s.buses {
+	if r.name !in s.buses || !s.on_wire(r.wire) {
 		return none
 	}
 	return RowTarget{
@@ -469,7 +474,7 @@ fn (x DidDesc) readable(data []u8) ! {
 			resp: data.clone()
 		}
 	}
-	if x.kind == .ascii {
+	if x.is_text() {
 		mut n := data.len
 		for n > 0 && data[n - 1] == 0 {
 			n--

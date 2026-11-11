@@ -1,0 +1,681 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A hand-made ODX 2.2 description for blobly/odx's tests: one BodyController base variant with
+     a DID of each layout the reader holds (text, a structure of integers, a signed integer,
+     bytes), one it does not (a LINEAR scaling), a service of another kind, and an ECU variant
+     that inherits all of it but a NOT-INHERITED service and adds a DID and a DTC. -->
+<ODX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" MODEL-VERSION="2.2.0">
+  <DIAG-LAYER-CONTAINER ID="DLC_BodyController">
+    <SHORT-NAME>DLC_BodyController</SHORT-NAME>
+    <BASE-VARIANTS>
+      <BASE-VARIANT ID="BV_BodyController">
+        <SHORT-NAME>BodyController_Base</SHORT-NAME>
+        <LONG-NAME>Body controller</LONG-NAME>
+        <DIAG-DATA-DICTIONARY-SPEC>
+          <DTC-DOPS>
+            <DTC-DOP ID="DOP_DTC_Base">
+              <SHORT-NAME>DOP_DTC_Base</SHORT-NAME>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>24</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DTCS>
+                <DTC ID="DTC_LampOpen">
+                  <SHORT-NAME>LampOpenCircuit</SHORT-NAME>
+                  <TROUBLE-CODE>9511681</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>B1123-01</DISPLAY-TROUBLE-CODE>
+                  <TEXT>Lamp open circuit</TEXT>
+                </DTC>
+                <DTC ID="DTC_LowVoltage">
+                  <SHORT-NAME>SupplyLow</SHORT-NAME>
+                  <TROUBLE-CODE>13697046</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>U1100-16</DISPLAY-TROUBLE-CODE>
+                  <TEXT>Supply voltage low</TEXT>
+                </DTC>
+              </DTCS>
+            </DTC-DOP>
+          </DTC-DOPS>
+          <DATA-OBJECT-PROPS>
+            <DATA-OBJECT-PROP ID="DOP_UINT8">
+              <SHORT-NAME>UInt8</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>8</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_UINT16">
+              <SHORT-NAME>UInt16</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>16</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_UINT32">
+              <SHORT-NAME>UInt32</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>32</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_INT16">
+              <SHORT-NAME>Int16</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_INT32">
+                <BIT-LENGTH>16</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_INT32" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_ASCII17">
+              <SHORT-NAME>Ascii17</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_ASCIISTRING">
+                <BIT-LENGTH>136</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_BYTES4">
+              <SHORT-NAME>Bytes4</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_BYTEFIELD">
+                <BIT-LENGTH>32</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_BYTEFIELD" />
+            </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_TEMP">
+              <SHORT-NAME>TemperatureC</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>LINEAR</CATEGORY>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>16</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_FLOAT64" />
+            </DATA-OBJECT-PROP>
+          </DATA-OBJECT-PROPS>
+          <STRUCTURES>
+            <STRUCTURE ID="STRUCT_Lamp">
+              <SHORT-NAME>LampConfigStruct</SHORT-NAME>
+              <BYTE-SIZE>3</BYTE-SIZE>
+              <PARAMS>
+                <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                  <SHORT-NAME>Brightness</SHORT-NAME>
+                  <BYTE-POSITION>0</BYTE-POSITION>
+                  <DOP-REF ID-REF="DOP_UINT8" />
+                </PARAM>
+                <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                  <SHORT-NAME>DelayMs</SHORT-NAME>
+                  <BYTE-POSITION>1</BYTE-POSITION>
+                  <DOP-REF ID-REF="DOP_UINT16" />
+                </PARAM>
+              </PARAMS>
+            </STRUCTURE>
+          </STRUCTURES>
+        </DIAG-DATA-DICTIONARY-SPEC>
+        <DIAG-COMMS>
+          <DIAG-SERVICE ID="DS_VIN_Read">
+            <SHORT-NAME>VIN_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_VIN_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_VIN_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_VIN_Write">
+            <SHORT-NAME>VIN_Write</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_VIN_Write" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_VIN_Write" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_LampConfig_Read">
+            <SHORT-NAME>LampConfig_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_LampConfig_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_LampConfig_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_LampConfig_Write">
+            <SHORT-NAME>LampConfig_Write</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_LampConfig_Write" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_LampConfig_Write" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_TrimOffset_Read">
+            <SHORT-NAME>TrimOffset_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_TrimOffset_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_TrimOffset_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_TrimOffset_Write">
+            <SHORT-NAME>TrimOffset_Write</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_TrimOffset_Write" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_TrimOffset_Write" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Temperature_Read">
+            <SHORT-NAME>Temperature_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_Temperature_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_Temperature_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Serial_Read">
+            <SHORT-NAME>Serial_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_Serial_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_Serial_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_HardReset">
+            <SHORT-NAME>HardReset</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_HardReset" />
+          </DIAG-SERVICE>
+        </DIAG-COMMS>
+        <REQUESTS>
+          <REQUEST ID="RQ_VIN_Read">
+            <SHORT-NAME>RQ_VIN_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>61840</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_VIN_Write">
+            <SHORT-NAME>RQ_VIN_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>46</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>61840</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>VIN</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_ASCII17" />
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_LampConfig_Read">
+            <SHORT-NAME>RQ_LampConfig_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>272</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_LampConfig_Write">
+            <SHORT-NAME>RQ_LampConfig_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>46</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>272</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>LampConfig</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="STRUCT_Lamp" />
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_TrimOffset_Read">
+            <SHORT-NAME>RQ_TrimOffset_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>288</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_TrimOffset_Write">
+            <SHORT-NAME>RQ_TrimOffset_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>46</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>288</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>TrimOffset</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_INT16" />
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Temperature_Read">
+            <SHORT-NAME>RQ_Temperature_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>304</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Serial_Read">
+            <SHORT-NAME>RQ_Serial_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>61836</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_HardReset">
+            <SHORT-NAME>RQ_HardReset</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>17</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>ResetType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>1</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+        </REQUESTS>
+        <POS-RESPONSES>
+          <POS-RESPONSE ID="PR_VIN_Read">
+            <SHORT-NAME>PR_VIN_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>VIN</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_ASCII17" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_VIN_Write">
+            <SHORT-NAME>PR_VIN_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>110</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_LampConfig_Read">
+            <SHORT-NAME>PR_LampConfig_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>LampConfig</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="STRUCT_Lamp" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_LampConfig_Write">
+            <SHORT-NAME>PR_LampConfig_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>110</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_TrimOffset_Read">
+            <SHORT-NAME>PR_TrimOffset_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>TrimOffset</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_INT16" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_TrimOffset_Write">
+            <SHORT-NAME>PR_TrimOffset_Write</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>110</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_Temperature_Read">
+            <SHORT-NAME>PR_Temperature_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Temperature</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_TEMP" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_Serial_Read">
+            <SHORT-NAME>PR_Serial_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>EcuSerial</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_BYTES4" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+        </POS-RESPONSES>
+        <STATE-CHARTS>
+          <STATE-CHART ID="SC_Session">
+            <SHORT-NAME>Session</SHORT-NAME>
+            <SEMANTIC>SESSION</SEMANTIC>
+          </STATE-CHART>
+        </STATE-CHARTS>
+      </BASE-VARIANT>
+    </BASE-VARIANTS>
+    <ECU-VARIANTS>
+      <ECU-VARIANT ID="EV_BodyController_V2">
+        <SHORT-NAME>BodyController_V2</SHORT-NAME>
+        <DIAG-DATA-DICTIONARY-SPEC>
+          <DTC-DOPS>
+            <DTC-DOP ID="DOP_DTC_V2">
+              <SHORT-NAME>DOP_DTC_V2</SHORT-NAME>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>24</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DTCS>
+                <DTC ID="DTC_Crash">
+                  <SHORT-NAME>CrashSensorFault</SHORT-NAME>
+                  <TROUBLE-CODE>9633809</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>B1300-11</DISPLAY-TROUBLE-CODE>
+                  <TEXT>Crash sensor shorted to ground</TEXT>
+                </DTC>
+              </DTCS>
+            </DTC-DOP>
+          </DTC-DOPS>
+        </DIAG-DATA-DICTIONARY-SPEC>
+        <DIAG-COMMS>
+          <DIAG-SERVICE ID="DS_Mileage_Read">
+            <SHORT-NAME>Mileage_Read</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_Mileage_Read" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_Mileage_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+        </DIAG-COMMS>
+        <REQUESTS>
+          <REQUEST ID="RQ_Mileage_Read">
+            <SHORT-NAME>RQ_Mileage_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>512</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+        </REQUESTS>
+        <POS-RESPONSES>
+          <POS-RESPONSE ID="PR_Mileage_Read">
+            <SHORT-NAME>PR_Mileage_Read</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>98</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>DID</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Mileage</SHORT-NAME>
+                <BYTE-POSITION>3</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_UINT32" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+        </POS-RESPONSES>
+        <PARENT-REFS>
+          <PARENT-REF ID-REF="BV_BodyController" xsi:type="BASE-VARIANT-REF">
+            <NOT-INHERITED-DIAG-COMMS>
+              <NOT-INHERITED-DIAG-COMM>
+                <DIAG-COMM-SNREF SHORT-NAME="Serial_Read" />
+              </NOT-INHERITED-DIAG-COMM>
+            </NOT-INHERITED-DIAG-COMMS>
+          </PARENT-REF>
+        </PARENT-REFS>
+      </ECU-VARIANT>
+    </ECU-VARIANTS>
+  </DIAG-LAYER-CONTAINER>
+</ODX>

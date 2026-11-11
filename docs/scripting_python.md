@@ -1472,6 +1472,16 @@ the write with `0x7F`, which is `NegativeResponse`, and the next write is gated 
 DTC (`node.faults`), and a snapshot DID's size is the description's, so a `0x19 04` does not read
 the DID to learn it.
 
+**A node an ODX file describes.** For an ECU that was not built with blobly_emb, a CAN row's
+`diagnostics:` entry names a node by its ODX description (a `.pdx`, an ODX file or a folder of
+them, and the base or ECU variant to read) and the ids it is reached at
+([odx.md](odx.md), [projects/odx-demo.blobnet](../projects/odx-demo.blobnet)). Such a node is in
+`net.nodes` beside system.toml's, with or without one: its DIDs are the variant's 0x22 / 0x2E data
+identifiers (`kind` `"fields"`, `"text"` or `"data"`; a value the ODX scales or maps is `"data"`,
+read as its bytes), its faults the variant's DTCs, and `read`, `write` and `fault` work as above.
+Its gates are not read from the ODX yet: a DID with a 0x2E service has a write gate that asks for
+nothing, and the ECU's own refusal says what it needs.
+
 ### Raw ISO-TP
 
 `ch.isotp(tx, rx)` opens a raw ISO-TP (ISO 15765-2) channel on a CAN row: whole messages sent on
@@ -2295,7 +2305,7 @@ break in either, raises `ValueError`, and the engine refuses the rest at `load()
 | `net.clear_signal(channel, node, message, signal=None)` | Lets go of that signal's value (`None`: every signal of the message). |
 | `net.clear_signals()` | Lets go of every value set; `clear_faults()` leaves them. |
 | `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
-| `net.nodes` | The nodes of the run's system model, a `Nodes` ([Nodes and their DIDs](#nodes-and-their-dids)); empty without a system.toml. `BloblyError` (code -3) when not started. |
+| `net.nodes` | The nodes of the run's system model, a `Nodes` ([Nodes and their DIDs](#nodes-and-their-dids)), and those its rows describe by ODX; empty without either. `BloblyError` (code -3) when not started. |
 | `net.system` | The system.toml the run read, or `None` when none describes the project. `BloblyError` (code -3) when not started. |
 | `net.lin` | The run's LIN buses, a `LinBuses` of `LinBus` ([LIN](#lin)); empty for a project with none. `BloblyError` (code -3) when not started. |
 | `net.replay(channels, source=None, *, speed=None, loop=None, paused=False, exclude=None, bus=None)` | Plays a recording onto channels of the started project: a `Replay`. |
@@ -2637,7 +2647,7 @@ number"]`, by position, `node.dids.keys()`). A DID of no name is reached by posi
 | member | what |
 |---|---|
 | `Did.id`, `Did.name` | The identifier, and its name: its signal's or parameter's, ISO's for a standard identifier, else `""`. |
-| `Did.kind` | Where its value comes from: `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"`, or `"unknown"` (no layout known: bytes). |
+| `Did.kind` | Where its value comes from: `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"`, for a node a row describes by ODX `"fields"`, `"text"` or `"data"` (the ECU's value laid out as integers, as a text, or bytes), or `"unknown"` (no layout known: bytes). |
 | `Did.size` | Its value's bytes, `None` where the description does not say. |
 | `Did.parts` | What a value is made of, each a `DidPart`. |
 | `Did.by_label` | `read` answers `{label: value}`: several parts, or a parameter status. |
@@ -2824,9 +2834,10 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.
 - Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.
-- Targets by node name from `system.toml`, and the DID codec from `ecu.toml`, are here
-  ([Nodes and their DIDs](#nodes-and-their-dids)): a node reached by its name, its DIDs read and
-  written by name through its layout, a gated write refused with what it needs, and its DTCs named.
+- Targets by node name from `system.toml` (or a row's ODX), and the DID codec from `ecu.toml` (or
+  the ODX), are here ([Nodes and their DIDs](#nodes-and-their-dids)): a node reached by its name,
+  its DIDs read and written by name through its layout, a gated write refused with what it needs,
+  and its DTCs named.
 
 - Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).

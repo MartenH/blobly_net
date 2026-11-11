@@ -1,9 +1,9 @@
 """nodes — a started project's system model, through libblobly: blobly_emb's system.toml and its
 nodes' ecu.toml descriptions as the run read them (the description its simulated servers answer by),
-a UDS client by node name — the model supplies the channel and the ids — and a node's DIDs read and
-written by name, through its layout. The rules are the engine's (blobly/sysview: the link, the
-description, the DID codec and the write gate's plan); this module carries the calls and turns a
-part's text into a Python value and back."""
+and the nodes a CAN row names by ODX; a UDS client by node name — the model supplies the channel
+and the ids — and a node's DIDs read and written by name, through its layout. The rules are the
+engine's (blobly/sysview: the link, the description, the DID codec and the write gate's plan); this
+module carries the calls and turns a part's text into a Python value and back."""
 import ctypes
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,7 +22,7 @@ DidValue: TypeAlias = int | bool | str | bytes | dict[str, int | bool]
 
 # enum bb_did_kind and enum bb_part_kind, as the ecu.toml and the codec name them
 DID_KINDS = {0: "ascii", 1: "bytes", 2: "signal", 3: "param", 4: "param_status", 5: "tx_saturations",
-             6: "unknown"}
+             6: "unknown", 7: "fields", 8: "text", 9: "data"}
 PART_KINDS = {0: "int", 1: "bool", 2: "text", 3: "bytes"}
 
 
@@ -53,7 +53,9 @@ class DidPart:
 class Did:
     """A DID a node lists: its description's own, then the ISO identification DIDs it does not
     declare. `kind` is where its value comes from ("ascii", "bytes", "signal", "param",
-    "param_status", "tx_saturations", or "unknown": no layout known, read as bytes); `size` its
+    "param_status", "tx_saturations", for a node a row describes by ODX "fields", "text" or "data"
+    — the ECU's value laid out as integers, as a text, or bytes —, or "unknown": no layout known,
+    read as bytes); `size` its
     value's bytes (None: the description does not say); `parts` what a value is made of;
     `by_label` whether read() answers its parts by label (several, or a parameter status, whose
     parts are its parameters) rather than its one part's value; `read_gate` None where none is
@@ -76,8 +78,9 @@ class Did:
 
 @dataclass(frozen=True)
 class Fault:
-    """A `[[fault]]` of a node's ecu.toml: its `name`, its 24-bit `dtc` and the DTC's SAE J2012
-    display (`dtc_name`, U0401-00) — what a NodeClient's DTCs are named by (Dtc.fault)."""
+    """A `[[fault]]` of a node's ecu.toml (a DTC of its ODX variant): its `name`, its 24-bit `dtc`
+    and the DTC's SAE J2012 display (`dtc_name`, U0401-00) — what a NodeClient's DTCs are named by
+    (Dtc.fault)."""
     name: str
     dtc: int
     dtc_name: str
@@ -242,7 +245,7 @@ def _target(channel, t) -> NodeTarget:
 
 class Nodes(Named[Node]):
     """The run's nodes (Project.nodes): `net.nodes.zone_a`, `net.nodes["zone-a"]`, by position,
-    iterated in system.toml's order, completed by dir()."""
+    iterated in system.toml's order then those named by ODX, completed by dir()."""
     _noun = "node"
 
 

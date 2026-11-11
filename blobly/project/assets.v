@@ -173,6 +173,7 @@ pub:
 	manifest      string
 	replay_source string
 	ldf           string // a LIN row's
+	odx           []string // its `diagnostics:` entries' descriptions
 }
 
 // rebase_assets rewrites every file reference in the project for a move from `old_dir` to
@@ -187,8 +188,13 @@ pub fn (mut p Project) rebase_assets(old_dir string, new_dir string) []AssetRefs
 			manifest:      ch.manifest
 			replay_source: if r := ch.replay { r.source } else { '' }
 			ldf:           ch.ldf
+			odx:           ch.diagnostics.map(it.odx)
 		}
 		ch.databases = ch.databases.map(rebase_ref(old_dir, new_dir, it))
+		ch.diagnostics = ch.diagnostics.map(DiagNodeCfg{
+			...it
+			odx: rebase_ref(old_dir, new_dir, it.odx)
+		})
 		ch.ldf = rebase_ref(old_dir, new_dir, ch.ldf)
 		ch.manifest = rebase_ref(old_dir, new_dir, ch.manifest)
 		if r := ch.replay {
@@ -211,6 +217,14 @@ pub fn (mut p Project) restore_assets(was []AssetRefs) {
 		p.channels[i].databases = w.databases
 		p.channels[i].manifest = w.manifest
 		p.channels[i].ldf = w.ldf
+		for k, o in w.odx {
+			if k < p.channels[i].diagnostics.len {
+				p.channels[i].diagnostics[k] = DiagNodeCfg{
+					...p.channels[i].diagnostics[k]
+					odx: o
+				}
+			}
+		}
 		if r := p.channels[i].replay {
 			p.channels[i].replay = Replay{
 				...r
@@ -256,7 +270,7 @@ pub fn cwd_only_note(dir string, ref string) ?string {
 }
 
 // references is every file reference in the project, in order: each channel's databases, its
-// manifest and its replay source.
+// manifest, its LDF, its diagnostics' ODX sources and its replay source.
 pub fn (p Project) references() []string {
 	mut refs := []string{}
 	for ch in p.channels {
@@ -266,6 +280,9 @@ pub fn (p Project) references() []string {
 		}
 		if ch.ldf != '' {
 			refs << ch.ldf
+		}
+		for d in ch.diagnostics {
+			refs << d.odx
 		}
 		if r := ch.replay {
 			if r.source != '' {

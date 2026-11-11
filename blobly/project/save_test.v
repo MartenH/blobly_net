@@ -780,3 +780,64 @@ channels:
 		}
 	}
 }
+
+// `diagnostics:` names a node described by ODX; it survives a save, raises the version to v13,
+// follows a Save As and is one of the project's references.
+fn test_diagnostics_round_trip_and_raise_the_version() {
+	mut p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    diagnostics:
+      - node: BodyController
+        odx: odx/body.pdx
+        variant: BodyController_Base
+        tx: "0x7E0"
+        rx: 2024
+')!
+	assert p.channels[0].diagnostics == [
+		DiagNodeCfg{'BodyController', 'odx/body.pdx', 'BodyController_Base', 0x7E0, 0x7E8},
+	]
+	assert version_for(p) == 13
+	assert 'odx/body.pdx' in p.references()
+	back := parse(p.to_yaml())!
+	assert back.channels[0].diagnostics == p.channels[0].diagnostics, p.to_yaml()
+	was := p.rebase_assets('/proj', '/proj/sub')
+	assert p.channels[0].diagnostics[0].odx == '../odx/body.pdx'
+	p.restore_assets(was)
+	assert p.channels[0].diagnostics[0].odx == 'odx/body.pdx'
+}
+
+fn test_diagnostics_entries_are_checked() {
+	for bad in ['{ node: A, odx: a.pdx, variant: V, tx: 0x7E0 }',
+		'{ node: A, odx: a.pdx, variant: V, tx: 0x7E0, rx: 0x7G8 }',
+		'{ node: A, odx: a.pdx, variant: V, tx: 0x7E0, rx: 0x7E0 }',
+		'{ node: A, odx: a.pdx, variant: V, tx: 0x7E0, rx: 0x20000000 }'] {
+		if _ := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    diagnostics:
+      - ${bad}
+') {
+			assert false, '${bad} must be refused'
+		} else {
+			assert err.msg().contains('diagnostics'), err.msg()
+		}
+	}
+	if _ := parse('project:
+  name: t
+channels:
+  - name: DoIP1
+    adapter: doip
+    address: 127.0.0.1:13400
+    diagnostics:
+      - { node: A, odx: a.pdx, variant: V, tx: 0x7E0, rx: 0x7E8 }
+') {
+		assert false, 'diagnostics on a DoIP row'
+	} else {
+		assert err.msg().contains('CAN row'), err.msg()
+	}
+}
