@@ -221,7 +221,8 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 		// "there was more; re-run the export to read it"
 		comment: 'arxml2dbc: source=${p.source} sha256=${p.sha256} reader=${p.reader} cluster=${p.cluster} schema=${report.schema}' +
 			(if p.inputs != '' { ' inputs=${p.inputs}' } else { '' }) +
-			' dropped=${dropped} unresolved=${report.unresolved.len} notes=${report.notes.len}'
+			' dropped=${dropped} unresolved=${report.unresolved.len} notes=${report.notes.len +
+			c.export_notes().len}'
 	}
 	if fmt.values.len > 0 {
 		x.attrs << fmt
@@ -236,6 +237,21 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 		m.e2e = m.e2e.filter(it.profile == '' || dbc_exports_profile(it.profile))
 	}
 	return db.to_dbc_with(x)
+}
+
+// export_notes is what blobly_net applies from the cluster that the exported DBC cannot state, one
+// line per frame: a fill of the bits no signal covers (Message.fill, the PDU's UNUSED-BIT-PATTERN).
+// Counted in the provenance's `notes`, and printed by arxml2dbc.
+pub fn (c ArxmlCluster) export_notes() []string {
+	mut msgs := c.db.messages.clone()
+	msgs.sort_with_compare(message_order)
+	mut out := []string{}
+	for m in msgs {
+		if m.fill != 0 {
+			out << '${m.name}: UNUSED-BIT-PATTERN 0x${m.fill:02X} fills the bits no signal covers; a DBC cannot state it, so a reader of the export fills them with 0'
+		}
+	}
+	return out
 }
 
 // dbc_exports_profile is whether the export writes an E2E profile as DBC attributes: the ones
@@ -283,6 +299,9 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 		b << 'bus  = "${c.bus}"'
 		if f.fd {
 			b << '# CAN-FD frame (${m.dlc} bytes)'
+		}
+		if m.fill != 0 {
+			b << '# the bits no signal covers are 0x${m.fill:02X} (UNUSED-BIT-PATTERN), which no key here states'
 		}
 		if sends {
 			mode := if f.tx_mode == '' { 'cyclic' } else { f.tx_mode }

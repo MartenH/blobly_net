@@ -16,7 +16,7 @@ pub fn sut_ecu(db candb.Database) SimEcu {
 	}
 	for m in db.messages_from('SUT') {
 		mut sm := SimMessage{
-			msg:       m
+			msg:       db.filled(m)
 			period_ms: m.cyclic_period()
 			next_ms:   f64(m.start_delay_ms)
 		}
@@ -61,7 +61,7 @@ pub fn ecu_from_dbc(db candb.Database, node string) SimEcu {
 	}
 	for m in db.messages_from(node) {
 		ecu.messages << SimMessage{
-			msg:       m
+			msg:       db.filled(m)
 			period_ms: m.cyclic_period()
 			next_ms:   f64(m.start_delay_ms)
 		}

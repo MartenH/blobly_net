@@ -1203,7 +1203,8 @@ fn message(row i32, m i32) !candb.Message {
 	if m < 0 || int(m) >= db.messages.len {
 		return error('channel ${row} has no message ${m} (it has ${db.messages.len})')
 	}
-	return db.messages[int(m)]
+	// with the row's fill, which its frames are built with (candb.Database.filled)
+	return db.filled(db.messages[int(m)])
 }
 
 fn signal(row i32, m i32, s i32) !candb.Signal {
@@ -1463,6 +1464,7 @@ fn encode_values(msg candb.Message, n i32, signals &&char, values &f64) ![]u8 {
 		}
 		sig.encode(mut data, unsafe { values[i] })
 	}
+	msg.fill_unused(mut data)
 	return data
 }
 

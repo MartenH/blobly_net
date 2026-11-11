@@ -159,6 +159,8 @@ pub mut:
 	// not fd, but an FD bus may carry it so
 	either bool
 	receivers     []string // ECUs with an IN frame port, or an IN I-PDU group, for it
+	// the first PDU's UNUSED-BIT-PATTERN: the byte every bit no signal maps takes (Message.fill)
+	fill          u8
 	e2e           ?ArxmlE2e
 	secoc         ?ArxmlSecOc
 }
@@ -1659,8 +1661,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 						// CARRIED, NOT APPLIED, like E2E below — and with less behind it: the
 						// native simulation has no SecOC stamping at all, so a simulated sender
 						// of this frame puts its authentic bytes on the wire with freshness and
-						// MAC as 0, which a conforming receiver rejects (round 18)
-						r.report.notes << '${fname}: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0'
+						// MAC as the frame's fill, which a conforming receiver rejects (round 18)
+						r.report.notes << '${fname}: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)'
 					}
 				}
 			}
@@ -1683,16 +1685,19 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 			ubp := child_text(sig_pdu, 'UNUSED-BIT-PATTERN').trim_space()
 			if ubp != '' {
-				// the fill of every bit no signal maps; the simulated ECUs fill with 0, and a
-				// checksum over the completed payload sees that 0 (codex on #273 round 15). Read
-				// by its table row: an overflowing pattern was 0 to parse_int, so "modelled" (#280)
+				// the fill of every bit no signal maps (Message.fill), the first PDU's like its timing
+				// and protection; read by its table row, so an overflowing pattern is said there (#280)
 				if ubp_v := int_in(sig_pdu, 'UNUSED-BIT-PATTERN') {
-					if ubp_v != 0 {
-						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not modelled; the simulated ECUs fill unmapped bits with 0, which any checksum over the payload also sees'
+					if ubp_v > 0xFF {
+						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not a byte; not applied, so the unmapped bits take the row\'s fill, else 0'
+					} else if first_pdu {
+						info.fill = u8(ubp_v)
+					} else if u8(ubp_v) != info.fill {
+						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} differs from the first PDU of ${fname}; the frame is filled with the first PDU\'s (0x${info.fill:02X})'
 					}
 				} else {
 					// what the value was, check_leaves said; the consequence is the same
-					r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not modelled either way; the simulated ECUs fill unmapped bits with 0'
+					r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not applied, so the unmapped bits take the row\'s fill, else 0'
 				}
 			}
 			mut pdu_rx := frame_rx.clone()
@@ -1811,6 +1816,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			cycle_ms: info.cycle_ms
 			format: format
 			signals: sigs
+			fill: info.fill
 		}
 		if e := info.e2e {
 			// what the DBC attributes cannot say, by the SAME predicate the export refuses with

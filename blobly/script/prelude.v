@@ -951,8 +951,8 @@ function bus.recv(channel, timeout_ms)
   if id == nil then return nil end
   return __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e, groups)
 end
--- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
--- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
+-- encode a DBC message by name from a {Signal = value} table and send it, the bits no signal
+-- covers at the row fill, its declared E2E (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
 -- opts.format as bus.send, else the format its database states, else the format of the channel
 -- row. A J1939 message past 8 bytes going out classic is sent as a BAM (TP.CM, then TP.DT 50 ms
 -- apart), returning after the last; to one node (a PDU1 group not to 0xFF) as an RTS/CTS
@@ -971,6 +971,7 @@ function bus.send_message(channel, name, sigs, opts)
   for k, v in pairs(sigs or {}) do
     data = __encode_signal(channel, name, k, v, data)
   end
+  data = __msg_fill(channel, name, data)
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
   local format = opts and opts.format
   if format == nil then format = declared end

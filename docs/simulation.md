@@ -809,6 +809,40 @@ what the signal's width holds (the encoder would clamp it to another value) — 
 of that name the node sends, since the value goes into each. A value past the
 signal's declared range is not refused: a test sends one on purpose.
 
+## The bits no signal covers (`fill:`)
+
+A frame built from a database — a simulated node's message, a `message:` generator, a script's
+`bus.send_message` / `bus.send_message_cyclic`, Python's `Message.encode` / `send` /
+`send_cyclic` — has bits that no signal of the message covers. They go out as 0 unless something
+states a **fill**: a byte, each uncovered bit taking the bit at the same position in it. An
+AUTOSAR sender fills its PDUs' unused areas with a configured pattern, often `0xFF`, and a
+generator standing in for it should send the same bytes.
+
+```yaml
+buses:
+  - name: CAN1
+    fill: 0xFF                 # each bit no signal covers takes the bit at its position in 0xFF
+    senders:
+      - name: Status
+        message: Status
+        fill: 0x00             # this generator as before
+```
+
+The order is a generator's own `fill:`, then its row's, then the message's own, then 0. The
+message's own is an ARXML PDU's `UNUSED-BIT-PATTERN` (a DBC has no such field): a frame mapping
+several PDUs takes the first PDU's, as it takes the first PDU's timing and protection, and the
+reader says when a later PDU states another; a pattern past `0xFF` is not a byte, said and not
+applied. A generator without `bus:` takes its own row's fill, even where another row shares its
+wire; one with `bus:` takes the fill of the row whose databases its message is resolved from.
+`arxml2dbc` cannot carry a fill into a DBC, so it names each filled frame (and counts it in the
+provenance comment's `notes`).
+
+The fill goes in **before protection**, so an E2E checksum over the payload covers the filled
+bytes, as the real sender's does. A signal is "covering" only in a frame that carries it: in a
+multiplexed message the bits of a branch the switch does not select are filled too. A signal the
+caller leaves unset is still raw 0 (a node's at its start value), never the fill. A raw `data:`
+frame is sent as written. A project using `fill:` declares `version: 14`.
+
 ## Fault injection
 
 A rest-bus that only sends correct traffic answers one question: does the ECU work when
@@ -1047,6 +1081,9 @@ that uses it declares `version: 13`.
         cycle_ms: 100
         format: classic        # classic | fd | fd_brs; absent: as declared
 ```
+
+`fill:` states the byte the bits no signal covers take in a `message:` generator's frames, over
+its row's ([the bits no signal covers](#the-bits-no-signal-covers-fill)).
 
 **A message's own frame format.** A simulated node sends each message in the format its database
 states for it, the same rule, so a `canfd` row carries its classic messages classic and its FD

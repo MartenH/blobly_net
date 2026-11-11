@@ -717,6 +717,13 @@ fn (a &App) script_db(ch Chan) (candb.Database, []candb.Database) {
 	mut al := unsafe { a }
 	al.mu.lock()
 	paths := a.current_db_paths_locked(ch)
+	mut fill := ch.fill
+	for c in a.chans {
+		if c.proj_idx == ch.proj_idx && c.name == ch.name {
+			fill = c.fill
+			break
+		}
+	}
 	al.mu.unlock()
 	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
 	// would otherwise hand the script an empty or partial database and let it fail on "unknown
@@ -725,7 +732,7 @@ fn (a &App) script_db(ch Chan) (candb.Database, []candb.Database) {
 	for n in notes {
 		al.notify('script: ${ch.name}: ${n}')
 	}
-	return db, sources
+	return project.with_fill(db, fill), sources
 }
 
 // row_is_mine_locked: may a worker spawned for run `gen` into row `ci` of `iface` write to

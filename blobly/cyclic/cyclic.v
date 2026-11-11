@@ -356,6 +356,7 @@ fn encoded(sp Spec) !transport.CanFrame {
 			}
 		}
 	}
+	sp.message.fill_unused(mut data)
 	return project.message_format(sp.message, sp.format).stamp(transport.CanFrame{
 		id:       sp.message.id
 		extended: sp.message.ext

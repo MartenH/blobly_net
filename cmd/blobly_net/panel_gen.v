@@ -333,8 +333,8 @@ fn draw_gen(mut app App) {
 			}
 			// message picker: build the frame from a DBC message (→ per-signal values) or send a
 			// raw id + data. Option 0 = raw; the rest are the messages on THIS generator's bus.
-			gen_iface := app.senders[i].target()
-			msg_names := app.message_names_for(gen_iface)
+			gen_msgs := sim.sender_messages(app.gen_dbs(app.senders[i]))
+			msg_names := gen_msgs.map(it.name)
 			mut msg_opts := ['(raw id / data)']
 			msg_opts << msg_names
 			mut cur_msg := 0
@@ -355,7 +355,13 @@ fn draw_gen(mut app App) {
 			// payload: DBC message -> per-signal values; raw -> id + data hex
 			if s.message != '' {
 				vgui.text('message ${s.message} · signal values:')
-				cmsg := app.find_message_cdb_for(gen_iface, s.message) or { candb.Message{} }
+				mut cmsg := candb.Message{}
+				for gm in gen_msgs {
+					if gm.name == s.message {
+						cmsg = gm
+						break
+					}
+				}
 				for j, ss in s.signals {
 					mut sig := candb.Signal{}
 					mut have := false
@@ -405,6 +411,7 @@ fn (mut app App) add_generator() {
 		tgt:      iface
 		chan:     cname
 		chan_idx: if app.chans.len > 0 { 0 } else { -1 }
+		rows:     if app.chans.len > 0 { [0] } else { []int{} }
 		sender:   project.Sender{
 			name:    'New generator'
 			id:      0x100
@@ -506,25 +513,19 @@ fn (mut app App) sync_senders_into_proj() {
 	app.proj = p
 }
 
-// dbs_for returns the DBCs attached to the channel transmitting on `iface` (a generator's target
-// bus). Scoping the message picker/lookup here — not the global app.dbs — means a generator on
-// bus B never resolves a same-named message from bus A's database.
+// dbs_for returns the DBCs attached to the channels on `iface`, never the global app.dbs, so a
+// lookup for bus B never resolves a same-named message from bus A's database.
 fn (app &App) dbs_for(iface string) []candb.Database {
 	return app.dbs_by_iface[iface] or { [] }
 }
 
-// message_names_for lists the DBC message names on `iface` (deduplicated, load order) — the
-// picker options for a generator whose target bus is `iface`.
-fn (app &App) message_names_for(iface string) []string {
-	mut out := []string{}
-	mut seen := map[string]bool{}
-	for db in app.dbs_for(iface) {
-		for m in db.messages {
-			if m.name in seen {
-				continue
-			}
-			seen[m.name] = true
-			out << m.name
+// gen_dbs is what generator `sr`'s frame is built from: its target rows' databases, each with its
+// row's fill (dbs_by_row), as the headless runner builds it.
+fn (app &App) gen_dbs(sr SenderRT) []candb.Database {
+	mut out := []candb.Database{}
+	for r in sr.rows {
+		if r < app.dbs_by_row.len {
+			out << app.dbs_by_row[r]
 		}
 	}
 	return out
@@ -538,7 +539,6 @@ fn (mut app App) set_sender_message(i int, msg string) {
 	if i < 0 || i >= app.senders.len {
 		return
 	}
-	iface := app.senders[i].target()
 	app.mu.lock()
 	defer {
 		app.mu.unlock()
@@ -550,56 +550,36 @@ fn (mut app App) set_sender_message(i int, msg string) {
 		old := app.senders[i].sender.signals.clone()
 		app.senders[i].sender.message = msg
 		mut sigs := []project.SenderSig{}
-		for db in app.dbs_for(iface) {
-			mut found := false
-			for m in db.messages {
-				if m.name != msg {
+		for m in sim.sender_messages(app.gen_dbs(app.senders[i])) {
+			if m.name != msg {
+				continue
+			}
+			for sig in m.signals {
+				// a signal with no number is not offered: a generator could not send one
+				if !sig.is_scalar() {
 					continue
 				}
-				for sig in m.signals {
-					// a signal with no number is not offered: a generator could not send one
-					if !sig.is_scalar() {
-						continue
-					}
-					// carry the WHOLE matching signal across, not just its number: the value
-					// source (wave) is part of what the user configured, and copying only
-					// `value` silently dropped a waveform when the message was switched and
-					// switched back.
-					mut keep := project.SenderSig{
-						name: sig.name
-					}
-					for o in old {
-						if o.name == sig.name {
-							keep = o
-							keep.name = sig.name
-							break
-						}
-					}
-					sigs << keep
+				// carry the WHOLE matching signal across, not just its number: the value
+				// source (wave) is part of what the user configured, and copying only
+				// `value` silently dropped a waveform when the message was switched and
+				// switched back.
+				mut keep := project.SenderSig{
+					name: sig.name
 				}
-				found = true
-				break
+				for o in old {
+					if o.name == sig.name {
+						keep = o
+						keep.name = sig.name
+						break
+					}
+				}
+				sigs << keep
 			}
-			if found {
-				break
-			}
+			break
 		}
 		app.senders[i].sender.signals = sigs
 	}
 	app.dirty = true
-}
-
-// find_message_cdb_for returns the candb.Message `name` from the DBCs on `iface` (signal
-// metadata: units, value tables, integer-vs-float scaling) — scoped to the generator's bus.
-fn (app &App) find_message_cdb_for(iface string, name string) ?candb.Message {
-	for db in app.dbs_for(iface) {
-		for m in db.messages {
-			if m.name == name {
-				return m
-			}
-		}
-	}
-	return none
 }
 
 // signal_is_integer is true when every representable physical value of the signal is a whole
@@ -961,6 +941,7 @@ fn (mut app App) fire_index(i int) {
 	tgt := app.senders[i].tgt
 	own := app.senders[i].chan
 	own_row := app.senders[i].chan_idx
+	dbs := app.gen_dbs(app.senders[i])
 	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
@@ -979,7 +960,7 @@ fn (mut app App) fire_index(i int) {
 	// resolved on the generator's own target bus (not globally), by the builders the headless
 	// runner's cyclic senders use too, which state the generator's format (or its message's)
 	frame := if s.message != '' {
-		sim.sender_message_frame(s, app.dbs_for(tgt), n, el) or {
+		sim.sender_message_frame(s, dbs, n, el) or {
 			app.notify('generator ${s.name}: ${err.msg()}')
 			return
 		}
@@ -990,7 +971,7 @@ fn (mut app App) fire_index(i int) {
 		}
 	}
 	// a J1939 message past eight bytes on a classic row is a BAM, paced by gen_loop
-	declared := s.message != '' && sim.sender_j1939(s, app.dbs_for(tgt))
+	declared := s.message != '' && sim.sender_j1939(s, dbs)
 	frames := j1939.message_frames(frame, declared, transport.framed_for_wire(tgt, transport.CanFrame{
 		...frame
 		row: own

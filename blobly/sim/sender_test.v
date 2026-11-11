@@ -110,6 +110,29 @@ fn test_sender_message_frame_encodes_the_selected_branch_only() {
 	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(2), 20]
 }
 
+// a generator's frame fills the bits no signal covers: its own `fill:`, else the row's (the
+// database's), else the message's own (#671)
+fn test_sender_message_frame_fills_the_uncovered_bits() {
+	db := candb.parse_dbc('BO_ 291 Status: 4 Tester
+ SG_ Mode : 0|4@1+ (1,0) [0|15] "" Receiver
+') or { panic(err) }
+	mut s := project.Sender{
+		name:    'Status'
+		message: 'Status'
+		signals: [project.SenderSig{
+			name:  'Mode'
+			value: 5
+		}]
+	}
+	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(5), 0, 0, 0]
+	row := project.Channel{
+		fill: u8(0xFF)
+	}
+	assert (sender_message_frame(s, [row.row_db(db)], 0, 0.0) or { panic('M') }).data == [u8(0xF5), 0xFF, 0xFF, 0xFF]
+	s.fill = u8(0x00)
+	assert (sender_message_frame(s, [row.row_db(db)], 0, 0.0) or { panic('M') }).data == [u8(5), 0, 0, 0]
+}
+
 // the grid is kept, and a slot a slow write covered is skipped rather than sent late
 fn test_next_due_keeps_the_grid_and_skips_what_a_slow_write_covered() {
 	assert next_due(0, 10, 1) == 10
@@ -161,4 +184,25 @@ fn test_a_wide_signal_a_generator_lists_is_refused_and_not_sent() {
 	f := sender_message_frame(s, [db], 0, 0) or { panic('no frame') }
 	assert f.data[0] == 2
 	assert f.data[1..].all(it == 0)
+}
+
+// the editor's messages over a generator's target rows are what sender_message_frame encodes:
+// each name once, at its first definition
+fn test_sender_messages_are_the_first_definitions() ! {
+	a := candb.parse_dbc('BO_ 256 M: 1 X\n SG_ A : 0|8@1+ (1,0) [0|255] "" X\n')!
+	b := candb.parse_dbc('BO_ 256 M: 1 X\n SG_ B : 0|8@1+ (1,0) [0|255] "" X\nBO_ 257 N: 1 X\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\n')!
+	ms := sender_messages([a, b])
+	assert ms.map(it.name) == ['M', 'N']
+	assert ms[0].signals.map(it.name) == ['A']
+	s := project.Sender{
+		name:    'g'
+		message: 'M'
+		signals: [project.SenderSig{
+			name:  'A'
+			value: 7
+		}]
+	}
+	f := sender_message_frame(s, [a, b], 0, 0)!
+	assert f.data == [u8(7)]
+	assert sender_messages([b]).map(it.name) == ['M', 'N']
 }

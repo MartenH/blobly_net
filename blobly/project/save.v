@@ -70,6 +70,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.kind() == .can && !ch.builtin_uds {
 			b.writeln('    builtin_uds: false')
 		}
+		if f := ch.fill {
+			b.writeln('    fill: ${fill_yaml(f)}')
+		}
 		if n := ch.nm {
 			cycle := if n.cycle_ms > 0 { ', cycle_ms: ${n.cycle_ms}' } else { '' }
 			if n.ranged {
@@ -269,6 +272,9 @@ pub fn (p Project) to_yaml() string {
 				}
 				if s.format != .wire {
 					b.writeln('        format: ${transport.frame_format_names[int(s.format)]}')
+				}
+				if f := s.fill {
+					b.writeln('        fill: ${fill_yaml(f)}')
 				}
 				if s.signals.len > 0 {
 					b.writeln('        signals:')

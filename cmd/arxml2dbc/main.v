@@ -136,6 +136,9 @@ fn main() {
 		print(dump_cluster(c))
 		return
 	}
+	for l in c.export_notes() {
+		eprintln('arxml2dbc: ${l}')
+	}
 	version := (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 	dbc := c.export_dbc(candb.ArxmlProvenance{
 		source: set.files.map(os.base(it)).join(',')

@@ -431,6 +431,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__bus_recv', l_bus_recv)
 	env.st.register('__msg_template', l_msg_template)
 	env.st.register('__encode_signal', l_encode_signal)
+	env.st.register('__msg_fill', l_msg_fill)
 	env.st.register('__decode', l_decode)
 	env.st.register('__dbc_messages', l_dbc_messages)
 	env.st.register('__dbc_message', l_dbc_message)
@@ -1624,6 +1625,19 @@ fn l_msg_template(l lua.State) i32 {
 	// the format its database states, which a send takes unless it states its own (#607)
 	l.push_str(transport.frame_format_names[int(project.declared_format(msg))])
 	return 4
+}
+
+// l_msg_fill is __msg_fill(channel, name, data): the payload with the bits no signal covers at the
+// fill the message is sent with on the channel (candb.Message.fill_unused)
+fn l_msg_fill(l lua.State) i32 {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	db := env.chans[ci].db
+	msg := db.message_named(l.arg_str(2)) or { return l.fail('unknown message "${l.arg_str(2)}"') }
+	mut data := l.arg_bytes(3)
+	db.filled(msg).fill_unused(mut data)
+	l.push_bytes(data)
+	return 1
 }
 
 fn l_encode_signal(l lua.State) i32 {

@@ -446,3 +446,36 @@ fn test_p01_frame_helpers_refuse_what_profile_1_cannot_be() {
 		assert false, 'accepted: ${want}'
 	}
 }
+
+// a node's frame fills the bits no signal covers at its row's fill before its checksum is stamped,
+// so the CRC covers the filled bytes (#671)
+fn test_the_fill_goes_under_the_checksum() {
+	m := candb.Message{
+		...brake_status()
+		sender: 'Chassis'
+		e2e:    [candb.E2eDecl{
+			counter:     'BrakeCounter'
+			crc:         'BrakeCrc'
+			profile:     'autosar_p01'
+			data_id:     0x1244
+			has_data_id: true
+		}]
+	}
+	db := candb.Database{
+		nodes:    ['Chassis']
+		messages: [m]
+		fill:     u8(0xFF)
+	}
+	mut ecu := from_project(db, project.NodeCfg{ name: 'Chassis' })
+	f := ecu.messages[0].build(0)
+	assert f.data[3] == 0xFF && f.data[5] & 0xF0 == 0xF0, 'the uncovered bits take the fill'
+	mut want := f.data.clone()
+	want[4] = 0
+	declared_e2e(m)[0].apply(m, mut want, 0)
+	assert f.data == want, 'the CRC is the one over the filled payload'
+	mut zero := f.data.clone()
+	zero[3] = 0
+	zero[5] &= 0x0F
+	declared_e2e(m)[0].apply(m, mut zero, 0)
+	assert zero[4] != f.data[4], 'a CRC over the unfilled payload differs'
+}
