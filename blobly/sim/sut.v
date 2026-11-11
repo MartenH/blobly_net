@@ -17,7 +17,8 @@ pub fn sut_ecu(db candb.Database) SimEcu {
 	for m in db.messages_from('SUT') {
 		mut sm := SimMessage{
 			msg:       m
-			period_ms: m.cycle_ms
+			period_ms: m.cyclic_period()
+			next_ms:   f64(m.start_delay_ms)
 		}
 		match m.name {
 			'Powertrain' {
@@ -51,9 +52,9 @@ pub fn sut_ecu(db candb.Database) SimEcu {
 }
 
 // ecu_from_dbc builds a generic ECU for `node`: every message whose DBC
-// transmitter is it, sent cyclically per its GenMsgCycleTime, with signals held
-// constant (no generators configured). A neutral default until per-signal
-// generators are configured.
+// transmitter is it, sent cyclically per its GenMsgCycleTime (Message.cyclic_period) from its
+// GenMsgStartDelayTime, with signals held at their start values (no generators configured). A
+// neutral default until per-signal generators are configured.
 pub fn ecu_from_dbc(db candb.Database, node string) SimEcu {
 	mut ecu := SimEcu{
 		name: node
@@ -61,7 +62,8 @@ pub fn ecu_from_dbc(db candb.Database, node string) SimEcu {
 	for m in db.messages_from(node) {
 		ecu.messages << SimMessage{
 			msg:       m
-			period_ms: m.cycle_ms
+			period_ms: m.cyclic_period()
+			next_ms:   f64(m.start_delay_ms)
 		}
 	}
 	return ecu
@@ -75,7 +77,8 @@ pub fn build_ecu(db candb.Database, node string) SimEcu {
 
 // build_configured_ecu builds `node` from the DBC (messages + cyclic periods) and
 // attaches the supplied per-signal generators + response rules — the engine model
-// for a project-file-configured ECU. Signals without a generator stay constant 0.
+// for a project-file-configured ECU. Signals without a generator stay at their start value
+// (GenSigStartValue), else raw 0.
 pub fn build_configured_ecu(db candb.Database, node string, gens map[string]Gen, rules []ResponseRule) SimEcu {
 	return build_protected_ecu(db, node, gens, rules, map[string]E2e{})
 }

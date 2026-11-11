@@ -26,6 +26,9 @@ pub mut:
 	// it ('' name for a DBC): so a check compares a row with the parse that was LOADED, never a
 	// later one of the same path (#439)
 	arxml ArxmlBus
+	// what the DBC reader read and refused (a send attribute or start value that is not one), one
+	// line each; said by open_database
+	read_notes []string
 }
 
 // ArxmlBus is what an ARXML cluster states about the bus that carries it.
@@ -415,6 +418,8 @@ mut:
 	is_multiplexor    bool
 	is_multiplexed    bool
 	multiplexor_value int
+	start_raw         u64
+	has_start         bool
 }
 
 struct MsgBuilder {
@@ -426,6 +431,13 @@ mut:
 	sender   string
 	tx_nodes []string // additional transmitters from BO_TX_BU_
 	cycle_ms int
+	// whether a GenMsgCycleTime record named the message: a BA_DEF_DEF_ fills only the rest
+	cycle_stated   bool
+	send_type_name string
+	cycle_fast_ms  int
+	repetitions    int
+	delay_ms       int
+	start_delay_ms int
 	// the raw value fields of the message's own `BA_ "VFrameFormat"` and `BA_ "CANFD_BRS"`
 	// records ('' none): a file may default to J1939PG and override single frames back to
 	// StandardCAN, and "stated, and not J1939" must beat the default rather than reading like
@@ -460,12 +472,12 @@ pub fn parse_dbc(text string) !Database {
 	mut cur := -1 // index of the message SG_ lines attach to
 	mut nodes := []string{}
 	mut e2e_defaults := []string{}
+	mut send := SendAttrs{} // the send attributes and start values, resolved after the loop
 
 	for raw_line in text.split_into_lines() {
-		line := raw_line.trim_space()
-		// an attribute record matched with its whitespace collapsed: CANdb++ writes two spaces
-		// after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
-		attr := if line.starts_with('BA_') { line.fields().join(' ') } else { '' }
+		// an attribute record matched with its blanks collapsed (attr_record): CANdb++ writes two
+		// spaces after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
+		line := attr_record(raw_line.trim_space())
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
 			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
@@ -486,28 +498,30 @@ pub fn parse_dbc(text string) !Database {
 		} else if line.starts_with('BU_:') {
 			// BU_: NodeA NodeB …  — the declared ECU nodes
 			nodes = line[4..].fields()
-		} else if attr.starts_with('BA_ "GenMsgCycleTime"') {
+		} else if send.take(line) {
+			// read below, once every message, signal and enum is known
+		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
-		} else if attr.starts_with('BA_ "E2E') {
+		} else if line.starts_with('BA_ "E2E') {
 			apply_e2e_attr(mut msgs, by_id, line)
-		} else if attr.starts_with('BA_DEF_DEF_ "E2E') {
+		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
 			// a file-wide default is a declaration too, as for VFrameFormat: applied below to
 			// every message that states any E2E attribute of its own
 			e2e_defaults << line
-		} else if attr.starts_with('BA_ "VFrameFormat"') || attr.starts_with('BA_ "CANFD_BRS"') {
-			fmt_lines << attr
-		} else if attr.starts_with('BA_DEF_DEF_ "CANFD_BRS"') {
+		} else if line.starts_with('BA_ "VFrameFormat"') || line.starts_with('BA_ "CANFD_BRS"') {
+			fmt_lines << line
+		} else if line.starts_with('BA_DEF_DEF_ "CANFD_BRS"') {
 			brs_default = default_attr_value(line)
-		} else if attr.starts_with('BA_DEF_ BO_ "CANFD_BRS"') {
+		} else if line.starts_with('BA_DEF_ BO_ "CANFD_BRS"') {
 			brs_choices = frame_format_choices(line)
-		} else if attr.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
+		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
 			// THE FILE-WIDE DEFAULT IS A DECLARATION TOO. A DBC states an attribute's default
 			// once and then overrides only the exceptions, so a J1939 database can declare
 			// J1939PG here and carry no per-message BA_ at all — read as "no declaration", every
 			// frame in it came back not-J1939, which is the same explicit-file-answered-wrongly
 			// case the both-spellings rule exists to prevent (codex on #289).
 			fmt_default = default_attr_value(line)
-		} else if attr.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
+		} else if line.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
 			fmt_choices = frame_format_choices(line)
 		}
 		// other records (BA_DEF_, blank, …) are ignored.
@@ -542,6 +556,8 @@ pub fn parse_dbc(text string) !Database {
 		}
 	}
 
+	read_notes := send.resolve(mut msgs, by_id)
+
 	// emit immutable model
 	mut out := []Message{cap: msgs.len}
 	for mb in msgs {
@@ -564,6 +580,8 @@ pub fn parse_dbc(text string) !Database {
 				is_multiplexor:    sb.is_multiplexor
 				is_multiplexed:    sb.is_multiplexed
 				multiplexor_value: sb.multiplexor_value
+				start_raw:         sb.start_raw
+				has_start:         sb.has_start
 			}
 		}
 		out << Message{
@@ -574,8 +592,14 @@ pub fn parse_dbc(text string) !Database {
 			sender:   mb.sender
 			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
+			send_type_name: mb.send_type_name
+			send_type:      send_type_of(mb.send_type_name)
+			cycle_fast_ms:  mb.cycle_fast_ms
+			repetitions:    mb.repetitions
+			delay_ms:       mb.delay_ms
+			start_delay_ms: mb.start_delay_ms
 			// the per-message record wins; the file-wide default fills the rest
-			j1939:   enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
+			j1939:   frame_enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
 			format:  frame_format_of(first_set(mb.fmt_value, fmt_default), fmt_choices, first_set(mb.brs_value,
 				brs_default), brs_choices)
 			e2e:     mb.e2e
@@ -583,8 +607,9 @@ pub fn parse_dbc(text string) !Database {
 		}
 	}
 	return Database{
-		messages: out
-		nodes:    nodes
+		messages:   out
+		nodes:      nodes
+		read_notes: read_notes
 	}
 }
 
@@ -704,6 +729,7 @@ fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
 	if idx := by_id[id] {
 		msgs[idx].cycle_ms = f[4].int()
+		msgs[idx].cycle_stated = true
 	}
 }
 
@@ -755,25 +781,19 @@ fn frame_format_choices(line string) []string {
 	return out
 }
 
-// enum_choice is the choice an ENUM attribute's value field names against `choices`, the file's
-// own ordering: a quoted value is the choice itself (what a BA_DEF_DEF_ usually carries, and
-// what some tools write in a BA_), an unquoted number its index; '' for an index the enum does
-// not have, or none at all. With no choices (an INT attribute) the value is its own text.
-fn enum_choice(value string, choices []string) string {
+// frame_enum_choice is the choice an ENUM attribute's value field names against `choices`, the
+// file's own ordering, read leniently for the frame-format attributes: a quoted value or an index
+// as enum_choice reads it (dbc_send.v, the one rule), a choice written unquoted as itself, the value
+// as its own text where there are no choices (an INT attribute), and '' for none or an index the
+// enum does not have.
+fn frame_enum_choice(value string, choices []string) string {
 	if value == '' {
 		return ''
 	}
-	if value.starts_with('"') {
-		return value.trim('"')
-	}
-	if choices.len == 0 {
+	if !value.starts_with('"') && (choices.len == 0 || !value[0].is_digit()) {
 		return value
 	}
-	if !value[0].is_digit() {
-		return value // a choice written unquoted
-	}
-	idx := value.int()
-	return if idx < choices.len { choices[idx] } else { '' }
+	return enum_choice(value, choices) or { '' }
 }
 
 // frame_format_of is the format a message's VFrameFormat and CANFD_BRS values state (each the
@@ -782,12 +802,12 @@ fn enum_choice(value string, choices []string) string {
 // since "1" is the default Vector's CAN-FD templates give it; any other value (reserved, an index
 // the enum lacks, none) states nothing.
 fn frame_format_of(fmt string, fmt_choices []string, brs string, brs_choices []string) MsgFormat {
-	return match enum_choice(fmt, fmt_choices) {
+	return match frame_enum_choice(fmt, fmt_choices) {
 		'StandardCAN', 'ExtendedCAN', 'J1939PG' {
 			.classic
 		}
 		'StandardCAN_FD', 'ExtendedCAN_FD' {
-			if enum_choice(brs, brs_choices).trim_space() == '0' { MsgFormat.fd } else { MsgFormat.fd_brs }
+			if frame_enum_choice(brs, brs_choices).trim_space() == '0' { MsgFormat.fd } else { MsgFormat.fd_brs }
 		}
 		else {
 			.unstated

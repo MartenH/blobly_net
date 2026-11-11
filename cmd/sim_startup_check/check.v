@@ -70,9 +70,14 @@ fn main() {
 		for cfg in ch.all_nodes() {
 			engine.ecus << build_node(db, cfg)
 		}
-		// pump a few rounds of due_frames across a simulated 200ms
+		// pump a few rounds of due_frames across a simulated 200ms, and on to the latest first
+		// send a start delay puts past it
 		mut count := 0
-		for t in [f64(0), 10, 20, 50, 100, 200] {
+		mut times := [f64(0), 10, 20, 50, 100, 200]
+		if engine.all_due_by_ms() > 200 {
+			times << engine.all_due_by_ms()
+		}
+		for t in times {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
@@ -109,7 +114,7 @@ fn main() {
 			if !runnable && i < engine.ecus.len {
 				runnable = engine.ecus[i].rules.len > 0
 				for m in engine.ecus[i].messages {
-					if m.period_ms > 0 {
+					if m.sends() {
 						runnable = true
 						break
 					}
@@ -122,17 +127,17 @@ fn main() {
 				why := if cfg.uds != none {
 					'its uds server did not start (its rx/tx is claimed by another node)'
 				} else {
-					'no cyclic messages, no response rules and no uds'
+					'no message sent on a cycle or a generator change, no response rules and no uds'
 				}
 				eprintln('  ${ch.name}: node "${cfg.name}" will never transmit — ${why}')
 				failed++
 			}
 		}
 		if cyclic > 0 && count == 0 {
-			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames in 200ms')
+			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames by ${int(times.last())}ms')
 			failed++
 		}
-		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_in_200ms=${count}')
+		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_by_${int(times.last())}ms=${count}')
 	}
 	if failed > 0 {
 		eprintln('FAILED: ${failed} channel(s) loaded nothing or emitted nothing')

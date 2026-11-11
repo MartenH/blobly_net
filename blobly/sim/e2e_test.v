@@ -198,20 +198,20 @@ fn test_counters_survive_a_rebuild() {
 			}]
 		}
 	}
-	mut cache := map[string]int{}
+	mut cache := Carry{}
 	mut old := mk()
 	old.ecus[0].messages[0].send_n = 42
-	old.save_counters(mut cache)
+	old.save_state(mut cache)
 
 	mut fresh := mk()
 	assert fresh.ecus[0].messages[0].send_n == 0
-	fresh.restore_counters(cache)
+	fresh.restore_state(cache)
 	assert fresh.ecus[0].messages[0].send_n == 42, 'the counter restarted on rebuild'
 
 	// a message that did not exist before starts at zero — it genuinely has not been sent
 	mut added := mk()
 	added.ecus[0].messages << SimMessage{ msg: candb.Message{ name: 'New', id: 0x999, dlc: 8 } }
-	added.restore_counters(cache)
+	added.restore_state(cache)
 	assert added.ecus[0].messages[1].send_n == 0
 }
 
@@ -229,21 +229,21 @@ fn test_counters_survive_disable_and_re_enable() {
 		}
 		return e
 	}
-	mut cache := map[string]int{}
+	mut cache := Carry{}
 
 	mut running := mk(true)
 	running.ecus[0].messages[0].send_n = 77
 
 	// unchecked: BCM leaves the engine entirely
-	running.save_counters(mut cache)
+	running.save_state(mut cache)
 	mut without := mk(false)
-	without.restore_counters(cache)
+	without.restore_state(cache)
 	assert without.ecus.len == 0
 
 	// rechecked, some rebuilds later — the count must resume, not restart
-	without.save_counters(mut cache)
+	without.save_state(mut cache)
 	mut back := mk(true)
-	back.restore_counters(cache)
+	back.restore_state(cache)
 	assert back.ecus[0].messages[0].send_n == 77, 'the counter jumped backwards on re-enable'
 }
 
@@ -570,7 +570,8 @@ fn test_validate_cfg_covers_generators_and_protection() {
 		nodes:    ['SUT']
 		messages: [candb.Message{
 			...protected_msg()
-			sender: 'SUT'
+			sender:   'SUT'
+			cycle_ms: 100
 		}]
 	}
 	cfg := project.NodeCfg{

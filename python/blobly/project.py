@@ -928,10 +928,13 @@ class Signal:
     none; encode does not apply it); `labels` the value table as decode's values name it,
     {physical value: text}, and `raw_labels` as the database keys it, {raw key: text} — the field's
     bits, two's complement for a signed signal; every entry is there, where two keys a double
-    cannot tell apart (past 2**53) are one entry of `labels`."""
+    cannot tell apart (past 2**53) are one entry of `labels`. `start_raw` is the raw value a
+    node sends before anything sets the signal (GenSigStartValue, else its default) as the field's
+    bits, `start` the same physical — both None where the database states none; a simulated node
+    and a generator send it for a signal nothing sets, encode does not."""
     __slots__ = ("name", "start_bit", "length", "byte_order", "signed", "factor", "offset",
                  "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels",
-                 "raw_labels")
+                 "raw_labels", "start_raw", "start")
     name: str
     start_bit: int
     length: int
@@ -947,6 +950,8 @@ class Signal:
     mux_value: int
     labels: dict[float, str]
     raw_labels: dict[int, str]
+    start_raw: int | None
+    start: float | None
 
     def __repr__(self) -> str:
         unit = f" {self.unit!r}" if self.unit else ""
@@ -957,7 +962,12 @@ class Signal:
 class Message:
     """A message of a row's databases: `id`, `ext`, `dlc`, `j1939` (the database declares it),
     `format` (the frame format its database states: "classic", "fd", "fd_brs", or None where it
-    states none), `signals`; encode / send by signal name. It belongs to the run that listed it: after a stop
+    states none), `signals`; encode / send by signal name. When its database says a node sends
+    it: `cycle_ms` (GenMsgCycleTime, else its default), `send_type` (GenMsgSendType: "cyclic",
+    "event", "mixed", "none" or "other", None where unstated), `cycle_fast_ms`, `repetitions`,
+    `delay_ms` and `start_delay_ms` — each 0 where the file states none, so
+    `msg.send_cyclic(msg.cycle_ms)` sends it on the file's period. It belongs to the run that
+    listed it: after a stop
     and a start it goes on working while its row's database still has it at its position, and
     refuses otherwise."""
     name: str
@@ -966,6 +976,12 @@ class Message:
     dlc: int
     j1939: bool
     format: FrameFormat | None
+    cycle_ms: int
+    send_type: Literal["cyclic", "event", "mixed", "none", "other"] | None
+    cycle_fast_ms: int
+    repetitions: int
+    delay_ms: int
+    start_delay_ms: int
     channel: Channel
 
     def __init__(self, channel: Channel, index: int, name: str) -> None:
@@ -975,6 +991,10 @@ class Message:
     def _fill(self, info, run):
         self.id, self.ext, self.dlc, self.j1939 = info.id, bool(info.ext), info.dlc, bool(info.j1939)
         self.format = _FORMAT_NAMES.get(info.format)
+        self.cycle_ms, self.cycle_fast_ms = info.cycle_ms, info.cycle_fast_ms
+        self.repetitions, self.delay_ms = info.repetitions, info.delay_ms
+        self.start_delay_ms = info.start_delay_ms
+        self.send_type = _lib.SEND_TYPES.get(info.send_type)  # type: ignore[assignment]
         self._count, self._run, self._signals = info.signals, run, None
 
     def _live(self):
@@ -1004,6 +1024,8 @@ class Message:
                     s.minimum, s.maximum = info.minimum, info.maximum
                     s.multiplexor, s.multiplexed = bool(info.multiplexor), bool(info.multiplexed)
                     s.mux_value = info.mux_value
+                    s.start_raw = info.start_raw if info.has_start else None
+                    s.start = info.start if info.has_start else None
                     s.labels, s.raw_labels = {}, {}
                     raw, value = ctypes.c_uint64(), ctypes.c_double()
                     for k in range(info.labels):

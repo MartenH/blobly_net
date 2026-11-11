@@ -243,7 +243,7 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 	}
 	for ecu in e.ecus {
 		for m in ecu.messages {
-			if m.period_ms <= 0 || m.last_n < 0 {
+			if m.last_n < 0 {
 				continue // a response, or none handed out yet: no frame carries a generator's value
 			}
 			for s in m.signals {

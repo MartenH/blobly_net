@@ -20,7 +20,8 @@ pub fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 }
 
 // sender_message_frame encodes a message generator's frame from the first database that
-// defines the message: its id and DLC, the listed signals encoded onto a zero payload in order (a
+// defines the message: its id and DLC, the listed signals encoded in order onto the payload the
+// message starts from (candb.Message.initial: every other signal at its start value, else raw 0; a
 // signal listed twice takes its last entry), a multiplexed one only where the switch selects it;
 // its format the generator's `format:`, else the message's declared one (project.message_format).
 // An error when no database defines it, or the payload is past its stated format.
@@ -30,17 +31,18 @@ pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f6
 			if m.name != s.message {
 				continue
 			}
-			mut data := m.template()
 			// the switch first: it decides which multiplexed signals the frame carries, and only
 			// those are encoded, so a value kept for another branch never lands on this one's bits
 			sw := m.multiplexor_index()
+			mut switch_raw := ?u64(none)
 			if sw >= 0 {
 				for ss in s.signals {
 					if ss.name == m.signals[sw].name {
-						m.signals[sw].encode(mut data, sender_value(ss, n, el))
+						switch_raw = m.signals[sw].raw_from_phys(sender_value(ss, n, el))
 					}
 				}
 			}
+			mut data := m.initial(switch_raw)
 			carried := m.carried(data)
 			for ss in s.signals {
 				for i, sig in m.signals {

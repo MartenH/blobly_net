@@ -255,6 +255,8 @@ static int dbc_steps(int row) {
 	bb_message mi;
 	CHECK(bb_message_info_p(row, pt, &mi) == 0 && mi.id == 0x100 && !mi.ext && mi.dlc == 8 && mi.signals == 6 && !mi.j1939,
 		"Powertrain's info: id 0x%X dlc %d signals %d", mi.id, mi.dlc, mi.signals);
+	CHECK(mi.cycle_ms == 100 && mi.repetitions == 0 && mi.send_type == BB_SEND_UNSTATED,
+		"Powertrain's send attributes: cycle %d send type %d", mi.cycle_ms, mi.send_type);
 	char cut[4];
 	CHECK(bb_message_name_p(row, pt, cut, sizeof cut) == 10 && strcmp(cut, "Pow") == 0, "a cut name answers its whole length");
 	CHECK(bb_message_name_p(row, pt, NULL, 0) == 10, "cap 0 asks for the length alone");
@@ -263,7 +265,8 @@ static int dbc_steps(int row) {
 	bb_signal si;
 	char unit[16];
 	CHECK(bb_signal_info_p(row, pt, es, &si) == 0 && si.start_bit == 0 && si.length == 16 && si.factor == 0.25
-		&& !si.big_endian && !si.is_signed && si.labels == 0 && si.maximum == 16383.75, "EngineSpeed's info");
+		&& !si.big_endian && !si.is_signed && si.labels == 0 && si.maximum == 16383.75 && !si.has_start
+		&& si.start_raw == 0, "EngineSpeed's info");
 	CHECK(bb_signal_unit_p(row, pt, es, unit, sizeof unit) == 3 && strcmp(unit, "rpm") == 0, "EngineSpeed's unit: %s", unit);
 	CHECK(bb_signal_info_p(row, pt, gear, &si) == 0 && si.labels == 7, "Gear's value table: %d labels", si.labels);
 	char label[32];

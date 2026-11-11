@@ -8,10 +8,11 @@ fn catalog_db() candb.Database {
 	return candb.Database{
 		messages: [
 			candb.Message{
-				name:    'Powertrain'
-				id:      0x100
-				dlc:     8
-				signals: [
+				name:     'Powertrain'
+				id:       0x100
+				dlc:      8
+				cycle_ms: 100
+				signals:  [
 					candb.Signal{
 						name:      'EngineSpeed'
 						start_bit: 0
@@ -43,6 +44,8 @@ fn catalog_db() candb.Database {
 						values:    {
 							u64(0xFF): 'Fault'
 						}
+						start_raw: 0xFE
+						has_start: true
 					},
 					candb.Signal{
 						name:       'Pressure'
@@ -53,11 +56,15 @@ fn catalog_db() candb.Database {
 				]
 			},
 			candb.Message{
-				name:    'Muxed'
-				id:      0x18FF0001
-				ext:     true
-				dlc:     2
-				signals: [
+				name:           'Muxed'
+				id:             0x18FF0001
+				ext:            true
+				dlc:            2
+				send_type_name: 'spontaneous'
+				send_type:      .event
+				repetitions:    2
+				delay_ms:       20
+				signals:        [
 					candb.Signal{
 						name:           'Page'
 						start_bit:      0
@@ -149,9 +156,23 @@ fn test_the_catalog_lists_messages_and_describes_signals() {
 			check.equal(one.multiplexed, true)
 			check.equal(one.mux_value, 1)
 		end)
+		test("send attributes and start values", function()
+			local p = dbc.message("CAN1", "Powertrain")
+			check.equal(p.cycle_ms, 100)
+			check.equal(p.send_type, nil)
+			local m = dbc.message("CAN1", "Muxed")
+			check.equal(m.send_type, "event")
+			check.equal(m.repetitions, 2)
+			check.equal(m.delay_ms, 20)
+			check.equal(m.cycle_ms, 0)
+			local t = dbc.signal("CAN1", "Powertrain", "Temp")
+			check.equal(t.start_raw, 0xFE)
+			check.equal(t.start, 9)
+			check.equal(dbc.signal("CAN1", "Powertrain", "Gear").start, nil)
+		end)
 	')!
-	assert env.total() == 5
-	assert env.passed() == 5, '${env.results}'
+	assert env.total() == 6
+	assert env.passed() == 6, '${env.results}'
 }
 
 fn test_decode_reports_raw_values_and_labels_for_what_a_frame_carries() {

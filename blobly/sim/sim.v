@@ -52,6 +52,13 @@ pub fn gen_stepmod(period f64, count f64, base f64) Gen {
 	return Gen{ kind: 'stepmod', offset: base, amp: count, freq: period }
 }
 
+// follows_time is whether the generator's value moves with time on its own (sine, sawtooth,
+// stepmod): what can start a change send. A const never changes, and a counter moves only with a
+// send, so neither starts one.
+pub fn (g Gen) follows_time() bool {
+	return g.kind in ['sine', 'sawtooth', 'stepmod']
+}
+
 // value evaluates the generator at time t (seconds) for send index n.
 pub fn (g Gen) value(t f64, n int) f64 {
 	return match g.kind {
@@ -104,9 +111,22 @@ pub mut:
 	e2e_n    int
 	last_e2e int
 	has_tx   bool // whether last_e2e means anything yet
-	next_ms   f64 // next due time
-	last_t    f64 // when due_frames last handed a frame of it out (s): what its generators read
-	last_n    int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
+	next_ms  f64  // next due time
+	last_t   f64  // when due_frames last handed a frame of it out (s): what its generators read
+	last_n   int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
+	ev       ChangeState // sending on a change (the send type event or mixed, Message.on_change)
+}
+
+// ChangeState is where a message sent on a change stands: the raw values its time-driven
+// generators gave when last looked at, how many sends a change still owes, the earliest the next
+// of them may go, and the earliest any send of it may go by its GenMsgDelayTime after the last (ms).
+pub struct ChangeState {
+pub mut:
+	raws    []u64
+	seen    bool
+	left    int
+	next_ms f64
+	hold_ms f64
 }
 
 // e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
@@ -130,9 +150,45 @@ pub fn (mut m SimMessage) advance_e2e() {
 	m.e2e_n = v + 1
 }
 
-// build encodes the message's signals at time t into a CAN frame.
+// sends is whether the node sends the message on its own: on its cycle, or where its send type
+// sends on a change, on a change of a generator of it that moves with time (step_change).
+pub fn (m SimMessage) sends() bool {
+	return m.period_ms > 0 || (m.msg.on_change() && m.signals.any(it.gen.follows_time()))
+}
+
+// change_raws is the raw value each generator that moves with time (Gen.follows_time) gives its
+// signal at time t (s): what a change is a change of.
+fn (m SimMessage) change_raws(t f64) []u64 {
+	mut out := []u64{cap: m.signals.len}
+	for s in m.signals {
+		if !s.gen.follows_time() {
+			continue
+		}
+		mut raw := u64(0)
+		for sig in m.msg.signals {
+			if sig.name == s.name {
+				raw = sig.raw_from_phys(s.gen.value(t, 0))
+				break
+			}
+		}
+		out << raw
+	}
+	return out
+}
+
+// build encodes the message's signals at time t into a CAN frame, over the payload the node starts
+// from (candb.Message.initial: a signal no generator drives at its start value, else raw 0).
 pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
-	mut data := []u8{len: m.msg.dlc}
+	mut switch_raw := ?u64(none)
+	sw := m.msg.multiplexor_index()
+	if sw >= 0 {
+		for s in m.signals {
+			if s.name == m.msg.signals[sw].name {
+				switch_raw = m.msg.signals[sw].raw_from_phys(s.gen.value(t, m.send_n))
+			}
+		}
+	}
+	mut data := m.msg.initial(switch_raw)
 	for s in m.signals {
 		for sig in m.msg.signals {
 			if sig.name == s.name {
@@ -182,8 +238,17 @@ pub mut:
 	ecus []SimEcu
 }
 
-// save_counters / restore_counters carry alive counters across an engine rebuild, through a
-// cache the caller owns and keeps for the whole run.
+// Carry is what an engine rebuild carries over, kept by the caller for the whole run: each
+// message's counters, and where a message sent on a change stands (a burst's remaining
+// repetitions, its delay boundary).
+pub struct Carry {
+pub mut:
+	counters map[string]int
+	changes  map[string]ChangeState
+}
+
+// save_state / restore_state carry alive counters and change-send state across an engine
+// rebuild, through a Carry the caller owns and keeps for the whole run.
 //
 // Toggling ONE ECU's checkbox rebuilds the WHOLE engine. Without this, every other protected
 // message restarts its counter at zero at that moment, and a receiver checking the sequence
@@ -196,19 +261,29 @@ pub mut:
 //
 // Keyed by ECU and message NAME, so it survives index shifts. A message with no cached entry
 // keeps its zero, which is correct: it has genuinely not been sent.
-pub fn (e Engine) save_counters(mut into map[string]int) {
+pub fn (e Engine) save_state(mut c Carry) {
+	// change-send state only of the ECUs in this engine: a node switched off and on again starts
+	// from its values then, not from a burst it was in when it left
+	c.changes = map[string]ChangeState{}
 	for ecu in e.ecus {
 		for m in ecu.messages {
-			into['${ecu.name}|${m.msg.name}'] = m.send_n
-			into['e2e|${ecu.name}|${m.msg.name}'] = m.e2e_n
-			into['e2elast|${ecu.name}|${m.msg.name}'] = if m.has_tx { m.last_e2e } else { -1 }
+			c.counters['${ecu.name}|${m.msg.name}'] = m.send_n
+			c.counters['e2e|${ecu.name}|${m.msg.name}'] = m.e2e_n
+			c.counters['e2elast|${ecu.name}|${m.msg.name}'] = if m.has_tx { m.last_e2e } else { -1 }
+			if m.ev.seen {
+				c.changes['${ecu.name}|${m.msg.name}'] = m.ev
+			}
 		}
 	}
 }
 
-pub fn (mut e Engine) restore_counters(from map[string]int) {
+pub fn (mut e Engine) restore_state(c Carry) {
+	from := c.counters
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
+			if ev := c.changes['${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
+				e.ecus[i].messages[j].ev = ev
+			}
 			if n := from['${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
 				e.ecus[i].messages[j].send_n = n
 			}
@@ -225,6 +300,20 @@ pub fn (mut e Engine) restore_counters(from map[string]int) {
 			}
 		}
 	}
+}
+
+// all_due_by_ms is when every cyclic message of a freshly built engine has been due at least
+// once: its latest first due time (GenMsgStartDelayTime), 0 with none.
+pub fn (e Engine) all_due_by_ms() f64 {
+	mut by := 0.0
+	for ecu in e.ecus {
+		for m in ecu.messages {
+			if m.period_ms > 0 && m.next_ms > by {
+				by = m.next_ms
+			}
+		}
+	}
+	return by
 }
 
 // due_frames advances every cyclic message whose period has elapsed by now_ms and
@@ -254,27 +343,68 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
-			if m.period_ms <= 0 {
-				continue
-			}
-			if now_ms + 1e-6 >= m.next_ms {
-				mut f := m.build(now_ms / 1000.0)
-				if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
-					m.last_t = now_ms / 1000.0
-					m.last_n = m.send_n
-				}
-				m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
-				// The PROTECTION counter is what freezes. A dropped frame still advances it, so
-				// recovery shows a gap rather than a stall — the difference a receiver uses to
-				// tell a lost frame from a stuck sender.
-				m.advance_e2e()
+			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev.hold_ms {
+				m.emit(now_ms, send)
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
 				}
 			}
+			m.step_change(now_ms, send)
 		}
 	}
+}
+
+// emit builds the message's frame at now_ms and hands it to `send`.
+fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
+	mut f := m.build(now_ms / 1000.0)
+	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
+		m.last_t = now_ms / 1000.0
+		m.last_n = m.send_n
+	}
+	m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
+	// The PROTECTION counter is what freezes. A dropped frame still advances it, so
+	// recovery shows a gap rather than a stall — the difference a receiver uses to
+	// tell a lost frame from a stuck sender.
+	m.advance_e2e()
+	if m.msg.on_change() {
+		m.ev.hold_ms = now_ms + f64(m.msg.delay_ms)
+	}
+}
+
+// change_gap_ms is the least time between two change sends of a message whose file states
+// neither GenMsgCycleTimeFast nor GenMsgDelayTime: the rate a changing generator is sent at,
+// rather than the simulation loop's.
+pub const change_gap_ms = 10
+
+// step_change sends a message whose send type is event or mixed when a generator that moves with
+// time changes the raw value of one of its signals (a counter moving with a send is no change): 1 + its repetitions times, the repetitions a fast cycle apart, no
+// send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
+// change_gap_ms apart where the file states neither, none before its start delay. The values when
+// first looked at are where it starts, not a change.
+fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) bool) {
+	if !m.msg.on_change() || !m.signals.any(it.gen.follows_time())
+		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
+		return
+	}
+	raws := m.change_raws(now_ms / 1000.0)
+	if !m.ev.seen {
+		m.ev.seen = true
+		m.ev.raws = raws
+	} else if raws != m.ev.raws {
+		m.ev.raws = raws
+		m.ev.left = 1 + m.msg.repetitions
+	}
+	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
+		return
+	}
+	m.emit(now_ms, send)
+	m.ev.left--
+	mut gap := if m.ev.left > 0 { m.msg.cycle_fast_ms } else { 0 }
+	if gap <= 0 && m.msg.delay_ms <= 0 {
+		gap = change_gap_ms
+	}
+	m.ev.next_ms = now_ms + f64(gap)
 }
 
 // loop_wait_ms is the longest a simulation loop's receive waits when nothing is due sooner: how
@@ -287,15 +417,27 @@ pub fn since_ms(t0_ns u64) f64 {
 	return f64(time.sys_mono_now() - t0_ns) / 1e6
 }
 
-// next_due_ms is when the engine's next cyclic message is due on its clock, or none.
+// next_due_ms is when the engine's next cyclic message, or a change send's next repetition, is
+// due on its clock, or none.
 pub fn (e &Engine) next_due_ms() ?f64 {
 	mut next := 0.0
 	mut any := false
 	for ecu in e.ecus {
 		for m in ecu.messages {
-			if m.period_ms > 0 && (!any || m.next_ms < next) {
-				next = m.next_ms
-				any = true
+			// a send is held back to its delay after the one before (ChangeState.hold_ms)
+			if m.period_ms > 0 {
+				due := math.max(m.next_ms, m.ev.hold_ms)
+				if !any || due < next {
+					next = due
+					any = true
+				}
+			}
+			if m.ev.left > 0 {
+				due := math.max(m.ev.next_ms, m.ev.hold_ms)
+				if !any || due < next {
+					next = due
+					any = true
+				}
 			}
 		}
 	}

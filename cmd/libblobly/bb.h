@@ -138,7 +138,25 @@ typedef struct bb_message {
 	int32_t  dlc;      /* the payload length bb_encode gives it: the DBC's DLC, 0 for a negative
 	                      one (one past 64 bb_encode refuses) */
 	int32_t  signals;  /* how many signals it has: bb_signal_info's s is 0 .. signals - 1 */
+	/* when its database says a node sends it, each 0 where the file states none: */
+	int32_t  cycle_ms;       /* GenMsgCycleTime (else its BA_DEF_DEF_) */
+	int32_t  cycle_fast_ms;  /* GenMsgCycleTimeFast: the period of its repetitions */
+	int32_t  repetitions;    /* GenMsgNrOfRepetition: sends after the first, on a change */
+	int32_t  delay_ms;       /* GenMsgDelayTime: the least time between two sends */
+	int32_t  start_delay_ms; /* GenMsgStartDelayTime: from the node's start to its first send */
+	uint8_t  send_type;      /* GenMsgSendType, an enum bb_send_type */
 } bb_message;
+
+/* A message's GenMsgSendType as the database reads it: the choice's own spelling is the file's
+ * (cyclicIfActive is cyclic, cyclicAndSpontaneous mixed, NoMsgSendType none). */
+enum bb_send_type {
+	BB_SEND_UNSTATED = 0, /* the file states none */
+	BB_SEND_CYCLIC = 1,   /* on its cycle */
+	BB_SEND_EVENT = 2,    /* when a signal changes */
+	BB_SEND_MIXED = 3,    /* on its cycle and when a signal changes */
+	BB_SEND_NONE = 4,     /* not sent (NoMsgSendType) */
+	BB_SEND_OTHER = 5     /* a choice the reader does not recognise */
+};
 
 /* A signal of a message (bb_signal_info). Its name and unit are bb_signal_name's and
  * bb_signal_unit's, its value table bb_signal_label's. physical = raw * factor + offset, the raw
@@ -157,6 +175,11 @@ typedef struct bb_signal {
 	double  minimum;      /* the DBC's [min|max], both 0 where it states none; NOT applied by
 	                         bb_encode, which only keeps a value within the signal's width */
 	double  maximum;
+	uint64_t start_raw;   /* GenSigStartValue (else its BA_DEF_DEF_): the raw value a node sends
+	                         before anything sets the signal, as the field's bits (two's complement
+	                         for a signed signal); 0 unless has_start */
+	double  start;        /* the same, physical */
+	uint8_t has_start;    /* the database states a start value (0 is one) */
 } bb_signal;
 
 /* What bb_uds_open opened: on a CAN row the ids a request goes out and its answer comes back on,

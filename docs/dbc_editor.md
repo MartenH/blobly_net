@@ -26,7 +26,9 @@ else (forms, validation, the bit grid) is table stakes.
 `candb` was parse-only; the editor needs the inverse. The serializer emits the
 exact record subset the parser reads — `BU_`, `BO_`, `SG_` (incl. mux
 markers, receivers), `BO_TX_BU_`, `CM_ SG_`, `VAL_`, the message attributes
-`GenMsgCycleTime`, `VFrameFormat`, `CANFD_BRS` and the E2E contract ([dbc_attributes.md](dbc_attributes.md))
+`GenMsgCycleTime`, the send attributes (`GenMsgSendType`, `GenMsgCycleTimeFast`,
+`GenMsgNrOfRepetition`, `GenMsgDelayTime`, `GenMsgStartDelayTime`), `VFrameFormat`, `CANFD_BRS` and the E2E
+contract, and the signal attribute `GenSigStartValue` ([dbc_attributes.md](dbc_attributes.md))
 with their `BA_DEF_`s, and the standard preamble — in **canonical order**: messages by id, signals by
 start_bit then name, value-table keys ascending, nodes sorted. Two laws, both
 tested (`dbc_write_test.v`):

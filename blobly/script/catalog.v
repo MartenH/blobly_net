@@ -7,7 +7,9 @@ import blobly.lua
 import blobly.candb
 
 // push_message leaves a message's description on the stack: name, id, ext, dlc (the length an
-// encoding has), j1939 (the database declares it), and its signals in their order.
+// encoding has), j1939 (the database declares it), its send attributes (cycle_ms, send_type —
+// absent where unstated — cycle_fast_ms, repetitions, delay_ms, start_delay_ms), and its signals
+// in their order.
 fn push_message(l lua.State, m candb.Message) {
 	l.new_table()
 	l.set_str('name', m.name)
@@ -15,6 +17,14 @@ fn push_message(l lua.State, m candb.Message) {
 	l.set_bool('ext', m.ext)
 	l.set_int('dlc', m.payload_len())
 	l.set_bool('j1939', m.j1939)
+	l.set_int('cycle_ms', m.cycle_ms)
+	if m.send_type != .unstated {
+		l.set_str('send_type', m.send_type.name())
+	}
+	l.set_int('cycle_fast_ms', m.cycle_fast_ms)
+	l.set_int('repetitions', m.repetitions)
+	l.set_int('delay_ms', m.delay_ms)
+	l.set_int('start_delay_ms', m.start_delay_ms)
 	l.new_table()
 	for i, s in m.signals {
 		push_signal(l, s)
@@ -26,7 +36,8 @@ fn push_message(l lua.State, m candb.Message) {
 // push_signal leaves a signal's description on the stack. `labels` is the value table keyed by
 // the physical value decode reads for each raw key (the first entry where two keys give one
 // value), `raw_labels` keyed by the raw key itself: the field's bits as a Lua integer, which
-// decode(..., "raw") returns.
+// decode(..., "raw") returns. `start_raw` / `start` are its start value as raw bits and physical,
+// absent where the database states none.
 fn push_signal(l lua.State, s candb.Signal) {
 	l.new_table()
 	l.set_str('name', s.name)
@@ -43,6 +54,10 @@ fn push_signal(l lua.State, s candb.Signal) {
 	l.set_bool('multiplexed', s.is_multiplexed)
 	if s.is_multiplexed {
 		l.set_int('mux_value', s.multiplexor_value)
+	}
+	if v := s.start() {
+		l.set_int('start_raw', i64(s.start_raw))
+		l.set_num('start', v)
 	}
 	l.new_table()
 	mut seen := map[f64]bool{}

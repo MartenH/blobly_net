@@ -199,8 +199,9 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut engine := sim.Engine{}
 	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
 	// the engine, so state kept only in the previous engine is lost and switching it back on
-	// restarts its counter at zero — a backward jump a checking receiver rejects.
-	mut counters := map[string]int{}
+	// restarts its counter at zero — a backward jump a checking receiver rejects. A change send's
+	// burst and delay boundary are carried too, so toggling one ECU does not cut another's.
+	mut carry := sim.Carry{}
 	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
 	mut built := false
 	t0 := time.sys_mono_now()
@@ -244,14 +245,14 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 				enabled[k] = v
 			}
 			a.mu.unlock()
-			engine.save_counters(mut counters) // fold the outgoing engine's counts in first
+			engine.save_state(mut carry) // fold the outgoing engine's state in first
 			engine = sim.Engine{}
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
-			engine.restore_counters(counters)
+			engine.restore_state(carry)
 		}
 		// serve_pass applies ONE fault source, the module's table — Lua's sim.fault() writes it too.
 		// The panel used to write a map on App that only the panel read, so a script launched
