@@ -157,6 +157,9 @@ mut:
 	running []Running
 	// sys_mono_now when the run ends (set_deadline); 0 is none
 	deadline u64
+	// whether the deadline has passed, built once by set_deadline (V never frees a closure); nil
+	// while there is none
+	at_deadline fn () bool = unsafe { nil }
 	// per channel: the E2E verdicts on what its handle reads, and the declared E2E counters of
 	// what the script sends by name (e2e.v)
 	e2e_rx map[string]&sim.E2eReader
@@ -1556,10 +1559,7 @@ fn l_bus_send_message(l lua.State) i32 {
 		data:     l.arg_bytes(3)
 	}, msg.j1939) or { return l.fail('${name}: ${err}') }
 	mut b := transport.Bus(bus)
-	stop := fn [env] () bool {
-		return env.expired()
-	}
-	j1939.send_message(mut b, frame, msg.j1939, stop) or {
+	j1939.send_message(mut b, frame, msg.j1939, env.at_deadline) or {
 		return l.fail('send failed on ${name}: ${err}')
 	}
 	return 0

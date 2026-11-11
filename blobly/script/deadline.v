@@ -45,6 +45,10 @@ struct Running {
 // that exists already is not bound.
 pub fn (mut env Env) set_deadline(after_ms i64) {
 	env.deadline = time.sys_mono_now() + u64(after_ms) * 1_000_000
+	deadline := env.deadline
+	env.at_deadline = fn [deadline] () bool {
+		return time.sys_mono_now() >= deadline
+	}
 	env.st.do_string(deadline_calls) or { panic('deadline_calls: ${err}') }
 	env.st.set_count_hook(l_deadline_hook, deadline_every)
 }
@@ -107,12 +111,10 @@ fn (env &Env) bounded_window(ms i64) i64 {
 // deadline_stop is the stop a script's client or channel asks to end at the run's deadline; none
 // when the run has no deadline.
 fn (env &Env) deadline_stop() ?fn () bool {
-	if env.deadline == 0 {
+	if env.at_deadline == unsafe { nil } {
 		return none
 	}
-	return fn [env] () bool {
-		return env.expired()
-	}
+	return env.at_deadline
 }
 
 // bound_client is `c` on `ch` abandoning a request once the deadline has passed: the client

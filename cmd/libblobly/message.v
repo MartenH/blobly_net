@@ -92,15 +92,11 @@ pub fn bb_message_send(h i32, row i32, m i32, p &C.bb_payload) i32 {
 	}
 	// a cancel asked before this send is not this send's
 	stdatomic.store_i64(&hd.cancel, 0)
-	closing := &hd.closing
-	cancel := &hd.cancel
-	stop := fn [closing, cancel] () bool {
-		return stdatomic.load_i64(closing) != 0 || stdatomic.load_i64(cancel) != 0
-	}
 	// as the row it is attached to, framed for that row and the wire in one policy read (framing.v)
 	mut bus := transport.Bus(hd.bus)
-	j1939.send_message(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939, stop) or {
-		if stdatomic.load_i64(cancel) != 0 {
+	j1939.send_message(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939,
+		hd.send_stop) or {
+		if stdatomic.load_i64(&hd.cancel) != 0 {
 			return fail(bb_err_cancelled, 'send: cancelled: ${err.msg()}')
 		}
 		return fail(bb_err, 'send: ${err.msg()}')

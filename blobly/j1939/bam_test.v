@@ -257,10 +257,10 @@ fn test_the_lane_is_held_until_the_last_frame_is_settled() {
 	p.add(wire, a, 1)
 	first := p.take(0)
 	assert first.len == 1 && !first[0].last
-	assert !p.settle(first[0], true)
+	assert !p.settle(first[0], true, 0)
 	mid := p.take(50)
 	assert mid.len == 1 && !mid[0].last
-	assert !p.settle(mid[0], true)
+	assert !p.settle(mid[0], true, 50)
 	last := p.take(100)
 	assert last.len == 1 && last[0].last
 	assert p.has(1), 'in flight until reported'
@@ -268,7 +268,7 @@ fn test_the_lane_is_held_until_the_last_frame_is_settled() {
 	key := lane_key(wire, 0x21)
 	assert !lane_take(key, other, time.sys_mono_now(), hold_ns()), 'held while the last frame is out'
 	assert p.take(500).len == 0, 'nothing more of the lane while its frame is unreported'
-	assert p.settle(last[0], true)
+	assert p.settle(last[0], true, 500)
 	assert !p.has(1)
 	assert lane_take(key, other, time.sys_mono_now() + u64(bam_gap_ms) * u64(time.millisecond),
 		hold_ns())
@@ -283,7 +283,7 @@ fn test_a_transfer_whose_lane_was_lost_is_dropped() {
 	p.add(wire, a, 1)
 	d := p.take(0)
 	assert d.len == 1
-	p.settle(d[0], true)
+	p.settle(d[0], true, 0)
 	// another sender claimed it during the stall, and its claim has since lapsed
 	key := lane_key(wire, 0x21)
 	thief := lane_owner()
@@ -299,7 +299,7 @@ fn test_a_transfer_whose_lane_was_lost_is_dropped() {
 	mut q := Pacer{}
 	q.add(wire, a, 2)
 	e := q.take(0)
-	q.settle(e[0], true)
+	q.settle(e[0], true, 0)
 	lock tp_lanes {
 		tp_lanes.by[key] = Lane{
 			owner: q.owner
@@ -308,4 +308,31 @@ fn test_a_transfer_whose_lane_was_lost_is_dropped() {
 	}
 	assert q.take(1000).len == 0
 	assert q.pending() == 0
+}
+
+// a lane's next frame — of its transfer, or of the next transfer — is a gap after the send before
+// it returned, not after that frame was handed out
+fn test_the_gap_runs_from_when_a_send_returned() {
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x23), 9)) or { panic(err) }
+	b := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x23), 9)) or { panic(err) }
+	mut p := Pacer{}
+	p.add('inproc:bam_gap_after', a, 1)
+	p.add('inproc:bam_gap_after', b, 2)
+	first := p.take(0)
+	assert first.len == 1
+	assert !p.settle(first[0], true, 100), 'a write that took 100 ms'
+	assert p.take(60).len == 0, 'not a gap after it was handed out'
+	assert p.take(149).len == 0
+	mid := p.take(150)
+	assert mid.len == 1
+	assert !p.settle(mid[0], true, 150)
+	last := p.take(200)
+	assert last.len == 1 && last[0].last
+	assert p.settle(last[0], true, 300)
+	assert p.take(250).len == 0, 'the next transfer waits a gap after the last frame returned'
+	assert p.take(349).len == 0
+	next := p.take(350)
+	assert next.len == 1 && next[0].tag == 2
+	assert !p.settle(next[0], true, 350)
+	p.abandon(2)
 }

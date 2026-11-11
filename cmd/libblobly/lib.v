@@ -571,6 +571,8 @@ mut:
 	cancel  i64 // bb_message_cancel: the bb_message_send in progress ends between its frames
 	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
 	stop fn () bool = unsafe { nil }
+	// asks `closing` and `cancel`, for bb_message_send's BAM: built once at open, not per send
+	send_stop fn () bool = unsafe { nil }
 	// the row bb_e2e_attach bound its frames' E2E verdicts to (e2e.v)
 	judge E2eJudge
 	// the J1939 listener bb_j1939_attach bound to the handle's frames (j1939.v)
@@ -941,6 +943,10 @@ pub fn bb_bus_open(iface &char) i32 {
 	closing := &hd.closing
 	hd.stop = fn [closing] () bool {
 		return stdatomic.load_i64(closing) != 0
+	}
+	cancel := &hd.cancel
+	hd.send_stop = fn [closing, cancel] () bool {
+		return stdatomic.load_i64(closing) != 0 || stdatomic.load_i64(cancel) != 0
 	}
 	bb_mu.lock()
 	h := bb_next

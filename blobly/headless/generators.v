@@ -61,6 +61,9 @@ mut:
 	slot      u64
 	done      u64
 	framed    ?transport.Bus
+	// a BAM in progress ends at the run's stop: asked through this, built once (stop_fn), since V
+	// never frees a closure
+	stopper fn () bool = unsafe { nil }
 }
 
 // fires_waiting is how many fires may wait for one generator's loop at once.
@@ -360,6 +363,17 @@ fn (mut g Gen) poke() {
 	}
 }
 
+// stop_fn is the run's stop as a closure, built on first use and kept.
+fn (mut g Gen) stop_fn() fn () bool {
+	if isnil(g.stopper) {
+		ctl := g.ctl
+		g.stopper = fn [ctl] () bool {
+			return !ctl.running
+		}
+	}
+	return g.stopper
+}
+
 // send puts g's frame on the bus once — a J1939 message past eight bytes on a classic row as its
 // BAM, paced (j1939.send_message), the run's stop asked between its frames: '' when the bus took
 // it, else why not.
@@ -379,12 +393,7 @@ fn (mut g Gen) send(mut bus transport.Bus) string {
 	} else {
 		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return err.msg() }
 	}
-	// a BAM in progress ends at the run's stop
-	ctl := g.ctl
-	stop := fn [ctl] () bool {
-		return !ctl.running
-	}
-	j1939.send_message(mut bus, frame, sim.sender_j1939(s, g.dbs), stop) or {
+	j1939.send_message(mut bus, frame, sim.sender_j1939(s, g.dbs), g.stop_fn()) or {
 		return 'not sent: ${err}'
 	}
 	g.mu.lock()

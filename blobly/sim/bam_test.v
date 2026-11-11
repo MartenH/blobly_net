@@ -1,5 +1,6 @@
 module sim
 
+import time
 import blobly.candb
 import blobly.j1939
 import blobly.transport
@@ -155,4 +156,37 @@ fn test_a_bam_is_the_last_sent_only_once_it_is_whole() {
 	assert r.seen == 3, 'the refused frame ends the transfer'
 	assert refused.ecus[0].messages[0].last_n == -1
 	assert refused.tp_sent.len == 0
+}
+
+// a frame whose write took 100 ms is followed by the next a gap after the write returned
+fn test_a_slow_write_moves_the_next_frame() {
+	msg := body_status()
+	mut e := Engine{
+		ecus: [
+			SimEcu{
+				name:     'Body'
+				messages: [SimMessage{
+					msg:       msg
+					period_ms: 1000
+				}]
+			},
+		]
+	}
+	mut log := &SentAt{}
+	for t := 0; t <= 400; t += 5 {
+		e.step(f64(t), fn [mut log, t] (f transport.CanFrame) bool {
+			log.at << t
+			if log.at.len == 1 {
+				time.sleep(100 * time.millisecond)
+			}
+			return true
+		})
+	}
+	assert log.at.len == 4, '${log.at}'
+	assert log.at[1] >= 150, '${log.at}'
+}
+
+struct SentAt {
+mut:
+	at []int
 }

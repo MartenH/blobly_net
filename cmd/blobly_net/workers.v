@@ -410,7 +410,7 @@ fn (mut app App) send_gen_tp(now_ms f64) {
 		x := xs[k]
 		sent := app.tx_on_chan(x.row, x.chan, x.iface, d.frame)
 		app.mu.lock()
-		whole := app.gen_tp.settle(d, sent)
+		whole := app.gen_tp.settle(d, sent, f64(time.ticks()))
 		if !app.gen_tp.has(d.tag) {
 			app.gen_tp_xfers.delete(d.tag)
 		}

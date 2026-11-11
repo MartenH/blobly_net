@@ -444,8 +444,10 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 		}
 	}
 	e.step_nm(now_ms, send)
+	t0 := time.sys_mono_now()
 	for d in e.tp.take(now_ms) {
-		if e.tp.settle(d, send(d.frame)) {
+		sent := send(d.frame)
+		if e.tp.settle(d, sent, j1939.returned_ms(now_ms, t0)) {
 			if last := e.tp_sent[d.tag] {
 				e.record_sent(last)
 			}
