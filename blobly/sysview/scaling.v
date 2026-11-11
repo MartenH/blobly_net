@@ -105,17 +105,17 @@ fn (s Scaling) raw(text string, lim Range) !i64 {
 		r := (p * g.d - g.v0) / g.v1
 		// the segment's raw value nearest the text: the rounded one where the segment holds it,
 		// else its end on the side the text lies
-		mut near := if r < f64(a) { a } else { b }
+		mut cand := if r < f64(a) { a } else { b }
 		if math.abs(r) <= 9.0e18 {
 			raw := i64(math.round(r))
 			if raw >= a && raw <= b {
-				near = raw
+				cand = raw
 				held = true
 			}
 		}
-		d := math.abs(g.physical(near) - p)
+		d := math.abs(g.physical(cand) - p)
 		if d < best_d {
-			best, best_d = near, d
+			best, best_d = cand, d
 		}
 	}
 	lo, hi := s.bounds(lim)
