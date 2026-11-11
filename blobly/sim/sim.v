@@ -509,16 +509,19 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 			}
 		}
 	}
-	// connections past their wait are aborted, and so are the ones it answers whose packets stopped
+	// a connection whose lane another sender took ends unsent; one past its wait is aborted, and so
+	// are the ones it answers whose packets stopped
 	for k := 0; k < e.conns.len; k++ {
-		out := e.conns[k].poll(now_ms)
+		out := if e.conns[k].take_lane(time.sys_mono_now()) {
+			e.conns[k].poll(now_ms)
+		} else {
+			e.conns[k].lost()
+		}
 		e.send_conn(out.frames, send)
 		if out.end != .open {
 			e.conn_ended(e.conns[k], out)
 			e.conns.delete(k)
 			k--
-		} else {
-			e.conns[k].take_lane(time.sys_mono_now())
 		}
 	}
 	e.send_conn(e.answers.poll(now_ms), send)
@@ -764,6 +767,9 @@ fn (mut e Engine) carry_local(send fn (f transport.CanFrame) bool) {
 // those it took for its own connections to read at the next step (carry_local): a frame that did
 // not go out is never read as sent, so a connection it belonged to times out rather than completes.
 //
+// Each packet renews its connection's lane first: a connection whose lane another sender took
+// ends there, nothing more of it sent, its abort included (Originator.lost).
+//
 // The clock moves on by the time the writes took, and a connection that wrote waits for its answer
 // from then (Originator.wrote), so a slow window is not timed out.
 fn (mut e Engine) send_conn(frames []transport.CanFrame, send fn (f transport.CanFrame) bool) {
@@ -772,7 +778,19 @@ fn (mut e Engine) send_conn(frames []transport.CanFrame, send fn (f transport.Ca
 	}
 	t0 := time.sys_mono_now()
 	mut sent := []transport.CanFrame{}
+	mut lost := []u16{}
 	for f in frames {
+		id := j1939.decompose(f.id)
+		if id.pgn() == j1939.pgn_tp_dt {
+			pair := (u16(id.sa) << 8) | u16(id.da())
+			if pair in lost {
+				continue
+			}
+			if !e.keep_lane(id.sa, id.da()) {
+				lost << pair
+				continue
+			}
+		}
 		if !send(f) {
 			break
 		}
@@ -785,6 +803,23 @@ fn (mut e Engine) send_conn(frames []transport.CanFrame, send fn (f transport.Ca
 			o.wrote(e.now_ms)
 		}
 	}
+}
+
+// keep_lane renews the lane of its connection from `sa` to `da` before a packet of it is written:
+// false, the connection ended lost, once another sender has taken it.
+fn (mut e Engine) keep_lane(sa u8, da u8) bool {
+	for k := 0; k < e.conns.len; k++ {
+		if e.conns[k].sa == sa && e.conns[k].da == da {
+			if e.conns[k].take_lane(time.sys_mono_now()) {
+				return true
+			}
+			out := e.conns[k].lost()
+			e.conn_ended(e.conns[k], out)
+			e.conns.delete(k)
+			return false
+		}
+	}
+	return true
 }
 
 // conn_ended lets a finished connection's lane go and says, once per message and outcome, one

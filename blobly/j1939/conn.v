@@ -632,8 +632,19 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 
 // lane_lost is the end of a connection whose lane another sender took: nothing more is sent, its
 // abort included, since that sender's connection runs between the same two addresses.
-fn (o Originator) lane_lost() ConnError {
+fn (mut o Originator) lane_lost() ConnError {
+	out := o.lost()
 	return ConnError{
+		end:    out.end
+		detail: out.detail
+	}
+}
+
+// lost ends the connection as one whose lane another sender took (take_lane false): it returns no
+// frame, its abort included, and the caller sends nothing more of it.
+pub fn (mut o Originator) lost() ConnOut {
+	o.state = .ended
+	return ConnOut{
 		end:    .lost
 		detail: '${o.what()}: another sender in this process took its lane; nothing more sent'
 	}

@@ -376,3 +376,62 @@ fn test_the_next_bam_frame_bounds_the_loop_wait() {
 	assert next >= 50 && next < 51, 'the next packet, not the next period: ${next}'
 	assert e.recv_wait_ms(48) == 2
 }
+
+// holder_takes claims the lane of a connection from 0x21 to 0x00 on `wire` for another sender,
+// as if after the engine's claim lapsed.
+fn holder_takes(wire string) {
+	holder := j1939.connection_for(transport.CanFrame{
+		id:       j1939.compose(6, 0xEF00, 0x00, 0x21)
+		extended: true
+		data:     []u8{len: 16}
+	}, wire, 0) or { panic(err) }
+	assert holder.take_lane(time.sys_mono_now() + 10 * u64(time.second))
+}
+
+// A window renews its lane before each packet: once another sender has taken it, nothing more of
+// the connection goes out, no abort either, and it is said once.
+fn test_a_window_whose_lane_is_taken_stops_unsent() {
+	wire := 'inproc:sim_conn_lane_window'
+	mut e := Engine{
+		iface: wire
+		ecus:  [j1939_node('Body', 'PropA_Cfg', 5000)]
+	}
+	assert e.due_frames(0).len == 1 && e.conns.len == 1
+	e.on_frame(transport.CanFrame{
+		id:       j1939.compose(7, j1939.pgn_tp_cm, 0x21, 0x00)
+		extended: true
+		data:     [j1939.cm_cts, 3, 1, 0xFF, 0xFF, 0x00, 0xEF, 0x00]
+	})
+	mut out := &FrameBox{}
+	e.step(5, fn [mut out, wire] (f transport.CanFrame) bool {
+		out.frames << f
+		if out.frames.len == 1 {
+			holder_takes(wire)
+		}
+		return true
+	})
+	assert out.frames.map(it.data[0]) == [u8(1)]
+	assert e.conns.len == 0
+	notes := e.take_notes()
+	assert notes.len == 1 && notes[0].contains('took its lane'), notes.str()
+}
+
+// A connection waiting for its CTS renews its lane each step: once another sender has taken it,
+// the connection ends there with nothing sent.
+fn test_a_waiting_connection_whose_lane_is_taken_ends_unsent() {
+	wire := 'inproc:sim_conn_lane_wait'
+	mut e := Engine{
+		iface: wire
+		ecus:  [j1939_node('Body', 'PropA_Cfg', 5000)]
+	}
+	assert e.due_frames(0).len == 1 && e.conns.len == 1
+	holder_takes(wire)
+	mut out := &FrameBox{}
+	e.step(f64(j1939.conn_t3_ms + 10), fn [mut out] (f transport.CanFrame) bool {
+		out.frames << f
+		return true
+	})
+	assert out.frames.len == 0 && e.conns.len == 0
+	notes := e.take_notes()
+	assert notes.len == 1 && notes[0].contains('took its lane'), notes.str()
+}
