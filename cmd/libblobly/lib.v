@@ -1137,6 +1137,18 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	if fr.data.len > 64 {
 		return fail(bb_err, 'recv: a frame of ${fr.data.len} bytes does not fit bb_frame (64 at most)')
 	}
+	put_frame(out, fr, transport.received_now(fr))
+	unsafe {
+		out.e2e = hd.e2e_verdict(fr)
+	}
+	hd.j1939_feed(fr)
+	hd.nm_feed(fr, out.t_ns)
+	return ok()
+}
+
+// put_frame copies a received frame of at most 64 bytes, placed at `t_ns`, into `out`, judged by no
+// E2E (BB_E2E_NONE) and stating no format.
+fn put_frame(out &C.bb_frame, fr transport.CanFrame, t_ns i64) {
 	unsafe {
 		out.id = fr.id
 		out.len = u8(fr.data.len)
@@ -1149,12 +1161,9 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 			out.data[i] = if i < fr.data.len { fr.data[i] } else { u8(0) }
 		}
 		out.format = 0
-		out.t_ns = transport.received_now(fr)
-		out.e2e = hd.e2e_verdict(fr)
+		out.t_ns = t_ns
+		out.e2e = 0
 	}
-	hd.j1939_feed(fr)
-	hd.nm_feed(fr, out.t_ns)
-	return ok()
 }
 
 // recv_nothing is what bb_bus_recv answers for a receive that brought no frame.
@@ -1209,6 +1218,9 @@ pub fn bb_bus_close(h i32) i32 {
 	stdatomic.store_i64(&hd.closing, 1)
 	for stdatomic.load_i64(&hd.users) > 0 {
 		time.sleep(time.millisecond)
+	}
+	if !isnil(hd.bus.view) {
+		hd.bus.view.close()
 	}
 	hd.bus.close()
 	return ok()

@@ -223,11 +223,13 @@ class Bus:
             raise ValueError(f"an interface address has no NUL: {address!r}")
         self.name = address
         self._h = None
-        self._latest = {}  # the newest frame read per (id, ext)
+        self._latest = {}  # the newest frame read per (id, ext), where the library keeps no view
+        self._watch = None  # the handle whose newest-frame view the library keeps (bb_bus_watch)
         lib = _lib.lib()
         with _lib.state_lock:  # bb_bus_open reads the loaded project's rows
             _close_orphans()
             self._h = _lib.check(lib.bb_bus_open(address.encode()))
+            self._watched(self._h)
 
     @property
     def iface(self) -> str:
@@ -239,6 +241,22 @@ class Bus:
         if h is None:
             raise BloblyError(f"{self.name}: closed", _lib.BB_ERR_HANDLE)
         return h
+
+    def _watched(self, h):
+        """Gives handle `h` the library's newest-frame view (bb_bus_watch), which latest and value
+        then answer from; where the library cannot open one, they answer from what h reads."""
+        lib = _lib.lib()
+        if lib.bb_bus_watch(h) == 0:
+            self._watch = h
+            return
+        try:
+            warnings.warn(f"{self.name}: no newest-frame reader ({_lib.text(lib.bb_last_error())}); "
+                          "latest and value answer as of this channel's last read", RuntimeWarning, stacklevel=3)
+        except BaseException:  # the warning raised (an error filter): the handle goes with it
+            if self._h == h:
+                self._h = None
+            lib.bb_bus_close(h)
+            raise
 
     def _run(self):
         """What a wait holds to: nothing for a bus of its own (a Channel: its project's run)."""
@@ -311,18 +329,36 @@ class Bus:
         return frame, False
 
     def latest(self, id: "int | Message", *, ext: bool | None = None) -> Frame | None:
-        """The newest frame this handle has read with this id AND kind, None before the first.
-        What is queued is read first (at most CATCH_UP_MS of reading), so the answer is as of
-        the call: asking consumes those frames, as a recv would. `id` and `ext` as expect's
-        (None: the newer of either kind); on a Channel `id` may be a Message of it. Its t_ms
-        says how old it is. A remote frame (rtr) is not kept: it asks for the data and carries
-        none. The frames of a closed handle are forgotten with it."""
+        """The newest frame on the wire with this id AND kind since the handle opened, None before
+        the first: kept by a reader in the library on a handle of its own, so it is current at the
+        call even when nothing read this channel meanwhile (a UDS exchange, a flash, a sleep), and
+        asking reads nothing off this channel. What this handle sends is not kept. `id` and `ext`
+        as expect's (None: the newer of either kind); on a Channel `id` may be a Message of it.
+        Its t_ms says how old it is; its e2e is None (no verdict). A remote frame (rtr) is not
+        kept: it asks for the data and carries none. The frames of a closed handle are forgotten
+        with it."""
         with _lib.state_lock:
             want = self._frame_key("latest", id, ext)
+        h = self._handle()
+        if self._watch is not None and self._watch == h:
+            f = _lib.BbFrame()
+            lib = _lib.lib()
+            rc = _lib.check(lib.bb_bus_latest(h, want[0], -1 if want[1] is None else int(want[1]),
+                                              ctypes.byref(f)))
+            return None if rc == _lib.BB_NONE else frame_of(f, received=True)
+        # no view: what is queued read first (at most CATCH_UP_MS), so the answer is as of the call
         self._catch_up()
         kinds = (False, True) if want[1] is None else (want[1],)
         got = [f for f in (self._latest.get((want[0], k)) for k in kinds) if f is not None]
         return max(got, key=lambda f: f.t_ms or 0.0) if got else None
+
+    def _forget_latest(self):
+        """Forgets the newest frames kept so far, the handle kept: latest answers from what comes
+        after, as on a handle just opened."""
+        self._latest = {}
+        h = self._h
+        if h is not None and self._watch == h:
+            _lib.check(_lib.lib().bb_bus_latest_clear(h))
 
     def _catch_up(self):
         """Reads what is queued on the handle now into the newest-frame table, for at most
@@ -477,7 +513,8 @@ class Channel(Bus):
     def __init__(self, project: "Project", index: int, name: str, gen: int) -> None:
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
-        self._latest = {}  # the newest frame read per (id, ext)
+        self._latest = {}  # the newest frame read per (id, ext), where the library keeps no view
+        self._watch = None  # the handle whose newest-frame view the library keeps (bb_bus_watch)
         self._messages, self._messages_run = None, None
         self._uds = weakref.WeakSet()  # the UDS clients and ISO-TP channels on this row, let go with its handle
         self._j1939 = None  # its J1939Listener, once asked for: every handle it opens then listens
@@ -547,6 +584,7 @@ class Channel(Bus):
                 except BloblyError:
                     lib.bb_bus_close(h)
                     raise
+                self._watched(h)  # its newest frame per id kept current by the library (latest)
                 self._h = h
             return self._h
 
@@ -629,7 +667,7 @@ class Channel(Bus):
 
     def value(self, message: "Message | str", signal: "Signal | str") -> float | None:
         """`signal`'s decoded physical value in the newest frame of `message` (latest's answer,
-        so what is queued is read first and consumed); None before the first frame of it, or
+        current at the call); None before the first frame of it, or
         where that frame does not carry the signal (a multiplexed one its switch does not
         select). `message` and `signal` as expect_signal's. latest(message).t_ms says how old
         the value is."""

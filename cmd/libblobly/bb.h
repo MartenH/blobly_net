@@ -30,7 +30,8 @@
  *     one thread at a time — which may be an attached thread of its own, not the driver's. The backends are not
  *     safe for more (Kvaser's canlib forbids two threads on one handle; SocketCAN's ladder state
  *     is written by recv and read by health), so open a handle per thread instead. The one
- *     call that may come from ANOTHER thread is bb_bus_close, which ends a recv in progress.
+ *     call that may come from ANOTHER thread is bb_bus_close, which ends a recv in progress
+ *     (and bb_bus_latest / bb_bus_latest_clear, which read the handle's newest-frame view).
  *   - A frame received is copied into the caller's bb_frame; nothing handed out points into the
  *     library except the strings: bb_channel_name / bb_channel_iface's stay valid until the next
  *     bb_load, bb_start or bb_stop, bb_last_error's until the calling thread's next call. A
@@ -663,6 +664,21 @@ int bb_bus_health(int h);                                    /* >= 0: an enum bb
 int bb_bus_close(int h);  /* a send or recv on another thread ends first (a recv within 20 ms,
                              with BB_ERR_HANDLE); the handle is then closed and its index never
                              reused */
+
+/* The newest frame. bb_bus_watch gives handle h a newest-frame view: a second handle on h's
+ * address, opened by the library and read by a thread of its own, keeping the newest frame per id
+ * and kind — so it stays current while nothing reads h (a UDS exchange, a flash, a sleep) and
+ * whatever h's own queue drops. What h sends is not kept (the view holds what h would read), nor
+ * is a remote frame. Watching twice is nothing; bb_bus_close ends the view with the handle.
+ * bb_bus_latest copies the newest frame of `id` and kind `ext` (-1: the newer of either kind, 0:
+ * 11-bit, 1: 29-bit) into *out — its t_ns when it arrived, its e2e BB_E2E_NONE — reading nothing
+ * off h, as of the call (what the view's handle holds queued is kept first, waited for at most
+ * 50 ms; on a quiet wire 2 ms at most); BB_NONE before the first; BB_ERR_STATE on a handle not watched, BB_ERR once the view's
+ * handle failed (its reason). bb_bus_latest_clear forgets what the view kept, what its handle held
+ * queued at the call included. Both may come from any thread. */
+int bb_bus_watch(int h);
+int bb_bus_latest(int h, uint32_t id, int ext, bb_frame *out); /* 0: a frame; BB_NONE: none yet */
+int bb_bus_latest_clear(int h);
 
 /* A row's databases: the merge of its `databases:` that the RUN loaded — the one its simulated
  * ECUs encode by and a Lua script's bus.send_message and decode read — from bb_start until

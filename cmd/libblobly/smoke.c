@@ -173,6 +173,8 @@ typedef int (*diag_fn)(int, bb_diagnostics *);
 static load_fn bb_bus_load_p;
 static diag_fn bb_bus_diagnostics_p;
 static int (*bb_bus_error_counters_p)(int, int *, int *);
+static int_int_fn bb_bus_watch_p, bb_bus_latest_clear_p;
+static int (*bb_bus_latest_p)(int, uint32_t, int, bb_frame *);
 
 /* J1939 on a row's frames */
 static int (*bb_j1939_attach_p)(int, int, int);
@@ -255,6 +257,35 @@ static int signal_named(int row, int m, const char *name) {
 		if (len >= 0 && len < (int)sizeof buf && strcmp(buf, name) == 0) return s;
 	}
 	return -1;
+}
+
+/* the newest frame per id on a watched handle, current though nothing reads it */
+static int newest_steps(void) {
+	int a = bb_bus_open_p("inproc:SMOKE_NEWEST"), b = bb_bus_open_p("inproc:SMOKE_NEWEST");
+	bb_frame f;
+	if (a < 0 || b < 0) FAIL("newest open");
+	if (bb_bus_latest_p(a, 0x321, -1, &f) != BB_ERR_STATE) { fprintf(stderr, "FAIL latest on a handle not watched must refuse\n"); return 1; }
+	if (bb_bus_watch_p(a) != 0 || bb_bus_watch_p(a) != 0) FAIL("watch, twice");
+	if (bb_bus_latest_p(a, 0x321, -1, &f) != BB_NONE) { fprintf(stderr, "FAIL latest before the first frame: %s\n", bb_last_error_p()); return 1; }
+	for (int i = 1; i <= 3; i++) {
+		memset(&f, 0, sizeof f);
+		f.id = 0x321; f.len = 1; f.data[0] = (uint8_t)i;
+		if (bb_bus_send_p(b, &f) != 0) FAIL("newest send");
+	}
+	memset(&f, 0, sizeof f);
+	f.id = 0x322; f.len = 1; f.data[0] = 9;
+	if (bb_bus_send_p(a, &f) != 0) FAIL("newest own send");
+	if (bb_bus_latest_p(a, 0x321, 0, &f) != 0 || f.data[0] != 3 || f.ext || f.t_ns <= 0 || f.t_ns > bb_now_ns_p()) {
+		fprintf(stderr, "FAIL latest is the newest frame sent before the call: %s\n", bb_last_error_p()); return 1;
+	}
+	if (bb_bus_latest_p(a, 0x322, -1, &f) != BB_NONE) { fprintf(stderr, "FAIL what the handle sent is not kept\n"); return 1; }
+	if (bb_bus_latest_p(a, 0x321, 2, &f) != BB_ERR) { fprintf(stderr, "FAIL ext 2 must refuse\n"); return 1; }
+	bb_frame q;
+	if (bb_bus_recv_p(a, 0, &q) != 0 || q.data[0] != 1) { fprintf(stderr, "FAIL latest reads nothing off the handle\n"); return 1; }
+	if (bb_bus_latest_clear_p(a) != 0 || bb_bus_latest_p(a, 0x321, -1, &f) != BB_NONE) FAIL("latest clear");
+	if (bb_bus_close_p(a) != 0 || bb_bus_close_p(b) != 0) FAIL("newest close");
+	printf("ok   newest frame: current without a read, own sends left out\n");
+	return 0;
 }
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL " __VA_ARGS__); fprintf(stderr, " (%s)\n", bb_last_error_p()); return 1; } } while (0)
@@ -862,6 +893,7 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
 	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_now_ns); SYM(bb_bus_health); SYM(bb_bus_close);
 	SYM(bb_bus_load); SYM(bb_bus_diagnostics); SYM(bb_bus_error_counters);
+	SYM(bb_bus_watch); SYM(bb_bus_latest); SYM(bb_bus_latest_clear);
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released); SYM(bb_wait_ready);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
@@ -951,6 +983,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (exchange("main thread", 20)) return 1;
+	if (newest_steps()) return 1;
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1)) return 1;
 	if (j1939_steps(can1)) return 1;
