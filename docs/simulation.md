@@ -168,6 +168,11 @@ offset -40 reads as -40 °C rather than 0. Give it a `const` generator if you wa
 physical value. A `senders:` generator starts from the same payload: a signal it does not list
 goes out at its start value.
 
+On a **multiplexed** message the multiplexor goes in first — a value a script holds on it
+(`sim.set`), else its generator's, else its start value — and every other generator writes its
+signal only in the frames that multiplexor selects, so a generator on a page that is not selected
+never writes into the bits the selected page's signals share.
+
 A generator naming a signal the node does not send is reported rather than silently ignored.
 
 `counter` is a *signal* generator and is unrelated to the alive counter in

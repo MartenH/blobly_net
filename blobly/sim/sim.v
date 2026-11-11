@@ -208,22 +208,33 @@ fn (m SimMessage) change_raws(t f64) []u64 {
 }
 
 // build encodes the message's signals at time t into a CAN frame, over the payload the node starts
-// from (candb.Message.initial: a signal no generator drives at its start value, else raw 0).
+// from (candb.Message.initial: a signal no generator drives at its start value, else raw 0). The
+// multiplexor switch goes in first — a value a script set on it, else its generator's — and a
+// generator writes only a signal the frame then carries, as apply_set does.
 pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 	mut switch_raw := ?u64(none)
 	sw := m.msg.multiplexor_index()
 	if sw >= 0 {
+		name := m.msg.signals[sw].name
 		for s in m.signals {
-			if s.name == m.msg.signals[sw].name {
+			if s.name == name {
 				switch_raw = m.msg.signals[sw].raw_from_phys(s.gen.value(t, m.send_n))
+			}
+		}
+		for v in m.set {
+			if v.signal == name {
+				switch_raw = m.msg.signals[sw].raw_from_phys(v.value)
 			}
 		}
 	}
 	mut data := m.msg.initial(switch_raw)
+	carried := m.msg.carried(data)
 	for s in m.signals {
-		for sig in m.msg.signals {
+		for i, sig in m.msg.signals {
 			if sig.name == s.name {
-				sig.encode(mut data, s.gen.value(t, m.send_n))
+				if i != sw && carried[i] {
+					sig.encode(mut data, s.gen.value(t, m.send_n))
+				}
 				break
 			}
 		}

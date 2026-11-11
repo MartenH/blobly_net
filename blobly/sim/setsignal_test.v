@@ -226,6 +226,74 @@ fn test_a_set_multiplexed_signal_follows_its_switch() {
 	assert data == [u8(1), 7]
 }
 
+// a message with a switch and two pages sharing byte 1
+fn two_page_message() candb.Message {
+	return candb.Message{
+		name:    'Mux'
+		id:      0x200
+		dlc:     2
+		signals: [
+			candb.Signal{
+				name:              'Page1'
+				start_bit:         8
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 1
+			},
+			candb.Signal{
+				name:              'Page2'
+				start_bit:         8
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 2
+			},
+			candb.Signal{
+				name:           'Mode'
+				start_bit:      0
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexor: true
+			},
+		]
+	}
+}
+
+// a generator on a page the switch does not select writes nothing, whichever is listed last
+fn test_an_off_page_generator_writes_nothing() {
+	for mode in [1, 2] {
+		for order in [['Page1', 'Page2'], ['Page2', 'Page1']] {
+			mut gens := [SimSignal{'Mode', gen_const(mode)}]
+			for name in order {
+				gens << SimSignal{name, gen_const(if name == 'Page1' { 11 } else { 22 })}
+			}
+			mut m := SimMessage{
+				msg:     two_page_message()
+				signals: gens
+			}
+			want := if mode == 1 { u8(11) } else { u8(22) }
+			assert m.build(0).data == [u8(mode), want], 'mode ${mode}, ${order}'
+		}
+	}
+}
+
+// a switch a script sets picks the page the generators write, as if its generator had
+fn test_a_set_switch_picks_the_generated_page() {
+	mut m := SimMessage{
+		msg:     two_page_message()
+		signals: [SimSignal{'Mode', gen_const(1)}, SimSignal{'Page1', gen_const(11)},
+			SimSignal{'Page2', gen_const(22)}]
+		set:     [SetValue{'Mode', 2}]
+	}
+	assert m.build(0).data == [u8(2), 22]
+	m.set = [SetValue{'Mode', 2}, SetValue{'Page2', 33}]
+	assert m.build(0).data == [u8(2), 33]
+}
+
 // a response rule's message carries the value set as a cyclic one does
 fn test_a_response_carries_a_set_value() {
 	mut e := Engine{
