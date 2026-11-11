@@ -307,10 +307,34 @@ fn test_an_abort_with_no_role_ends_one_connection() {
 			data:     data
 		}
 	}
-	assert e.on_frame(cm([j1939.cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])).len == 1
+	e.on_frame(cm([j1939.cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00]))
 	assert e.answers.open() == 1
 	e.on_frame(cm([j1939.cm_abort, 250, 0xFF, 0xFF, 0xFF, 0x00, 0xEF, 0x00]))
 	assert e.answers.open() == 0 && e.conns.len == 1
+}
+
+// The packets a CTS clears go out at the next step, and the wait for the acknowledgement runs
+// from their last write: a slow window is not timed out.
+fn test_a_slow_window_waits_from_its_last_write() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 5000)]
+	}
+	e.due_frames(0)
+	cts := transport.CanFrame{
+		id:       j1939.compose(7, j1939.pgn_tp_cm, 0x21, 0x00)
+		extended: true
+		data:     [j1939.cm_cts, 3, 1, 0xFF, 0xFF, 0x00, 0xEF, 0x00]
+	}
+	assert e.on_frame(cts).len == 0
+	mut out := &FrameBox{}
+	e.step(5, fn [mut out] (f transport.CanFrame) bool {
+		time.sleep(20 * time.millisecond)
+		out.frames << f
+		return true
+	})
+	assert out.frames.map(it.data[0]) == [u8(1), 2, 3]
+	assert e.due_frames(f64(5 + j1939.conn_t3_ms + 10)).len == 0
+	assert e.conns.len == 1 && e.take_notes().len == 0
 }
 
 // A loop ending with connections open aborts what the engine sends and answers, and lets the
@@ -326,7 +350,8 @@ fn test_ending_the_connections_aborts_them_and_frees_the_lane() {
 	}
 	rts := body.due_frames(0)
 	assert rts.len == 1 && rts[0].data[0] == j1939.cm_rts
-	assert engine.on_frame(rts[0]).len == 1 && engine.answers.open() == 1
+	engine.on_frame(rts[0])
+	assert engine.answers.open() == 1
 	mut out := &FrameBox{}
 	collect := fn [mut out] (f transport.CanFrame) bool {
 		out.frames << f

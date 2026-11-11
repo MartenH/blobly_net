@@ -281,8 +281,10 @@ pub mut:
 	// answers for the addresses its nodes' J1939 messages are sent from
 	conns   []j1939.Originator
 	answers j1939.Responder
-	// the frames of those connections it sent that its own connections have yet to read (local)
-	local []transport.CanFrame
+	// the frames of those connections it sent that its own connections have yet to read (local),
+	// and the ones it made of frames it read (on_frame), which the next step sends
+	local  []transport.CanFrame
+	answer []transport.CanFrame
 	// the clock of the last step, which on_frame reads
 	now_ms f64
 	// why a message is never sent, said once per message (take_notes), and which were said
@@ -317,6 +319,7 @@ pub fn (e &Engine) carried() Engine {
 		conns:   e.conns
 		answers: e.answers
 		local:   e.local
+		answer:  e.answer
 		now_ms:  e.now_ms
 		said:    e.said
 	}
@@ -702,13 +705,17 @@ fn (mut e Engine) connect(f transport.CanFrame, msg candb.Message, send fn (f tr
 	return true
 }
 
-// carry_local hands its own connections the connection frames it sent since the last step (its
-// own frames never come back to it off the wire), and `send` what they make of them: a connection
+// carry_local hands `send` the connection frames made of frames read since the last step, and its
+// own connections the connection frames it sent then (its own frames never come back to it off
+// the wire), and `send` what they make of them: a connection
 // between two of its nodes goes a hop a step — an RTS's CTS, a CTS's window, a window's CTS or
 // acknowledgement — as it would between two nodes.
 fn (mut e Engine) carry_local(send fn (f transport.CanFrame) bool) {
 	sent := e.local
 	e.local = []
+	answer := e.answer
+	e.answer = []
+	e.send_conn(answer, send)
 	for f in sent {
 		e.send_conn(e.j1939_frame(f), send)
 	}
@@ -717,12 +724,27 @@ fn (mut e Engine) carry_local(send fn (f transport.CanFrame) bool) {
 // send_conn hands `send` a connection's `frames` in order, up to the first it refuses, and keeps
 // those it took for its own connections to read at the next step (carry_local): a frame that did
 // not go out is never read as sent, so a connection it belonged to times out rather than completes.
+//
+// The clock moves on by the time the writes took, and a connection that wrote waits for its answer
+// from then (Originator.wrote), so a slow window is not timed out.
 fn (mut e Engine) send_conn(frames []transport.CanFrame, send fn (f transport.CanFrame) bool) {
+	if frames.len == 0 {
+		return
+	}
+	t0 := time.sys_mono_now()
+	mut sent := []transport.CanFrame{}
 	for f in frames {
 		if !send(f) {
-			return
+			break
 		}
-		e.local << f
+		sent << f
+	}
+	e.local << sent
+	e.now_ms += f64(time.sys_mono_now() - t0) / 1_000_000.0
+	for mut o in e.conns {
+		if sent.any(j1939.decompose(it.id).sa == o.sa && j1939.decompose(it.id).da() == o.da) {
+			o.wrote(e.now_ms)
+		}
 	}
 }
 
@@ -746,6 +768,7 @@ pub fn (mut e Engine) end_connections(send fn (f transport.CanFrame) bool) {
 	}
 	e.conns = []
 	e.local = []
+	e.answer = []
 	for f in e.answers.stop() {
 		send(f)
 	}
@@ -835,15 +858,16 @@ pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
 	}
 }
 
-// on_frame returns the response frames triggered by a received frame: a response rule's, and the
-// transport protocol's (j1939_frame) — a CTS's packets, an answer to an RTS — in that order of
-// making, the J1939 ones first.
+// on_frame returns the response frames triggered by a received frame, a response rule's; what the
+// transport protocol makes of it (j1939_frame) — a CTS's packets, an answer to an RTS — the next
+// step sends (send_conn).
 //
 // Takes `mut` because a protected response has to advance its own counter: a request-driven
 // message has period 0, so due_frames never touches it and its send count would otherwise
 // stay at zero forever — a receiver checking the counter would reject every single response.
 pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
-	mut out := e.j1939_frame(f)
+	e.answer << e.j1939_frame(f)
+	mut out := []transport.CanFrame{}
 	for i := 0; i < e.ecus.len; i++ {
 		for r in e.ecus[i].rules {
 			if f.id != r.req_id {

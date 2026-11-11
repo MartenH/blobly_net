@@ -98,18 +98,19 @@ pub fn (mut l Listener) feed(f transport.CanFrame, t_ms f64) {
 	for fl in ev.faults {
 		l.push_fault(fl)
 	}
+	l.outgoing << l.answers.abort_unheld(l.tp)
 }
 
 // idle expires the sessions stalled at `t_ms`, for a reader that found nothing queued: a sender
 // that stopped mid-transfer is said even when no further frame comes.
 pub fn (mut l Listener) idle(t_ms f64) {
 	l.outgoing << l.answers.poll(t_ms)
-	if l.tp.open() == 0 {
-		return
+	if l.tp.open() > 0 {
+		for fl in l.tp.expire(t_ms) {
+			l.push_fault(fl)
+		}
 	}
-	for fl in l.tp.expire(t_ms) {
-		l.push_fault(fl)
-	}
+	l.outgoing << l.answers.abort_unheld(l.tp)
 }
 
 // answer makes the listener answer RTS/CTS connections aimed at `address` (0..0xFD), as the node

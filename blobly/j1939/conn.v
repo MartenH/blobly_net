@@ -211,6 +211,10 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 				return ConnOut{}
 			}
 			first := int(cm.next_packet())
+			// a packet again, or the next unsent; never past one not yet sent
+			if first > o.sent + 1 {
+				return ConnOut{}
+			}
 			last := if first + count - 1 < o.packets() { first + count - 1 } else { o.packets() }
 			mut out := ConnOut{}
 			for k in first .. last + 1 {
@@ -426,6 +430,26 @@ pub fn (mut r Responder) poll(now_ms f64) []transport.CanFrame {
 			gone << k
 			out << abort_frame(u8(k & 0xFF), u8(k >> 8), abort_timeout, .responder, c.pgn)
 		}
+	}
+	for k in gone {
+		r.conns.delete(k)
+	}
+	return out
+}
+
+// abort_unheld aborts (reason 250) every connection whose transfer `tp`, rejoining beside it, no
+// longer holds (evicted, or dropped): its acknowledgement would be for a message nobody gets.
+pub fn (mut r Responder) abort_unheld(tp &Reassembler) []transport.CanFrame {
+	mut out := []transport.CanFrame{}
+	mut gone := []u16{}
+	for k, c in r.conns {
+		if s := tp.sessions[k] {
+			if !s.bam && s.pgn == c.pgn {
+				continue
+			}
+		}
+		gone << k
+		out << abort_frame(u8(k & 0xFF), u8(k >> 8), abort_other, .responder, c.pgn)
 	}
 	for k in gone {
 		r.conns.delete(k)

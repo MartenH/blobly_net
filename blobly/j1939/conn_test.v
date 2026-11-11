@@ -199,6 +199,23 @@ fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	assert r.feed(packets[2], 22)[0].data[0] == cm_eom_ack
 }
 
+// A connection the listener answers whose transfer its reassembler drops (here, evicted by as many
+// broadcasts as it holds sessions) is aborted, not acknowledged.
+fn test_a_listener_aborts_a_connection_its_reassembler_dropped() {
+	mut l := Listener{}
+	l.answer(0x00)!
+	mut o := connection_for(prop_cfg(), '', 0)!
+	l.feed(o.start(0).frames[0], 0)
+	assert l.take_outgoing().map(it.data[0]) == [cm_cts]
+	for sa in 0 .. l.tp.max_sessions {
+		l.feed(control_frame(u8(0x30 + sa), addr_global, [cm_bam, 16, 0, 3, 0xFF, 0xCA, 0xFE, 0x00]),
+			1)
+	}
+	out := l.take_outgoing()
+	assert out.len == 1 && out[0].data[..3] == [cm_abort, 250, 0xFD], out.str()
+	assert l.answers.open() == 0
+}
+
 // The listener answers for the address it is told, and rejoins the message as ever.
 fn test_a_listener_answers_for_its_address() {
 	mut l := Listener{}
@@ -277,6 +294,16 @@ fn test_an_acknowledgement_after_a_retransmission_is_taken() {
 	assert o.feed(cts(1, 2), 2).frames.map(it.data[0]) == [u8(2)]
 	ack := control_frame(0x00, 0x21, [cm_eom_ack, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])
 	assert o.feed(ack, 3).end == .done
+}
+
+// A CTS asking for a packet past the next unsent is not answered, so the acknowledgement that
+// follows it is not taken either.
+fn test_a_cts_past_the_next_unsent_packet_is_not_answered() {
+	mut o := connection_for(prop_cfg(), '', 0)!
+	o.start(0)
+	assert o.feed(control_frame(0x00, 0x21, [cm_cts, 1, 3, 0xFF, 0xFF, 0x00, 0xEF, 0x00]), 1).frames.len == 0
+	ack := control_frame(0x00, 0x21, [cm_eom_ack, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])
+	assert o.feed(ack, 2).end == .open
 }
 
 // An acknowledgement before every packet has gone out is not this message's.
