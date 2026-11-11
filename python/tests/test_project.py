@@ -277,6 +277,10 @@ class TestLoads:
             blobly.Project(SIM_DEMO, interfaces={"CAN1": "inproc:a\nCAN2=inproc:b"})
         with pytest.raises(TypeError):
             blobly.Project(SIM_DEMO, interfaces={"CAN1": 5})  # type: ignore[dict-item]
+        net = blobly.Project(SIM_DEMO, interfaces={"CAN1": "inproc:a"})
+        net.interfaces["CAN1"] = "inproc:a\0CAN2=inproc:b"  # changed after construction: checked at load
+        with pytest.raises(ValueError):
+            net.load()
 
     def test_a_bytes_path_loads(self):
         net = blobly.Project(os.fsencode(SIM_DEMO)).load()

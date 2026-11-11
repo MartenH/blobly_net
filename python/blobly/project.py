@@ -1085,6 +1085,20 @@ def _say_dropped(path, gone):
                   + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=level)
 
 
+def _override_text(interfaces: Mapping[str, str]) -> str:
+    """The overrides as bb_load_with reads them, `NAME=IFACE` a line; a pair that cannot be
+    written that way is refused (TypeError, ValueError)."""
+    out = []
+    for name, iface in interfaces.items():
+        if not isinstance(name, str) or not isinstance(iface, str):
+            raise TypeError(f"interfaces: {name!r}: {iface!r} is not a row name and an interface string")
+        if "=" in name or any(c in name + iface for c in "\0\r\n"):
+            raise ValueError(f"interfaces: {name!r}: {iface!r}: a row name cannot carry '=', and neither "
+                             "can carry a NUL or a line break")
+        out.append(f"{name}={iface}\n")
+    return "".join(out)
+
+
 class Project(EventLoop[Channel | str], Faults, Replays):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
@@ -1108,12 +1122,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         if (b"\0" if isinstance(p, bytes) else "\0") in p:
             raise ValueError("a project path cannot carry a NUL: C would read it cut short")
         self.interfaces = dict(interfaces or {})
-        for name, iface in self.interfaces.items():
-            if not isinstance(name, str) or not isinstance(iface, str):
-                raise TypeError(f"interfaces: {name!r}: {iface!r} is not a row name and an interface string")
-            if "=" in name or any(c in name + iface for c in "\0\r\n"):
-                raise ValueError(f"interfaces: {name!r}: {iface!r}: a row name cannot carry '=', and neither "
-                                 "can carry a NUL or a line break")
+        _override_text(self.interfaces)
         self.path = os.path.abspath(path)
         self.started = False
         self._channels = None
@@ -1137,7 +1146,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         """load, answering the rows whose handlers it dropped."""
         lib = _lib.lib()
         with _lib.state_lock:
-            pairs = "".join(f"{name}={iface}\n" for name, iface in self.interfaces.items())
+            pairs = _override_text(self.interfaces)
             # the path in the filesystem's bytes, not UTF-8
             _lib.check(lib.bb_load_with(os.fsencode(self.path), pairs.encode()))
             old = list(self._channels) if self._channels is not None else []
