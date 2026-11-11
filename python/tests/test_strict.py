@@ -69,3 +69,14 @@ def test_a_newer_schema_is_noted_not_refused_for_its_keys(tmp_path):
     path = write(tmp_path, "p.blobnet", project(version=99).replace("    databases: [u.dbc]\n", ""))
     net = blobly.Project(path, strict=True).load()
     assert len(net.notes) == 1 and net.notes[0].startswith("unknown key `cycle_msec` in channel")
+
+
+def test_any_other_refusal_keeps_its_words_and_leaves_no_notes(tmp_path):
+    write(tmp_path, "u.dbc", DBC)
+    net = blobly.Project(write(tmp_path, "p.blobnet", project(key="bitrat")))
+    assert len(net.load().notes) == 3
+    net.path = str(tmp_path / "gone.blobnet")
+    with pytest.raises(blobly.BloblyError) as e:
+        net.load()
+    assert "gone.blobnet" in str(e.value)
+    assert net.notes == []

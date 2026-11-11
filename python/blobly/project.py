@@ -1301,10 +1301,11 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             # the path in the filesystem's bytes, not UTF-8
             rc = lib.bb_load_flags(os.fsencode(self.path), pairs.encode(),
                                    _lib.BB_LOAD_STRICT if self.strict else 0)
+            # the error first, since a note call clears it
+            e = _lib.error(rc) if rc < 0 else None
             # this load's notes, a refused one's too: a strict refusal's lines, else none
             self._notes = _notes(lib)
-            if rc < 0:
-                e = _lib.error(rc)
+            if e is not None:
                 if self.strict and isinstance(e, Refused) and self._notes:
                     # every line the load refused: bb_last_error may be cut short
                     raise Refused(f"{self.path}: a strict load refuses what this build does not read:\n  "
