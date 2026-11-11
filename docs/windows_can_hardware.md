@@ -43,7 +43,7 @@ done" is then a fact somebody can check rather than a feeling.
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ❌ the device refuses a PHY PUT on a live channel (measured) |
 | Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ✅ mDNS (#235; bench-verified from Linux/WSL, the Windows half type-checked only) |
-| Honours project timing / sample point | partial (BTR) | ❌ ignored | ✅ `sample_point` / `data_sample_point`, classic and FD (#621); `timing{}` not read | refuses non-default |
+| Honours project timing / sample point | partial (BTR) | ❌ ignored | ✅ `sample_point` / `data_sample_point` on FD; classic through `xlCanSetChannelParams`, not yet bench-verified (#621); `timing{}` not read | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
 | Bench record below | ✅ | ✅ | ✅ | ✅ |
 | A monitor reads its own health | ✅ | ✅ | ✅ | ✅ from the receive counter (#241): the firmware starts every channel at **TEC 129 / error-passive** with nothing on the wire — measured alone and even opened listen-only — and a node that never transmits cannot lower that counter, so `state` alone painted a healthy monitor errP for the life of the run |
@@ -145,13 +145,17 @@ call — PCAN's `TPCANBaudrate` enum for standard rates, or raw `timing{}` for a
 **A sample point on Vector** (#621). `sample_point` (and, for a CAN-FD data phase,
 `data_sample_point`, schema v13; unset it is `sample_point`) reaches the address as
 `,sp=<percent>` / `,dsp=<percent>` — options like `,silent`, so the wire's identity ignores them:
-`vector:1@500000/2000000,sp=75,dsp=70`. `transport.vector_phase_timing` solves each phase on the
+`vector:1@500000/2000000,sp=75,dsp=70`. `transport.vector_phase_timing` solves each FD phase on the
 80 MHz clock: the division of the bit whose realised point is nearest the one asked (a tie to the
 finer), refused by name when that is more than 2 points away (PCAN's allowance) — 76% at an
 8 Mbit/s data phase, which has ten quanta a bit, is refused, naming 80%. FD hands the segments to
 `xlCanFdSetConfiguration` as before; a classic channel with a sample point is configured through
 `xlCanSetChannelParams` (without one, `xlCanSetChannelBitrate` and the driver's own timing, as
-before), so its rate must divide the clock too. Unset, an FD phase samples where it always did
+before), whose `XLchipParams` is the SJA1000-style timing of a 16 MHz clock (python-can fills it
+only for that clock): so a classic sample point is solved on 16 MHz within those registers —
+prescaler 1..64, tseg1 1..16, tseg2 1..8, sjw 1..4 — and its rate must divide that clock (500k at
+75% is 16 quanta, 11/4/4; 10 kbit/s samples at 68% and nowhere else). That clock is python-can's
+reading, not yet measured here: the bench check below is what confirms it. Unset, an FD phase samples where it always did
 (~80%). The ports pin the segments like the rates (`-1014`, `wire_pin_clash`), two rows on one
 wire that ask for different points are refused from the file (`destination_conflicts`), and a
 point typed into the address field instead of the row's keys is refused. Bench check:

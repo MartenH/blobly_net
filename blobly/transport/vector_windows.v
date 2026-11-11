@@ -13,8 +13,9 @@
 //             disturb the bus. See the note below; on a live vehicle, start here.
 //   ,sp=<%> : where the (arbitration) phase samples, e.g. ,sp=75; ,dsp=<%> the CAN-FD data
 //             phase's, defaulting to sp. Unset, an FD phase samples at ~80% and a classic
-//             channel where the driver puts it. Solved by vector_open_timings, refused when the
-//             80 MHz clock cannot place it; options, like the mode, are not part of the wire.
+//             channel where the driver puts it. Solved by vector_open_timings (an FD phase on
+//             the 80 MHz clock, a classic one on XLchipParams' 16 MHz), refused when the clock
+//             cannot place it; options, like the mode, are not part of the wire.
 //
 // **Silent first.** A CAN node that goes on the bus at the WRONG bitrate does not merely fail
 // to read: it acknowledges nothing correctly and floods error frames, which degrades a bus

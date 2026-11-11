@@ -78,6 +78,14 @@ fn test_a_data_sample_point_is_refused_where_nothing_places_it() {
 		data_sample_point: 70.0
 	}
 	assert (kv.address_config_error() or { '' }).contains('kvaser')
+	cs := Channel{
+		...vector_row('CAN1')
+		adapter:           'cansub'
+		address:           'e5a16adf/1'
+		iface:             'cansub:e5a16adf/1'
+		data_sample_point: 70.0
+	}
+	assert (cs.address_config_error() or { '' }).contains('cansub')
 	typed := Channel{
 		...vector_row('CAN1')
 		address: '1,sp=75'
@@ -106,6 +114,21 @@ fn test_rows_sharing_a_vector_wire_must_agree_where_it_samples() {
 	}
 	problems := destination_conflicts([a, other])
 	assert problems.len == 1 && problems[0].contains('70%'), '${problems}'
+	// The default split and an asked 80% configure the same segments, so they agree.
+	dflt := vector_row('A')
+	eighty := Channel{
+		...vector_row('B')
+		sample_point: 80.0
+	}
+	assert destination_conflicts([dflt, eighty]) == []
+	// Rows disagreeing on the rate are said once, for the rate.
+	faster := Channel{
+		...vector_row('B')
+		sample_point: 75.0
+		bitrate:      1000000
+	}
+	rate_only := destination_conflicts([a, faster])
+	assert rate_only.len == 1 && rate_only[0].contains('bit/s'), '${rate_only}'
 }
 
 // data_sample_point is written back, and a project using it says v13.

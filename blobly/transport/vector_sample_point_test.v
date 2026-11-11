@@ -82,14 +82,15 @@ fn test_a_sample_point_the_clock_cannot_place_is_refused_by_name() {
 
 // Every placement the solver accepts divides the clock and lands within the allowance.
 fn test_every_accepted_placement_is_exact_and_near() {
-	for phase in [VectorPhase.arbitration, .data] {
+	for phase in [VectorPhase.arbitration, .data, .classic] {
 		for rate in [125_000, 250_000, 500_000, 800_000, 1_000_000, 2_000_000, 4_000_000, 5_000_000,
 			8_000_000] {
 			for sp in [50.0, 62.5, 70.0, 75.0, 80.0, 81.0, 87.5, 90.0, 95.0] {
 				t := vector_phase_timing(rate, phase, sp) or { continue }
 				tq := 1 + t.tseg1 + t.tseg2
-				assert vector_fd_clock_hz % (rate * tq) == 0
-				assert tq <= phase.tq_max() && t.tseg2 >= 1 && t.tseg1 >= 1
+				assert phase.clock_hz() % (rate * tq) == 0
+				assert phase.clock_hz() / (rate * tq) <= phase.brp_max()
+				assert tq <= phase.tq_max() && t.tseg2 >= 1 && t.tseg1 >= 1 && phase.fits(t)
 				assert math.abs(t.sample_point() - sp) <= vector_sample_point_tolerance
 			}
 		}
@@ -136,4 +137,36 @@ fn test_the_open_ports_pin_the_sample_point() {
 	assert wire_pin_clash('vector:21@500000/2000000,sp=75,dsp=70') != ''
 	held.close()
 	assert wire_pin_clash('vector:21@500000/2000000') == ''
+}
+
+// A classic channel's segments are XLchipParams', so they fit its registers (tseg1 up to 16,
+// tseg2 up to 8, sjw up to 4) and divide its 16 MHz clock.
+fn test_a_classic_sample_point_fits_the_chip_registers() {
+	t := vector_phase_timing(500_000, .classic, 75) or { panic(err) }
+	assert t == FdTiming{
+		tseg1: 11
+		tseg2: 4
+		sjw:   4
+	}
+	for rate in [20_000, 50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000] {
+		for sp in [70.0, 75.0, 80.0] {
+			c := vector_phase_timing(rate, .classic, sp) or {
+				assert false, '${rate} at ${sp}: ${err}'
+				continue
+			}
+			assert c.tseg1 <= 16 && c.tseg2 <= 8 && c.sjw <= 4, '${rate} at ${sp}: ${c}'
+		}
+	}
+	// 10 kbit/s needs every quantum of a 25-quantum bit, and tseg1 of 16 samples it at 68% at most
+	// below 72%.
+	near := vector_phase_timing(10_000, .classic, 70) or { panic(err) }
+	assert near.sample_point() == 68.0
+	if t2 := vector_phase_timing(10_000, .classic, 62.5) {
+		assert false, '62.5% is past the allowance at 10 kbit/s: ${t2}'
+	} else {
+		assert err.msg().contains('68%'), err.msg()
+	}
+	if _ := vector_phase_timing(83_333, .classic, 75) {
+		assert false, '83333 divides no 16 MHz prescaler'
+	}
 }

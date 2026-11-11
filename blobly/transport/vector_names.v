@@ -141,17 +141,47 @@ fn vector_fd_timing_data(rate int) !FdTiming {
 	return vector_phase_timing(rate, .data, 0)
 }
 
-// VectorPhase is the register set a timing is solved for. A classic channel is the controller's
-// nominal phase, so it takes the arbitration phase's limits.
+// VectorPhase is the register set a timing is solved for: an FD channel's two phases, or a
+// classic channel's, which xlCanSetChannelParams takes in its own register shape.
 enum VectorPhase {
 	arbitration
 	data
+	classic
+}
+
+// vector_classic_clock_hz is the clock XLchipParams' segments divide: the SJA1000-style bit
+// timing of a 16 MHz controller (python-can fills XLchipParams only for that clock), with its
+// register ranges — prescaler 1..64, tseg1 1..16, tseg2 1..8, sjw 1..4.
+const vector_classic_clock_hz = 16_000_000
+
+fn (p VectorPhase) clock_hz() int {
+	return match p {
+		.arbitration, .data { vector_fd_clock_hz }
+		.classic { vector_classic_clock_hz }
+	}
 }
 
 fn (p VectorPhase) tq_max() int {
 	return match p {
 		.arbitration { fd_tq_max_arbitration }
 		.data { fd_tq_max_data }
+		.classic { 1 + 16 + 8 }
+	}
+}
+
+fn (p VectorPhase) brp_max() int {
+	return match p {
+		.arbitration, .data { 256 }
+		.classic { 64 }
+	}
+}
+
+// fits is whether the phase's segment registers hold `t`; the FD phases' bound is the quanta
+// count alone.
+fn (p VectorPhase) fits(t FdTiming) bool {
+	return match p {
+		.arbitration, .data { true }
+		.classic { t.tseg1 <= 16 && t.tseg2 <= 8 && t.sjw <= 4 }
 	}
 }
 
@@ -173,35 +203,46 @@ fn vector_phase_timing(rate int, phase VectorPhase, sample_point f64) !FdTiming 
 		return error('sample point ${pct_text(sample_point)}% is outside 50-95%')
 	}
 	tq_max := phase.tq_max()
+	clock := phase.clock_hz()
+	brp_max := phase.brp_max()
 	mut best := FdTiming{}
 	mut best_off := 0.0
 	mut found := false
+	mut divided := false
 	// Downwards from the ceiling: more quanta per bit means a smaller prescaler and so a finer
 	// resynchronisation step. Below eight there is not enough resolution to place a sample point.
 	for tq := tq_max; tq >= 8; tq-- {
-		if vector_fd_clock_hz % (rate * tq) != 0 {
+		if clock % (rate * tq) != 0 {
 			continue
 		}
 		// THE PRESCALER HAS TO FIT. A whole brp is not the same as a usable one: the low end of
 		// the accepted range divides cleanly and then asks for a value the field cannot hold.
-		brp := vector_fd_clock_hz / (rate * tq)
-		if brp < 1 || brp > 256 {
+		brp := clock / (rate * tq)
+		if brp < 1 || brp > brp_max {
 			continue
 		}
+		divided = true
 		if sample_point == 0 {
-			return vector_fd_split(tq)
+			d := vector_fd_split(tq)
+			if phase.fits(d) {
+				return d
+			}
+			continue
 		}
-		t := vector_split_at(tq, sample_point) or { continue }
+		t := vector_split_at(tq, sample_point, phase) or { continue }
 		off := math.abs(t.sample_point() - sample_point)
 		if !found || off < best_off {
 			best, best_off, found = t, off, true
 		}
 	}
+	if !found && divided {
+		return error("${rate} bit/s cannot be sampled at ${pct_text(sample_point)}% from this controller's ${clock / 1_000_000} MHz clock: no division of the bit fits its segment registers")
+	}
 	if !found {
-		return error("${rate} bit/s cannot be produced from this controller's ${vector_fd_clock_hz / 1_000_000} MHz clock: no whole prescaler of 256 or less divides it at 8 to ${tq_max} quanta per bit")
+		return error("${rate} bit/s cannot be produced from this controller's ${clock / 1_000_000} MHz clock: no whole prescaler of ${brp_max} or less divides it at 8 to ${tq_max} quanta per bit")
 	}
 	if best_off > vector_sample_point_tolerance {
-		return error("${rate} bit/s cannot be sampled at ${pct_text(sample_point)}% from this controller's ${vector_fd_clock_hz / 1_000_000} MHz clock — the nearest it can manage is ${pct_text(best.sample_point())}%")
+		return error("${rate} bit/s cannot be sampled at ${pct_text(sample_point)}% from this controller's ${clock / 1_000_000} MHz clock — the nearest it can manage is ${pct_text(best.sample_point())}%")
 	}
 	return best
 }
@@ -218,15 +259,27 @@ fn vector_fd_split(tq int) FdTiming {
 	return vector_segments(tq - 1 - t2, t2)
 }
 
-// vector_split_at divides a bit of `tq` quanta so it samples nearest `sample_point` percent;
-// none when a segment would be empty.
-fn vector_split_at(tq int, sample_point f64) ?FdTiming {
-	t1 := int(math.round(f64(tq) * sample_point / 100)) - 1
-	t2 := tq - 1 - t1
-	if t1 < 1 || t2 < 1 {
+// vector_split_at divides a bit of `tq` quanta so it samples nearest `sample_point` percent, of
+// the divisions the phase's segment registers hold (a tie to the later point); none when no
+// division has both segments non-empty and held.
+fn vector_split_at(tq int, sample_point f64, phase VectorPhase) ?FdTiming {
+	mut best := FdTiming{}
+	mut best_off := 0.0
+	mut found := false
+	for t1 := tq - 2; t1 >= 1; t1-- {
+		t := vector_segments(t1, tq - 1 - t1)
+		if !phase.fits(t) {
+			continue
+		}
+		off := math.abs(t.sample_point() - sample_point)
+		if !found || off < best_off {
+			best, best_off, found = t, off, true
+		}
+	}
+	if !found {
 		return none
 	}
-	return vector_segments(t1, t2)
+	return best
 }
 
 fn vector_segments(t1 int, t2 int) FdTiming {
@@ -268,6 +321,28 @@ fn (t VectorTimings) describe(fd bool) string {
 	return 'at ${pct_text(t.arb.sample_point())}% (data phase ${pct_text(t.dat.sample_point())}%)'
 }
 
+// VectorSampling is where an address samples, as rows sharing a wire are compared: `key` the
+// segments its open configures (what the ports pin), `text` where they sample.
+pub struct VectorSampling {
+pub:
+	key  string
+	text string
+}
+
+// vector_sampling is an address's VectorSampling; none where the address cannot be opened, which
+// vector_address_error says.
+pub fn vector_sampling(iface string) ?VectorSampling {
+	i := iface.trim_space()
+	body := if i.to_lower().starts_with('vector:') { i['vector:'.len..] } else { i }
+	s := parse_vector_spec(body) or { return none }
+	t := vector_open_timings(s) or { return none }
+	a, d := t.arb, t.dat
+	return VectorSampling{
+		key:  '${a.tseg1}/${a.tseg2}/${a.sjw} ${d.tseg1}/${d.tseg2}/${d.sjw}'
+		text: t.describe(s.fd)
+	}
+}
+
 // vector_open_timings is the ONE derivation of what an address configures, which open_vector
 // hands the driver, vector_timing_error judges and the port pin records.
 fn vector_open_timings(s VectorSpec) !VectorTimings {
@@ -280,7 +355,7 @@ fn vector_open_timings(s VectorSpec) !VectorTimings {
 			return VectorTimings{}
 		}
 		return VectorTimings{
-			arb: vector_phase_timing(s.bitrate, .arbitration, s.sample_point) or {
+			arb: vector_phase_timing(s.bitrate, .classic, s.sample_point) or {
 				return error('classic ${err.msg()}')
 			}
 		}

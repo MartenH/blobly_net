@@ -2235,6 +2235,16 @@ pub fn (fr Framing) to_wire() transport.Framing {
 // Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
 // `transport.open` is handed, so anything this accepts, the open accepts.
 pub fn (c Channel) address_config_error() ?string {
+	// A DATA-PHASE SAMPLE POINT only Vector carries to the controller, and only on CAN-FD. (On
+	// SocketCAN and the software buses the timing is the link's, as `sample_point`'s is.)
+	if c.data_sample_point != 0 && transport.adapter_configures_bitrate(c.adapter) {
+		if c.adapter != 'vector' {
+			return "data sample point ${num(c.data_sample_point)}% cannot be configured on ${c.adapter} from here — only a Vector channel places the data phase's sample point, so remove the setting or use a different adapter"
+		}
+		if !c.fd {
+			return 'data sample point ${num(c.data_sample_point)}% is for a CAN-FD data phase, and ${c.name} is classic CAN'
+		}
+	}
 	// CANSUB IS ASKED ABOUT EVERY ROW, FD or not. The other vendor backends hand a nominal rate
 	// to a driver that either produces it or says so; the CANsub derives its own bit timing from
 	// an 80 MHz clock that must divide EXACTLY, so it is the first adapter here that can refuse a
@@ -2292,16 +2302,6 @@ pub fn (c Channel) address_config_error() ?string {
 			if vector_option_key(o) in ['sp', 'dsp'] {
 				return 'the address field holds a sample point (${c.address}) — put it in sample_point / data_sample_point instead'
 			}
-		}
-	}
-	// A DATA-PHASE SAMPLE POINT only Vector carries to the controller, and only on CAN-FD. (On
-	// SocketCAN and the software buses the timing is the link's, as `sample_point`'s is.)
-	if c.data_sample_point != 0 && transport.adapter_configures_bitrate(c.adapter) {
-		if c.adapter != 'vector' {
-			return "data sample point ${num(c.data_sample_point)}% cannot be configured on ${c.adapter} from here — only a Vector channel places the data phase's sample point, so remove the setting or use a different adapter"
-		}
-		if !c.fd {
-			return 'data sample point ${num(c.data_sample_point)}% is for a CAN-FD data phase, and ${c.name} is classic CAN'
 		}
 	}
 	if c.adapter == 'pcan' && c.sample_point != 0 {
@@ -2467,18 +2467,6 @@ pub fn (c Channel) data_rate() int {
 }
 
 // fd_describe names an fd_wanted value the way an operator would read it back.
-// sample_describe is where a row asks its wire to sample, comparable between rows: the
-// arbitration phase, then a CAN-FD data phase (its own point, else the arbitration one).
-fn sample_describe(c Channel) string {
-	arb := if c.sample_point != 0 { '${num(c.sample_point)}%' } else { 'at the default' }
-	if !c.fd {
-		return arb
-	}
-	dsp := if c.data_sample_point != 0 { c.data_sample_point } else { c.sample_point }
-	dat := if dsp != 0 { '${num(dsp)}%' } else { 'at the default' }
-	return '${arb} (data phase ${dat})'
-}
-
 fn fd_describe(v int) string {
 	return if v == 0 { 'classic CAN' } else { 'CAN-FD with a ${v} bit/s data phase' }
 }
@@ -2499,7 +2487,7 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 	// asking FD at 2 Mbit/s disagrees with a classic row and with an FD row at 4 Mbit/s alike.
 	mut fd_mode := map[string]int{}
 	mut fd_row := map[string]string{}
-	mut sp_of := map[string]string{}
+	mut sp_of := map[string]transport.VectorSampling{}
 	mut sp_row := map[string]string{}
 	for c in chs {
 		if !c.enabled {
@@ -2556,15 +2544,18 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		}
 		// WHERE IT SAMPLES, on the one backend that carries a sample point to the controller: the
 		// ports pin it like the rates (-1014), so two rows disagreeing are answered from the file.
+		// Compared by the segments each row's open configures, and only between rows that agree
+		// on the rates (which time the segments, and are said above when they differ).
 		if c.adapter == 'vector' {
-			spw := sample_describe(c)
-			if prev := sp_of[k] {
-				if prev != spw {
-					out << '${c.name} and ${sp_row[k]} share ${c.iface} but ask to sample ${spw} and ${prev}'
+			if spw := transport.vector_sampling(c.iface_with_bitrate()) {
+				if prev := sp_of[k] {
+					if prev.key != spw.key && rate[k] == want && fd_mode[k] == fdw {
+						out << '${c.name} and ${sp_row[k]} share ${c.iface} but ask to sample ${spw.text} and ${prev.text}'
+					}
+				} else {
+					sp_of[k] = spw
+					sp_row[k] = c.name
 				}
-			} else {
-				sp_of[k] = spw
-				sp_row[k] = c.name
 			}
 		}
 	}

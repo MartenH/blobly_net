@@ -803,8 +803,9 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			        bitrate, a_tseg1, a_tseg2, a_sjw, dbitrate, d_tseg1, d_tseg2, d_sjw, (int)st);
 			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		} else if (a_tseg1) {
-			/* A CHOSEN SAMPLE POINT: the segments, from which the driver derives the prescaler
-			 * as it does for FD. Without one the driver picks the timing from the rate alone. */
+			/* A CHOSEN SAMPLE POINT: the segments, solved for XLchipParams' 16 MHz SJA1000-style
+			 * timing (tseg1 <= 16, tseg2 <= 8, sjw <= 4), from which the driver derives the
+			 * prescaler. Without one the driver picks the timing from the rate alone. */
 			ct_xl_chip_params cp;
 			memset(&cp, 0, sizeof(cp));
 			cp.bitRate = (unsigned long)bitrate;
