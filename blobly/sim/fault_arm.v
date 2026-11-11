@@ -102,17 +102,12 @@ fn past_payload_refusal(msgs []candb.Message, field string, kind string) ! {
 	}
 }
 
-// protection is what `node` stamps on `msg` here (empty when none): its protect: entry or the
-// DBC's declaration, the one answer the simulation stamps by (protection_for).
+// protection is what `node` stamps on `msg` here (empty when none): the protection the engine
+// attaches to its messages of that name (protections).
 fn (t FaultTarget) protection(node string, msg string) E2e {
 	for n in t.nodes {
-		if n.name != node {
-			continue
-		}
-		for m in t.db.messages_from(node) {
-			if m.name == msg {
-				return protection_for(n, m) or { E2e{} }
-			}
+		if n.name == node {
+			return protections(t.db, n)[msg] or { E2e{} }
 		}
 	}
 	return E2e{}

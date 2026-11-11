@@ -292,3 +292,42 @@ fn test_a_set_value_must_fit_every_message_of_the_name() {
 	assert set_refusal(t, 'ECU', 'Dup', 'Val', 200) == ''
 	clear_all()
 }
+
+// two messages of one name, only the second protected: the engine stamps that protection on
+// both, so its fields are refused as on a message protected alone
+fn test_a_later_protected_message_of_the_name_protects_the_name() {
+	clear_all()
+	plain := candb.Message{
+		name:    'Status'
+		id:      0x200
+		dlc:     8
+		sender:  'ECU'
+		signals: [sig8('Counter', 0, 4), sig8('CRC', 56, 8)]
+	}
+	protected := candb.Message{
+		...plain
+		id:  0x201
+		e2e: candb.E2eDecl{
+			counter: 'Counter'
+			crc:     'CRC'
+			profile: 'crc8_j1850'
+		}
+	}
+	db := candb.Database{
+		nodes:    ['ECU']
+		messages: [plain, protected]
+	}
+	cfg := project.NodeCfg{
+		name: 'ECU'
+	}
+	assert from_project(db, cfg).messages.all(it.e2e.crc == 'CRC')
+	t := FaultTarget{
+		channel: 'CAN1'
+		iface:   'inproc:SET'
+		db:      db
+		nodes:   [cfg]
+	}
+	assert set_refusal(t, 'ECU', 'Status', 'CRC', 1) == '"CRC" on "Status" is stamped by its E2E protection, which overwrites a value set on it'
+	assert signal_values('inproc:SET', 'ECU', 'Status').len == 0
+	clear_all()
+}
