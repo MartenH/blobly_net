@@ -720,8 +720,9 @@ int bb_uds_io_control(int u, int did, int parameter, const uint8_t *state, int s
                                      /* 0x2F: parameter 0 return control, 1 reset to default,
                                         2 freeze, 3 short-term adjustment (any other refused),
                                         then the control state and enable mask; the answer after
-                                        the echoed DID and parameter (BB_ERR_UNDECODABLE when the
-                                        parameter is not echoed) */
+                                        the echoed DID and parameter (BB_ERR_UNDECODABLE when too
+                                        short to echo it; an answer naming another parameter is
+                                        an earlier request's, skipped) */
 int bb_uds_read_memory(int u, uint64_t address, uint64_t size, int address_bytes, int size_bytes,
                        uint8_t *buf, int cap);
                                      /* 0x23: size bytes at address, the two as wide as

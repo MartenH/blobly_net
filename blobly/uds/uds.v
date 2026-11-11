@@ -299,7 +299,8 @@ fn sub_mask(sid u8) u8 {
 
 // echo_of: how many leading bytes of a request its positive response echoes, SID included, and
 // whether the second is a sub-function — a sub-function, a data identifier (a multi-DID read
-// echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
+// echoes its first one first), a sub-function and a routine identifier, an I/O control's data
+// identifier and control parameter (where the request carries one), a block sequence counter,
 // or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte), or
 // a 0x19 04 / 06's sub-function and DTC.
 // Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
@@ -315,8 +316,9 @@ fn echo_of(req []u8) (int, bool) {
 	return match req[0] {
 		0x10, 0x11, 0x19, 0x27, 0x28, 0x29, 0x3E, 0x83, 0x85, 0x86, 0x87 { 2, true }
 		0x2C, 0x31 { 4, true }
+		0x2F { 4, false }
 		0x36, 0x38 { 2, false }
-		0x22, 0x24, 0x2E, 0x2F { 3, false }
+		0x22, 0x24, 0x2E { 3, false }
 		0x3D { wmba, false }
 		else { 1, false }
 	}
