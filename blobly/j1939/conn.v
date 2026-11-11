@@ -207,7 +207,8 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 				o.arm(now_ms, conn_t4_ms)
 				return ConnOut{}
 			}
-			if !cm.names_packet(o.packets()) {
+			// a window past what the RTS allowed per CTS is not this side's to write back to back
+			if !cm.names_packet(o.packets()) || count > int(conn_per_cts) {
 				return ConnOut{}
 			}
 			first := int(cm.next_packet())

@@ -316,7 +316,7 @@ fn test_an_early_acknowledgement_is_not_taken() {
 }
 
 // The RTS lets a CTS clear conn_per_cts packets, so a responder clears a long message a window
-// of that many at a time.
+// of that many at a time, and the originator writes no wider one.
 fn test_a_window_is_at_most_conn_per_cts() {
 	mut o := connection_for(transport.CanFrame{ ...prop_cfg(), data: []u8{len: 100} }, '', 0)!
 	mut r := Responder{
@@ -325,6 +325,11 @@ fn test_a_window_is_at_most_conn_per_cts() {
 	cts := r.feed(o.start(0).frames[0], 0)
 	assert cts[0].data[1..3] == [conn_per_cts, 1]
 	assert o.feed(cts[0], 1).frames.len == int(conn_per_cts)
+	// a CTS asking for more than that is not answered
+	mut wide := connection_for(transport.CanFrame{ ...prop_cfg(), data: []u8{len: 100} }, '', 0)!
+	wide.start(0)
+	assert wide.feed(control_frame(0x00, 0x21, [cm_cts, conn_per_cts + 1, 1, 0xFF, 0xFF, 0x00, 0xEF,
+		0x00]), 1).frames.len == 0
 }
 
 // A responder whose owner goes away aborts what it answers (reason 250).
