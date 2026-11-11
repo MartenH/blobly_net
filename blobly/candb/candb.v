@@ -92,9 +92,33 @@ pub fn (m Message) payload_len() int {
 }
 
 // template is the payload a message is encoded into: payload_len bytes, every signal at raw 0, so
-// a signal the caller does not set goes out as 0.
+// a signal the caller does not set goes out as 0. Every builder completes it with fill_unused once
+// its signals are encoded, before any checksum is stamped.
 pub fn (m Message) template() []u8 {
 	return []u8{len: m.payload_len()}
+}
+
+// fill_unused sets every bit of `data` that no signal it carries covers to the bit at the same
+// position in m.fill: a signal the payload holds whole and its switch selects covers its bits, so
+// for a multiplexed message the bits of a branch the switch does not select are filled too. A fill
+// of 0 leaves `data` as it is, the template's own fill.
+pub fn (m Message) fill_unused(mut data []u8) {
+	if m.fill == 0 {
+		return
+	}
+	sw := m.switch_in(data)
+	mut covered := []bool{len: data.len * 8}
+	for s in m.signals {
+		if sw.holds_selected(s, data.len) {
+			s.mark_bits(mut covered)
+		}
+	}
+	for g, c in covered {
+		if !c {
+			mask := u8(1) << (g % 8)
+			data[g / 8] = (data[g / 8] & ~mask) | (m.fill & mask)
+		}
+	}
 }
 
 // initial is the payload a node sends before anything sets a signal: template with every signal
@@ -225,6 +249,9 @@ pub mut:
 	// simulation stamps them (sim.protection_for). Empty when the file declares none.
 	e2e     []E2eDecl
 	signals []Signal
+	// the byte a bit no signal covers takes, bit for bit (fill_unused): an ARXML PDU's
+	// UNUSED-BIT-PATTERN, 0 for a DBC, which states none; a row's `fill:` replaces it (Database.filled)
+	fill u8
 	// the signal groups (`SIG_GROUP_`), in file order: what an SG_-scope E2E declaration's
 	// window is, and kept so a Save writes them back
 	groups []SignalGroup
@@ -720,6 +747,24 @@ pub fn (s Signal) set_raw(mut data []u8, raw u64) {
 				data[byte_idx] = (data[byte_idx] & ~mask) | (bit << bit_idx)
 			}
 			pos = if bit_idx == 0 { pos + 15 } else { pos - 1 }
+		}
+	}
+}
+
+// mark_bits sets covered[g] for every bit g of the signal inside `covered`, along the bit order
+// set_raw writes.
+fn (s Signal) mark_bits(mut covered []bool) {
+	mut pos := s.start_bit
+	for _ in 0 .. s.length {
+		if pos >= 0 && pos < covered.len {
+			covered[pos] = true
+		}
+		pos = if s.byte_order == .little_endian {
+			pos + 1
+		} else if pos % 8 == 0 {
+			pos + 15
+		} else {
+			pos - 1
 		}
 	}
 }

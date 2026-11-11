@@ -32,6 +32,19 @@ pub mut:
 	// the E2E attributes the reader did not take — at a scope other than BO_ and SG_, or naming a
 	// message the file does not define — one line each, said by e2e_notes and save_drops
 	e2e_unread []string
+	// the fill a row states (`fill:`), which replaces each message's own (filled); none where the
+	// row states none
+	fill ?u8
+}
+
+// filled is message `m` as this database sends it: its fill the row's where the row states one,
+// else its own (Message.fill).
+pub fn (db Database) filled(m Message) Message {
+	f := db.fill or { return m }
+	return Message{
+		...m
+		fill: f
+	}
 }
 
 // ArxmlBus is what an ARXML cluster states about the bus that carries it.

@@ -667,7 +667,8 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   payload order (with `as` `"physical"` or `"raw"`; `"label"` leaves it out), and
   `bus.send_message` takes such a string for it — exactly `length / 8` bytes, a string for any
   other wide signal refused (`bus.send_message_cyclic` does not take one: its signals are
-  numbers, a byte signal going out as zeros). `decode` leaves out a wide signal that is not a
+  numbers, a byte signal going out as zeros). `bus.send_message` and `bus.send_message_cyclic` fill the bits no signal covers at the row's
+  `fill:` ([simulation.md](simulation.md#the-bits-no-signal-covers-fill)), before the E2E stamp. `decode` leaves out a wide signal that is not a
   byte signal (`kind == "none"`).
 - `as` picks what `decode` reports for each signal the frame carries: `"physical"` (the
   default: raw × factor + offset), `"raw"` (the field's bits as a Lua integer, two's complement

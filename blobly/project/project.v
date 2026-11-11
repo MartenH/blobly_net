@@ -27,7 +27,7 @@ import strconv
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 13
+pub const schema_version = 14
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -41,6 +41,11 @@ pub const schema_version = 13
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v14 — a stated fill for the bits no signal covers (`fill:`, on a row or a generator, #671),
+	// which an older build drops on its next structured save, and the bits go out as 0 again
+	if p.channels.any(it.fill != none || it.senders.any(it.fill != none)) {
+		return 14
+	}
 	// v13 — a CAN-FD data phase's own sample point (`data_sample_point`), which an older build
 	// drops on its next structured save, and the data phase samples where the arbitration does;
 	// a row turning off the built-in UDS server (`builtin_uds: false`), and a simulated ECU's IO
@@ -449,6 +454,8 @@ pub mut:
 	// `format:` — the format its frames state (classic | fd | fd_brs); `wire` (absent) leaves it
 	// to its message's declared format, else the row's (message_format)
 	format transport.FrameFormat
+	// `fill:` — the byte the bits no signal of its message covers take, over its row's (fill.v)
+	fill ?u8
 }
 
 // Channel is one bus the tester attaches to.
@@ -554,6 +561,9 @@ pub mut:
 	// builtin_uds false: no built-in 0x7E0/0x7E8 diagnostic server on this row's wire when no
 	// node of it has a `uds:` block (`builtin_uds: false`, v13; builtin_uds_off is the rule)
 	builtin_uds bool = true
+	// `fill:` — the byte the bits no signal covers take in a frame built from the row's databases,
+	// over each message's own (fill.v); none where the row states none
+	fill     ?u8
 	nodes    []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders  []Sender  // interactive generators: triggerable custom frames
 	replay   ?Replay
@@ -1085,6 +1095,9 @@ fn parse_channel(c yaml.Any) !Channel {
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	ch.data_sample_point = c.value('data_sample_point').default_to(f64(0)).f64()
+	if fv := c.value_opt('fill') {
+		ch.fill = parse_fill(fv, 'bus ${ch.name}')!
+	}
 	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).
 	mut proto := c.value('protocol').default_to('').string()
 	if proto == '' {
@@ -1656,6 +1669,9 @@ fn parse_sender(s yaml.Any) !Sender {
 		snd.format = transport.parse_frame_format(fv.str()) or {
 			return error('generator ${snd.name}: format: ${err.msg()}')
 		}
+	}
+	if fv := s.value_opt('fill') {
+		snd.fill = parse_fill(fv, 'generator ${snd.name}')!
 	}
 	if sigs := s.value_opt('signals') {
 		for sg in sigs.array() {

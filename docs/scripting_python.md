@@ -654,7 +654,9 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   database states none: what a simulated node or a generator sends for a signal nothing sets. `kind` is what it reads as: `"number"`
   (1 .. 64 bits), `"bytes"` or `"none"` — see byte signals below.
 - `msg.encode(**signals)` returns the `Frame` the message sends with the named signals at these
-  physical values and every other at raw 0, not at its start value; to send the start values,
+  physical values and every other at raw 0, not at its start value, the bits no signal covers at
+  the row's `fill:` ([simulation.md](simulation.md#the-bits-no-signal-covers-fill); so do `send`
+  and `send_cyclic`); to send the start values,
   name them: `msg.encode(**{s.name: s.start for s in msg.signals if s.start is not None})`. A name the message does not have raises
   `BloblyError`, and so does a number for a signal wider than 64 bits (a byte array in a CAN FD
   frame), which carries none (`Refused`: `Key is 128 bits wide: a value is encoded into 1 .. 64`;

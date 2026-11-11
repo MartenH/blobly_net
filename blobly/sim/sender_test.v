@@ -110,6 +110,29 @@ fn test_sender_message_frame_encodes_the_selected_branch_only() {
 	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(2), 20]
 }
 
+// a generator's frame fills the bits no signal covers: its own `fill:`, else the row's (the
+// database's), else the message's own (#671)
+fn test_sender_message_frame_fills_the_uncovered_bits() {
+	db := candb.parse_dbc('BO_ 291 Status: 4 Tester
+ SG_ Mode : 0|4@1+ (1,0) [0|15] "" Receiver
+') or { panic(err) }
+	mut s := project.Sender{
+		name:    'Status'
+		message: 'Status'
+		signals: [project.SenderSig{
+			name:  'Mode'
+			value: 5
+		}]
+	}
+	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(5), 0, 0, 0]
+	row := project.Channel{
+		fill: u8(0xFF)
+	}
+	assert (sender_message_frame(s, [row.row_db(db)], 0, 0.0) or { panic('M') }).data == [u8(0xF5), 0xFF, 0xFF, 0xFF]
+	s.fill = u8(0x00)
+	assert (sender_message_frame(s, [row.row_db(db)], 0, 0.0) or { panic('M') }).data == [u8(5), 0, 0, 0]
+}
+
 // the grid is kept, and a slot a slow write covered is skipped rather than sent late
 fn test_next_due_keeps_the_grid_and_skips_what_a_slow_write_covered() {
 	assert next_due(0, 10, 1) == 10

@@ -996,7 +996,8 @@ fn load_channel_db(ch project.Channel, proj_dir string, files &DbFiles) candb.Da
 	for n in notes {
 		files.err('${ch.name}: ${n}')
 	}
-	return db
+	// carrying the row's fill, which its frames are built with
+	return ch.row_db(db)
 }
 
 // DbFiles opens the run's databases: each reference once and each ARXML FILE once, however

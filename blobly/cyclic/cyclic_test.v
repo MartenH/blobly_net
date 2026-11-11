@@ -449,3 +449,25 @@ fn test_a_j1939_message_sender_sends_a_bam_each_period() {
 	assert s.stop()
 	assert s.info().sent == 1 && s.info().failed == 0
 }
+
+// a message sender fills the bits no signal covers at its message's fill (the row's, through
+// candb.Database.filled), each frame anew (#671)
+fn test_a_message_sender_fills_the_uncovered_bits() {
+	db := candb.parse_dbc('BO_ 291 Status: 3 A
+ SG_ Mode : 0|4@1+ (1,0) [0|15] "" A
+')!
+	row := candb.Database{
+		...db
+		fill: u8(0xFF)
+	}
+	spec := Spec{
+		by_message: true
+		message:    row.filled(db.messages[0])
+		values:     {
+			'Mode': 5.0
+		}
+		period_ms:  10
+	}
+	assert encoded(spec)!.data == [u8(0xF5), 0xFF, 0xFF]
+	assert encoded(Spec{ ...spec, message: db.messages[0] })!.data == [u8(5), 0, 0]
+}

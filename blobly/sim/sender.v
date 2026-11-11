@@ -22,15 +22,17 @@ pub fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 // sender_message_frame encodes a message generator's frame from the first database that
 // defines the message: its id and DLC, the listed signals encoded in order onto the payload the
 // message starts from (candb.Message.initial: every other signal at its start value, else raw 0; a
-// signal listed twice takes its last entry), a multiplexed one only where the switch selects it;
-// its format the generator's `format:`, else the message's declared one (project.message_format).
+// signal listed twice takes its last entry), a multiplexed one only where the switch selects it,
+// the bits no signal covers at its fill (project.Sender.sent_message); its format the generator's
+// `format:`, else the message's declared one (project.message_format).
 // An error when no database defines it, or the payload is past its stated format.
 pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f64) !transport.CanFrame {
 	for db in dbs {
-		for m in db.messages {
-			if m.name != s.message {
+		for dm in db.messages {
+			if dm.name != s.message {
 				continue
 			}
+			m := s.sent_message(db, dm)
 			// the switch first: it decides which multiplexed signals the frame carries, and only
 			// those are encoded, so a value kept for another branch never lands on this one's bits
 			sw := m.multiplexor_index()
@@ -54,6 +56,7 @@ pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f6
 					}
 				}
 			}
+			m.fill_unused(mut data)
 			return project.message_format(m, s.format).stamp(transport.CanFrame{
 				id:       m.id
 				extended: m.ext

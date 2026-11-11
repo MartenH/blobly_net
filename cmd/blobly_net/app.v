@@ -1419,6 +1419,7 @@ fn (mut app App) rebuild_from_proj() {
 			data_sample_point: ch.data_sample_point
 			j1939:          ch.j1939
 			databases:      ch.databases.clone()
+			fill:           ch.fill
 			manifest:       ch.manifest
 			kind:           ch.kind()
 			group:          ch.group
@@ -1438,7 +1439,7 @@ fn (mut app App) rebuild_from_proj() {
 			// another
 			prev := app.dbs_paths.index(rp)
 			if prev >= 0 {
-				app.dbs_by_iface[ch.iface] << app.dbs[prev]
+				app.dbs_by_iface[ch.iface] << ch.row_db(app.dbs[prev])
 				continue
 			}
 			if rp in dbc_keep {
@@ -1446,11 +1447,11 @@ fn (mut app App) rebuild_from_proj() {
 				// is the truth, not the disk copy
 				app.dbs << dbc_keep[rp]
 				app.dbs_paths << rp
-				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
+				app.dbs_by_iface[ch.iface] << ch.row_db(dbc_keep[rp])
 			} else if loaded := candb.open_database(rp) {
 				app.dbs << loaded.db
 				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
-				app.dbs_by_iface[ch.iface] << loaded.db // scoped to this channel (generator picker)
+				app.dbs_by_iface[ch.iface] << ch.row_db(loaded.db) // scoped to this channel (generator picker)
 				for n in loaded.notes {
 					app.elog('dbc ${n}') // the reader's honesty report: never dropped in silence
 				}
@@ -1551,7 +1552,7 @@ fn (mut app App) rebuild_from_proj() {
 					}
 				}
 			}
-			sim_db := candb.merge_dbs(app.loaded_dbs_for(db_paths))
+			sim_db := ch.row_db(candb.merge_dbs(app.loaded_dbs_for(db_paths)))
 			app.sims << SimCfg{
 				iface:    ch.iface
 				proj_idx: ci

@@ -98,9 +98,10 @@ fn l_cyclic_start_msg(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	ci := env.find_chan(name) or { return l.fail('bus.send_message_cyclic: ${err}') }
-	msg := env.chans[ci].db.message_named(l.arg_str(2)) or {
+	db := env.chans[ci].db
+	msg := db.filled(db.message_named(l.arg_str(2)) or {
 		return l.fail('bus.send_message_cyclic: unknown message "${l.arg_str(2)}"')
-	}
+	})
 	ff := transport.parse_frame_format(l.arg_str(5)) or {
 		return l.fail('bus.send_message_cyclic: ${err}')
 	}

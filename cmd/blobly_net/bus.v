@@ -35,6 +35,7 @@ struct Chan {
 	// what the wire's databases declare, into `app.j1939_dbs`.
 	j1939        bool
 	databases    []string
+	fill         ?u8 // the row's `fill:` (project.Channel.fill), which its frames are built with
 	manifest     string
 	kind         project.RowKind // the row's (project.Channel.kind): "is this a CAN wire?" is `== .can`
 	group        string // multicast group the listener joins ('' = unicast only)

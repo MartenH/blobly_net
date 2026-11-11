@@ -230,6 +230,8 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 	}
 	// values set from a script, over the generators and under protection, so the checksum covers them
 	apply_set(m.msg, m.set, mut data)
+	// the bits no signal covers at the message's fill, under protection too
+	m.msg.fill_unused(mut data)
 	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid
 	// checksum and the receiver reaches its range handling instead of rejecting a CRC error.
 	m.fault.apply_pre(m.msg, mut data)

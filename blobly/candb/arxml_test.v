@@ -1191,7 +1191,9 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert sig(c.db.messages[0], 'Crc').values.len == 0
 	assert a.report.notes.any(it.contains('/CM/Bits: a masked bitfield text table'))
 	assert a.report.notes.any(it.contains('/Sig/V: BASE-TYPE-ENCODING BCD-P is not modelled'))
-	assert a.report.notes.any(it.contains('/PDUs/P: UNUSED-BIT-PATTERN 255 is not modelled'))
+	// the pattern is the fill of the frame's uncovered bits, applied rather than said (#671)
+	assert c.db.messages[0].fill == 0xFF
+	assert !a.report.notes.any(it.contains('UNUSED-BIT-PATTERN')), a.report.notes.str()
 	assert a.report.notes.any(it.contains('/PDUs/P: event-controlled timing only, no cyclic timing'))
 	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
 	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
@@ -2148,7 +2150,13 @@ fn test_relations_the_table_cannot_state_are_said() {
 		panic(err)
 	}
 	assert ubp.report.notes.any(it.contains('/PDUs/P: I-SIGNAL-I-PDU/UNUSED-BIT-PATTERN 0x10000000000000000 is outside 0..9223372036854775807; not read')), ubp.report.notes.str()
-	assert !ubp.report.notes.any(it.contains('is not modelled; the simulated ECUs fill')), ubp.report.notes.str()
+	assert ubp.cluster('')!.db.messages[0].fill == 0
+	// a pattern past a byte is said and not applied
+	ubp_wide := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH><UNUSED-BIT-PATTERN>256</UNUSED-BIT-PATTERN>') + arxml_tail) or {
+		panic(err)
+	}
+	assert ubp_wide.report.notes.any(it.contains('/PDUs/P: UNUSED-BIT-PATTERN 256 is not a byte; not applied')), ubp_wide.report.notes.str()
+	assert ubp_wide.cluster('')!.db.messages[0].fill == 0
 	// an initial value that is not a number is said by its row, not read as the supported zero
 	iv := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><INIT-VALUE><NUMERICAL-VALUE-SPECIFICATION><VALUE>abc</VALUE></NUMERICAL-VALUE-SPECIFICATION></INIT-VALUE></I-SIGNAL>') + arxml_tail) or {
 		panic(err)

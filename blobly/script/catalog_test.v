@@ -274,3 +274,34 @@ fn test_a_wide_signal_reads_as_bytes_or_not_at_all() {
 	assert env.total() == 4
 	assert env.passed() == 4, '${env.results}'
 }
+
+// send_message fills the bits no signal covers at the row's fill before its E2E is stamped, and a
+// background sender fills each frame the same way (#671)
+fn test_send_message_fills_the_uncovered_bits_at_the_row_fill() {
+	db := candb.parse_dbc('BO_ 291 Status: 4 A\n SG_ Mode : 0|4@1+ (1,0) [0|15] "" A\n') or {
+		panic(err)
+	}
+	mut env := new_env([ChanInfo{
+		name:  'CAN1'
+		iface: 'inproc:UTFILL'
+		db:    candb.Database{
+			...db
+			fill: u8(0xFF)
+		}
+	}, ChanInfo{
+		name:  'CAN2'
+		iface: 'inproc:UTFILL2'
+		db:    db
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source('
+		test("send_message fills at the row fill", function()
+			local f = bus.send_message("CAN1", "Status", { Mode = 5 })
+			check.equal(f.data, string.char(0xF5, 0xFF, 0xFF, 0xFF))
+			check.equal(bus.send_message("CAN2", "Status", { Mode = 5 }).data, string.char(5, 0, 0, 0))
+		end)
+	')!
+	assert env.total() == 1
+	assert env.passed() == 1, '${env.results}'
+}
