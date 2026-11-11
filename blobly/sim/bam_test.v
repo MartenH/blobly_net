@@ -274,6 +274,45 @@ fn test_a_refused_packet_between_its_own_nodes_times_out() {
 	assert notes.len == 1 && notes[0].contains('timeout'), notes.str()
 }
 
+// A simulation rebuilt mid-connection carries it on, the frames its own nodes have yet to read
+// included.
+fn test_a_rebuild_carries_a_connection_between_its_own_nodes_on() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000), j1939_node('Engine', 'EEC1', 0)]
+	}
+	mut frames := e.due_frames(0)
+	assert frames.len == 1 && frames[0].data[0] == j1939.cm_rts
+	ecus := e.ecus
+	e = e.carried()
+	e.ecus = ecus
+	for t := 5; t <= 100; t += 5 {
+		frames << e.due_frames(f64(t))
+	}
+	assert frames.map(it.data[0]) == [j1939.cm_rts, j1939.cm_cts, 1, 2, 3, j1939.cm_eom_ack]
+	assert e.take_notes().len == 0
+}
+
+// An abort declaring no role, from a node with a connection open each way with the engine on one
+// group, ends the one that node originates: the engine's own goes on.
+fn test_an_abort_with_no_role_ends_one_connection() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000)]
+	}
+	rts := e.due_frames(0)
+	assert rts.len == 1 && e.conns.len == 1
+	cm := fn (data []u8) transport.CanFrame {
+		return transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_cm, 0x21, 0x00)
+			extended: true
+			data:     data
+		}
+	}
+	assert e.on_frame(cm([j1939.cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])).len == 1
+	assert e.answers.open() == 1
+	e.on_frame(cm([j1939.cm_abort, 250, 0xFF, 0xFF, 0xFF, 0x00, 0xEF, 0x00]))
+	assert e.answers.open() == 0 && e.conns.len == 1
+}
+
 // A loop ending with connections open aborts what the engine sends and answers, and lets the
 // lane go for the next sender.
 fn test_ending_the_connections_aborts_them_and_frees_the_lane() {

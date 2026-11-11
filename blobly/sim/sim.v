@@ -305,16 +305,19 @@ struct LastSent {
 	data []u8
 }
 
-// carried is a new engine, with no ECUs, carrying e's transfers in progress (its BAMs, the
-// connections it sends and answers) and what it has said, so a rebuild neither cuts a transfer
-// short on the wire nor says a note again.
-pub fn (e Engine) carried() Engine {
+// carried is an engine with no nodes that carries on this one's transfers — its BAMs, the
+// connections it sends and answers and their frames its own have yet to read — and what it has
+// said, for a simulation rebuilt mid-run, whose nodes the caller then adds: a rebuild neither cuts
+// a transfer short on the wire nor says a note again.
+pub fn (e &Engine) carried() Engine {
 	return Engine{
 		tp:      e.tp
 		tp_sent: e.tp_sent
 		tp_next: e.tp_next
 		conns:   e.conns
 		answers: e.answers
+		local:   e.local
+		now_ms:  e.now_ms
 		said:    e.said
 	}
 }
@@ -742,6 +745,7 @@ pub fn (mut e Engine) end_connections(send fn (f transport.CanFrame) bool) {
 		o.free_lane(time.sys_mono_now())
 	}
 	e.conns = []
+	e.local = []
 	for f in e.answers.stop() {
 		send(f)
 	}
@@ -766,7 +770,13 @@ fn (mut e Engine) j1939_frame(f transport.CanFrame) []transport.CanFrame {
 		return []
 	}
 	mut out := []transport.CanFrame{}
+	e.answers.addresses = e.j1939_addresses()
+	// an abort ends one connection, the one abort_target picks, where it could name one each way
+	target := j1939.abort_target(f, e.conns, e.answers)
 	for k := 0; k < e.conns.len; k++ {
+		if target or { false } {
+			break
+		}
 		step := e.conns[k].feed(f, e.now_ms)
 		out << step.frames
 		if step.end != .open {
@@ -775,8 +785,9 @@ fn (mut e Engine) j1939_frame(f transport.CanFrame) []transport.CanFrame {
 			k--
 		}
 	}
-	e.answers.addresses = e.j1939_addresses()
-	out << e.answers.feed(f, e.now_ms)
+	if target or { true } {
+		out << e.answers.feed(f, e.now_ms)
+	}
 	return out
 }
 

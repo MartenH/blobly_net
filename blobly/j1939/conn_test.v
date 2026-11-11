@@ -150,7 +150,7 @@ fn test_what_cannot_be_a_connection_is_refused() {
 }
 
 // A responder answers only an RTS to its address; a gap aborts (reason 7), a repeat (reason 8),
-// a stall (reason 3); a window the RTS limits takes one CTS per window.
+// a mis-sized packet (reason 250), a stall (reason 3); a window the RTS limits takes one CTS per window.
 fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	mut o := connection_for(prop_cfg(), '', 0)!
 	rts := o.start(0).frames[0]
@@ -169,6 +169,10 @@ fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	r.feed(packets[0], 6)
 	dup := r.feed(packets[0], 7)
 	assert dup.len == 1 && dup[0].data[..3] == [cm_abort, 8, 0xFD] && r.open() == 0
+	// so does a classic packet of another length (reason 250)
+	r.feed(rts, 8)
+	short := r.feed(transport.CanFrame{ ...packets[0], data: packets[0].data[..5].clone() }, 9)
+	assert short.len == 1 && short[0].data[..3] == [cm_abort, 250, 0xFD] && r.open() == 0
 	r.feed(rts, 10)
 	r.feed(packets[0], 11)
 	assert r.poll(11 + conn_t1_ms).len == 0
@@ -391,4 +395,71 @@ fn test_send_connection_stops_between_packets() {
 		return
 	}
 	assert false, 'stopped'
+}
+
+// SlowBus writes each packet `delay_ms` late.
+struct SlowBus {
+mut:
+	inner    transport.Bus
+	delay_ms int
+}
+
+fn (mut b SlowBus) send(f transport.CanFrame) ! {
+	if pgn(f.id) == pgn_tp_dt {
+		time.sleep(b.delay_ms * time.millisecond)
+	}
+	b.inner.send(f)!
+}
+
+fn (mut b SlowBus) recv(timeout_ms int) !transport.CanFrame {
+	return b.inner.recv(timeout_ms)!
+}
+
+fn (mut b SlowBus) close() {
+	b.inner.close()
+}
+
+fn (mut b SlowBus) health() transport.BusHealth {
+	return .unknown
+}
+
+fn (mut b SlowBus) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn (mut b SlowBus) reconcile_silence(_ bool) ! {}
+
+fn (mut b SlowBus) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
+// The wait for the acknowledgement runs from the last packet written, not from the CTS: a window
+// written slowly is not timed out.
+fn test_send_connection_waits_from_the_last_packet_written() {
+	wire := 'inproc:J1939_CONN_SLOW'
+	mut tx := transport.Bus(SlowBus{
+		inner:    transport.open(wire)!
+		delay_ms: 60
+	})
+	mut peer := transport.open(wire)!
+	defer {
+		tx.close()
+		peer.close()
+	}
+	spawn fn (mut peer transport.Bus) {
+		mut r := Responder{
+			addresses: [u8(0x00)]
+		}
+		t0 := time.ticks()
+		for time.ticks() - t0 < 2000 {
+			f := peer.recv(10) or { continue }
+			for a in r.feed(f, f64(time.ticks())) {
+				peer.send(a) or {}
+				if a.data[0] == cm_eom_ack {
+					return
+				}
+			}
+		}
+	}(mut peer)
+	send_connection(mut tx, prop_cfg(), 100, unsafe { nil })!
 }

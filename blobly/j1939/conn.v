@@ -87,6 +87,7 @@ mut:
 	owner    u64
 	state    OrigState
 	deadline f64
+	wait_ms  f64 // the wait the last step armed, which wrote restarts
 	sent     int // the highest packet sent so far
 }
 
@@ -169,7 +170,7 @@ pub fn (o Originator) free_lane(now_ns u64) {
 pub fn (mut o Originator) start(now_ms f64) ConnOut {
 	n := o.data.len
 	o.state = .wait_cts
-	o.deadline = now_ms + o.answer_ms
+	o.arm(now_ms, o.answer_ms)
 	return ConnOut{
 		frames: [
 			control_frame(o.sa, o.da, [cm_rts, u8(n & 0xFF), u8(n >> 8), u8(o.packets()), conn_per_cts,
@@ -202,7 +203,7 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 			count := int(cm.raw[1])
 			if count == 0 {
 				o.state = .wait_cts
-				o.deadline = now_ms + conn_t4_ms
+				o.arm(now_ms, conn_t4_ms)
 				return ConnOut{}
 			}
 			if !cm.names_packet(o.packets()) {
@@ -218,7 +219,7 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 				o.sent = last
 			}
 			o.state = if last == o.packets() { OrigState.wait_ack } else { OrigState.wait_cts }
-			o.deadline = now_ms + o.answer_ms
+			o.arm(now_ms, o.answer_ms)
 			return out
 		}
 		// accepted once every packet has gone out, whether a retransmission was asked for since
@@ -242,6 +243,19 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 		else {}
 	}
 	return ConnOut{}
+}
+
+// wrote says the frames the last step returned went out by `now_ms`: the wait it armed runs from
+// then, so a slow write of a window is not spent from the answer's time.
+pub fn (mut o Originator) wrote(now_ms f64) {
+	if o.open() {
+		o.deadline = now_ms + o.wait_ms
+	}
+}
+
+fn (mut o Originator) arm(now_ms f64, wait_ms f64) {
+	o.wait_ms = wait_ms
+	o.deadline = now_ms + wait_ms
 }
 
 // poll times the connection out at `now_ms`: past its wait it is aborted (reason 3).
@@ -310,7 +324,7 @@ pub fn (r Responder) open() int {
 
 // feed takes one frame read at `now_ms` and returns what to send in answer.
 pub fn (mut r Responder) feed(f transport.CanFrame, now_ms f64) []transport.CanFrame {
-	if r.addresses.len == 0 || !tp_shaped(f) {
+	if r.addresses.len == 0 || !f.extended || f.rtr || f.fd {
 		return []
 	}
 	id := decompose(f.id)
@@ -319,6 +333,20 @@ pub fn (mut r Responder) feed(f transport.CanFrame, now_ms f64) []transport.CanF
 		return []
 	}
 	k := skey(id.sa, me)
+	if f.data.len != 8 {
+		// a classic transport frame of another length ends the transfer it would belong to (a
+		// packet, or a new announcement), as a listener beside it drops it: aborted (reason 250)
+		p := id.pgn()
+		ends := p == pgn_tp_dt
+			|| (p == pgn_tp_cm && f.data.len > 0 && f.data[0] in [cm_rts, cm_bam])
+		if ends {
+			if c := r.conns[k] {
+				r.conns.delete(k)
+				return [abort_frame(me, id.sa, abort_other, .responder, c.pgn)]
+			}
+		}
+		return []
+	}
 	match id.pgn() {
 		pgn_tp_cm {
 			cm := parse_cm_of(f) or { return [] }
@@ -344,7 +372,7 @@ pub fn (mut r Responder) feed(f transport.CanFrame, now_ms f64) []transport.CanF
 				r.conns[k] = c
 				return [cts]
 			}
-			if cm.ctrl == cm_abort {
+			if cm.ctrl == cm_abort && !refused(cm) {
 				if c := r.conns[k] {
 					if c.pgn == cm.pgn && cm.abort_role() != .responder {
 						r.conns.delete(k)
@@ -406,6 +434,43 @@ pub fn (mut r Responder) stop() []transport.CanFrame {
 	}
 	r.conns = map[u16]Answering{}
 	return out
+}
+
+// abort_target says which of the connections one side sends (`sent`) and answers (`answered`) an
+// abort `f` ends — true one answered, false one sent, none neither or no abort — by
+// abort_targets_forward, the listeners' rule: with no role declared and the group open both ways,
+// the one its sender originates.
+pub fn abort_target(f transport.CanFrame, sent []Originator, answered Responder) ?bool {
+	if !tp_shaped(f) || pgn(f.id) != pgn_tp_cm {
+		return none
+	}
+	cm := parse_cm_of(f) or { return none }
+	if cm.ctrl != cm_abort || refused(cm) {
+		return none
+	}
+	id := decompose(f.id)
+	mut fwd := ?AbortSide(none)
+	if c := answered.conns[skey(id.sa, id.da())] {
+		fwd = AbortSide{
+			pgn: c.pgn
+		}
+	}
+	mut rev := ?AbortSide(none)
+	for o in sent {
+		if o.open() && o.sa == id.da() && o.da == id.sa {
+			rev = AbortSide{
+				pgn: o.pgn
+			}
+		}
+	}
+	return abort_targets_forward(id, cm, fwd, rev)
+}
+
+fn refused(cm Cm) bool {
+	if _ := cm.control_refusal() {
+		return true
+	}
+	return false
 }
 
 // clear is the CTS for the next window, from `me` to the originator `to`, and the wait for its
@@ -483,6 +548,9 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 				}
 				return error('${o.what()}: ${err.msg()}')
 			}
+		}
+		if out.frames.len > 0 {
+			o.wrote(mono_ms())
 		}
 		match out.end {
 			.open {}
