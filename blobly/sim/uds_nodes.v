@@ -7,6 +7,7 @@ module sim
 import blobly.project
 import blobly.uds
 import blobly.doip
+import blobly.isotp
 
 // UdsNode is one simulated ECU's diagnostic server, with the addresses it answers on.
 pub struct UdsNode {
@@ -23,6 +24,8 @@ pub:
 	// the functional id it also answers, 0 = none (and its width, inferred like the pair's)
 	functional u32
 	fext       bool
+	// the length of the frames it answers a long message in (its `uds:` tx_dl, one of isotp.tx_dls)
+	tx_dl u8 = 8
 pub mut:
 	server uds.Server
 	// the described node it answers as (describe_uds_nodes), '' = the project's content
@@ -61,6 +64,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			// else. Opened as standard, SocketCAN masks it to 11 bits and 0x18DAF110 goes out
 			// as 0x110 — a different, probably occupied, address.
 			ext:    cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			tx_dl:  if tx_dl_usable(cfg.tx_dl) { u8(cfg.tx_dl) } else { u8(8) }
 			server: build_server(cfg, max_response, max_dtcs)
 		}
 	}
@@ -78,6 +82,22 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 		}
 	}
 	return out
+}
+
+// tx_dl_usable is whether a `uds:` tx_dl is one a channel sends in; 0 states none.
+fn tx_dl_usable(dl u32) bool {
+	return dl != 0 && int(dl) in isotp.tx_dls
+}
+
+// isotp_settings is what the node's ISO-TP channel sends in on `row`, the row it answers as: its
+// frames at its TX_DL, or 8 bytes and the reason where the row cannot carry them
+// (isotp.Settings.row_refusal), said at Start. The GUI and the headless runner both ask this.
+pub fn (u UdsNode) isotp_settings(row project.Channel) (isotp.Settings, string) {
+	s := isotp.settings_with(0, 0, 0, u.tx_dl, .wire) or { return isotp.Settings{}, '' }
+	if why := s.row_refusal(row.emitter_framing().fd) {
+		return isotp.Settings{}, 'uds on "${u.name}": ${why} — answers in 8-byte frames'
+	}
+	return s, ''
 }
 
 // DiagServers is which diagnostic servers a wire's simulated nodes start.
@@ -288,6 +308,9 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 		if cfg.functional != 0 {
 			warns << 'uds on "${n.name}": functional is ignored on a DoIP channel — DoIP addresses functional requests by logical address'
 		}
+		if cfg.tx_dl != 0 {
+			warns << 'uds on "${n.name}": tx_dl is ignored on a DoIP channel — a DoIP message is not cut into CAN frames'
+		}
 		for m in cfg.malformed {
 			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
 		}
@@ -312,21 +335,22 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 }
 
 // max_dtcs is how many faults a 0x19 sub 0x02 response can carry: the header is 3 bytes and
-// each record 4, against ISO-TP's 4095-byte maximum. Past it `send` refuses the transfer and
-// the error is discarded, so the tester sees only a timeout.
-pub const max_dtcs = (4095 - 3) / 4
+// each record 4, against ISO-TP's maximum. Past it `send` refuses the transfer and the error is
+// discarded, so the tester sees only a timeout.
+pub const max_dtcs = (max_response - 3) / 4
 
-// max_response is the longest answer one ISO-TP transfer carries.
-pub const max_response = 4095
+// max_response is the longest answer one ISO-TP transfer carries (isotp.max_pdu; past 4095 bytes
+// its First Frame gives the 32-bit length, which a tester reads only from ISO 15765-2:2016 on).
+pub const max_response = isotp.max_pdu
 
-// max_did_bytes is the largest DID value that fits one ISO-TP transfer: 4095 bytes minus the
+// max_did_bytes is the largest DID value that fits one ISO-TP transfer: max_response less the
 // three-byte positive-response header (0x62 + the two identifier bytes).
 pub const max_did_bytes = max_response - uds.did_answer_header
 
 // The DoIP equivalents. A diagnostic message is capped at doip.max_payload_len (64 KiB, which
 // both ends enforce), of which 4 bytes are the source/target address pair and 3 the UDS
-// positive-response header. Applying ISO-TP's 4092 here silently dropped configured data that
-// the selected carrier can carry perfectly well, and reads answered NRC 0x31 for it.
+// positive-response header. Each carrier's own limit applies: another's drops configured data the
+// selected carrier can carry, and reads answer NRC 0x31 for it.
 pub const max_did_bytes_doip = max_response_doip - uds.did_answer_header
 
 // max_response_doip is the longest answer one DoIP diagnostic message carries: the payload less
@@ -440,6 +464,9 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 		if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
 			// ISO-TP uses one frame format for the pair; a mixed pair cannot be honoured
 			warns << 'uds on "${n.name}": rx 0x${cfg.rx:X} and tx 0x${cfg.tx:X} mix 11-bit and 29-bit addressing'
+		}
+		if cfg.tx_dl != 0 && !tx_dl_usable(cfg.tx_dl) {
+			warns << 'uds on "${n.name}": tx_dl ${cfg.tx_dl} is not one of ${isotp.tx_dls.map(it.str()).join(', ')} — answers in 8-byte frames'
 		}
 		warns << validate_content(n.name, cfg, max_response, 'ISO-TP')
 		for m in cfg.malformed {

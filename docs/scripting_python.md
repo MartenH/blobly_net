@@ -1526,7 +1526,7 @@ message and its code:
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). On DoIP: a negative acknowledgement, or a connection that could not be opened; `blobly.ConnectionLost`, its subclass, is the connection gone ([DoIP](#11-doip)). |
 | `blobly.RoutingDenied` | DoIP only, when the client opens: the entity denied the routing activation ([DoIP](#11-doip)). |
 | `blobly.WriteGated` | A `NodeClient.write` the DID's write gate does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
-| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group, a routine control or I/O control parameter ISO does not define, an address or size its width cannot hold), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
+| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group, a routine control or I/O control parameter ISO does not define, an address or size its width cannot hold), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (65535 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
 went out, the answer, the NRC, whether it went out whole, and its timing.
@@ -1640,7 +1640,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 - **Ids.** Both are given: a raw channel has no default pair. Either past 0x7FF makes both 29-bit,
   as for `ch.uds()`. A DoIP or SOME/IP row is refused: ISO-TP is a CAN transport.
-- **What it carries.** Messages of 1 to 4095 bytes, sent in 8-byte frames padded with 0x00 (FD on a
+- **What it carries.** Messages of 1 to 65535 bytes (past 4095 the First Frame gives the 32-bit
+  length of ISO 15765-2:2016, sent and received), sent in 8-byte frames padded with 0x00 (FD on a
   row the project declares CAN-FD) unless `tx_dl` says longer. It receives frames of any length the
   sender chose, with no keyword: a CAN-FD peer's Single Frame of up to 62 bytes behind the escape
   length, or its First Frame of up to 64 bytes and Consecutive Frames as long. As a sender it honours the receiver's Flow Control (block size,
@@ -1663,13 +1664,13 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   on a CAN row too: `ch.uds(tx_dl=64)` sends a flash download's 0x36 blocks 63 bytes a frame,
   `ch.uds(format="classic")` reaches an ECU that reads classic frames only on a CAN-FD bus.
 - **`send(data)`** returns once the message is on the wire. A long one waits for the receiver's
-  Flow Control, 1000 ms each (N_Bs) and 120 s for the transfer, and raises `Timeout` when none came.
+  Flow Control, 1000 ms each (N_Bs) and 120 s for every 4095 bytes of the transfer, and raises `Timeout` when none came.
   It is one call, so Ctrl-C ends it only once it returns.
 - **`recv(timeout_ms=1000)`** returns the next whole message, or `None` when none came in time
   (`0` only looks). A transfer begun is kept, and the next `recv` goes on with it, until 1000 ms
   pass with no Consecutive Frame (N_Cr), which raises `CarrierFailed`. Ctrl-C ends the wait within
   100 ms.
-- **Errors.** `Refused` for a message it cannot carry (empty, past 4095 bytes) or a send on a
+- **Errors.** `Refused` for a message it cannot carry (empty, past 65535 bytes) or a send on a
   listen-only row; `CarrierFailed` for the bus or the transfer failing (a frame lost, a frame that
   is not ISO-TP, the receiver reporting overflow).
 - **Lifecycle and threads** are a `UdsClient`'s: `with` closes it, a stop and a start let its
@@ -2748,7 +2749,7 @@ A raw ISO-TP channel on a CAN row (`ch.isotp(tx, rx)`). See [Raw ISO-TP](#raw-is
 |---|---|
 | `tp.channel` | The `Channel` it is on. |
 | `tp.tx`, `tp.rx`, `tp.ext` | The CAN ids it sends and receives on, and whether they are 29-bit. |
-| `tp.send(data)` | Sends one whole message (1 to 4095 bytes); returns once it is on the wire. `Timeout` when the receiver sent no Flow Control. |
+| `tp.send(data)` | Sends one whole message (1 to 65535 bytes); returns once it is on the wire. `Timeout` when the receiver sent no Flow Control. |
 | `tp.recv(timeout_ms=1000)` | The next whole message on `rx`, or `None` when none came within `timeout_ms` (`0` only looks). Ctrl-C ends the wait within 100 ms. |
 | `tp.close()`, `with tp:` | Lets the handle go for good; a later call refuses. |
 

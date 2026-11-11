@@ -102,7 +102,7 @@ fn build_key_table() map[string]KeySection {
 			keys: ['id', 'nid', 'ext']
 		}
 		'uds':         KeySection{
-			keys:  ['rx', 'tx', 'functional', 'session', 'dids', 'dtcs', 'io', 'memory']
+			keys:  ['rx', 'tx', 'functional', 'session', 'dids', 'dtcs', 'io', 'memory', 'tx_dl']
 			lists: {
 				'dids':   'did'
 				'dtcs':   'dtc'

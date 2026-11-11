@@ -453,7 +453,8 @@ tp:close()
 Whole messages on a CAN channel's id pair, segmented and reassembled by the ISO-TP a `uds.open`
 connection rides, with no UDS on top: a protocol of your own over ISO-TP, or a malformed UDS request
 and the bytes that come back. Both ids are needed (there is no default pair), and either past
-0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes, sent in
+0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 65535 bytes (past 4095 its First Frame gives the 32-bit length
+of ISO 15765-2:2016, sent and received), sent in
 8-byte frames (FD on a channel the project declares CAN-FD) unless `opts.tx_dl` says longer, and
 received in frames of any length the sender chose (a CAN-FD Single Frame behind the escape length, a
 First Frame of up to 64 bytes and Consecutive Frames as long). `tp:send(data)` returns once the message is on the wire, a long one after the

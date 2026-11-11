@@ -138,14 +138,15 @@ pub fn parse_flow_control(data []u8) !FlowControl {
 	}
 }
 
-// fc_total_wait_ms bounds how long ONE transfer may spend waiting for its peer, across every
-// Flow Control it asks for.
+// fc_total_wait_ms bounds how long ONE transfer of up to 4095 bytes may spend waiting for its peer,
+// across every Flow Control it asks for; a longer one is allowed it for every 4095 bytes begun
+// (transfer_wait_ms), so each Flow Control is given as long whatever the message's length.
 //
 // WHY A SECOND BOUND AT ALL. The two above are per-block and answer a per-block question, and
 // `await_flow_control` resets its wait count on every call -- deliberately, because a receiver
 // that asks to wait, is given time and then accepts a block has done nothing wrong, and a count
 // carried across blocks would abort a long, legitimately paced transfer partway through. That
-// reasoning is right and it leaves NO TOTAL BOUND: at BS=1 a maximum PDU is 585 blocks, so a
+// reasoning is right and it leaves NO TOTAL BOUND: at BS=1 a 4095-byte message is 585 blocks, so a
 // peer answering `n_wft_max` WAITs per block holds one `send` for 585 x 16 x 1000 ms, about two
 // and a half hours. It does not even need WAIT -- answering every Flow Control at 999 ms is ten
 // minutes. Before #226 the worst case was about a second (#296).
@@ -158,7 +159,7 @@ pub fn parse_flow_control(data []u8) !FlowControl {
 //
 // THE VALUE IS SIZED BY FLASH, which is the real caller and cannot raise it: `flash.program`
 // takes the `Channel` INTERFACE, so no per-channel field is reachable from there, and a bound
-// that aborts a firmware download is worse than the stall it prevents. A maximum PDU at BS=1
+// that aborts a firmware download is worse than the stall it prevents. A 4095-byte message at BS=1
 // asks for 584 Flow Controls, so this permits an average of ~205 ms of waiting for each one --
 // a bootloader busy erasing may take tens of milliseconds to answer, and this is an order of
 // magnitude above that. A peer slower than that ON AVERAGE, for the whole transfer, is not
@@ -236,5 +237,5 @@ pub fn (b WaitBudget) spent() bool {
 // exhausted_note says which bound was hit, because `timeout` here would name the per-block one
 // and send the reader to the wrong constant.
 pub fn exhausted_note(ms int) string {
-	return 'ISO-TP: transfer spent its ${ms} ms of waiting on the receiver (fc_total_wait_ms) — giving up'
+	return 'ISO-TP: transfer spent its waiting on the receiver (${ms} ms per 4095 bytes, fc_total_wait_ms) — giving up'
 }

@@ -93,29 +93,32 @@ fn test_doip_rejects_malformed_and_reports_it() {
 	assert warns.any(it.contains('not a valid identifier'))
 }
 
-// The limits are the CARRIER's, not ISO-TP's. A DID too large for one CAN transfer fits a
-// DoIP diagnostic message perfectly well, and dropping it there answered NRC 0x31 for data the
-// transport could have carried.
-fn test_doip_carries_what_iso_tp_cannot() {
-	over_can := 'x'.repeat(max_did_bytes + 1)
+// The limits are the CARRIER's: a DID one past what a DoIP message carries fits one ISO-TP transfer
+// and is served there, and one past ISO-TP's is dropped on CAN, each said by its own builder.
+fn test_each_carrier_has_its_own_limit() {
+	over_doip := 'x'.repeat(max_did_bytes_doip + 1)
 	nodes := [
 		doip_node('E', project.UdsCfg{
 			dids: [project.DidCfg{
 				id:   0xF190
-				text: over_can
+				text: over_doip
 			}]
 		}),
 	]
-	assert uds_nodes_doip(nodes)[0].server.dids[u16(0xF190)].len == max_did_bytes + 1
-	assert validate_uds_doip(nodes).len == 0 // and no warning about a limit that does not apply
-	// the CAN builder still drops it, and still says so
-	cfg := project.UdsCfg{
+	assert uds_nodes_doip(nodes)[0].server.dids.len == 0
+	assert validate_uds_doip(nodes).any(it.contains('over the ${max_did_bytes_doip}-byte DoIP payload limit'))
+	mut cfg := project.UdsCfg{
 		rx:   0x7E0
 		tx:   0x7E8
 		dids: [project.DidCfg{
 			id:   0xF190
-			text: over_can
+			text: over_doip
 		}]
+	}
+	assert uds_nodes([doip_node('E', cfg)])[0].server.dids[u16(0xF190)].len == max_did_bytes_doip + 1
+	cfg.dids[0] = project.DidCfg{
+		id:   0xF190
+		text: 'x'.repeat(max_did_bytes + 1)
 	}
 	assert uds_nodes([doip_node('E', cfg)])[0].server.dids.len == 0
 	assert validate_uds([doip_node('E', cfg)]).any(it.contains('ISO-TP'))

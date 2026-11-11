@@ -1,5 +1,5 @@
 // isotp — ISO-TP (ISO 15765-2) transport: a message pipe that sends/receives
-// whole PDUs (up to 4095 bytes), hiding CAN segmentation/flow-control. It is the
+// whole PDUs (up to 65535 bytes), hiding CAN segmentation/flow-control. It is the
 // byte carrier UDS (blobly/uds) rides on. GUI-free.
 //
 // PLATFORM SPLIT (see CLAUDE.md → platform support): this file is platform-
@@ -19,8 +19,11 @@ module isotp
 
 import blobly.transport
 
-// max_pdu is the ISO-TP maximum service data unit (classic addressing).
-pub const max_pdu = 4095
+// max_pdu is the longest message a channel sends or receives: past ff12_max its First Frame gives
+// the 32-bit length (ISO 15765-2:2016), bounded at 64 KiB as a DoIP diagnostic message is. A First
+// Frame declaring more is answered with Flow Control OVERFLOW. The kernel socket carries what its
+// own max_pdu_size allows (8300 bytes by default).
+pub const max_pdu = 65535
 
 // Channel is a platform-agnostic ISO-TP message pipe. Each OS backend provides a
 // concrete implementation + an `open()` that returns one.

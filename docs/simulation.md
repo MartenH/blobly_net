@@ -472,6 +472,7 @@ distinguishable one:
           rx: "0x7E1"          # tester -> ECU (where it listens)
           tx: "0x7E9"          # ECU -> tester (where it answers)
           functional: "0x7DF"  # optional: also answers the functional (broadcast) id
+          tx_dl: 64            # optional: answers in frames of up to 64 bytes (a CAN-FD row)
           dids:
             - { id: "0xF190", text: "BLOBLY-BCM-0001" }   # ASCII
             - { id: "0xF195", bytes: "01 00" }            # raw bytes
@@ -535,6 +536,15 @@ if it is, it is reported and not answered. It is ignored on a DoIP channel. A pr
 uses it declares `version: 8`, since an older build would drop it on save. `uds.functional`
 in a script is the tester side of this (`docs/scripting.md`).
 
+**`tx_dl:`** is the length of the frames the ECU answers a long message in (8, 12, 16, 20, 24,
+32, 48 or 64; 8 when not given), as a tester's `tx_dl` is (`docs/scripting.md`): a Single Frame of
+up to `tx_dl - 2` bytes behind the escape length, Consecutive Frames of `tx_dl - 1`. Above 8 the
+frames are CAN-FD, so the row must declare CAN-FD; on a classic row the ECU answers in 8-byte
+frames and Start says why, as it does for a value not in that list. It is ignored on a DoIP
+channel. A project that uses it declares `version: 14`. An answer past 4095 bytes goes out with
+the 32-bit First Frame length of ISO 15765-2:2016 whatever the frame length, so a DID may be as
+long as 65532 bytes on CAN; a tester that predates that edition does not read such an answer.
+
 **Configure one and you own diagnostics on that channel:** the built-in `0x7E0`/`0x7E8` server
 stops running. Otherwise the two would both answer whenever their ids overlapped, and which
 reply the tester saw would depend on scheduling. A channel with no `uds:` anywhere keeps the
@@ -566,7 +576,7 @@ A configuration that cannot work is **reported and not started**, so it can neve
 an unset address, `rx` equal to `tx`, an id beyond 29 bits, a pair mixing 11-bit and 29-bit,
 two servers sharing a request *or* a response id, one ECU's request id being another's response
 id (it would eat that ECU's replies and answer them with a negative response), a DID above the
-16-bit range or longer than 4092 bytes (one ISO-TP transfer, minus the response header), a DTC
+16-bit range or longer than 65532 bytes (one ISO-TP transfer, minus the response header), a DTC
 above the 24-bit range, or a DTC status that is not a byte.
 
 Out-of-range values are **dropped, never narrowed**, because narrowing turns a mistake into a

@@ -22,6 +22,7 @@
 module uds
 
 import time
+import blobly.isotp
 
 // Session masks, one bit per 0x10 session value (bit n-1 for session n); 0 = every session.
 pub const in_default = u8(0x01)
@@ -233,7 +234,7 @@ pub fn (mut s Server) set_dtc_status(code u32, status u8) {
 }
 
 fn (spec ServerSpec) resp_cap() int {
-	return if spec.max_response > 0 { spec.max_response } else { 4095 }
+	return if spec.max_response > 0 { spec.max_response } else { isotp.max_pdu }
 }
 
 // security_mask is the 0x27 levels the server serves (bit L-1 for level L): every level a DID

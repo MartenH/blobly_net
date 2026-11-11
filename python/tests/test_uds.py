@@ -170,7 +170,7 @@ class TestSimDemo:
             diag.raw(b"")
         assert not diag.last.sent, "an empty request reached the carrier"
         with pytest.raises(blobly.Refused):
-            diag.raw(bytes(4096))  # past ISO-TP's 4095
+            diag.raw(bytes(65536))  # past ISO-TP's 65535
         with pytest.raises(TypeError):
             diag.raw("22 F1 90")
 

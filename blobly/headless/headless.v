@@ -553,12 +553,14 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 				// contribute servers, or a test observes an ECU it explicitly switched off.
 				mut peers := []project.NodeCfg{}
 				mut owners := []string{} // each peer's channel, by position
+				mut owner_rows := []project.Channel{} // and the row itself
 				for other in proj.channels {
 					if other.enabled
 						&& transport.destination_key_for(other.adapter, other.iface) == ch_dest {
 						for n in other.all_nodes() {
 							peers << n
 							owners << other.name
+							owner_rows << other
 						}
 					}
 				}
@@ -594,10 +596,15 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
+						own_row := if u.src >= 0 && u.src < owner_rows.len { owner_rows[u.src] } else { ch }
+						settings, why := u.isotp_settings(own_row)
+						if why != '' {
+							o.err('${own_row.name}: ${why}')
+						}
 						r.counted()
-						own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { ch.name }
+						own := own_row.name
 						spawn r.uds_node_loop(ch.iface_with_bitrate(), own, u.rx, u.tx, u.ext,
-							u.functional, u.fext, u.server, r.opening('${own}: uds node 0x${u.rx:X}'))
+							u.functional, u.fext, u.server, settings, r.opening('${own}: uds node 0x${u.rx:X}'))
 					}
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -796,7 +803,7 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_nam
 }
 
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, ready int) {
+fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, settings isotp.Settings, ready int) {
 	defer {
 		r.done()
 	}
@@ -805,6 +812,7 @@ fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool,
 		r.open_failed(ready, 'cannot open ${iface}: ${err}')
 		return
 	}
+	ch.settings = settings // sim.UdsNode.isotp_settings, checked against the row
 	// a run worker: Stop abandons an answer still being segmented (#347)
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running

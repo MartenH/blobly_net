@@ -79,7 +79,7 @@ class TestSimDemo:
 
     def test_what_it_cannot_carry_is_refused(self, sim_demo, can1):
         with can1.isotp(0x7E0, 0x7E8) as tp:
-            for bad in (b"", bytes(4096)):
+            for bad in (b"", bytes(65536)):
                 with pytest.raises(blobly.Refused):
                     tp.send(bad)
             with pytest.raises(TypeError):

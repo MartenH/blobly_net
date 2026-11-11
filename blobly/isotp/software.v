@@ -6,9 +6,9 @@
 // vendor driver that has no kernel ISO-TP. Cross-platform (unsuffixed file). It
 // implements the same `Channel` interface, so UDS rides on it unchanged.
 //
-// Scope: normal addressing, single + multi-frame, messages up to 4095 bytes (a First Frame's 12-bit
-// length). It sends in 8-byte frames padded with 0x00 unless the channel's `settings` say another
-// byte or none (#635), or a longer TX_DL (12 .. 64, CAN-FD, #637): a Single Frame of up to TX_DL - 2
+// Scope: normal addressing, single + multi-frame, messages up to max_pdu bytes (past 4095 a First
+// Frame gives the 32-bit length, sent and received; firstframe.v). It sends in 8-byte frames padded
+// with 0x00 unless the channel's `settings` say another byte or none (#635), or a longer TX_DL (12 .. 64, CAN-FD, #637): a Single Frame of up to TX_DL - 2
 // bytes behind the escape length, Consecutive Frames of TX_DL - 1 bytes, a frame longer than 8 padded
 // up to the next CAN-FD length; and in the format they state (#608), else the row's. It RECEIVES
 // either with no setting: a Single Frame behind the escape, and a First Frame of any CAN-FD length,
@@ -234,12 +234,13 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	if c.stopping() {
 		return error(abandoned_note)
 	}
-	// First Frame: PCI 0x1<len_hi><len_lo> + the first TX_DL - 2 bytes.
-	mut ff := [u8(0x10 | u8((data.len >> 8) & 0x0F)), u8(data.len & 0xFF)]
-	ff << data[..dl - 2]
+	// First Frame: its PCI (first_frame_pci) + as much of the message as fills TX_DL bytes.
+	mut ff := first_frame_pci(data.len)
+	head := dl - ff.len
+	ff << data[..head]
 	c.tx(ff)!
 	// From here the peer is answering us, so every exit owes the next send a clean slate.
-	c.send_segmented(data, dl) or {
+	c.send_segmented(data, dl, head) or {
 		c.fc_dirty = true
 		return err
 	}
@@ -248,14 +249,14 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 // send_segmented is everything after the First Frame: the Flow Control conversation and the
 // Consecutive Frames it authorises. Split out so `send` can mark the channel dirty on ANY exit
 // from it — there is no path out of here that leaves the peer with nothing more to say.
-fn (mut c SoftChannel) send_segmented(data []u8, dl int) ! {
+fn (mut c SoftChannel) send_segmented(data []u8, dl int, head int) ! {
 	// ONE ALLOWANCE FOR THE WHOLE TRANSFER, spent by every Flow Control this send waits for.
 	// Here and not on the channel because it belongs to the transfer: the next send starts
 	// again, as a peer that stalled one request has not forfeited the next (fc_total_wait_ms).
-	mut budget := new_wait_budget_ms(c.total_wait_ms)
+	mut budget := new_wait_budget_ms(transfer_wait_ms(c.total_wait_ms, data.len))
 	mut fc := c.await_flow_control(mut budget)!
 	mut sn := u8(1)
-	mut off := dl - 2
+	mut off := head
 	// When the last Consecutive Frame went out, in monotonic NANOSECONDS. Zero until the first.
 	//
 	// MEASURED FROM THE FRAME, NOT COUNTED WITHIN A BLOCK. The first cut slept only when it had
@@ -512,10 +513,13 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			if dl !in transport.fd_lengths {
 				return error('ISO-TP: First Frame of ${dl} bytes, not a CAN-FD frame length')
 			}
-			total := (int(first[0] & 0x0F) << 8) | int(first[1])
-			if total == 0 {
-				return error('ISO-TP: First Frame with a 32-bit length: messages past ${max_pdu} bytes are not received')
+			declared, pci_len := first_frame_length(first)!
+			if declared > max_pdu {
+				// ISO 15765-2: a receiver that cannot take the message says so with OVERFLOW
+				c.tx([u8(0x32), 0, 0])!
+				return error('ISO-TP: First Frame declares ${declared} bytes, past the ${max_pdu} received (Flow Control OVERFLOW sent)')
 			}
+			total := int(declared)
 			if total <= sf_max(dl) {
 				// A length that fits a Single Frame must be sent as one (ISO 15765-2); accepted, a
 				// total of 0..6 returned the padding bytes as a PDU and 7 waited for a Consecutive
@@ -523,7 +527,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				return error('ISO-TP FF declares ${total} bytes, which must be a Single Frame')
 			}
 			mut buf := []u8{cap: total}
-			buf << first[2..]
+			buf << first[pci_len..]
 			c.rx = Reassembly{
 				buf:   buf
 				total: total
