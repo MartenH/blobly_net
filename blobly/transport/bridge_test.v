@@ -144,6 +144,10 @@ fn (mut b RefusingBus) diagnostics() BusDiagnostics {
 	}
 }
 
+fn (mut b RefusingBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 fn (mut b RefusingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_send_the_interface_refuses_fails_with_its_reason_and_health_arrives() {
@@ -194,6 +198,10 @@ fn (mut b DyingBus) health() BusHealth {
 
 fn (mut b DyingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
+}
+
+fn (mut b DyingBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
 }
 
 fn (mut b DyingBus) reconcile_silence(_ bool) ! {}
@@ -333,6 +341,10 @@ fn (mut b BlankErrorBus) health() BusHealth {
 
 fn (mut b BlankErrorBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
+}
+
+fn (mut b BlankErrorBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
 }
 
 fn (mut b BlankErrorBus) reconcile_silence(_ bool) ! {}
@@ -529,6 +541,10 @@ fn (mut b EchoingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
+fn (mut b EchoingBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 fn (mut b EchoingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_reply_never_overtakes_the_acknowledgement_of_its_request() {
@@ -611,6 +627,10 @@ fn (mut b HoldingBus) health() BusHealth {
 
 fn (mut b HoldingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
+}
+
+fn (mut b HoldingBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
 }
 
 fn (mut b HoldingBus) reconcile_silence(_ bool) ! {}

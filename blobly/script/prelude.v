@@ -858,6 +858,13 @@ function bus.diagnostics(channel)
   local dropped, bus_errors, decode_errors = __bus_diagnostics(channel)
   return { dropped = dropped, bus_errors = bus_errors, decode_errors = decode_errors }
 end
+-- the controller`s transmit and receive error counters as it last reported them, { tx, rx }, or nil
+-- where the backend cannot say (the software buses, PCAN, the CAN bridge)
+function bus.error_counters(channel)
+  local tx, rx = __bus_error_counters(channel)
+  if tx == nil then return nil end
+  return { tx = tx, rx = rx }
+end
 -- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock),
 -- e2e its E2E verdict ("ok", "bad_crc", "repeated", "skipped", "truncated", "timeout"), nil where
 -- its message has none: the verify: entry of the channel for it, else what its DBC declares

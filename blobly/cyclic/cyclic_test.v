@@ -212,6 +212,10 @@ fn (mut b RefusingBus) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
 }
 
+fn (mut b RefusingBus) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b RefusingBus) reconcile_silence(_ bool) ! {}
 
 @[heap]

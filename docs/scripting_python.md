@@ -909,6 +909,25 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     print(repr(net.channels.CAN1.health()))   # '': inproc: is a software bus, with no controller
 ```
 
+`ch.error_counters()` is the controller's transmit and receive error counters as it last reported
+them, an `ErrorCounters` (`tx`, `rx`), or `None` where the backend cannot say. They are what the
+ladder moves on, so a test can watch a counter climb and come back while `health()` still reads
+`"ok"`, and see which side is counting: unacknowledged sends raise `tx`, a wrong bit timing `rx`.
+
+| backend | the counters |
+|---|---|
+| `inproc:`, `udp:`, PCAN, the CAN bridge | `None` |
+| Kvaser, CANsub | the driver is asked: current without a reader (a CANsub starts a channel at `tx` 129, and a channel that never sends never lowers it) |
+| SocketCAN | the last error frame that carried them (`CAN_ERR_CNT`), so `None` until the driver sent one (vcan never does); moves only while the channel is read |
+| Vector | the last chip state the channel's reads carried; moves only while the channel is read |
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    print(net.channels.CAN1.error_counters())   # None: inproc: has no controller
+```
+
 ### Bus metrics
 
 `ch.load()` is a `BusLoad`: the load of the frames this channel's handle carried since it opened,
@@ -2099,7 +2118,7 @@ closes it at the end of the block.
 | member | what |
 |---|---|
 | `bus.name`, `bus.iface` | The address it was opened with. |
-| `bus.send`, `bus.recv`, `bus.look`, `bus.expect`, `bus.latest`, `bus.health`, `bus.load`, `bus.diagnostics` | As `Channel`'s; `expect` and `latest` take an int id and `ext` (a `Message` is a row's). |
+| `bus.send`, `bus.recv`, `bus.look`, `bus.expect`, `bus.latest`, `bus.health`, `bus.load`, `bus.diagnostics`, `bus.error_counters` | As `Channel`'s; `expect` and `latest` take an int id and `ext` (a `Message` is a row's). |
 | `bus.close()` | Lets the handle go; a wait in progress on another thread ends within 20 ms. Twice is nothing. |
 
 An `Interface` (`blobly.interfaces()`, `blobly.discover_cansub()`) is a frozen dataclass:
@@ -2216,6 +2235,7 @@ after `start()`.
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
 | `ch.load()` | A `BusLoad`: the load of the decoded frames this channel's handle sent and read since it opened ([Bus metrics](#bus-metrics)). |
 | `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
+| `ch.error_counters()` | An `ErrorCounters`: the controller's transmit and receive error counters as it last reported them; `None` where the backend cannot say ([Health](#8-health)). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive. |
@@ -2297,6 +2317,15 @@ What `ch.load()` and `ch.diagnostics()` return: named tuples ([Bus metrics](#bus
 | `BusDiagnostics.dropped` | Frames lost before delivery: a full queue, a driver overrun, a shared ring overwritten. |
 | `BusDiagnostics.bus_errors` | Controller error records the device reported. |
 | `BusDiagnostics.decode_errors` | Records the backend could not decode. |
+
+### `ErrorCounters`
+
+What `ch.error_counters()` returns where the backend can say: a named tuple ([Health](#8-health)).
+
+| field | what |
+|---|---|
+| `ErrorCounters.tx` | The transmit error counter (TEC) as the controller last reported it. |
+| `ErrorCounters.rx` | The receive error counter (REC) as the controller last reported it. |
 
 ### `Frame`
 

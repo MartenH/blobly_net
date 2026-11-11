@@ -134,6 +134,10 @@ pub fn (mut m MeteredBus) diagnostics() BusDiagnostics {
 	return m.inner.diagnostics()
 }
 
+pub fn (mut m MeteredBus) error_counters() ErrorCounters {
+	return m.inner.error_counters()
+}
+
 pub fn (mut m MeteredBus) reconcile_silence(want bool) ! {
 	m.inner.reconcile_silence(want)!
 }

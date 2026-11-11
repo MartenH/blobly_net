@@ -647,6 +647,10 @@ fn (mut b Ladder) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
 }
 
+fn (mut b Ladder) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b Ladder) reconcile_silence(_ bool) ! {}
 
 fn ladder_env(rung &Rung, steps []transport.BusHealth) (&Env, &Said) {
@@ -783,6 +787,10 @@ fn (mut b Closed) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
 }
 
+fn (mut b Closed) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b Closed) reconcile_silence(_ bool) ! {}
 
 // A bus that fails at once is not spun on, and not given up on for the rest of the wait.
@@ -837,6 +845,10 @@ fn (mut b Late) health() transport.BusHealth {
 
 fn (mut b Late) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
+}
+
+fn (mut b Late) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
 }
 
 fn (mut b Late) reconcile_silence(_ bool) ! {}
@@ -970,6 +982,10 @@ fn (mut b Busy) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
 }
 
+fn (mut b Busy) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b Busy) reconcile_silence(_ bool) ! {}
 
 // A look stopped at its bound with records still queued is looked again at once, not slept on:
@@ -1037,6 +1053,10 @@ fn (mut b Slow) health() transport.BusHealth {
 
 fn (mut b Slow) diagnostics() transport.BusDiagnostics {
 	return transport.BusDiagnostics{}
+}
+
+fn (mut b Slow) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
 }
 
 fn (mut b Slow) reconcile_silence(_ bool) ! {}

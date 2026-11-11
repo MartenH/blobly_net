@@ -27,6 +27,10 @@ pub fn (mut b UnopenedBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
+pub fn (mut b UnopenedBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 pub fn (mut b UnopenedBus) reconcile_silence(_ bool) ! {
 	return error(bus_not_open)
 }

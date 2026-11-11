@@ -29,6 +29,8 @@ mut:
 	bus_errors u64
 	fd         int       = -1
 	hstate     BusHealth = .unknown // last kernel error-frame verdict; recv updates it
+	// The last TEC and REC an error frame carried (CAN_ERR_CNT); recv updates it.
+	counters ErrorCounters
 	// The last receive stamp this socket accepted: what in_order_stamp holds the next one against.
 	last_stamp i64
 }
@@ -132,6 +134,12 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			if h != .unknown {
 				b.hstate = h
 			}
+			// counters where the frame carries them; a restart resets the controller's
+			if c := socketcan_err_counters(raw_id, buf[..dlc]) {
+				b.counters = c
+			} else if raw_id & 0x100 != 0 {
+				b.counters = ErrorCounters{}
+			}
 			// AND COUNTED, where the record is a loss or a controller error rather than a rung:
 			// CAN_ERR_CRTL with RX/TX_OVERFLOW is frames the kernel says it dropped, CAN_ERR_PROT
 			// and CAN_ERR_ACK are controller errors (codex round 10 on #231).
@@ -154,6 +162,7 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 		// is plainly carrying traffic again (self-review). Traffic clears it.
 		if b.hstate == .bus_off {
 			b.hstate = .ok
+			b.counters = ErrorCounters{}
 		}
 		ext := (raw_id & can_eff_flag) != 0
 		rtr := (raw_id & can_rtr_flag) != 0
@@ -194,6 +203,13 @@ pub fn (mut b SocketCanBus) diagnostics() BusDiagnostics {
 		dropped:    b.dropped
 		bus_errors: b.bus_errors
 	}
+}
+
+// error_counters: the last TEC and REC this socket's error frames carried — updated while recv
+// runs, as health is. Unknown until a driver that reports them (CAN_ERR_CNT) has sent one; vcan
+// never does.
+pub fn (mut b SocketCanBus) error_counters() ErrorCounters {
+	return b.counters
 }
 
 // reconcile_silence — a SocketCAN interface's mode is chosen outside this app, by whoever ran

@@ -1,5 +1,5 @@
-"""Bus metrics from Python (Channel.load, Channel.diagnostics): two rows on one in-process wire at
-250 kbit/s, one sending what the other reads. A standard 8-byte frame is 135 bit-times with
+"""Bus metrics from Python (Channel.load, Channel.diagnostics, Channel.error_counters): two rows
+on one in-process wire at 250 kbit/s, one sending what the other reads. A standard 8-byte frame is 135 bit-times with
 worst-case stuffing (transport.frame_bits)."""
 import time
 
@@ -77,3 +77,8 @@ class TestMetrics:
             assert e.value.code == _lib.BB_ERR_STATE
         finally:
             net.start()
+
+    def test_a_software_bus_has_no_error_counters(self, net):
+        assert net.channels.A.error_counters() is None
+        with blobly.open("inproc:PY_METRICS_OWN") as bus:
+            assert bus.error_counters() is None

@@ -159,6 +159,7 @@ typedef int (*load_fn)(int, bb_busload *);
 typedef int (*diag_fn)(int, bb_diagnostics *);
 static load_fn bb_bus_load_p;
 static diag_fn bb_bus_diagnostics_p;
+static int (*bb_bus_error_counters_p)(int, int *, int *);
 
 /* J1939 on a row's frames */
 static int (*bb_j1939_attach_p)(int, int, int);
@@ -213,6 +214,8 @@ static int exchange(const char *who, int n) {
 	bb_diagnostics diag;
 	if (bb_bus_load_p(h, &load) != 0 || load.frames != (uint64_t)n + 1) { fprintf(stderr, "FAIL %s load: %s\n", who, bb_last_error_p()); return 1; }
 	if (bb_bus_diagnostics_p(h, &diag) != 0) { fprintf(stderr, "FAIL %s diagnostics: %s\n", who, bb_last_error_p()); return 1; }
+	int tec = -1, rec = -1;
+	if (bb_bus_error_counters_p(h, &tec, &rec) != BB_NONE) { fprintf(stderr, "FAIL %s error counters: a software bus has none\n", who); return 1; }
 	if (bb_bus_close_p(h) != 0) { fprintf(stderr, "FAIL %s close: %s\n", who, bb_last_error_p()); return 1; }
 	if (bb_bus_recv_p(h, 0, &f) != BB_ERR_HANDLE) { fprintf(stderr, "FAIL %s: a closed handle must refuse\n", who); return 1; }
 	printf("ok   %s: %d frames heard, one sent\n", who, n);
@@ -822,7 +825,7 @@ int main(int argc, char **argv) {
 	SYM(bb_version); SYM(bb_init); SYM(bb_last_error); SYM(bb_thread_attach); SYM(bb_thread_detach); SYM(bb_load); SYM(bb_start); SYM(bb_stop);
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
 	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_now_ns); SYM(bb_bus_health); SYM(bb_bus_close);
-	SYM(bb_bus_load); SYM(bb_bus_diagnostics);
+	SYM(bb_bus_load); SYM(bb_bus_diagnostics); SYM(bb_bus_error_counters);
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);

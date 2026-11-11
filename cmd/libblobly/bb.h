@@ -26,7 +26,7 @@
  *   - bb_last_error is PER THREAD: the calling thread's last error, "" after its last success.
  *   - ONE HOST THREAD drives the library's STATE in this version: open, close, load, start and
  *     stop are not synchronised against each other.
- *   - ONE THREAD USES A BUS HANDLE: its send, recv, health, load and diagnostics calls come from
+ *   - ONE THREAD USES A BUS HANDLE: its send, recv, health, load, diagnostics and error-counter calls come from
  *     one thread at a time — which may be an attached thread of its own, not the driver's. The backends are not
  *     safe for more (Kvaser's canlib forbids two threads on one handle; SocketCAN's ladder state
  *     is written by recv and read by health), so open a handle per thread instead. The one
@@ -972,6 +972,11 @@ int bb_bridge_stop(const char *distro);
 /* Bus metrics (bb_busload, bb_diagnostics above): from the thread that uses the handle. */
 int bb_bus_load(int h, bb_busload *out);
 int bb_bus_diagnostics(int h, bb_diagnostics *out);
+/* The controller's transmit and receive error counters (TEC, REC) as it last reported them
+ * (transport.ErrorCounters): 0 with *tx and *rx set, BB_NONE where the backend cannot say (a
+ * software bus, PCAN, the CAN bridge, or a SocketCAN or Vector wire that has carried no error
+ * frame or chip state yet; like bb_bus_health, those two move only while the handle is read). */
+int bb_bus_error_counters(int h, int *tx, int *rx);
 /* Generators: the project's `senders:` in the run (blobly/headless generators.v), as the Lua
  * gen.* has them — every CAN row's, a disabled row's included, in project order, `g` 0 ..
  * bb_gen_count - 1. From bb_start until bb_stop (BB_ERR_STATE otherwise, and for a call a stop

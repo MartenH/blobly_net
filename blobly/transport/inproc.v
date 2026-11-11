@@ -174,6 +174,11 @@ pub fn (mut b InprocBus) diagnostics() BusDiagnostics {
 	}
 }
 
+// error_counters: no controller, so nothing to count.
+pub fn (mut b InprocBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 // reconcile_silence — nothing to reconcile: this bus has no controller, so it generates no
 // acknowledgement and `SilentBus` refusing its sends is the whole of listen-only here.
 pub fn (mut b InprocBus) reconcile_silence(want bool) ! {

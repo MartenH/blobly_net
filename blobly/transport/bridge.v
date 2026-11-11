@@ -1120,6 +1120,11 @@ fn (mut b BridgeBus) diagnostics() BusDiagnostics {
 	}
 }
 
+// error_counters: the bridge protocol carries the ladder, not the counters.
+fn (mut b BridgeBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 // reconcile_silence — the interface's mode is set on the bridge's host, as for SocketCAN, and a
 // vcan has no transceiver at all.
 fn (mut b BridgeBus) reconcile_silence(_ bool) ! {}

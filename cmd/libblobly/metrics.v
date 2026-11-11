@@ -1,5 +1,6 @@
 // Bus metrics of a bus handle (bb.h's "Bus metrics" block): its load (transport.LoadMeter, counted
-// by the handle's MeteredBus) and its backend's diagnostics counts since open.
+// by the handle's MeteredBus), its backend's diagnostics counts since open, and its controller's
+// error counters.
 module main
 
 @[export: 'bb_bus_load']
@@ -38,4 +39,25 @@ pub fn bb_bus_diagnostics(h i32, out &C.bb_diagnostics) i32 {
 		out.decode_errors = d.decode_errors
 	}
 	return ok()
+}
+
+@[export: 'bb_bus_error_counters']
+pub fn bb_bus_error_counters(h i32, tx &i32, rx &i32) i32 {
+	if isnil(tx) || isnil(rx) {
+		return fail(bb_err, 'error counters: nowhere to put them')
+	}
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	defer {
+		hd.leave()
+	}
+	c := hd.bus.error_counters()
+	ok()
+	if !c.known {
+		return bb_none
+	}
+	unsafe {
+		*tx = i32(c.tx)
+		*rx = i32(c.rx)
+	}
+	return 0
 }

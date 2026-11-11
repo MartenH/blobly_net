@@ -70,6 +70,10 @@ static ct_kvChanData ct_kv_chandata;
 typedef int (__stdcall *ct_kvReadStatus)(int, uint32_t *);
 static ct_kvReadStatus ct_kv_readstatus;
 
+/* error counters (optional): canReadErrorCounters fills the transmit, receive and overrun counts. */
+typedef int (__stdcall *ct_kvReadErrCnt)(int, unsigned int *, unsigned int *, unsigned int *);
+static ct_kvReadErrCnt ct_kv_readerrcnt;
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_kvaser_load(void) {
 	HMODULE h = LoadLibraryA("canlib32.dll");
@@ -84,6 +88,7 @@ static int ct_kvaser_load(void) {
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
 	ct_kv_readwait = (ct_kvReadWait)(void *)GetProcAddress(h, "canReadWait");
 	ct_kv_readstatus = (ct_kvReadStatus)(void *)GetProcAddress(h, "canReadStatus");
+	ct_kv_readerrcnt = (ct_kvReadErrCnt)(void *)GetProcAddress(h, "canReadErrorCounters");
 	ct_kv_close    = (ct_kvClose)(void *)GetProcAddress(h, "canClose");
 	ct_kv_numchan  = (ct_kvNumChan)(void *)GetProcAddress(h, "canGetNumberOfChannels");
 	ct_kv_chandata = (ct_kvChanData)(void *)GetProcAddress(h, "canGetChannelData");
@@ -341,6 +346,16 @@ static void ct_kvaser_close(int hnd) {
 static int ct_kvaser_status(int hnd, uint32_t *flags) {
 	if (!ct_kv_readstatus) return -1;
 	return ct_kv_readstatus(hnd, flags) == 0 ? 0 : -1;
+}
+
+/* 0 and the controller's TEC and REC, or -1 where canlib lacks the call or refuses it. */
+static int ct_kvaser_errcnt(int hnd, int *tx, int *rx) {
+	unsigned int t = 0, r = 0, o = 0;
+	if (!ct_kv_readerrcnt) return -1;
+	if (ct_kv_readerrcnt(hnd, &t, &r, &o) != 0) return -1;
+	*tx = (int)t;
+	*rx = (int)r;
+	return 0;
 }
 
 #endif /* CT_KVASER_SHIM_H */
