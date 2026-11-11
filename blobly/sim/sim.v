@@ -115,7 +115,8 @@ pub mut:
 	next_ms  f64  // next due time
 	last_t   f64  // when due_frames last handed a frame of it out (s): what its generators read
 	last_n   int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
-	last_set []SetValue // the values set that frame carried
+	last_set  []SetValue // the values set when that frame was built
+	last_data []u8 // that frame's payload: which signals it carried (candb.Message.carried)
 	ev       ChangeState // sending on a change (the send type event or mixed, Message.on_change)
 }
 
@@ -341,7 +342,7 @@ mut:
 
 // step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
 // `send`, which says whether the transport took it: only a frame taken is the message's LAST SENT
-// (`last_t`/`last_n`/`last_set`, what a described server's live DID reads), so a frame refused — a
+// (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so a frame refused — a
 // listen-only wire, a bus that is down — or dropped by a fault leaves it as it was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
@@ -366,6 +367,7 @@ fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
 		m.last_t = now_ms / 1000.0
 		m.last_n = m.send_n
 		m.last_set = m.set
+		m.last_data = f.data
 	}
 	m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
 	// The PROTECTION counter is what freezes. A dropped frame still advances it, so

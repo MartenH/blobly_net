@@ -235,7 +235,8 @@ pub fn live_value(iface string, chan_name string, node string, signal string) ?u
 // publish_live records, for the signals a described server wants, the value the last frame
 // due_frames sent of its message carried: a value set on the signal (setsignal.v), else its
 // generator's, else raw 0 — every signal of the message, so one let go of goes back to what the
-// frame carries.
+// frame carries. A signal that frame did not carry (a multiplexed one off its page) keeps the
+// value the last frame carrying it published.
 pub fn publish_live(iface string, chan_name string, e &Engine) {
 	live_table.mu.rlock()
 	empty := live_table.want.len == 0
@@ -259,7 +260,11 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 					names << v.signal
 				}
 			}
+			carried := m.msg.carried(m.last_data)
 			for name in names {
+				if !carried_last(m.msg, carried, name) {
+					continue // not in the last frame: its live value stays what the last one carrying it said
+				}
 				k := live_key(iface, chan_name, ecu.name, name)
 				live_table.mu.rlock()
 				wanted := k in live_table.want || any_key(ecu.name, name) in live_table.want
@@ -279,6 +284,18 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			}
 		}
 	}
+}
+
+// carried_last is whether the last frame sent of `msg` carried `name`, by `carried`
+// (msg.carried of that payload): a multiplexed signal only on its page, every signal only where
+// the payload holds it. A name that is not a signal of the message (a generator's) is carried.
+fn carried_last(msg candb.Message, carried []bool, name string) bool {
+	for i, sig in msg.signals {
+		if sig.name == name {
+			return carried[i]
+		}
+	}
+	return true
 }
 
 // last_sent_value is the physical value of `name` in the last frame sent of `m`: the value set on
