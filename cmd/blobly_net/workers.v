@@ -203,7 +203,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut counters := map[string]int{}
 	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
 	mut built := false
-	t0 := time.ticks()
+	t0 := time.sys_mono_now()
 	for a.running {
 		// A CHANNEL THAT HAS LEFT THE RUN takes its simulation with it. rx_loop disables a
 		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
@@ -253,25 +253,23 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 			}
 			engine.restore_counters(counters)
 		}
-		// ONE fault source, the module's table — the same one Lua writes through sim.fault().
+		// serve_pass applies ONE fault source, the module's table — Lua's sim.fault() writes it too.
 		// The panel used to write a map on App that only the panel read, so a script launched
 		// from the Script panel reported success and changed nothing on the bus.
-		sim.apply_injected(sc.iface, mut engine)
-		now_ms := f64(time.ticks() - t0)
-		sim.transmit(mut engine, mut bus, now_ms, sc.iface, sc.pch.name)
-		if frame := bus.recv(5) {
-			for resp in engine.on_frame(frame) {
-				bus.send(resp) or {}
-			}
-		}
+		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.pch.name)
 	}
 	bus.close()
 }
 
-// GenSlot is a cyclic generator's grid slot last fired in, and when that fire returned.
+// gen_poll_ms is the longest gen_loop sleeps: how late it sees a sender started or changed.
+const gen_poll_ms = u64(8)
+
+// GenSlot is a cyclic generator's grid slot last fired in, its cycle then, and when that fire
+// returned (ms on the monotonic clock).
 struct GenSlot {
-	slot u64
-	done u64
+	slot   u64
+	period u64
+	done   u64
 }
 
 // gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
@@ -283,11 +281,12 @@ fn gen_loop(app &App) {
 	mut a := unsafe { app }
 	mut slots := map[u64]GenSlot{} // by SenderRT.uid
 	for a.running {
-		now := u64(time.ticks())
+		now := time.sys_mono_now() / 1_000_000
+		mut next_at := now + gen_poll_ms // the earliest a cyclic sender is due next
 		mut fire := []int{}
 		mut fire_uids := []u64{}
 		a.mu.lock()
-		// ONE snapshot of the taps per pass, not one per sender: this loop runs every 8 ms
+		// ONE snapshot of the taps per pass, not one per sender: this loop runs every few ms
 		// with app.mu held, and rebuilding the key lists per sender made it O(senders × taps)
 		// of allocation under the lock (codex round 1 on #261).
 		taps := a.taprule_taps_locked()
@@ -327,14 +326,18 @@ fn gen_loop(app &App) {
 					due := sim.next_due(g.slot, u64(sr.sender.cycle_ms), g.done)
 					if now >= due {
 						slots[sr.uid] = GenSlot{
-							slot: due
+							slot:   due
+							period: u64(sr.sender.cycle_ms)
 						}
 						fire << i
 						fire_uids << sr.uid
+					} else if due < next_at {
+						next_at = due
 					}
 				} else {
 					slots[sr.uid] = GenSlot{
-						slot: now
+						slot:   now
+						period: u64(sr.sender.cycle_ms)
 					}
 					fire << i
 					fire_uids << sr.uid
@@ -347,9 +350,14 @@ fn gen_loop(app &App) {
 		for i, uid in fire_uids {
 			a.fire_index(fire[i])
 			if g := slots[uid] {
+				done := time.sys_mono_now() / 1_000_000
 				slots[uid] = GenSlot{
 					...g
-					done: u64(time.ticks())
+					done: done
+				}
+				due := sim.next_due(g.slot, g.period, done)
+				if due < next_at {
+					next_at = due
 				}
 			}
 		}
@@ -359,7 +367,8 @@ fn gen_loop(app &App) {
 		a.mu.lock()
 		a.expire_pending_locked(a.since_ms())
 		a.mu.unlock()
-		time.sleep(8 * time.millisecond)
+		// until the next cyclic sender is due, on the monotonic clock
+		time.sleep(i64(sim.wait_until(next_at, time.sys_mono_now() / 1_000_000, gen_poll_ms)) * time.millisecond)
 	}
 }
 
