@@ -329,3 +329,40 @@ fn test_a_read_of_several_dids_is_refused_not_read_as_the_first() {
 	assert v.dids.len == 0
 	assert v.notes.any(it.contains('Read_Both') && it.contains('not read'))
 }
+
+fn test_a_did_two_services_lay_out_differently_is_never_written() {
+	// a one-byte read, a two-byte write, then a one-byte write matching the read
+	comms := service_xml('Read_5', 'qr', 'rr') + service_xml('Write_5', 'qw', '') +
+		service_xml('Write_5b', 'qn', '')
+	reqs := '<REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID', 1, 5, 16) + '</PARAMS></REQUEST><REQUEST ID="qw"><SHORT-NAME>QW</SHORT-NAME><PARAMS>' +
+		coded_param('SID', 0, 0x2E, 8) + coded_param('DID', 1, 5, 16) + value_param('Wide', 'u16') +
+		'</PARAMS></REQUEST><REQUEST ID="qn"><SHORT-NAME>QN</SHORT-NAME><PARAMS>' +
+		coded_param('SID', 0, 0x2E, 8) + coded_param('DID', 1, 5, 16) + value_param('Narrow', 'u8') +
+		'</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('Narrow', 'u8') +
+		'</PARAMS></POS-RESPONSE>'
+	db := load_docs('clash', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.readable && !d.writable && d.size == 1
+}
+
+fn test_a_value_at_a_bit_position_spans_the_bytes_it_reaches() {
+	// an 8-bit value starting 4 bits into byte 3 occupies two bytes
+	comms := service_xml('Read_5', 'qr', 'rr')
+	reqs := '<REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID', 1, 5, 16) + '</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID', 1, 5, 16) +
+		'<PARAM xsi:type="VALUE"><SHORT-NAME>Shifted</SHORT-NAME><BYTE-POSITION>3</BYTE-POSITION><BIT-POSITION>4</BIT-POSITION><DOP-REF ID-REF="u8"/></PARAM></PARAMS></POS-RESPONSE>'
+	db := load_docs('bitpos', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	v := db.variant('Base')!
+	d := did_of(v, 5)
+	assert d.size == 2 && d.parts.len == 0
+	assert v.notes.any(it.contains('BIT-POSITION') && it.contains('2 bytes'))
+}

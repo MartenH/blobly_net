@@ -244,6 +244,7 @@ pub fn (db &Db) variant(name string) !Variant {
 	// the services, nearest layer first: a SHORT-NAME seen is overridden further up
 	mut seen := map[string]bool{}
 	mut found := map[u16]Did{}
+	mut clash := map[u16]bool{} // DIDs two services lay out differently: never written
 	for li, layer in r.chain {
 		ex := r.comms[li]
 		for c in layer.child('DIAG-COMMS').children() {
@@ -263,7 +264,7 @@ pub fn (db &Db) variant(name string) !Variant {
 				r.ignored[svc.name()]++
 				continue
 			}
-			db.service(svc, mut r, mut found)
+			db.service(svc, mut r, mut found, mut clash)
 		}
 		for c in layer.children() {
 			if c.name() !in read_layer_children {
@@ -420,8 +421,9 @@ fn snref_of(n flatxml.Node) string {
 }
 
 // service reads one DIAG-SERVICE: a 0x22 or 0x2E of one DID is a DID read or written, any other
-// service is counted by its service id.
-fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
+// service is counted by its service id. A DID two services lay out differently is in `clash` and
+// stays unwritten whatever service follows.
+fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did, mut clash map[u16]bool) {
 	sn := short_name(svc)
 	req := db.ref(svc.child('REQUEST-REF')) or {
 		r.notes << 'service ${sn}: no REQUEST; not read'
@@ -488,6 +490,9 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
 		}
 		if !same {
 			r.notes << 'DID 0x${id:04X}: ${sn} lays its value out unlike the service read before it; not written'
+			clash[u16(id)] = true
+		}
+		if clash[u16(id)] {
 			d = Did{
 				...d
 				writable: false
@@ -600,8 +605,15 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &
 			continue
 		}
 		bpv := p.child('BIT-POSITION')
-		if bpv.ok() && (int_of(bpv.text()) or { -1 }) != 0 {
-			lay.why << '${pname}: BIT-POSITION "${bpv.text()}"'
+		mut bitpos := 0 // the value's first bit in its first byte; -1 when not an integer
+		if bpv.ok() {
+			bitpos = int(int_of(bpv.text()) or { -1 })
+			if bitpos < 0 {
+				bitpos = -1
+			}
+			if bitpos != 0 {
+				lay.why << '${pname}: BIT-POSITION "${bpv.text()}"'
+			}
 		}
 		if base > 0 {
 			lay.values << pname
@@ -644,9 +656,22 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &
 				lay.why << '${pname}: its DOP is a ${dop.name()}'
 			}
 		}
+		size = occupied(size, bitpos, dop.name())
 		lay.extend(start, size)
 		next = if size >= 0 { pos + size } else { -1 }
 	}
+}
+
+// occupied is the bytes a value of `size` bytes starting `bitpos` bits into its first byte spans:
+// ceil((bitpos + bits) / 8) for a DATA-OBJECT-PROP, unknown (-1) for a bit position past that.
+fn occupied(size int, bitpos int, dop_kind string) int {
+	if bitpos == 0 || size < 0 {
+		return size
+	}
+	if bitpos < 0 || dop_kind != 'DATA-OBJECT-PROP' {
+		return -1
+	}
+	return (bitpos + size * 8 + 7) / 8
 }
 
 // extend counts a part of `size` bytes at `start` (-1: no fixed size) into the value's size.

@@ -100,3 +100,29 @@ fn test_an_enabled_row_describes_a_node_before_a_disabled_one() {
 	assert sys.nodes[0].odx == 'odx_demo.odx-d#BodyController_V2'
 	assert notes.any(it.starts_with('CAN1: diagnostics Body: a node of that name is already described'))
 }
+
+fn test_an_odx_node_is_reached_on_every_row_that_names_it() {
+	// system.toml declares CAN1 alone; the rows name the node on CAN1 and on CAN2
+	base := System{
+		buses: [SysBus{
+			name: 'CAN1'
+		}]
+	}
+	mut rows := odx_rows([body('BodyController_Base')])
+	rows << project.Channel{
+		name:        'CAN2'
+		diagnostics: [body('BodyController_Base')]
+	}
+	sys, _ := base.with_odx_nodes(os.join_path(@VMODROOT, 'dbc'), rows)
+	n := sys.node_named('Body') or { panic(err) }
+	refs := [RowRef{
+		name: 'CAN1'
+		wire: 'inproc:a'
+	}, RowRef{
+		name: 'CAN2'
+		wire: 'inproc:b'
+	}]
+	assert sys.targets(n, refs).map(it.row) == [0, 1]
+	t := sys.reach(n, refs, 1) or { panic(err) }
+	assert t.row == 1 && t.req == 0x7E0
+}

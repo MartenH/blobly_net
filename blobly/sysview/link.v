@@ -172,8 +172,12 @@ fn (sys &System) can_buses(n &SysNode) []string {
 // `[isotp] bus` names — none when that cannot be told. A node's ecu.toml names a controller in
 // its own terms, as sysgen generates it: `can0` on a node with one bus, the system bus's
 // `interface` on a node with several (blobly_emb sysmodel's `local_can_iface`, whose `diag_bus`
-// this is).
+// this is). A node a project row describes by ODX is on every row that names it, so it has no one
+// bus to infer: none, and `can_server` keeps all its rows.
 pub fn (sys &System) diag_bus(n &SysNode) ?string {
+	if n.odx != '' {
+		return none
+	}
 	// the CAN buses the system DECLARES it on: one it names and does not declare tells nothing
 	cans := n.buses.filter(fn [sys] (b string) bool {
 		return sys.buses.any(it.name == b && it.kind == 'can')

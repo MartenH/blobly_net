@@ -36,7 +36,7 @@ included. A layer reached on two ways passes on what either way passes on.
 - **DIDs** — every `DIAG-SERVICE` whose request is `0x22` or `0x2E` with one 16-bit DID at byte 1
   (a `0x22` request carrying anything past that DID — several DIDs — is said and not read).
   The value is laid out from the read service's positive response, whatever order the services
-  come in (else the write service's request; a write laid out otherwise is not written), from byte 3: each `VALUE` parameter's `DATA-OBJECT-PROP` (a `STANDARD-LENGTH-TYPE`
+  come in (else the write service's request; a DID two of its services lay out differently is not written, whatever service follows), from byte 3: each `VALUE` parameter's `DATA-OBJECT-PROP` (a `STANDARD-LENGTH-TYPE`
   of whole bytes, `COMPU-METHOD` `IDENTICAL`) or `STRUCTURE` of them. An `A_UINT32` / `A_INT32`
   of 1, 2 or 4 bytes is an integer field, an `A_ASCIISTRING` a text, an `A_BYTEFIELD` bytes. The
   DID's name is its one value parameter's `SHORT-NAME`, else the service's.
@@ -53,7 +53,7 @@ headless runner's stderr, the Script panel in the GUI):
 
 - a DID whose value it cannot lay out — a `LINEAR`, `TEXTTABLE` or other scaling, a bit position,
   a bit mask, low byte first, a float, a parameter of no fixed length, a gap — is kept as **bytes**
-  of its size (`kind` `data`; of no fixed size when that is not known), with the reason;
+  of its size (a value at a bit position spanning every byte it reaches; `kind` `data`; of no fixed size when that is not known), with the reason;
 - every other service (by its service id), every `SINGLE-ECU-JOB`, and every layer or data
   dictionary element it does not use (`STATE-CHARTS`, `TABLES`, `COMPARAM-REFS`, a `PARENT-REF`'s
   `NOT-INHERITED-VARIABLES`, ...) is counted:
