@@ -25,7 +25,7 @@ class Busload(ctypes.Structure):
 
 class Message(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
-                ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32),
+                ("format", ctypes.c_uint8), ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32),
                 ("cycle_ms", ctypes.c_int32), ("cycle_fast_ms", ctypes.c_int32),
                 ("repetitions", ctypes.c_int32), ("delay_ms", ctypes.c_int32),
                 ("start_delay_ms", ctypes.c_int32), ("send_type", ctypes.c_uint8)]

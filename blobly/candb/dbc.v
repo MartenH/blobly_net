@@ -599,7 +599,7 @@ pub fn parse_dbc(text string) !Database {
 			delay_ms:       mb.delay_ms
 			start_delay_ms: mb.start_delay_ms
 			// the per-message record wins; the file-wide default fills the rest
-			j1939:   enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
+			j1939:   frame_enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
 			format:  frame_format_of(first_set(mb.fmt_value, fmt_default), fmt_choices, first_set(mb.brs_value,
 				brs_default), brs_choices)
 			e2e:     mb.e2e
@@ -781,25 +781,19 @@ fn frame_format_choices(line string) []string {
 	return out
 }
 
-// enum_choice is the choice an ENUM attribute's value field names against `choices`, the file's
-// own ordering: a quoted value is the choice itself (what a BA_DEF_DEF_ usually carries, and
-// what some tools write in a BA_), an unquoted number its index; '' for an index the enum does
-// not have, or none at all. With no choices (an INT attribute) the value is its own text.
-fn enum_choice(value string, choices []string) string {
+// frame_enum_choice is the choice an ENUM attribute's value field names against `choices`, the
+// file's own ordering, read leniently for the frame-format attributes: a quoted value or an index
+// as enum_choice reads it (dbc_send.v, the one rule), a choice written unquoted as itself, the value
+// as its own text where there are no choices (an INT attribute), and '' for none or an index the
+// enum does not have.
+fn frame_enum_choice(value string, choices []string) string {
 	if value == '' {
 		return ''
 	}
-	if value.starts_with('"') {
-		return value.trim('"')
-	}
-	if choices.len == 0 {
+	if !value.starts_with('"') && (choices.len == 0 || !value[0].is_digit()) {
 		return value
 	}
-	if !value[0].is_digit() {
-		return value // a choice written unquoted
-	}
-	idx := value.int()
-	return if idx < choices.len { choices[idx] } else { '' }
+	return enum_choice(value, choices) or { '' }
 }
 
 // frame_format_of is the format a message's VFrameFormat and CANFD_BRS values state (each the
@@ -808,12 +802,12 @@ fn enum_choice(value string, choices []string) string {
 // since "1" is the default Vector's CAN-FD templates give it; any other value (reserved, an index
 // the enum lacks, none) states nothing.
 fn frame_format_of(fmt string, fmt_choices []string, brs string, brs_choices []string) MsgFormat {
-	return match enum_choice(fmt, fmt_choices) {
+	return match frame_enum_choice(fmt, fmt_choices) {
 		'StandardCAN', 'ExtendedCAN', 'J1939PG' {
 			.classic
 		}
 		'StandardCAN_FD', 'ExtendedCAN_FD' {
-			if enum_choice(brs, brs_choices).trim_space() == '0' { MsgFormat.fd } else { MsgFormat.fd_brs }
+			if frame_enum_choice(brs, brs_choices).trim_space() == '0' { MsgFormat.fd } else { MsgFormat.fd_brs }
 		}
 		else {
 			.unstated
