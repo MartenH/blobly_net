@@ -592,6 +592,8 @@ def _declare(lib):
         "bb_sim_clear_signals": ([], c_int),
         "bb_e2e_p01_crc": ([c_char_p, c_int, c_int, c_int, c_int, c_char_p], c_int),
         "bb_e2e_p01_protect": ([c_char_p, c_int, c_int, c_int, c_int, c_int, c_char_p], c_int),
+        "bb_e2e_p05_crc": ([c_char_p, c_int, c_int, c_int], c_int),
+        "bb_e2e_p05_protect": ([c_char_p, c_int, c_int, c_int, c_int], c_int),
         "bb_uds_dtcs": ([c_int, c_int], c_int),
         "bb_uds_supported_dtcs": ([c_int], c_int),
         "bb_uds_dtc": ([c_int, c_int, P(BbDtc)], c_int),

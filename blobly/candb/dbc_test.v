@@ -455,6 +455,18 @@ fn test_e2e_profile_1_spellings() {
 	assert profile_from_dbc('crc8_j1850') == 'crc8_j1850'
 }
 
+// Profile 5 is read under its three spellings and written back as P05
+fn test_e2e_profile_5_spellings() {
+	for v in ['P05', 'PROFILE_05', 'autosar_p05'] {
+		db := parse_dbc('BO_ 1 A: 8 N\n SG_ S : 0|16@1+ (1,0) [0|65535] "" X\nBA_ "E2EProfile" BO_ 1 "${v}";\n') or {
+			panic(err)
+		}
+		assert db.messages[0].e2e.profile == 'autosar_p05', v
+		assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 1 "P05";'), v
+	}
+	assert profile_to_dbc('autosar_p05') == 'P05'
+}
+
 // a file-wide E2E default is a declaration too, for messages that state one of their own — a
 // message that states none is not protected by a default
 fn test_e2e_defaults_fill_only_declared_messages() {

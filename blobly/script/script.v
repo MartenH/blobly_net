@@ -444,6 +444,8 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_functional', l_uds_functional)
 	env.st.register('__e2e_p01_crc', l_e2e_p01_crc)
 	env.st.register('__e2e_p01_protect', l_e2e_p01_protect)
+	env.st.register('__e2e_p05_crc', l_e2e_p05_crc)
+	env.st.register('__e2e_p05_protect', l_e2e_p05_protect)
 	env.st.register('__uds_dtcs', l_uds_dtcs)
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
@@ -1259,6 +1261,29 @@ fn l_e2e_p01_protect(l lua.State) i32 {
 	out := sim.p01_protect(data, id, crc_pos, ctr_pos, counter, l.arg_str(6)) or {
 		return l.fail(err.msg())
 	}
+	l.push_bytes(out)
+	return 1
+}
+
+// l_e2e_p05_crc(frame, data_id, offset): AUTOSAR E2E Profile 5's CRC for a frame as it stands
+// (sim.p05_frame_crc, what the simulation stamps with).
+fn l_e2e_p05_crc(l lua.State) i32 {
+	data := l.arg_bytes(1)
+	id := l.arg_int_exact(2) or { return l.fail('data_id is not an integer') }
+	offset := l.arg_int_exact(3) or { return l.fail('offset is not an integer') }
+	crc := sim.p05_frame_crc(data, id, offset) or { return l.fail(err.msg()) }
+	l.push_int(crc)
+	return 1
+}
+
+// l_e2e_p05_protect(frame, data_id, counter, offset): the frame with the counter written and the
+// Profile 5 CRC stamped (sim.p05_protect).
+fn l_e2e_p05_protect(l lua.State) i32 {
+	data := l.arg_bytes(1)
+	id := l.arg_int_exact(2) or { return l.fail('data_id is not an integer') }
+	counter := l.arg_int_exact(3) or { return l.fail('counter is not an integer') }
+	offset := l.arg_int_exact(4) or { return l.fail('offset is not an integer') }
+	out := sim.p05_protect(data, id, counter, offset) or { return l.fail(err.msg()) }
 	l.push_bytes(out)
 	return 1
 }

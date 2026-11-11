@@ -1,12 +1,15 @@
-"""e2e — AUTOSAR E2E Profile 1 for frames a script builds itself, as Lua's e2e.p01_crc and
-e2e.p01_protect: computed by the engine's one implementation (sim.p01_frame_crc, sim.p01_protect),
-the one the simulation stamps with, pinned to vectors from an independent implementation.
+"""e2e — AUTOSAR E2E Profiles 1 and 5 for frames a script builds itself, as Lua's e2e.p01_crc,
+e2e.p01_protect, e2e.p05_crc and e2e.p05_protect: computed by the engine's one implementation
+(sim.p01_frame_crc, sim.p01_protect, sim.p05_frame_crc, sim.p05_protect), the one the simulation
+stamps with, pinned to vectors from an independent implementation.
 
     from blobly import e2e
     frame = e2e.p01_protect(bytes.fromhex("E8035A000000"), 0x1244, 4, 5, counter=3)
+    fd = e2e.p05_protect(bytes(12), 0x0BEE, counter=7, offset=3)
 
-Positions are 0-based bytes, as blobly_emb's [[frame]].e2e writes them. `mode` is the Data ID
-mode: "both" (low byte, then high), "low", or "alt" (low for an even counter, high for an odd).
+Positions are 0-based bytes, as blobly_emb's [[frame]].e2e writes them. `mode` is Profile 1's
+Data ID mode: "both" (low byte, then high), "low", or "alt" (low for an even counter, high for an
+odd). Profile 5's header is 3 bytes at `offset`: the CRC low byte, its high byte, the counter.
 
 Also here, exported from blobly: E2eStatus, a received frame's verdict (Frame.e2e), and E2eError,
 what an expectation raises for a frame that fails it."""
@@ -21,7 +24,7 @@ from ._lib import BloblyError, ByteData
 if TYPE_CHECKING:
     from .project import Frame
 
-__all__ = ["p01_crc", "p01_protect"]
+__all__ = ["p01_crc", "p01_protect", "p05_crc", "p05_protect"]
 
 
 class E2eStatus(enum.StrEnum):
@@ -102,6 +105,30 @@ def p01_protect(data: ByteData, data_id: int, crc_pos: int, counter_pos: int, co
     lib = _lib.lib()
     rc = lib.bb_e2e_p01_protect(buf, len(d), _int("data_id", data_id), _int("crc_pos", crc_pos),
                                 _int("counter_pos", counter_pos), _int("counter", counter), _mode(mode))
+    _answer(lib, rc)
+    return buf.raw
+
+
+def p05_crc(data: ByteData, data_id: int, offset: int = 0) -> int:
+    """The Profile 5 CRC for `data` as it stands, 0..0xFFFF: CRC-16/CCITT-FALSE (poly 0x1021,
+    start 0xFFFF, no final XOR) over every byte but the CRC's own two at `offset`, then the Data ID
+    low byte and high byte. Raises ValueError for what Profile 5 cannot be: a data_id past 16
+    bits, or an offset whose 3-byte header (CRC and counter) is not in the frame."""
+    d = _bytes(data)
+    lib = _lib.lib()
+    rc = lib.bb_e2e_p05_crc(d, len(d), _int("data_id", data_id), _int("offset", offset))
+    return _answer(lib, rc)
+
+
+def p05_protect(data: ByteData, data_id: int, counter: int, offset: int = 0) -> bytes:
+    """`data` with `counter` (0..255) in byte `offset` + 2 and then the CRC of p05_crc stamped at
+    `offset`, low byte first. Raises ValueError as p05_crc does, and for a counter outside
+    0..255."""
+    d = _bytes(data)
+    buf = ctypes.create_string_buffer(d, len(d))
+    lib = _lib.lib()
+    rc = lib.bb_e2e_p05_protect(buf, len(d), _int("data_id", data_id), _int("counter", counter),
+                                _int("offset", offset))
     _answer(lib, rc)
     return buf.raw
 

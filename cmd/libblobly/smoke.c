@@ -73,6 +73,10 @@ static fault_fn bb_sim_fault_p;
 static int_fn bb_sim_clear_faults_p;
 static p01_crc_fn bb_e2e_p01_crc_p;
 static p01_protect_fn bb_e2e_p01_protect_p;
+typedef int (*p05_crc_fn)(const uint8_t *, int, int, int);
+typedef int (*p05_protect_fn)(uint8_t *, int, int, int, int);
+static p05_crc_fn bb_e2e_p05_crc_p;
+static p05_protect_fn bb_e2e_p05_protect_p;
 typedef int (*e2e_attach_fn)(int, int);
 typedef int (*e2e_stamp_fn)(int, int, bb_frame *);
 static e2e_attach_fn bb_e2e_attach_p;
@@ -522,7 +526,11 @@ static int fault_steps(int row, int doip) {
 	CHECK(bb_e2e_p01_protect_p(f, 6, 0x1244, 4, 5, 3, "") == 0 && f[5] == 0xA3 && f[4] == bb_e2e_p01_crc_p(f, 6, 0x1244, 4, 5, ""),
 		"protect writes the counter's nibble and stamps the CRC");
 	CHECK(bb_e2e_p01_protect_p(f, 6, 0x1244, 4, 5, 15, "") == BB_ERR && strstr(bb_last_error_p(), "0..14"), "counter 15 must refuse");
-	printf("ok   faults armed and refused by name; E2E Profile 1 is the reference\n");
+	uint8_t g[8] = {0x00, 0x00, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+	CHECK(bb_e2e_p05_protect_p(g, 8, 0x1234, 1, 0) == 0 && g[0] == 0xF2 && g[1] == 0x4F && g[2] == 1
+		&& bb_e2e_p05_crc_p(g, 8, 0x1234, 0) == 0x4FF2, "the Profile 5 CRC of counter 1, low byte first");
+	CHECK(bb_e2e_p05_protect_p(g, 8, 0x1234, 256, 0) == BB_ERR && strstr(bb_last_error_p(), "0..255"), "counter 256 must refuse");
+	printf("ok   faults armed and refused by name; E2E Profiles 1 and 5 are the reference\n");
 	return 0;
 }
 
@@ -859,6 +867,7 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
+	SYM(bb_e2e_p05_crc); SYM(bb_e2e_p05_protect);
 	SYM(bb_e2e_attach); SYM(bb_e2e_stamp);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);

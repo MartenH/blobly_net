@@ -6,6 +6,7 @@
 module candb
 
 //
-// `autosar_p01` is a whole PROFILE (AUTOSAR E2E Profile 1: its CRC, coverage, Data ID modes and
-// 0..14 counter), not a primitive; the rest are primitives under blobly's own coverage rule.
-pub const e2e_profiles = ['autosar_p01', 'crc8_j1850', 'crc8_autosar', 'sum8', 'xor8']
+// `autosar_p01` and `autosar_p05` are whole PROFILES (AUTOSAR E2E Profile 1: its CRC, coverage,
+// Data ID modes and 0..14 counter; Profile 5: its 16-bit CRC, coverage and 0..255 counter), not
+// primitives; the rest are primitives under blobly's own coverage rule.
+pub const e2e_profiles = ['autosar_p01', 'autosar_p05', 'crc8_j1850', 'crc8_autosar', 'sum8', 'xor8']

@@ -1,5 +1,6 @@
 -- @project ../projects/sim-demo.blobnet
--- e2e.p01_crc / e2e.p01_protect: AUTOSAR E2E Profile 1 for frames a script builds itself,
+-- e2e.p01_crc / e2e.p01_protect: AUTOSAR E2E Profile 1 for frames a script builds itself (and
+-- e2e.p05_crc / e2e.p05_protect, Profile 5, below),
 -- computed by the simulation's own P01 (sim.p01_crc_bytes). Checked against vectors from an
 -- independent implementation (autosar-e2e, sut/e2e_oracle.py): blobly_emb overspeed's
 -- BrakeStatus layout, payload E8 03 5A 00, CRC byte 4, counter byte 5, Data ID 0x1244.
@@ -30,4 +31,31 @@ test("e2e helpers refuse what Profile 1 cannot be", function()
   check.truthy(not ok and tostring(err):find("e2e.p01_protect: crc_pos 1 / counter_pos 7", 1, true), tostring(err))
   ok, err = pcall(e2e.p01_protect, base, 0x10000, 4, 5, 3)
   check.truthy(not ok and tostring(err):find("e2e.p01_protect:", 1, true), tostring(err))
+end)
+
+-- Profile 5 (e2e.p05_crc / e2e.p05_protect): vectors from autosar-e2e on a 12-byte CAN-FD frame,
+-- the header at byte 3, Data ID 0x0BEE, counters 0, 1, 2, 3, 127, 128, 254, 255.
+local P05_CTR = { 0, 1, 2, 3, 127, 128, 254, 255 }
+local P05 = { 0x8D87, 0x66A4, 0x4BE0, 0xA0C3, 0xBE08, 0x3235, 0xEA99, 0x01BA }
+
+test("e2e.p05_protect stamps the counter and the reference CRC", function()
+  local base = fromhex("E8 03 5A 00 00 00 10 20 30 40 50 60")
+  for i, n in ipairs(P05_CTR) do
+    local f = e2e.p05_protect(base, 0x0BEE, n, 3)
+    check.equal(string.byte(f, 6), n)
+    check.equal(string.byte(f, 4) | (string.byte(f, 5) << 8), P05[i])
+    check.equal(e2e.p05_crc(f, 0x0BEE, 3), P05[i])
+  end
+  -- the offset defaults to 0
+  local f = e2e.p05_protect(fromhex("00 00 00 11 22 33 44 55"), 0x1234, 1)
+  check.equal(string.byte(f, 1) | (string.byte(f, 2) << 8), 0x4FF2)
+end)
+
+test("e2e helpers refuse what Profile 5 cannot be", function()
+  local base = fromhex("00 00 00 11 22 33 44 55")
+  check.truthy(not pcall(e2e.p05_protect, base, 0x1234, 256), "a counter of 256 was stamped")
+  check.truthy(not pcall(e2e.p05_crc, base, 0x10000), "a 17-bit Data ID was accepted")
+  check.truthy(not pcall(e2e.p05_crc, base, 0x1234, 6), "a header past the frame was accepted")
+  local ok, err = pcall(e2e.p05_protect, base, 0x1234, 1, 7)
+  check.truthy(not ok and tostring(err):find("e2e.p05_protect: offset 7", 1, true), tostring(err))
 end)

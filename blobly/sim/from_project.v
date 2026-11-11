@@ -254,11 +254,11 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 			warns << 'protect: "${p.message}" sets data_id but no crc — the id is not used'
 		}
 		for sg in m.signals {
-			if sg.name == p.crc && sg.length != 8 {
-				// every profile returns a u8. A wider field carries zeros in its upper bits, a
-				// narrower one truncates the checksum — either way a receiver computing over
-				// the DBC-declared width rejects the frame.
-				warns << 'protect: checksum "${p.crc}" on ${p.message} is ${sg.length} bits — every supported profile produces 8'
+			if sg.name == p.crc && sg.length != crc_width(p.profile) {
+				// a wider field carries zeros in its upper bits, a narrower one truncates the
+				// checksum — either way a receiver computing over the DBC-declared width rejects
+				// the frame.
+				warns << 'protect: checksum "${p.crc}" on ${p.message} is ${sg.length} bits — profile ${p.profile} produces ${crc_width(p.profile)}'
 			}
 		}
 		if p.counter != '' && p.counter == p.crc {

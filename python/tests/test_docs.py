@@ -131,7 +131,7 @@ class TestReference:
         classes = package_classes()
         assert {"send", "recv", "look", "iface", "kind", "name"} <= members(classes["Channel"], classes)
         assert {"on_message", "run", "path", "started", "fault", "clear_faults"} <= members(classes["Project"], classes)
-        assert blobly.e2e.__all__ == ["p01_crc", "p01_protect"]
+        assert blobly.e2e.__all__ == ["p01_crc", "p01_protect", "p05_crc", "p05_protect"]
         assert {"id", "ext", "dlc", "j1939", "channel"} <= members(classes["Message"], classes)
         assert {"raw_labels", "mux_value"} <= members(classes["Signal"], classes)
         assert "code" in members(classes["BloblyError"], classes)

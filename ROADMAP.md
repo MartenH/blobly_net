@@ -307,6 +307,9 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **AUTOSAR E2E Profile 1** (#271) — stamped and verified as specified, declared in the DBC
   (`E2E*` attributes, [docs/dbc_attributes.md](docs/dbc_attributes.md)) or by a node's
   `protect:`/`verify:`; Lua's `e2e.p01_crc` / `e2e.p01_protect` for frames a script builds
+- ✅ **AUTOSAR E2E Profile 5** (#616) — the 16-bit CRC and 8-bit counter CAN-FD payloads carry,
+  the same ways (`"P05"`, `autosar_p05`, ARXML `PROFILE_05` from its `OFFSET`); `e2e.p05_crc` /
+  `e2e.p05_protect` in Lua, Python and the C ABI
 
 **Diagnostics**
 - ✅ **ISO-TP** (ISO 15765-2) · ✅ **UDS client** · ✅ **DoIP** (ISO 13400 — UDS over TCP)

@@ -1260,6 +1260,28 @@ print(frame.hex(" ").upper())                            # E8 03 5A 00 CF 03
 print(e2e.p01_crc(frame, 0x1244, 4, 5) == frame[4])      # True
 ```
 
+### E2E Profile 5 for frames you build
+
+`e2e.p05_crc` and `e2e.p05_protect` are Lua's of the same names: AUTOSAR E2E Profile 5, the one
+CAN-FD payloads usually carry, as the simulation stamps it. Its header is 3 bytes at `offset`
+(0-based): the CRC low byte, its high byte, then an 8-bit counter. The CRC is CRC-16/CCITT-FALSE
+(poly 0x1021, start 0xFFFF, no final XOR) over every byte but its own two, then the Data ID low
+byte and high byte; the Data ID is not transmitted.
+
+- `e2e.p05_crc(data, data_id, offset=0)` is the CRC for `data` as it stands, 0..0xFFFF.
+- `e2e.p05_protect(data, data_id, counter, offset=0)` returns `data` with `counter` (0..255) at
+  `offset + 2` and the CRC stamped at `offset`, low byte first.
+- A value Profile 5 cannot have raises `ValueError`: a counter outside 0..255, a `data_id` past
+  16 bits, an offset whose header is not in the frame.
+
+```python
+from blobly import e2e
+
+frame = e2e.p05_protect(bytes.fromhex("E8035A000000102030405060"), 0x0BEE, counter=1, offset=3)
+print(frame[3:6].hex(" ").upper())                                    # A4 66 01
+print(e2e.p05_crc(frame, 0x0BEE, 3) == frame[3] | frame[4] << 8)      # True
+```
+
 ---
 
 ## 10. UDS diagnostics
@@ -2157,6 +2179,8 @@ the package is named in this section.
 |---|---|
 | `blobly.e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` | The Profile 1 CRC byte for `data` as it stands, an `int`. |
 | `blobly.e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` | `data` with `counter` (0..14) written and the CRC stamped, as `bytes`; the input is not changed. |
+| `blobly.e2e.p05_crc(data, data_id, offset=0)` | The Profile 5 CRC (0..0xFFFF) for `data` as it stands, its header at `offset`, an `int`. |
+| `blobly.e2e.p05_protect(data, data_id, counter, offset=0)` | `data` with `counter` (0..255) at `offset + 2` and the CRC stamped at `offset`, low byte first, as `bytes`; the input is not changed. |
 
 ### Module `blobly.someip`
 

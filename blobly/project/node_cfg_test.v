@@ -338,3 +338,26 @@ fn test_builtin_uds_off_asks_every_enabled_row_of_the_wire() {
 		enabled: false
 	}], a), 'a disabled row does not'
 }
+
+// Profile 5 under its spellings, and the version it needs (v13), kept by a save
+fn test_protect_profile_5_spellings() {
+	for spelling in ['P05', 'PROFILE_05', 'autosar_p05'] {
+		p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        protect:
+          - { message: M, counter: C, crc: K, profile: ${spelling}, data_id: 0x1234 }
+') or {
+			panic(err)
+		}
+		assert p.channels[0].nodes[0].protect[0].profile == 'autosar_p05', spelling
+		assert version_for(p) == 13, spelling
+		again := parse(p.to_yaml()) or { panic(err) }
+		assert again.channels[0].nodes[0].protect[0].profile == 'autosar_p05', spelling
+		assert again.version == 13, spelling
+	}
+}

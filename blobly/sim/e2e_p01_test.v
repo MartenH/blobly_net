@@ -115,7 +115,7 @@ fn test_p01_verifier_accepts_its_own_frames_and_catches_the_rest() {
 	// 15 is never a Profile 1 counter: a frame carrying it, correctly checksummed, is a skip
 	mut fifteen := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x0F]
 	sig := m.signals[2]
-	fifteen[4] = v.e2e.checksum(m, sig, fifteen)
+	fifteen[4] = u8(v.e2e.checksum(m, sig, fifteen))
 	assert v.check(fifteen) == .skipped_ctr
 }
 
@@ -164,7 +164,7 @@ fn test_p01_counter_fifteen_is_wrong_even_first() {
 		e2e: p01_e2e('both')
 	}
 	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x0F]
-	d[4] = v.e2e.checksum(m, m.signals[2], d)
+	d[4] = u8(v.e2e.checksum(m, m.signals[2], d))
 	assert v.check(d) == .skipped_ctr
 }
 

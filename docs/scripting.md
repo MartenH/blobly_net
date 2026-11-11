@@ -532,6 +532,18 @@ implementation. Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` wri
 is `both` (default), `low` or `alt`. A counter of 15, a Data ID wider than 16 bits, or positions
 outside the frame raise.
 
+### End-to-end protection for frames you build (AUTOSAR E2E Profile 5)
+
+```lua
+local f = e2e.p05_protect(frame, 0x0BEE, counter [, offset])  -- counter 0..255, offset default 0
+local crc = e2e.p05_crc(frame, 0x0BEE [, offset])             -- the 16-bit CRC as the frame stands
+```
+
+Profile 5's header is 3 bytes at `offset`: the CRC low byte, its high byte, then the 8-bit counter.
+The CRC is CRC-16/CCITT-FALSE over every byte but its own two, then the Data ID low and high byte
+(`sim.p05_crc_bytes`, pinned to an independent implementation). A counter outside 0..255, a Data ID
+wider than 16 bits, or a header outside the frame raise.
+
 ### Flashing through a bootloader
 
 ```lua
