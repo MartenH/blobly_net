@@ -43,7 +43,7 @@ fn build_key_table() map[string]KeySection {
 				'j1939', 'builtin_uds', 'enabled', 'announce_count', 'announce_interval_ms',
 				'announce_to', 'group', 'tester_address', 'ecu_address', 'vin', 'eid', 'databases',
 				'manifest', 'simulate', 'verify', 'simulation', 'nodes', 'senders', 'diagnostics',
-				'nm', 'timing', 'replay']
+				'nm', 'timing', 'replay', 'fill']
 			lists: {
 				'verify':      'protect'
 				'simulation':  'node'
@@ -124,7 +124,7 @@ fn build_key_table() map[string]KeySection {
 		}
 		'sender':      KeySection{
 			keys:  ['name', 'key', 'message', 'extended', 'bus', 'trigger', 'cycle_ms', 'id', 'data',
-				'format', 'signals']
+				'format', 'signals', 'fill']
 			lists: {
 				'signals': 'signal'
 			}
