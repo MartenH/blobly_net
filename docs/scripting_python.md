@@ -532,6 +532,14 @@ with blobly.Project("projects/lin-demo.blobnet") as net:
   must pass its E2E check, or `blobly.E2eError` is raised.
 - **A frame read is consumed.** `recv` takes it off the channel's handle, and so does `expect`:
   a wait for one id drops every other frame it reads on the way.
+- `ch.latest(id, *, ext=None)` is the newest frame the channel's handle has read with this id
+  **and** kind, or `None` before the first: every read keeps it (`recv`, `look`, `expect`,
+  `expect_signal`, `run()`, `net.wait()`), so a frame consumed on the way is still the latest.
+  It reads what is queued first, so its answer is as of the call — and those frames are consumed,
+  as a `recv` would consume them. `id` and `ext` are `expect`'s (`None`: the newer of either
+  kind); on a channel `id` may be a `Message`. The frame's `t_ms` says how old it is. The
+  frames are forgotten when the handle closes (`close()`, a stop). See
+  [The value now](#the-value-now).
 
 ```python
 import blobly
@@ -615,6 +623,39 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     print("sent", sent, "answered", frame, code)                # ... answered Frame(0x102 [06 ...]) 6.0
     _, engaged = can1.expect_signal(pt, gear, lambda g: g >= 1, timeout_ms=1000)  # a Signal, or its name
     print("in gear", engaged)                                   # 1.0 to 6.0: sim-demo steps it each second
+```
+
+### The value now
+
+A check of a state — is the lamp on after the request, what was the speed before the stimulus —
+asks for the newest frame, not the next one:
+
+- `ch.value(message, signal)` is `signal`'s decoded value in the newest frame of `message`
+  (`ch.latest(message)`, so what is queued is read first), or `None` before the first frame of it,
+  or where that frame does not carry the signal (a multiplexed signal its switch does not select).
+  `message` and `signal` are `expect_signal`'s.
+- `net.wait(duration_ms)` lets that much time pass while every open channel is read: the
+  replacement for `time.sleep` in a test. A channel's newest frames stay current, and its queue
+  does not fill with frames from before. It is `run()` reading every channel whose handle is open
+  besides the handlers' ones, so handlers and timers run during it as in `run()`. A channel's
+  handle opens at its first use, so use it once (a `latest`, a `look`) to have `wait` read it;
+  the pytest plugin opens every CAN channel's handle before each test.
+- Nothing reads a channel while the script is inside a UDS exchange, a flash, a `time.sleep` or
+  its own code: what arrives then queues on the handle (bounded: 4096 records on a shared wire,
+  where a loaded bus loses the oldest), and the next `latest` reads it. A reader in the engine
+  that keeps the newest frames current through those is not built.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    pt = can1.messages.Powertrain
+    print(can1.latest(pt))                                      # None: its handle opens here
+    net.wait(300)                                               # can1 read while time passes
+    frame = can1.latest(pt)                                     # Powertrain comes every 100 ms
+    print(frame, round(blobly.now_ms() - frame.t_ms), "ms old")
+    print("in gear", can1.value(pt, "Gear"))                    # 1.0 to 6.0
 ```
 
 ### Sending in the background
@@ -2056,7 +2097,7 @@ closes it at the end of the block.
 | member | what |
 |---|---|
 | `bus.name`, `bus.iface` | The address it was opened with. |
-| `bus.send`, `bus.recv`, `bus.look`, `bus.expect`, `bus.health`, `bus.load`, `bus.diagnostics` | As `Channel`'s; `expect` takes an int id and `ext` (a `Message` is a row's). |
+| `bus.send`, `bus.recv`, `bus.look`, `bus.expect`, `bus.latest`, `bus.health`, `bus.load`, `bus.diagnostics` | As `Channel`'s; `expect` and `latest` take an int id and `ext` (a `Message` is a row's). |
 | `bus.close()` | Lets the handle go; a wait in progress on another thread ends within 20 ms. Twice is nothing. |
 
 An `Interface` (`blobly.interfaces()`, `blobly.discover_cansub()`) is a frozen dataclass:
@@ -2114,7 +2155,7 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.channels` | The enabled rows, a `Channels`. `BloblyError` before `load()`. |
 | `net.path` | The project file's absolute path (bytes when given bytes). |
 | `net.started` | Whether this project is running. |
-| `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)` | The event loop: see `EventLoop`. |
+| `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)`, `net.wait(duration_ms)` | The event loop: see `EventLoop`. |
 | `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
@@ -2137,6 +2178,7 @@ rules with fakes (`python/tests/test_events.py` does).
 | `on_health(channel, fn)` | `fn(state)` during `run()` when the controller's ladder moves, and at its first sample. Sampled every 100 ms; never `""`. |
 | `on_timer(period_ms, fn)` | `fn()` every `period_ms` (at least 1) during `run()`, on its own grid. |
 | `run(duration_ms=1000)` | The loop, for a finite number of milliseconds, zero or more. |
+| `wait(duration_ms)` | `run()` reading every open channel besides the handlers' ones: time passes while each channel's newest frames stay current ([The value now](#the-value-now)). |
 
 ### `Channels`, `Messages`, `Signals`
 
@@ -2165,6 +2207,8 @@ after `start()`.
 | `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
+| `ch.latest(id, *, ext=None)` | The newest frame the handle has read with this id and kind (an int and `ext`, or a `Message`), or `None` before the first; what is queued is read (and consumed) first, so it is as of the call. Forgotten when the handle closes. |
+| `ch.value(message, signal)` | `signal`'s decoded value in `ch.latest(message)`, or `None` before the first frame or where it does not carry the signal ([The value now](#the-value-now)). |
 | `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. With `e2e=True` it must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
 | `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. With `e2e=True` every frame of `message` read must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
@@ -2632,5 +2676,6 @@ policy for this package, and possibly an MCP server.
 
 Not planned: Python inside the GUI, or a console panel there. VS Code is the console
 ([vscode.md](vscode.md)), and this package brings a project up in your own process. Also not
-built: removing a handler, and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
+built: removing a handler, a reader in the engine that keeps a channel's newest frames current
+while the script is inside a UDS exchange or a flash ([The value now](#the-value-now)), and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
 [#506](https://github.com/MartenH/blobly_net/issues/506).

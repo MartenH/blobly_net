@@ -31,7 +31,7 @@ model describes, `j1939_listen.py` to [`projects/j1939-script.blobnet`](../../pr
 | [lin_monitor.py](lin_monitor.py) | LIN on [`projects/lin-demo.blobnet`](../../projects/lin-demo.blobnet)'s BODY bus, this process its master simulating every node: one schedule round decoded through the LDF, a signal LSM publishes changed, a switch to another schedule table, then go-to-sleep and a wakeup. |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |
 | [interfaces.py](interfaces.py) | No project: the interfaces present with their kind and CAN-FD support (`--cansub` adds an mDNS browse), the Vector channels and their assignments, then a frame exchanged between two buses opened by address (`--open vcan0` for a real wire). |
-| [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
+| [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `wait` with `latest` and `value`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
 
 ## Running them
 

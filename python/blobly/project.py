@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 # a frame's stated format (bb.h's enum bb_format, the Lua bus.send's `format =`); None states none
 FrameFormat: TypeAlias = Literal["classic", "fd", "fd_brs"]
 
+# how long latest() reads what is queued before it answers: a bus faster than this reader still
+# gets an answer
+CATCH_UP_MS = 100
+
 
 class Frame:
     """A CAN frame. `data` is the payload; `length` its length, or for a remote frame (`rtr`, no
@@ -192,6 +196,7 @@ class Bus:
             raise ValueError(f"an interface address has no NUL: {address!r}")
         self.name = address
         self._h = None
+        self._latest = {}  # the newest frame read per (id, ext)
         lib = _lib.lib()
         with _lib.state_lock:  # bb_bus_open reads the loaded project's rows
             _close_orphans()
@@ -271,7 +276,32 @@ class Bus:
         rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
         if rc in (_lib.BB_NONE, _lib.BB_SPENT):
             return None, rc == _lib.BB_SPENT
-        return frame_of(f, received=True), False
+        frame = frame_of(f, received=True)
+        self._latest[(frame.id, frame.ext)] = frame  # every read path comes through here
+        return frame, False
+
+    def latest(self, id: "int | Message", *, ext: bool | None = None) -> Frame | None:
+        """The newest frame this handle has read with this id AND kind, None before the first.
+        What is queued is read first (at most CATCH_UP_MS of reading), so the answer is as of
+        the call: asking consumes those frames, as a recv would. `id` and `ext` as expect's
+        (None: the newer of either kind); on a Channel `id` may be a Message of it. Its t_ms
+        says how old it is. The frames of a closed handle are forgotten with it."""
+        with _lib.state_lock:
+            want = self._frame_key("latest", id, ext)
+        self._catch_up()
+        kinds = (False, True) if want[1] is None else (want[1],)
+        got = [f for f in (self._latest.get((want[0], k)) for k in kinds) if f is not None]
+        return max(got, key=lambda f: f.t_ms or 0.0) if got else None
+
+    def _catch_up(self):
+        """Reads what is queued on the handle now into the newest-frame table, for at most
+        CATCH_UP_MS, so a bus faster than this reader still answers."""
+        h = self._handle()
+        end = monotonic_ms() + CATCH_UP_MS
+        while monotonic_ms() < end:
+            f, spent = self._receive(0, h)
+            if f is None and not spent:
+                return
 
     def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None,
                e2e: bool = False) -> Frame:
@@ -371,6 +401,7 @@ class Bus:
         twice is nothing."""
         lib = _lib.lib()
         with _lib.state_lock:
+            self._latest = {}
             if self._h is not None:
                 h, self._h = self._h, None
                 _lib.check(lib.bb_bus_close(h))
@@ -406,6 +437,7 @@ class Channel(Bus):
     def __init__(self, project: "Project", index: int, name: str, gen: int) -> None:
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
+        self._latest = {}  # the newest frame read per (id, ext)
         self._messages, self._messages_run = None, None
         self._uds = weakref.WeakSet()  # the UDS clients and ISO-TP channels on this row, let go with its handle
         self._j1939 = None  # its J1939Listener, once asked for: every handle it opens then listens
@@ -508,16 +540,7 @@ class Channel(Bus):
         with _lib.state_lock:  # the message and signal of one run, which the wait then holds to
             msg = self._own("expect_signal", message)
             key = self._frame_key("expect_signal", msg, None)
-            if isinstance(signal, str):
-                sig = msg.signals[signal]  # an unknown name is refused now, not after the wait
-            elif isinstance(signal, Signal):
-                sig = signal
-            else:
-                raise TypeError(f"expect_signal: a signal is a Signal or its name, not {signal!r}")
-            # the Signal itself, not its name: two signals of one name are two signals
-            if not any(s is sig for s in msg.signals):
-                raise ValueError(f"expect_signal: that {sig.name} is not a signal of {msg.name} in this "
-                                 f"run; take it from {msg.name}.signals, or name it")
+            sig = self._signal_of("expect_signal", msg, signal)  # refused now, not after the wait
             run = _lib.state["run"]
         name = sig.name
         if want is None or isinstance(want, (str, bytes)):
@@ -555,6 +578,38 @@ class Channel(Bus):
         else:
             text += f"{frames} {msg.name} frames came, {name} went from {lo!r} to {hi!r}, last {last!r}"
         raise Timeout(text, _lib.BB_ERR_TIMEOUT)
+
+    def value(self, message: "Message | str", signal: "Signal | str") -> float | None:
+        """`signal`'s decoded physical value in the newest frame of `message` (latest's answer,
+        so what is queued is read first and consumed); None before the first frame of it, or
+        where that frame does not carry the signal (a multiplexed one its switch does not
+        select). `message` and `signal` as expect_signal's. latest(message).t_ms says how old
+        the value is."""
+        with _lib.state_lock:
+            msg = self._own("value", message)
+            sig = self._signal_of("value", msg, signal)
+            run = _lib.state["run"]
+        f = self.latest(msg)
+        if f is None:
+            return None
+        got = self._decode(f, run)
+        if got is None or got[0] is not msg:
+            return None
+        return next((v for s, v in got[1] if s is sig), None)
+
+    def _signal_of(self, who, msg, signal):
+        """A Signal of `msg` in this run: one of msg.signals, or its name. Under the state lock."""
+        if isinstance(signal, str):
+            sig = msg.signals[signal]
+        elif isinstance(signal, Signal):
+            sig = signal
+        else:
+            raise TypeError(f"{who}: a signal is a Signal or its name, not {signal!r}")
+        # the Signal itself, not its name: two signals of one name are two signals
+        if not any(s is sig for s in msg.signals):
+            raise ValueError(f"{who}: that {sig.name} is not a signal of {msg.name} in this "
+                             f"run; take it from {msg.name}.signals, or name it")
+        return sig
 
     def _frame_key(self, who, id, ext):
         """(id, ext) a wait matches: Bus's, or a Message's own."""
@@ -731,6 +786,7 @@ class Channel(Bus):
         lib = _lib.lib()
         with _lib.state_lock:
             self._let_go_clients()
+            self._latest = {}
             if self._h is not None:
                 h, self._h = self._h, None
                 _lib.check(lib.bb_bus_close(h))
@@ -1226,6 +1282,10 @@ class Project(EventLoop[Channel | str], Faults, Replays):
 
     def _health(self, c):
         return c.health()
+
+    def _open(self):
+        # the channels whose handle is open: each a CAN row of this load (no other kind opens one)
+        return [c for c in self._channels or [] if c._h is not None]
 
     def _health_needs_reader(self, c):
         return c._health_needs_reader()

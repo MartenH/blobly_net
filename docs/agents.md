@@ -184,6 +184,10 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
   to either and a frame of the message that fails its E2E check raises `blobly.E2eError` (code
   -12, `.status` the verdict); every received frame carries that verdict as `f.e2e`.
 - **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
+- **A state is the newest frame, not the next one.** `ch.latest(message)` and
+  `ch.value(message, signal)` answer as of the call (what is queued is read first; `f.t_ms` says
+  how old the frame is), and `net.wait(ms)` in place of `time.sleep` keeps every open channel
+  read while time passes.
 - **Send in the background, not from a loop.** A frame the SUT must keep receiving while the
   script waits (a heartbeat, a polled request) is `ch.send_cyclic(id, data, period_ms=...)` or
   `msg.send_cyclic(period_ms, **signals)` in a `with` block; it stops at the block's end, or at
