@@ -172,9 +172,10 @@ fn phys_of(sig candb.Signal, raw f64) f64 {
 // not simulated here, a message it does not send, a signal the message does not have, one its
 // protection overwrites or its payload does not hold, and a value the signal cannot carry.
 pub fn (t FaultTarget) set_signal(node string, msg string, signal string, value f64) ! {
-	sig := t.settable(node, msg, signal)!
-	if why := encodable_refusal(sig, value) {
-		return error('${signal} on "${msg}": ${why}')
+	for sig in t.settable(node, msg, signal)! {
+		if why := encodable_refusal(sig, value) {
+			return error('${signal} on "${msg}": ${why}')
+		}
 	}
 	set_value(t.iface, node, msg, signal, value)
 }
@@ -206,23 +207,25 @@ fn (t FaultTarget) sent_by(node string, msg string) ![]candb.Message {
 	return m
 }
 
-// settable is `signal` of `node`'s `msg` where a value set on it reaches the wire: the message
-// has it, protection does not overwrite it and the payload holds it.
-fn (t FaultTarget) settable(node string, msg string, signal string) !candb.Signal {
+// settable is `signal` in each of `node`'s messages named `msg` that has it, where a value set on
+// it reaches the wire: protection does not overwrite it and every payload holds it. Every one,
+// since a value set goes into each of those messages and must fit each layout.
+fn (t FaultTarget) settable(node string, msg string, signal string) ![]candb.Signal {
 	ms := t.sent_by(node, msg)!
 	prot := t.protection(node, msg)
 	if signal != '' && (signal == prot.counter || signal == prot.crc) {
 		return error('"${signal}" on "${msg}" is stamped by its E2E protection, which overwrites a value set on it')
 	}
-	mut found := ?candb.Signal(none)
+	mut found := []candb.Signal{}
 	for m in ms {
 		s := m.signal_named(signal) or { continue }
 		if why := past_payload(m, signal) {
 			return error('${why} — a value set on it would change nothing')
 		}
-		if found == none {
-			found = s
-		}
+		found << s
 	}
-	return found or { error('"${msg}" has no signal "${signal}"') }
+	if found.len == 0 {
+		return error('"${msg}" has no signal "${signal}"')
+	}
+	return found
 }

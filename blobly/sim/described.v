@@ -232,8 +232,9 @@ pub fn live_value(iface string, chan_name string, node string, signal string) ?u
 	return live_table.vals[live_key(iface, chan_name, node, signal)] or { return none }
 }
 
-// publish_live records, for the signals a described server wants, the value each generator gave
-// the last frame due_frames sent of its message.
+// publish_live records, for the signals a described server wants, the value the last frame
+// due_frames sent of its message carried: a value set on the signal (setsignal.v), else its
+// generator's.
 pub fn publish_live(iface string, chan_name string, e &Engine) {
 	live_table.mu.rlock()
 	empty := live_table.want.len == 0
@@ -246,18 +247,24 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			if m.last_n < 0 {
 				continue // a response, or none handed out yet: no frame carries a generator's value
 			}
-			for s in m.signals {
-				k := live_key(iface, chan_name, ecu.name, s.name)
+			mut names := m.signals.map(it.name)
+			for v in m.last_set {
+				if v.signal !in names {
+					names << v.signal
+				}
+			}
+			for name in names {
+				k := live_key(iface, chan_name, ecu.name, name)
 				live_table.mu.rlock()
-				wanted := k in live_table.want || any_key(ecu.name, s.name) in live_table.want
+				wanted := k in live_table.want || any_key(ecu.name, name) in live_table.want
 				live_table.mu.runlock()
 				if !wanted {
 					continue
 				}
-				phys := s.gen.value(m.last_t, m.last_n)
+				phys := last_sent_value(m, name)
 				mut v := live_rounded(phys)
 				for sig in m.msg.signals {
-					if sig.name == s.name {
+					if sig.name == name {
 						v = live_encoded(sig, phys)
 						break
 					}
@@ -270,8 +277,22 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 	}
 }
 
-// live_encoded is a generator's value as `sig` encodes it, as an exact integer: by its raw bits at
-// factor 1 and offset 0 (the whole 64-bit range), else its physical value rounded.
+// last_sent_value is the physical value of `name` in the last frame sent of `m`: the value set on
+// it, else its generator's, else 0 (a signal nothing drives encodes as raw 0).
+fn last_sent_value(m SimMessage, name string) f64 {
+	for v in m.last_set {
+		if v.signal == name {
+			return v.value
+		}
+	}
+	for s in m.signals {
+		if s.name == name {
+			return s.gen.value(m.last_t, m.last_n)
+		}
+	}
+	return 0
+}
+
 fn live_encoded(sig candb.Signal, phys f64) uds.LiveValue {
 	raw := sig.raw_from_phys(phys) // clamped to the signal's width
 	if sig.factor != 1 || sig.offset != 0 {

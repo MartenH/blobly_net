@@ -259,3 +259,36 @@ fn test_a_response_carries_a_set_value() {
 	out := e.on_frame(id: 0x300, data: [u8(5)])
 	assert out.len == 1 && out[0].data == [u8(5), 9]
 }
+
+// a value set goes into every message of the name, so it must fit every layout of the signal
+fn test_a_set_value_must_fit_every_message_of_the_name() {
+	clear_all()
+	wide := candb.Message{
+		name:    'Dup'
+		id:      0x200
+		dlc:     2
+		sender:  'ECU'
+		signals: [sig8('Val', 0, 16)]
+	}
+	narrow := candb.Message{
+		...wide
+		id:      0x201
+		dlc:     1
+		signals: [sig8('Val', 0, 8)]
+	}
+	t := FaultTarget{
+		channel: 'CAN1'
+		iface:   'inproc:DUP'
+		db:      candb.Database{
+			nodes:    ['ECU']
+			messages: [wide, narrow]
+		}
+		nodes:   [project.NodeCfg{
+			name: 'ECU'
+		}]
+	}
+	assert set_refusal(t, 'ECU', 'Dup', 'Val', 1000).contains('8-bit')
+	assert signal_values('inproc:DUP', 'ECU', 'Dup').len == 0
+	assert set_refusal(t, 'ECU', 'Dup', 'Val', 200) == ''
+	clear_all()
+}

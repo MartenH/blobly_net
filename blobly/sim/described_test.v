@@ -655,6 +655,33 @@ fn test_a_refused_send_publishes_nothing() {
 	clear_live()
 }
 
+// a value set on the signal is what the live DID reads once a frame carries it; a refused frame
+// leaves the value the last sent one carried
+fn test_a_live_did_reads_the_value_set_on_its_signal() {
+	sys := dx_load('liveset')
+	mut s := zone_a(sys)
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
+	mut e := one_signal_engine('zone_a', 'SteeringAngle', 300, Fault{})
+	e.step(0, fn (f transport.CanFrame) bool {
+		return true
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
+	e.ecus[0].messages[0].set = [SetValue{'SteeringAngle', 400}]
+	e.step(50, fn (f transport.CanFrame) bool {
+		return false
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
+	e.step(100, fn (f transport.CanFrame) bool {
+		return true
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x90]
+	clear_live()
+}
+
 // a described server judges a VIN write itself: its gates first, then the declared size
 fn test_a_described_vin_write_takes_the_servers_size_check() {
 	mut host := DoipHost{

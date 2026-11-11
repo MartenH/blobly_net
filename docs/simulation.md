@@ -716,12 +716,14 @@ written only in the frames its multiplexor selects; set the multiplexor too to c
 The values live in one process-wide table keyed by channel, node and message, like the faults,
 so a script reaches the GUI's simulation and the headless runner's alike. A start clears them,
 in the GUI and headless alike (and the GUI clears them with the faults when a project is loaded
-or its text replaced).
+or its text replaced). A described ECU's live DID on that signal reads the value set once a
+frame carrying it has gone out.
 
 A value that could not reach the wire is **refused**, and nothing is set: a node not simulated
 on that channel, a message it does not send, a signal the message does not have, the E2E counter
 or checksum (protection overwrites it), a signal past the message's payload, and a value past
-what the signal's width holds (the encoder would clamp it to another value). A value past the
+what the signal's width holds (the encoder would clamp it to another value) — in every message
+of that name the node sends, since the value goes into each. A value past the
 signal's declared range is not refused: a test sends one on purpose.
 
 ## Fault injection
