@@ -269,3 +269,16 @@ class J1939Listener:
     def __repr__(self) -> str:
         return f"<J1939Listener {self.channel.name}>"
 
+
+
+def _discard(channel: "Channel", h: int) -> None:
+    """Lets go of what the reading on the channel's handle `h` holds completed (messages and faults),
+    keeping its address directory and the transfers in progress; nothing where `h` reads no J1939."""
+    listener = channel._j1939 or J1939Listener(channel)
+    try:
+        listener._take(h, _lib.state["run"], None)
+    except _lib.BloblyError as e:
+        if e.code != _lib.BB_ERR_STATE:  # the handle is not listening
+            raise
+        return
+    listener._faults.clear()

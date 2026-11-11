@@ -730,12 +730,27 @@ class Channel(Bus):
         """Lets the handle go, and the connections of its UDS clients; the next use opens another."""
         lib = _lib.lib()
         with _lib.state_lock:
-            _close_orphans()
-            for c in list(self._uds):
-                c._let_go()
+            self._let_go_clients()
             if self._h is not None:
                 h, self._h = self._h, None
                 _lib.check(lib.bb_bus_close(h))
+
+    def _let_go_clients(self) -> None:
+        """Lets the connections of its UDS clients and ISO-TP channels go, the handle kept; their
+        next use opens another."""
+        with _lib.state_lock:
+            _close_orphans()
+            for c in list(self._uds):
+                c._let_go()
+
+    def _judge_afresh(self) -> None:
+        """Gives the open handle a new E2E reader, the handle kept: the next frame of each message
+        is judged on its CRC alone, as after an open, and no gap before it is a timeout."""
+        h = self._handle()
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._current()
+            _lib.check(lib.bb_e2e_attach(h, self._index))
 
     def __repr__(self) -> str:
         return f"<Channel {self.name}>"
