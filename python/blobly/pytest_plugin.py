@@ -88,15 +88,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def interface_overrides(config: pytest.Config) -> dict[str, str]:
-    """The rows' interface overrides: the ini's, then --blobly-interface's over them. A pair
-    without its "=" or a name given twice in one place is refused."""
+    """The rows' interface overrides: the ini's, then --blobly-interface's over them by name. A
+    pair is split at its first "=" only to lay one over the other; the engine reads the rest. A
+    pair without one, or a name given twice in one place, is refused here, since a mapping cannot
+    carry either to the engine."""
     out: dict[str, str] = {}
     for source, pairs in (("blobly_interfaces in the ini file", config.getini("blobly_interfaces")),
                           ("--blobly-interface", config.getoption("blobly_interface"))):
         given: dict[str, str] = {}
         for pair in pairs:
             name, eq, iface = pair.partition("=")
-            if not eq or not name.strip() or not iface.strip():
+            if not eq:
                 raise pytest.UsageError(f"{pair!r} (from {source}) is not NAME=IFACE")
             if name.strip() in given:
                 raise pytest.UsageError(f"row {name.strip()!r} is given twice (from {source})")

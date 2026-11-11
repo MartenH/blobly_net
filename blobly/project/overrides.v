@@ -3,7 +3,7 @@ module project
 import transport
 
 // IfaceOverride attaches the row named `name` to `iface` for one run, in place of the
-// interface its file states: an interface string as `Channel.iface` reads it (`inproc:BusA`,
+// interface its file states: an interface string without a rate or a mode (`inproc:BusA`,
 // `pcan:PCAN_USBBUS2`, `vcan1`, `doip:10.0.0.5:13400`, `lin:tty:/dev/ttyUSB0`).
 pub struct IfaceOverride {
 pub:
@@ -56,6 +56,11 @@ fn iface_override_refusal(ch Channel, iface string) ?string {
 		if why := lin_row_refusal(address, '') {
 			return '"${iface}": ${why}'
 		}
+		// a serial address's `@<baud>` (lin.parse_serial's grammar) is a rate
+		if (address.starts_with('tty:') || address.starts_with('pty:'))
+			&& address.all_before(',plain').contains('@') {
+			return '"${iface}": the rate is the row\'s (bitrate:) or its LDF\'s, not the interface\'s'
+		}
 		return none
 	}
 	if transport.adapter_configures_bitrate(adapter) && address != iface.trim_space().all_after(':') {
@@ -70,7 +75,9 @@ fn iface_override_refusal(ch Channel, iface string) ?string {
 // override_interfaces attaches each named row to its override's interface, before anything is
 // checked or opened. Refused whole, changing nothing, for a name no row has (naming the rows),
 // a name two rows share, a name given twice, or an interface iface_override_refusal refuses.
-// A generator whose `bus:` named a moved row by its old interface is rewritten to name it again.
+// A generator follows the rows it transmitted to: one whose `bus:` named a moved row by its old
+// interface, or named a wire (shared by several rows, or not a row's spelling of it) that every
+// CAN row on it left, is rewritten to name where they went.
 pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 	if overrides.len == 0 {
 		return
@@ -106,15 +113,15 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 		chs[i].iface = compose_iface(adapter, address)
 		moved[i] = true
 	}
-	// a `bus:` naming a moved row by its old interface follows the row
 	for ci, own in p.channels {
 		for si, s in own.senders {
 			was := resolve_sender_bus(s.bus, own, p.channels)
-			if was.kind != .iface || was.row !in moved {
+			to := followed_rows(was, p.channels, moved)
+			if to.len == 0 {
 				continue
 			}
-			v := sender_bus_value(chs[was.row], chs[ci], chs) or {
-				return error('interface override: generator "${s.name}" of row "${own.name}" names row "${chs[was.row].name}" by its interface, and nothing can name it once moved; name the row in its bus:')
+			v := moved_bus_value(to, chs[ci], chs) or {
+				return error('interface override: generator "${s.name}" of row "${own.name}" transmits on `${s.bus}`, which ${to.map('"${chs[it].name}"').join(', ')} left, and nothing names where they went; name a row in its bus:')
 			}
 			mut ss := chs[ci].senders.clone()
 			ss[si].bus = v
@@ -122,4 +129,45 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 		}
 	}
 	p.channels = chs
+}
+
+// followed_rows is the rows of `chs` (the project before the move) a generator's resolved `bus:`
+// follows: the moved row an interface named, or every CAN row on the wire an ambiguous or bare
+// value reaches when all of them moved; none when the generator stays where it is.
+fn followed_rows(was SenderBus, chs []Channel, moved map[int]bool) []int {
+	if was.kind == .iface {
+		return if was.row in moved { [was.row] } else { []int{} }
+	}
+	if was.kind !in [.ambiguous, .bare] || was.iface == '' {
+		return []int{}
+	}
+	adapter, _ := decompose_iface(was.iface)
+	wire := conflict_wire_key(Channel{
+		adapter: adapter
+		iface:   was.iface
+	})
+	mut on := []int{}
+	for i, c in chs {
+		if c.kind() == .can && conflict_wire_key(c) == wire {
+			if i !in moved {
+				return []int{}
+			}
+			on << i
+		}
+	}
+	return on
+}
+
+// moved_bus_value spells where the rows `to` (positions in `chs`, the project after the move)
+// now are, for a generator of row `own`: the one row as sender_bus_value names it, or the one
+// interface they all moved to where nothing named like it takes the value; none otherwise.
+fn moved_bus_value(to []int, own Channel, chs []Channel) ?string {
+	if to.len == 1 {
+		return sender_bus_value(chs[to[0]], own, chs)
+	}
+	iface := chs[to[0]].iface
+	if to.any(chs[it].iface != iface) || resolve_sender_bus(iface, own, chs).iface != iface {
+		return none
+	}
+	return iface
 }

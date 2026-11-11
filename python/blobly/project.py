@@ -1094,7 +1094,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
     cycles its generators; replay and record play a recording onto its channels and record them to a
     file.
     `interfaces` attaches rows elsewhere than the file says, by row name — {"BusA": "inproc:BusA"},
-    an interface string as `Channel.iface` reads it, without a rate or a mode: the row keeps its
+    an interface string without a rate or a mode (not `Channel.iface`'s `...@500000`): the row keeps its
     bitrate, framing and listen_only. Applied at every load before anything is checked or opened;
     a name no row has, or an interface of another kind than the row's, refuses the load."""
     path: str | bytes

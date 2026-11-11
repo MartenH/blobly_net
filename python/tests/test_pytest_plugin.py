@@ -395,6 +395,9 @@ class TestPlugin:
         r = pytest_run(tmp_path, "--blobly-interface=CAN1", WANT="")
         assert r.returncode == 4, r.stdout + r.stderr
         assert "'CAN1' (from --blobly-interface) is not NAME=IFACE" in r.stdout + r.stderr
+        r = pytest_run(tmp_path, "--blobly-interface=CAN1=", WANT="")
+        assert r.returncode == 4, r.stdout + r.stderr  # the engine's own refusal
+        assert 'interface override "CAN1=": gives no interface' in r.stdout + r.stderr
 
     def test_a_run_from_the_repository_root_leaves_the_examples_suite_out(self):
         # its conftest's pytest_plugins is refused below a run's root, so python/conftest.py

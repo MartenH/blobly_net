@@ -148,3 +148,82 @@ fn test_no_overrides_change_nothing() {
 	p.override_interfaces([])!
 	assert p.channels.map(it.iface) == before
 }
+
+const wires_yaml = '
+project:
+  name: wires
+  version: 4
+buses:
+  - name: A
+    adapter: pcan
+    address: PCAN_USBBUS1
+    senders:
+      - name: shared
+        bus: pcan:PCAN_USBBUS1
+        trigger: manual
+      - name: elsewhere
+        bus: pcan:PCAN_USBBUS9
+        trigger: manual
+  - name: A_mon
+    adapter: pcan
+    address: PCAN_USBBUS1
+  - name: B
+    adapter: pcan
+    address: PCAN_USBBUS2
+    senders:
+      - name: rated
+        bus: pcan:PCAN_USBBUS2@250000
+        trigger: manual
+'
+
+fn sender_of(p Project, row_name string, name string) Sender {
+	for s in row(p, row_name).senders {
+		if s.name == name {
+			return s
+		}
+	}
+	panic('no generator ${name}')
+}
+
+fn test_a_generator_on_a_wire_every_row_left_follows_them() {
+	mut p := parse(wires_yaml) or { panic(err) }
+	p.override_interfaces([IfaceOverride{'A', 'inproc:A'}, IfaceOverride{'A_mon', 'inproc:A'},
+		IfaceOverride{'B', 'inproc:B'}])!
+	// the interface both alias rows shared: where both went
+	shared := sender_of(p, 'A', 'shared')
+	assert shared.bus == 'inproc:A'
+	assert resolve_sender_bus(shared.bus, row(p, 'A'), p.channels).iface == 'inproc:A'
+	// a rate-carrying spelling of one row's wire: that row
+	rated := sender_of(p, 'B', 'rated')
+	assert resolve_sender_bus(rated.bus, row(p, 'B'), p.channels).iface == 'inproc:B'
+	// a wire no row is on is the file's own choice, and stays
+	assert sender_of(p, 'A', 'elsewhere').bus == 'pcan:PCAN_USBBUS9'
+}
+
+fn test_a_generator_stays_on_a_wire_a_row_still_has() {
+	mut p := parse(wires_yaml) or { panic(err) }
+	p.override_interfaces([IfaceOverride{'A', 'inproc:A'}])!
+	shared := sender_of(p, 'A', 'shared')
+	assert shared.bus == 'pcan:PCAN_USBBUS1'
+	r := resolve_sender_bus(shared.bus, row(p, 'A'), p.channels)
+	assert r.iface == 'pcan:PCAN_USBBUS1'
+	assert r.chan == 'A_mon'
+}
+
+fn test_a_wire_whose_rows_went_two_ways_is_refused() {
+	mut p := parse(wires_yaml) or { panic(err) }
+	p.override_interfaces([IfaceOverride{'A', 'inproc:A'}, IfaceOverride{'A_mon', 'inproc:M'}]) or {
+		assert err.msg().contains('generator "shared" of row "A"')
+		assert err.msg().contains('"A", "A_mon" left')
+		assert row(p, 'A').iface == 'pcan:PCAN_USBBUS1'
+		return
+	}
+	assert false
+}
+
+fn test_a_rate_in_a_lin_serial_address_is_refused() {
+	assert refusal([IfaceOverride{'Lin1', 'lin:tty:/dev/ttyUSB0@9600'}]).contains('the rate is the row')
+	assert refusal([IfaceOverride{'Lin1', 'lin:pty:/tmp/x@19200,plain'}]).contains('the rate is the row')
+	assert refusal([IfaceOverride{'Lin1', 'lin:pty:/tmp/x,plain'}]) == ''
+	assert refusal([IfaceOverride{'Lin1', 'lin:inproc:bench@A'}]) == ''
+}

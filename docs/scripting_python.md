@@ -172,15 +172,17 @@ with an interface, its databases and the ECUs simulated on it.
   ends the run. `with blobly.Project(path) as net:` loads and starts it, and stops it when the
   block ends.
 - **A row attached elsewhere than the file says**: `blobly.Project(path, interfaces={"BusA":
-  "inproc:BusA", "BusB": "pcan:PCAN_USBBUS2"})`, by row name, an interface string as `ch.iface`
-  reads it. One suite then runs on in-process buses and on benches whose adapters or channel
+  "inproc:BusA", "BusB": "pcan:PCAN_USBBUS2"})`, by row name, an interface string without its rate
+  or mode (`pcan:PCAN_USBBUS2`, where `ch.iface` reads `pcan:PCAN_USBBUS2@500000`). One suite then runs on in-process buses and on benches whose adapters or channel
   numbers differ, from one file. Applied at every load, before anything is checked or opened, so
   the simulated ECUs, the generators and the listen-only policy follow the row. The row keeps its
-  bitrate, CAN-FD framing and `listen_only`, so an interface carrying a rate (`@500000`) or a mode
-  (`,silent`) is refused; so is a name no row has (the error names the rows: a typo must not leave
+  bitrate, CAN-FD framing and `listen_only`, so an interface carrying a rate (`@500000`, or a LIN
+  serial address's `@19200`) or a mode (`,silent`) is refused; so is a name no row has (the error names the rows: a typo must not leave
   a row on its bench adapter), a name two rows share, and an interface of another kind than the
-  row's (a CAN row onto `doip:`). A generator whose `bus:` named the row by its old interface
-  follows it.
+  row's (a CAN row onto `doip:`). A generator follows the rows it transmitted to: one whose
+  `bus:` named the row by its old interface, or named a wire every row on it left (an interface
+  alias rows share, or a spelling with a rate), is rewritten to name where they went, and refused
+  when they went two ways; a `bus:` naming a wire no row is on stays where the file says.
 - **What `start()` brings up**, for every enabled row: the simulated ECUs (`simulation:`) and
   their UDS servers, the cyclic generators (`senders:` with `trigger: cyclic`; every generator is
   then the script's to drive, [Generators](#generators)), and a DoIP
