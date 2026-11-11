@@ -1269,12 +1269,22 @@ fn test_a_retargeted_client_talks_to_the_node_behind_the_gateway() {
 	ln.close() or {}
 }
 
+// min_sock_buf asks for the smallest socket buffer the kernel allows; it clamps the value up.
+const min_sock_buf = 1
+
 // An entity that activates routing and then reads nothing holds a write no longer than
 // write_timeout_ms (the connection lost), and a stop asked meanwhile ends it within a poll.
 fn test_a_write_the_entity_does_not_read_is_bounded() {
 	for stop_it in [false, true] {
 		mut ln, lport := free_listener() or {
 			assert false, 'listen: ${err}'
+			return
+		}
+		// The smallest buffers at both ends (the accepted socket inherits the listener's): the
+		// write runs out of room after one delayed ACK, so what it takes is the no-progress bound
+		// and not however long the kernel goes on taking data into autotuned buffers.
+		ln.sock.set_option_int(.receive_buf_size, min_sock_buf) or {
+			assert false, 'SO_RCVBUF: ${err}'
 			return
 		}
 		spawn fn (mut ln net.TcpListener) {
@@ -1288,6 +1298,12 @@ fn test_a_write_the_entity_does_not_read_is_bounded() {
 			assert false, 'open: ${err}'
 			return
 		}
+		ch.conn.sock.set_option_int(.send_buf_size, min_sock_buf) or {
+			assert false, 'SO_SNDBUF: ${err}'
+			return
+		}
+		// more than the socket buffers of both ends hold
+		payload := []u8{len: 1024 * 1024, init: 0x2E}
 		at := time.ticks() + 300
 		if stop_it {
 			ch.stop_requested = fn [at] () bool {
@@ -1295,9 +1311,8 @@ fn test_a_write_the_entity_does_not_read_is_bounded() {
 			}
 		}
 		sw := time.new_stopwatch()
-		// more than the socket buffers of both ends hold
 		mut failed := false
-		ch.send([]u8{len: 32 * 1024 * 1024, init: 0x2E}) or {
+		ch.send(payload) or {
 			failed = true
 			if stop_it {
 				assert err.msg() == stopped_note, err.msg()
