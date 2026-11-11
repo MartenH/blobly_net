@@ -642,7 +642,9 @@ fn test_a_flooded_port_still_closes() {
 		C.bl_ser_close(peer)
 	}
 	stop := chan bool{cap: 1}
-	spawn fn [peer, stop] () {
+	// the writer is joined before peer closes: a write after that lands on whatever fd reuses
+	// peer's number, a later test's pty
+	writer := spawn fn [peer, stop] () {
 		p := pid(0x21)
 		one := pty_bytes(true, [u8(0x55), p, 1, 2, checksum(.enhanced, p, [u8(1), 2])])
 		mut block := []u8{}
@@ -665,6 +667,7 @@ fn test_a_flooded_port_still_closes() {
 	mon.close()
 	took := time.since(t0)
 	stop <- true
+	writer.wait()
 	assert took < 100 * time.millisecond, '${took}'
 }
 
@@ -683,7 +686,8 @@ fn test_two_wakeups_are_two_events() {
 	time.sleep(20 * time.millisecond)
 	m.wakeup()!
 	for _ in 0 .. 2 {
-		assert got(mut m).event == .wakeup
+		f := got(mut m)
+		assert f.event == .wakeup, reading(f)
 		assert got(mut s).event == .wakeup
 	}
 }
