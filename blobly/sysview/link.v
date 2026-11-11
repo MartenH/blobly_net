@@ -3,6 +3,7 @@ module sysview
 import os
 import blobly.candb
 import blobly.project
+import blobly.transport
 
 // link.v — from a tester's diagnostic target to the blobly_emb node it addresses, and from a
 // project to the system.toml that describes its nodes. Both pure rules (the second reads only
@@ -117,7 +118,7 @@ pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 		srv := sys.can_server(n) or { continue }
 		req, rsp := srv.req, srv.rsp
 		for b in srv.buses {
-			on := chans.filter(it.name == b)
+			on := chans.filter(it.name == b && srv.on_wire(transport.destination_key(it.iface)))
 			for c in on {
 				out << NodeTarget{
 					node:        i
@@ -150,14 +151,22 @@ fn (sys &System) can_server(n &SysNode) ?CanServer {
 		req:   req
 		rsp:   rsp
 		buses: if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
+		wires: n.wires
 	}
 }
 
-// CanServer is a node's diagnostic server over CAN: its ids and the buses it serves on.
+// CanServer is a node's diagnostic server over CAN: its ids, the buses it serves on and, for a
+// node a row describes, the wires of those rows (empty: any).
 struct CanServer {
 	req   u32
 	rsp   u32
 	buses []string
+	wires []string
+}
+
+// on_wire: the server is reached on a row of wire `w` (transport.destination_key).
+fn (s CanServer) on_wire(w string) bool {
+	return s.wires.len == 0 || w in s.wires
 }
 
 // can_buses is the buses `n` sits on that are not declared as another kind (a someip segment), in

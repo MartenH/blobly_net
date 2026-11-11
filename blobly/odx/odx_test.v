@@ -412,3 +412,19 @@ fn test_the_instance_type_is_read_under_any_prefix() {
 	d := did_of(db.variant('Base')!, 5)
 	assert d.size == 1 && d.parts.map(it.name) == ['Narrow']
 }
+
+fn test_a_write_naming_its_value_otherwise_still_writes() {
+	comms := service_xml('Read_5', 'qr', 'rr') + service_xml('Write_5', 'qw', '')
+	reqs := '<REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID', 1, 5, 16) + '</PARAMS></REQUEST><REQUEST ID="qw"><SHORT-NAME>QW</SHORT-NAME><PARAMS>' +
+		coded_param('SID', 0, 0x2E, 8) + coded_param('DID', 1, 5, 16) + value_param('NewValue', 'u8') +
+		'</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('CurrentValue', 'u8') +
+		'</PARAMS></POS-RESPONSE>'
+	db := load_docs('names', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.readable && d.writable && d.parts.map(it.name) == ['CurrentValue']
+}

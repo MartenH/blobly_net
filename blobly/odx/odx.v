@@ -490,7 +490,7 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did, mut 
 	if prev := found[u16(id)] {
 		// the value is laid out as the first 0x22 service read reads it, whichever came first; a
 		// write is kept only where every service lays it out alike
-		same := prev.size == lay.size && prev.parts == parts
+		same := prev.size == lay.size && shapes(prev.parts) == shapes(parts)
 		mut d := if sid == 0x22 && !prev.readable {
 			Did{
 				...prev
@@ -528,6 +528,14 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did, mut 
 		size:     lay.size
 		parts:    parts
 	}
+}
+
+// shapes are parts as the bytes lay them out, their names left out.
+fn shapes(parts []Part) []Part {
+	return parts.map(Part{
+		...it
+		name: ''
+	})
 }
 
 // const_at is the CODED-CONST parameter's value at `at_byte` of `bits` width, none when there is none.

@@ -2,6 +2,7 @@ module sysview
 
 import blobly.odx
 import blobly.project
+import blobly.transport
 import blobly.uds
 
 // odxnodes.v — the nodes a project names by an imported description (a CAN row's `diagnostics:`
@@ -32,6 +33,7 @@ pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (Sy
 		if ch.kind() != .can {
 			continue
 		}
+		wire := transport.destination_key(ch.iface)
 		for e in ch.diagnostics {
 			label := '${ch.name}: diagnostics ${e.node}'
 			src := '${e.odx}#${e.variant}'
@@ -40,6 +42,9 @@ pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (Sy
 				if n.odx == src && n.diag_req == e.tx && n.diag_rsp == e.rx {
 					if ch.name !in n.buses {
 						out.nodes[i].buses << ch.name
+					}
+					if wire !in n.wires {
+						out.nodes[i].wires << wire
 					}
 				} else {
 					notes << '${label}: a node of that name is already described (${if n.odx != '' {
@@ -70,6 +75,7 @@ pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (Sy
 				ecu:      e.odx
 				odx:      src
 				buses:    [ch.name]
+				wires:    [wire]
 				diag_req: e.tx
 				diag_rsp: e.rx
 				desc:     EcuDesc{

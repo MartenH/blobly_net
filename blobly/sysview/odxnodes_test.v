@@ -8,6 +8,7 @@ import blobly.project
 fn odx_rows(entries []project.DiagNodeCfg) []project.Channel {
 	return [project.Channel{
 		name:        'CAN1'
+		iface:       'inproc:a'
 		diagnostics: entries
 	}]
 }
@@ -28,6 +29,7 @@ fn test_an_odx_node_is_named_reached_and_laid_out() {
 	assert sys.sources.len == 1 && sys.current()
 	t := sys.reach(n, [RowRef{
 		name: 'CAN1'
+		wire: 'inproc:a'
 	}], -1) or { panic(err) }
 	assert t.req == 0x7E0 && t.rsp == 0x7E8 && !t.ext
 	d := node.desc
@@ -111,6 +113,7 @@ fn test_an_odx_node_is_reached_on_every_row_that_names_it() {
 	mut rows := odx_rows([body('BodyController_Base')])
 	rows << project.Channel{
 		name:        'CAN2'
+		iface:       'inproc:b'
 		diagnostics: [body('BodyController_Base')]
 	}
 	sys, _ := base.with_odx_nodes(os.join_path(@VMODROOT, 'dbc'), rows)
@@ -125,4 +128,35 @@ fn test_an_odx_node_is_reached_on_every_row_that_names_it() {
 	assert sys.targets(n, refs).map(it.row) == [0, 1]
 	t := sys.reach(n, refs, 1) or { panic(err) }
 	assert t.row == 1 && t.req == 0x7E0
+}
+
+fn test_an_odx_node_is_reached_on_the_wire_of_the_row_naming_it() {
+	// two rows of one name on two wires, each naming a node at the same ids
+	rows := [
+		project.Channel{
+			name:        'CAN1'
+			iface:       'inproc:a'
+			diagnostics: [body('BodyController_Base')]
+		},
+		project.Channel{
+			name:        'CAN1'
+			iface:       'inproc:b'
+			diagnostics: [project.DiagNodeCfg{'Door', 'odx_demo.odx-d', 'BodyController_V2', 0x7E0, 0x7E8}]
+		},
+	]
+	sys, _ := System{}.with_odx_nodes(os.join_path(@VMODROOT, 'dbc'), rows)
+	refs := [RowRef{
+		name: 'CAN1'
+		wire: 'inproc:a'
+	}, RowRef{
+		name: 'CAN1'
+		wire: 'inproc:b'
+	}]
+	body_n := sys.node_named('Body') or { panic(err) }
+	door_n := sys.node_named('Door') or { panic(err) }
+	assert sys.targets(body_n, refs).map(it.row) == [0]
+	assert sys.targets(door_n, refs).map(it.row) == [1]
+	chans := [ChanRef{'CAN1', 'inproc:a'}, ChanRef{'CAN1', 'inproc:b'}]
+	assert sys.can_targets(chans).map('${it.node}:${it.iface}') == ['${body_n}:inproc:a',
+		'${door_n}:inproc:b']
 }

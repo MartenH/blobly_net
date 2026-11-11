@@ -109,7 +109,7 @@ fn (sys &System) can_target(n int, r RowRef, i int) ?RowTarget {
 		return none
 	}
 	s := sys.can_server(sys.nodes[n])?
-	if r.name !in s.buses {
+	if r.name !in s.buses || !s.on_wire(r.wire) {
 		return none
 	}
 	return RowTarget{

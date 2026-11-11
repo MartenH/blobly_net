@@ -69,6 +69,9 @@ pub mut:
 	ecu_err  string   // non-empty: its ecu.toml could not be read/parsed
 	desc     EcuDesc  // its diagnostic description (faults, DIDs, parameters)
 	odx      string   // `<source>#<variant>` for a node a project row describes by ODX (odxnodes.v)
+	// the wires (transport.destination_key) of the rows describing it by ODX: it is reached on a
+	// row of its bus's name on one of them only; empty for a system.toml node
+	wires []string
 }
 
 // IdUse is one allocated identifier on a bus, for the allocation table.
