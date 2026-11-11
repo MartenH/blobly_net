@@ -103,6 +103,36 @@ pub fn clear_signal_values() {
 	set_values.clear()
 }
 
+// payload_of is a message's payload from signal values in order: the multiplexor switch first (its
+// last value listed, else its start value), the payload the message starts from over it
+// (candb.Message.initial), then each other value written only where that frame carries its signal
+// (Message.carried) — a signal listed twice takes its last value. The one rule a simulated node's
+// generators and a `senders:` generator encode by.
+pub fn payload_of(msg candb.Message, vals []SetValue) []u8 {
+	sw := msg.multiplexor_index()
+	mut switch_raw := ?u64(none)
+	if sw >= 0 {
+		for v in vals {
+			if v.signal == msg.signals[sw].name {
+				switch_raw = msg.signals[sw].raw_from_phys(v.value)
+			}
+		}
+	}
+	mut data := msg.initial(switch_raw)
+	carried := msg.carried(data)
+	for v in vals {
+		for i, sig in msg.signals {
+			if sig.name == v.signal {
+				if i != sw && carried[i] {
+					sig.encode(mut data, v.value)
+				}
+				break
+			}
+		}
+	}
+	return data
+}
+
 // apply_set writes the set values onto a payload: the multiplexor switch first, since it decides
 // which multiplexed signals the frame carries, then every other set signal the frame carries.
 pub fn apply_set(msg candb.Message, set []SetValue, mut data []u8) {

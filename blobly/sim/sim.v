@@ -207,40 +207,16 @@ fn (m SimMessage) change_raws(t f64) []u64 {
 	return out
 }
 
-// build encodes the message's signals at time t into a CAN frame, over the payload the node starts
-// from (candb.Message.initial: a signal no generator drives at its start value, else raw 0). The
-// multiplexor switch goes in first — a value a script set on it, else its generator's — and a
-// generator writes only a signal the frame then carries, as apply_set does.
+// build encodes the message's signals at time t into a CAN frame (payload_of): its generators'
+// values, then the values a script set on it, so a set switch picks the page and a set value goes
+// over its generator's, under protection so the checksum covers them.
 pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
-	mut switch_raw := ?u64(none)
-	sw := m.msg.multiplexor_index()
-	if sw >= 0 {
-		name := m.msg.signals[sw].name
-		for s in m.signals {
-			if s.name == name {
-				switch_raw = m.msg.signals[sw].raw_from_phys(s.gen.value(t, m.send_n))
-			}
-		}
-		for v in m.set {
-			if v.signal == name {
-				switch_raw = m.msg.signals[sw].raw_from_phys(v.value)
-			}
-		}
-	}
-	mut data := m.msg.initial(switch_raw)
-	carried := m.msg.carried(data)
+	mut vals := []SetValue{cap: m.signals.len + m.set.len}
 	for s in m.signals {
-		for i, sig in m.msg.signals {
-			if sig.name == s.name {
-				if i != sw && carried[i] {
-					sig.encode(mut data, s.gen.value(t, m.send_n))
-				}
-				break
-			}
-		}
+		vals << SetValue{s.name, s.gen.value(t, m.send_n)}
 	}
-	// values set from a script, over the generators and under protection, so the checksum covers them
-	apply_set(m.msg, m.set, mut data)
+	vals << m.set
+	mut data := payload_of(m.msg, vals)
 	// the bits no signal covers at the message's fill, under protection too
 	m.msg.fill_unused(mut data)
 	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid

@@ -171,7 +171,8 @@ goes out at its start value.
 On a **multiplexed** message the multiplexor goes in first — a value a script holds on it
 (`sim.set`), else its generator's, else its start value — and every other generator writes its
 signal only in the frames that multiplexor selects, so a generator on a page that is not selected
-never writes into the bits the selected page's signals share.
+never writes into the bits the selected page's signals share. A signal the frame's length does not
+hold whole is not written either. A `senders:` generator encodes its message by the same rule.
 
 A generator naming a signal the node does not send is reported rather than silently ignored.
 
