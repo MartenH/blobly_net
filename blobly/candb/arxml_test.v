@@ -896,15 +896,48 @@ fn test_receivers_are_per_pdu_on_a_multi_pdu_frame() {
 	assert text.contains(' SG_ W : 40|8@1+ (1,0) [0|0] "" Y')
 }
 
-fn test_signal_shapes_the_model_cannot_hold_are_said() {
-	// wider than 64 bits: not read, and said
-	wide := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH>')
-	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + wide + arxml_tail) or {
+// wide_pdu_xml is offset_pdu_xml in a 24-byte CAN-FD frame with V 72 bits wide, packed `packing`
+// from PDU bit `at` (the PDU starts at frame byte 1).
+fn wide_pdu_xml(packing string, at int) string {
+	return offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>24</FRAME-LENGTH>').replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>',
+		'<SHORT-NAME>P</SHORT-NAME><LENGTH>23</LENGTH>').replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH>',
+		'<SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH>').replace('/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>',
+		'/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>${packing}</PACKING-BYTE-ORDER><START-POSITION>${at}</START-POSITION>')
+}
+
+fn test_a_wide_signal_of_whole_bytes_is_read_as_bytes() {
+	data := []u8{len: 24, init: u8(index)}
+	// Intel from a byte's bit 0, Motorola from a byte's bit 7, OPAQUE as Intel: frame bytes 1 .. 9
+	for packing, at in {
+		'MOST-SIGNIFICANT-BYTE-LAST':  0
+		'MOST-SIGNIFICANT-BYTE-FIRST': 7
+		'OPAQUE':                      0
+	} {
+		a := parse_arxml(arxml_head + fd_cluster() + wide_pdu_xml(packing, at) + arxml_tail) or {
+			panic(err)
+		}
+		m := (a.cluster('') or { panic(err) }).db.messages[0]
+		v := sig(m, 'V')
+		assert v.kind() == .bytes, packing
+		assert v.factor == 1 && v.offset == 0 && v.unit == '' && v.values.len == 0
+		assert v.bytes_value(data) or { panic(err) } == data[1..10], packing
+		assert m.byte_signals(data).map(it.name) == ['V']
+		assert !a.report.notes.any(it.contains('/Sig/V')), a.report.notes.str()
+	}
+	// Motorola from a byte's bit 0 is not whole bytes in payload order
+	be := parse_arxml(arxml_head + fd_cluster() + wide_pdu_xml('MOST-SIGNIFICANT-BYTE-FIRST', 0) + arxml_tail) or {
 		panic(err)
 	}
+	assert (be.cluster('') or { panic(err) }).db.messages[0].signals.map(it.name) == ['Crc', 'Ctr']
+}
+
+fn test_signal_shapes_the_model_cannot_hold_are_said() {
+	// wider than 64 bits and not whole bytes from a byte boundary: not read, and said
+	wide := wide_pdu_xml('MOST-SIGNIFICANT-BYTE-LAST', 4)
+	a := parse_arxml(arxml_head + fd_cluster() + wide + arxml_tail) or { panic(err) }
 	c := a.cluster('') or { panic(err) }
 	assert c.db.messages[0].signals.map(it.name) == ['Crc', 'Ctr']
-	assert a.report.notes.any(it.contains('72-bit signal is wider than the 64-bit scalar model; not read'))
+	assert a.report.notes.any(it.contains('/Sig/V: 72-bit signal is wider than the 64-bit scalar model and not whole bytes from a byte boundary; not read'))
 	// two property variants: the first is read, and said
 	vari := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/u8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE><SW-BASE-TYPE><SHORT-NAME>u8</SHORT-NAME><BASE-TYPE-ENCODING>NONE</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>'
 	v := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + vari + arxml_tail) or {
@@ -1044,10 +1077,10 @@ fn test_initial_values_are_said_not_dropped() {
 		assert !other.report.notes.any(it.contains('declares an initial value of')), form
 	}
 	// a signal the model does not carry gets no claim about its simulated outcome
-	wide := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init('<NUMERICAL-VALUE-SPECIFICATION><VALUE>7</VALUE></NUMERICAL-VALUE-SPECIFICATION>').replace('<LENGTH>16</LENGTH>', '<LENGTH>72</LENGTH>')) + arxml_tail) or {
+	wide := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init('<NUMERICAL-VALUE-SPECIFICATION><VALUE>7</VALUE></NUMERICAL-VALUE-SPECIFICATION>').replace('<LENGTH>16</LENGTH>', '<LENGTH>70</LENGTH>')) + arxml_tail) or {
 		panic(err)
 	}
-	assert wide.report.notes.any(it.contains('72-bit signal is wider'))
+	assert wide.report.notes.any(it.contains('70-bit signal is wider'))
 	assert !wide.report.notes.any(it.contains('initial value'))
 }
 
@@ -1252,14 +1285,14 @@ fn test_round_19_shapes() {
 	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
 	// a signal the width guard drops must not reserve its name: the supported one behind it
 	// keeps the plain name and no collision is reported
-	wide_then_same := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH></I-SIGNAL>').replace('</I-SIGNAL-TO-PDU-MAPPINGS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV2</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	wide_then_same := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>70</LENGTH></I-SIGNAL>').replace('</I-SIGNAL-TO-PDU-MAPPINGS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV2</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
 	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + wide_then_same + arxml_tail) or {
 		panic(err)
 	}
 	m := (a.cluster('') or { panic(err) }).db.messages[0]
 	assert m.signals.map(it.name) == ['Crc', 'Ctr', 'V'], m.signals.map(it.name).str()
 	assert sig(m, 'V').length == 8
-	assert a.report.notes.any(it.contains('72-bit signal is wider'))
+	assert a.report.notes.any(it.contains('70-bit signal is wider'))
 	assert !a.report.notes.any(it.contains('is already used in this message'))
 	// a LENGTH missing or 0 is dropped and said too — before its name is claimed (round 33)
 	zero_w := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>0</LENGTH></I-SIGNAL>') + arxml_tail) or {

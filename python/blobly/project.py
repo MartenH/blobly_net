@@ -538,7 +538,7 @@ class Channel(Bus):
             return _start_raw(self, f, _period(period_ms))
 
     def expect_signal(self, message: "Message | str", signal: "Signal | str", want: object,
-                      timeout_ms: float = 1000, *, e2e: bool = False) -> tuple[Frame, float]:
+                      timeout_ms: float = 1000, *, e2e: bool = False) -> tuple[Frame, float | bytes]:
         """The first frame of `message` whose decoded `signal` matches `want`, and that value,
         waited for at most timeout_ms in all; blobly.Timeout when none came, its message saying
         what the signal was instead.
@@ -547,7 +547,8 @@ class Channel(Bus):
         kind. `signal` is a signal of it, or its name. `want` is a callable, a predicate on the
         decoded physical value, or a value compared with ==: decoded values are floats carrying
         the rounding of raw x factor + offset, so a value a binary fraction cannot hold (0.1 steps)
-        wants pytest.approx(0.3) or a predicate. timeout_ms is one deadline for the whole wait, as
+        wants pytest.approx(0.3) or a predicate; a byte signal (Signal.kind "bytes") decodes to
+        bytes, so its `want` is bytes or a predicate. timeout_ms is one deadline for the whole wait, as
         expect's. With e2e=True every frame of `message` read while waiting must pass its E2E
         check: blobly.E2eError at the first that does not, as expect's.
 
@@ -561,7 +562,12 @@ class Channel(Bus):
             sig = self._signal_of("expect_signal", msg, signal)  # refused now, not after the wait
             run = _lib.state["run"]
         name = sig.name
-        if want is None or isinstance(want, (str, bytes)):
+        if sig.kind == "bytes":
+            if not callable(want) and not isinstance(want, (bytes, bytearray)):
+                raise TypeError(f"expect_signal: {name} decodes to bytes, so want is bytes or a predicate, "
+                                f"not {want!r}")
+            want = bytes(want) if isinstance(want, bytearray) else want
+        elif want is None or isinstance(want, (str, bytes, bytearray)):
             raise TypeError(f"expect_signal: want is a number (decoded values are) or a predicate, not "
                             f"{want!r}; a value table's labels are {msg.name}.signals.{name}.labels")
         test = want if callable(want) else (lambda v: v == want)
@@ -687,13 +693,13 @@ class Channel(Bus):
             self._messages, self._messages_run = Messages(rows), run
             return self._messages
 
-    def decode(self, frame: Frame) -> dict[str, float] | None:
+    def decode(self, frame: Frame) -> dict[str, float | bytes] | None:
         """{signal: physical value} for what `frame` says in this row's databases — the message
         of its id and kind (else, for an extended frame, one of its J1939 PGN), each signal it
         carries (a multiplexed signal its switch does not select is left out, and so is one whose
-        bits a short payload does not all hold, where a Lua script's decode() reads them as 0, and
-        one wider than 64 bits, which carries no number); None for a frame of no message, or a
-        remote frame."""
+        bits a short payload does not all hold, where a Lua script's decode() reads them as 0);
+        a byte signal (Signal.kind "bytes") its bytes in payload order, and a signal wider than 64
+        bits that is not one left out; None for a frame of no message, or a remote frame."""
         got = self._decode(frame)
         if got is None:
             return None
@@ -717,7 +723,13 @@ class Channel(Bus):
             if rc == _lib.BB_NONE:
                 return None
             msg = msgs[m.value]
-            return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
+            out = []
+            for i, s in enumerate(msg.signals):
+                v = values[i] if active[i] else None
+                if v is not None and s.kind == "bytes":
+                    v = _lib.bytes_of(lib.bb_decode_bytes, self._index, ctypes.byref(f), m.value, i)
+                out.append((s, v))
+            return msg, out
 
     def j1939(self) -> J1939Listener:
         """This channel's J1939 reading (J1939Listener): multi-packet messages rejoined from the
@@ -923,6 +935,10 @@ class Signals(Named["Signal"]):
     _noun = "signal"
 
 
+# bb.h's enum bb_signal_kind, as Signal.kind reads it
+_SIGNAL_KINDS = {0: "number", 1: "bytes", 2: "none"}
+
+
 class Signal:
     """A signal of a message, as its database defines it. physical = raw * factor + offset, the
     raw value two's complement where `signed`; `byte_order` "little" (Intel) or "big" (Motorola),
@@ -933,14 +949,18 @@ class Signal:
     cannot tell apart (past 2**53) are one entry of `labels`. `start_raw` is the raw value a
     node sends before anything sets the signal (GenSigStartValue, else its default) as the field's
     bits, `start` the same physical — both None where the database states none; a simulated node
-    and a generator send it for a signal nothing sets, encode does not."""
-    __slots__ = ("name", "start_bit", "length", "byte_order", "signed", "factor", "offset",
+    and a generator send it for a signal nothing sets, encode does not. `kind` is what it reads as: "number"
+    (1 .. 64 bits), "bytes" (wider, from a byte boundary and whole bytes long: decode and encode
+    take bytes in payload order) or "none" (wider and not whole bytes: nothing is read or
+    written)."""
+    __slots__ = ("name", "start_bit", "length", "byte_order", "kind", "signed", "factor", "offset",
                  "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels",
                  "raw_labels", "start_raw", "start")
     name: str
     start_bit: int
     length: int
     byte_order: Literal["little", "big"]
+    kind: Literal["number", "bytes", "none"]
     signed: bool
     factor: float
     offset: float
@@ -1022,6 +1042,7 @@ class Message:
                     s.unit = _lib.string(lib.bb_signal_unit, row, m, i)
                     s.start_bit, s.length = info.start_bit, info.length
                     s.byte_order = "big" if info.big_endian else "little"
+                    s.kind = _SIGNAL_KINDS.get(info.kind, "none")
                     s.signed, s.factor, s.offset = bool(info.is_signed), info.factor, info.offset
                     s.minimum, s.maximum = info.minimum, info.maximum
                     s.multiplexor, s.multiplexed = bool(info.multiplexor), bool(info.multiplexed)
@@ -1038,11 +1059,12 @@ class Message:
                 self._signals = Signals(rows)
             return self._signals
 
-    def encode(self, /, **signals: float) -> Frame:
+    def encode(self, /, **signals: float | bytes) -> Frame:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
-        have is refused, and so is a signal wider than 64 bits, which carries no number; a value
-        past what the signal's width holds is clamped to the nearer end.
+        have is refused, and so is a number for a signal wider than 64 bits, which carries none; a
+        byte signal (Signal.kind "bytes") takes bytes, length / 8 of them in payload order, and
+        only it does; a value past what the signal's width holds is clamped to the nearer end.
         fd/brs are left unset, so channel.send takes its channel's declared format. Its E2E is not stamped:
         send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
         return frame_of(self._encoded(signals))
@@ -1051,12 +1073,16 @@ class Message:
         """encode's bb_frame."""
         names = []
         values = []
+        spans = []  # (name, bytes) for the byte signals
         for k, v in signals.items():
             if "\0" in k:
                 raise ValueError(f"{self.name}: a signal name cannot carry a NUL: C would read it cut short")
+            if isinstance(v, (bytes, bytearray, memoryview)):
+                spans.append((k.encode(), bytes(v)))
+                continue
             names.append(k.encode())
             if not isinstance(v, numbers.Real):
-                raise TypeError(f"{self.name}.{k}: a signal's value is a number, not {v!r}")
+                raise TypeError(f"{self.name}.{k}: a signal's value is a number or bytes, not {v!r}")
             values.append(float(v))
         n = len(names)
         f = _lib.BbFrame()
@@ -1065,9 +1091,11 @@ class Message:
             self._live()
             _lib.check(lib.bb_encode(self.channel._index, self._index, n, (ctypes.c_char_p * n)(*names),
                                      (ctypes.c_double * n)(*values), ctypes.byref(f)))
+            for k, b in spans:
+                _lib.check(lib.bb_encode_bytes(self.channel._index, self._index, k, b, len(b), ctypes.byref(f)))
         return f
 
-    def send(self, /, *, format: FrameFormat | None = None, **signals: float) -> Frame:
+    def send(self, /, *, format: FrameFormat | None = None, **signals: float | bytes) -> Frame:
         """Encodes this message (encode), stamps the E2E its database declares — the counter its
         next of this run's sends by name on the channel, from 0, then the CRC, over what the
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns

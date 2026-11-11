@@ -626,8 +626,15 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   hold is left out (its key is `nil`), as is a multiplexed one its multiplexor does not select
   or whose multiplexor the frame does not hold — so `expect_signal` never matches a value that
   was not on the wire. A signal wider than 64 bits (a byte array in a CAN FD frame) carries no
-  number: `decode` leaves it out, and `bus.send_message` / `bus.send_message_cyclic` refuse a
-  value for it (`Key is 128 bits wide: a value is encoded into 1 .. 64`).
+  number, and `bus.send_message` / `bus.send_message_cyclic` refuse a number for it (`Key is 128
+  bits wide: a value is encoded into 1 .. 64`). One that starts on a byte boundary (Intel: its
+  start bit on a byte's bit 0; Motorola: on a byte's bit 7) and is whole bytes long is a **byte
+  signal** (`dbc.signal(...).kind == "bytes"`): `decode` gives it as a string of its bytes in
+  payload order (with `as` `"physical"` or `"raw"`; `"label"` leaves it out), and
+  `bus.send_message` takes such a string for it — exactly `length / 8` bytes, a string for any
+  other wide signal refused (`bus.send_message_cyclic` does not take one: its signals are
+  numbers, a byte signal going out as zeros). `decode` leaves out a wide signal that is not a
+  byte signal (`kind == "none"`).
 - `as` picks what `decode` reports for each signal the frame carries: `"physical"` (the
   default: raw × factor + offset), `"raw"` (the field's bits as a Lua integer, two's complement
   for a signed signal — the key `raw_labels` is keyed by) or `"label"` (the value table's text
@@ -760,6 +767,7 @@ A signal is:
 | `name`, `unit` | as the DBC writes them (`unit` `""` where it states none) |
 | `start_bit`, `length` | the DBC's numbering: the LSB for `"little"`, the MSB for `"big"` |
 | `byte_order` | `"little"` (Intel) or `"big"` (Motorola) |
+| `kind` | what it reads as: `"number"` (1 .. 64 bits), `"bytes"` (wider, from a byte boundary and whole bytes long: a string of its bytes in `decode` and `bus.send_message`) or `"none"` (wider and not whole bytes: nothing is read or written) |
 | `signed` | the raw value is two's complement |
 | `factor`, `offset` | physical = raw × factor + offset |
 | `minimum`, `maximum` | the DBC's range, both `0` where it states none; nothing applies it |

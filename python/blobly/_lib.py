@@ -182,7 +182,7 @@ class BbSignal(ctypes.Structure):
     _fields_ = [("start_bit", ctypes.c_int32), ("length", ctypes.c_int32),
                 ("big_endian", ctypes.c_uint8), ("is_signed", ctypes.c_uint8),
                 ("multiplexor", ctypes.c_uint8), ("multiplexed", ctypes.c_uint8),
-                ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32),
+                ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32), ("kind", ctypes.c_uint8),
                 ("factor", ctypes.c_double), ("offset", ctypes.c_double),
                 ("minimum", ctypes.c_double), ("maximum", ctypes.c_double),
                 ("start_raw", ctypes.c_uint64), ("start", ctypes.c_double),
@@ -545,6 +545,8 @@ def _declare(lib):
                              c_int], c_int),
         "bb_encode": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbFrame)], c_int),
         "bb_decode": ([c_int, P(BbFrame), P(c_int), P(ctypes.c_double), P(ctypes.c_uint8), c_int], c_int),
+        "bb_encode_bytes": ([c_int, c_int, c_char_p, c_char_p, c_int, P(BbFrame)], c_int),
+        "bb_decode_bytes": ([c_int, P(BbFrame), c_int, c_int, c_char_p, c_int], c_int),
         # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
         "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
         "bb_uds_close": ([c_int], c_int),

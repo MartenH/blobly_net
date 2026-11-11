@@ -2016,27 +2016,10 @@ fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off 
 		// would be a negative shift. Reported and left out, before its name is claimed (rounds
 		// 33, 40); wider than 64 has its own line below
 		length := int(r.int_of(isig, 'LENGTH', isig_path) or { continue })
-		if length > scalar_bits {
-			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
-			// a wider signal would lose its top bits in silence. Reported and left out — BEFORE
-			// its name is claimed, or a supported signal of the same name behind it is renamed
-			// for a collision with a signal the database does not contain (round 19)
-			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
-			continue
-		}
 		// read as 0 for want of a number, the signal landed at the PDU's first bit over whatever
 		// sits there; negative, it indexed below the payload (rounds 35, 37, 40)
 		in_pdu := int(r.int_of(m, 'START-POSITION', isig_path) or { continue })
 		start := in_pdu + pdu_off
-		if child(m, 'UPDATE-BIT-POSITION') != none {
-			// a receiver may treat the signal as not updated while the bit is clear, and a
-			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
-			if ubit := int_in(m, 'UPDATE-BIT-POSITION') {
-				r.report.notes << '${isig_path}: declares an update bit at bit ${ubit + pdu_off}; not modelled, a simulated frame leaves it clear'
-			} else {
-				r.report.notes << '${isig_path}: ${err.msg()}; the update bit is not modelled either way'
-			}
-		}
 		packing := child_text(m, 'PACKING-BYTE-ORDER').trim_space()
 		if packing == '' && child(m, 'PACKING-BYTE-ORDER') != none {
 			// present and EMPTY is a value the table refused, and said (self-review of #280)
@@ -2060,8 +2043,31 @@ fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off 
 		} else {
 			ByteOrder.little_endian
 		}
-		opaque := packing == 'OPAQUE'
-		if opaque {
+		// wider than the scalar model: read as bytes where it starts on a byte boundary and is
+		// whole bytes long (Signal.kind), else reported and left out — BEFORE its name is claimed,
+		// or a supported signal of the same name behind it is renamed for a collision with a
+		// signal the database does not contain (round 19)
+		wide := length > scalar_bits
+		if wide && !Signal{
+			start_bit:  start
+			length:     length
+			byte_order: order
+		}.is_bytes() {
+			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model and not whole bytes from a byte boundary; not read'
+			continue
+		}
+		if child(m, 'UPDATE-BIT-POSITION') != none {
+			// a receiver may treat the signal as not updated while the bit is clear, and a
+			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
+			if ubit := int_in(m, 'UPDATE-BIT-POSITION') {
+				r.report.notes << '${isig_path}: declares an update bit at bit ${ubit + pdu_off}; not modelled, a simulated frame leaves it clear'
+			} else {
+				r.report.notes << '${isig_path}: ${err.msg()}; the update bit is not modelled either way'
+			}
+		}
+		// a byte signal carries bytes, not a quantity: no compu method, unit or range, as OPAQUE
+		opaque := packing == 'OPAQUE' || wide
+		if opaque && !wide {
 			// a byte array, not a number: read as a little-endian integer the bytes round-trip
 			// exactly, but the value has no numeric meaning and a factor or a range on it
 			// would be fiction — said, so nobody scales it; and a COMPU-METHOD or DATA-CONSTR
@@ -2101,7 +2107,9 @@ fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off 
 		r.note_variants(isig, isig_path)
 		if bt, _ := r.deref(props, 'BASE-TYPE-REF', isig_path) {
 			enc := first_text(bt, 'BASE-TYPE-ENCODING')
-			if enc == '2C' {
+			if wide {
+				// a byte signal is its bytes, whatever encoding they hold
+			} else if enc == '2C' {
 				is_signed = true
 			} else if enc == '1C' || enc == 'SM' {
 				// one's complement and sign-magnitude are signed, but the model decodes

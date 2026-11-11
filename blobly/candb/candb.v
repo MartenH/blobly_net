@@ -342,14 +342,91 @@ pub fn (s Signal) scalar_refusal() string {
 	return '${s.name} is ${s.length} bits wide: a value is encoded into 1 .. ${scalar_bits}'
 }
 
-// scalar_notes says each signal wider than scalar_bits, one line each: a load note, since such a
-// signal loads but carries no number to decode or encode.
+// SignalKind is what a signal is read and written as.
+pub enum SignalKind {
+	number  // 1 .. scalar_bits wide: a raw value, physical by factor and offset
+	bytes   // wider, starting on a byte boundary and whole bytes long: bytes in payload order
+	nothing // wider and not whole bytes from a byte boundary: nothing is read or written
+}
+
+// name is the kind as a script reads it: number, bytes or none.
+pub fn (k SignalKind) name() string {
+	return match k {
+		.number { 'number' }
+		.bytes { 'bytes' }
+		.nothing { 'none' }
+	}
+}
+
+// kind is what the signal is read and written as. A byte signal's bytes are payload bytes
+// start_bit/8 .. start_bit/8 + length/8 - 1: an Intel one starts at a byte's bit 0 (start_bit % 8 ==
+// 0), a Motorola one at a byte's bit 7 (start_bit % 8 == 7, its most significant bit), and either
+// way its bits run through whole bytes in payload order.
+pub fn (s Signal) kind() SignalKind {
+	if s.is_scalar() {
+		return .number
+	}
+	edge := if s.byte_order == .little_endian { 0 } else { 7 }
+	if s.length > scalar_bits && s.length % 8 == 0 && s.start_bit >= 0 && s.start_bit % 8 == edge {
+		return .bytes
+	}
+	return .nothing
+}
+
+// is_bytes is whether the signal is read and written as bytes (kind).
+pub fn (s Signal) is_bytes() bool {
+	return s.kind() == .bytes
+}
+
+// bytes_refusal is why the signal takes no bytes, '' when it does.
+pub fn (s Signal) bytes_refusal() string {
+	return match s.kind() {
+		.bytes { '' }
+		.number { '${s.name} is a number (${s.length} bits), not bytes' }
+		.nothing { '${s.name} is ${s.length} bits wide from bit ${s.start_bit}: bytes are read from a signal past ${scalar_bits} bits that starts on a byte boundary and is whole bytes long' }
+	}
+}
+
+// bytes_value is a byte signal's bytes in `data`, in payload order: refused for a signal that is
+// not one (bytes_refusal), or a payload that does not hold it whole.
+pub fn (s Signal) bytes_value(data []u8) ![]u8 {
+	at := s.byte_span(data.len)!
+	return data[at..at + s.length / 8].clone()
+}
+
+// set_bytes writes `b`, in payload order, into a byte signal of `data`: refused for a signal that
+// is not one, `b` not length/8 bytes, or a payload that does not hold it whole.
+pub fn (s Signal) set_bytes(mut data []u8, b []u8) ! {
+	at := s.byte_span(data.len)!
+	if b.len != s.length / 8 {
+		return error('${s.name} takes ${s.length / 8} bytes, not ${b.len}')
+	}
+	for i, v in b {
+		data[at + i] = v
+	}
+}
+
+// byte_span is the first payload byte of a byte signal a payload of `len` bytes holds whole.
+fn (s Signal) byte_span(len int) !int {
+	why := s.bytes_refusal()
+	if why != '' {
+		return error(why)
+	}
+	at := s.start_bit / 8
+	if !s.fits(len) {
+		return error('${s.name} is payload bytes ${at} .. ${at + s.length / 8 - 1}, past a payload of ${len}')
+	}
+	return at
+}
+
+// scalar_notes says each signal wider than scalar_bits that is not a byte signal (kind), one line
+// each: a load note, since such a signal loads but carries nothing to decode or encode.
 pub fn (db Database) scalar_notes() []string {
 	mut out := []string{}
 	for m in db.messages {
 		for s in m.signals {
-			if s.length > scalar_bits {
-				out << '${m.name}: signal ${s.name} is ${s.length} bits wide, past the ${scalar_bits}-bit scalar model — decode leaves it out and encode refuses it'
+			if s.kind() == .nothing && s.length > scalar_bits {
+				out << '${m.name}: signal ${s.name} is ${s.length} bits wide, past the ${scalar_bits}-bit scalar model and not whole bytes from a byte boundary — decode leaves it out and encode refuses it'
 			}
 		}
 	}
@@ -557,6 +634,29 @@ pub fn (m Message) carried(data []u8) []bool {
 	return out
 }
 
+// carried_bytes is carried's answer for the byte signals (Signal.is_bytes): which of the
+// message's signals `data` carries as bytes, by the same rule of payload length and switch.
+pub fn (m Message) carried_bytes(data []u8) []bool {
+	sw := m.switch_in(data)
+	mut out := []bool{len: m.signals.len}
+	for i, s in m.signals {
+		out[i] = sw.selects_bytes(s, data.len)
+	}
+	return out
+}
+
+// byte_signals is carried_bytes' answer as the signals: the byte signals `data` carries.
+pub fn (m Message) byte_signals(data []u8) []Signal {
+	on := m.carried_bytes(data)
+	mut out := []Signal{}
+	for i, s in m.signals {
+		if on[i] {
+			out << s
+		}
+	}
+	return out
+}
+
 // holds is whether a payload of `len` bytes holds `s` whole, and the switch that selects it when it
 // is multiplexed: what a payload must hold for `s` to be carried, whichever branch it selects.
 pub fn (m Message) holds(s Signal, len int) bool {
@@ -618,9 +718,19 @@ fn read_switch(present bool, mux Signal, data []u8) MuxSwitch {
 }
 
 // selects is whether a payload of `len` bytes with this switch carries `s` — a number of it: a
-// signal wider than scalar_bits is never carried.
+// signal wider than scalar_bits is never carried as one.
 fn (sw MuxSwitch) selects(s Signal, len int) bool {
-	if !s.fits(len) || !s.is_scalar() {
+	return s.is_scalar() && sw.holds_selected(s, len)
+}
+
+// selects_bytes is whether a payload of `len` bytes with this switch carries byte signal `s`.
+fn (sw MuxSwitch) selects_bytes(s Signal, len int) bool {
+	return s.is_bytes() && sw.holds_selected(s, len)
+}
+
+// holds_selected is whether the payload holds `s` whole and this switch selects it.
+fn (sw MuxSwitch) holds_selected(s Signal, len int) bool {
+	if !s.fits(len) {
 		return false
 	}
 	return !s.is_multiplexed || !sw.present || (sw.held && u64(s.multiplexor_value) == sw.value)
