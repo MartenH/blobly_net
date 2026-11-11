@@ -405,6 +405,7 @@ fn (mut app App) add_generator() {
 		tgt:      iface
 		chan:     cname
 		chan_idx: if app.chans.len > 0 { 0 } else { -1 }
+		rows:     if app.chans.len > 0 { [0] } else { []int{} }
 		sender:   project.Sender{
 			name:    'New generator'
 			id:      0x100
@@ -511,6 +512,18 @@ fn (mut app App) sync_senders_into_proj() {
 // bus B never resolves a same-named message from bus A's database.
 fn (app &App) dbs_for(iface string) []candb.Database {
 	return app.dbs_by_iface[iface] or { [] }
+}
+
+// gen_dbs is what generator `sr`'s frame is built from: its target rows' databases, each with its
+// row's fill (dbs_by_row), as the headless runner builds it.
+fn (app &App) gen_dbs(sr SenderRT) []candb.Database {
+	mut out := []candb.Database{}
+	for r in sr.rows {
+		if r < app.dbs_by_row.len {
+			out << app.dbs_by_row[r]
+		}
+	}
+	return out
 }
 
 // message_names_for lists the DBC message names on `iface` (deduplicated, load order) — the
@@ -961,6 +974,7 @@ fn (mut app App) fire_index(i int) {
 	tgt := app.senders[i].tgt
 	own := app.senders[i].chan
 	own_row := app.senders[i].chan_idx
+	dbs := app.gen_dbs(app.senders[i])
 	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
@@ -979,7 +993,7 @@ fn (mut app App) fire_index(i int) {
 	// resolved on the generator's own target bus (not globally), by the builders the headless
 	// runner's cyclic senders use too, which state the generator's format (or its message's)
 	frame := if s.message != '' {
-		sim.sender_message_frame(s, app.dbs_for(tgt), n, el) or {
+		sim.sender_message_frame(s, dbs, n, el) or {
 			app.notify('generator ${s.name}: ${err.msg()}')
 			return
 		}
@@ -990,7 +1004,7 @@ fn (mut app App) fire_index(i int) {
 		}
 	}
 	// a J1939 message past eight bytes on a classic row is a BAM, paced by gen_loop
-	declared := s.message != '' && sim.sender_j1939(s, app.dbs_for(tgt))
+	declared := s.message != '' && sim.sender_j1939(s, dbs)
 	frames := j1939.message_frames(frame, declared, transport.framed_for_wire(tgt, transport.CanFrame{
 		...frame
 		row: own

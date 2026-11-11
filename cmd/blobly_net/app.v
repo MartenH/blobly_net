@@ -208,6 +208,9 @@ mut:
 	run_workers  int
 	tool_readers int
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
+	// each row's databases by row index, carrying the row's `fill:` (project.Channel.row_db):
+	// what a generator's frame is built from, over its target rows (SenderRT.rows)
+	dbs_by_row [][]candb.Database
 	manifest     telem.Manifest
 	has_manifest bool
 	manifest_ref string // the `manifest:` value `manifest` was loaded from — names the trace target's channel
@@ -749,7 +752,10 @@ mut:
 	// wire): the Generators panel shows it beside the chips, which then light every row it
 	// could be (rowrule.chip_lit)
 	bus_note string
-	sender   project.Sender
+	// the rows whose databases its frame is built from (project.sender_target_rows), as the
+	// headless runner's: its own row alone, the named rows, or every row on a named wire
+	rows   []int
+	sender project.Sender
 }
 
 // target is the interface this generator transmits on — the RESOLVED answer, not a re-derivation
@@ -1372,6 +1378,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
+	app.dbs_by_row = [][]candb.Database{len: proj.channels.len}
 	old_wires := app.wire_dbs.keys()
 	app.wire_dbs = map[string][]int{} // indices into the array just emptied; rebuilt below
 	// selection indices go stale across a rebuild; the dragged dividers are the operator's and
@@ -1439,7 +1446,8 @@ fn (mut app App) rebuild_from_proj() {
 			// another
 			prev := app.dbs_paths.index(rp)
 			if prev >= 0 {
-				app.dbs_by_iface[ch.iface] << ch.row_db(app.dbs[prev])
+				app.dbs_by_iface[ch.iface] << app.dbs[prev]
+				app.dbs_by_row[ci] << ch.row_db(app.dbs[prev])
 				continue
 			}
 			if rp in dbc_keep {
@@ -1447,11 +1455,13 @@ fn (mut app App) rebuild_from_proj() {
 				// is the truth, not the disk copy
 				app.dbs << dbc_keep[rp]
 				app.dbs_paths << rp
-				app.dbs_by_iface[ch.iface] << ch.row_db(dbc_keep[rp])
+				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
+				app.dbs_by_row[ci] << ch.row_db(dbc_keep[rp])
 			} else if loaded := candb.open_database(rp) {
 				app.dbs << loaded.db
 				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
-				app.dbs_by_iface[ch.iface] << ch.row_db(loaded.db) // scoped to this channel (generator picker)
+				app.dbs_by_iface[ch.iface] << loaded.db // scoped to this channel (generator picker)
+				app.dbs_by_row[ci] << ch.row_db(loaded.db)
 				for n in loaded.notes {
 					app.elog('dbc ${n}') // the reader's honesty report: never dropped in silence
 				}
@@ -1727,6 +1737,8 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	app.senders[i].tgt = r.iface
 	app.senders[i].chan = r.chan
 	app.senders[i].chan_idx = sender_row(r, app.senders[i].own_idx, own, rows)
+	app.senders[i].rows = project.sender_target_rows(r, app.senders[i].chan_idx, rows).filter(it >= 0
+		&& it < rows.len)
 	app.senders[i].bus_note = if r.kind == .ambiguous { r.note } else { '' }
 }
 

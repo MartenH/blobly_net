@@ -1661,8 +1661,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 						// CARRIED, NOT APPLIED, like E2E below — and with less behind it: the
 						// native simulation has no SecOC stamping at all, so a simulated sender
 						// of this frame puts its authentic bytes on the wire with freshness and
-						// MAC as 0, which a conforming receiver rejects (round 18)
-						r.report.notes << '${fname}: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0'
+						// MAC as the frame's fill, which a conforming receiver rejects (round 18)
+						r.report.notes << '${fname}: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)'
 					}
 				}
 			}
@@ -1689,7 +1689,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				// and protection; read by its table row, so an overflowing pattern is said there (#280)
 				if ubp_v := int_in(sig_pdu, 'UNUSED-BIT-PATTERN') {
 					if ubp_v > 0xFF {
-						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not a byte; not applied, the simulated ECUs fill unmapped bits with 0'
+						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not a byte; not applied, so the unmapped bits take the row\'s fill, else 0'
 					} else if first_pdu {
 						info.fill = u8(ubp_v)
 					} else if u8(ubp_v) != info.fill {
@@ -1697,7 +1697,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					}
 				} else {
 					// what the value was, check_leaves said; the consequence is the same
-					r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not applied; the simulated ECUs fill unmapped bits with 0'
+					r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not applied, so the unmapped bits take the row\'s fill, else 0'
 				}
 			}
 			mut pdu_rx := frame_rx.clone()

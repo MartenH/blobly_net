@@ -52,6 +52,13 @@ buses:
         fill: 0x0F
         signals:
           - { name: Mode, value: 5 }
+  - name: CAN3
+    adapter: virtual
+    address: pyfill3
+    protocol: can
+    bitrate: 500000
+    fill: 0xAA
+    databases: [demo.dbc]
 """
 
 FILLED = bytes([0xF5]) + b"\xff" * 7
@@ -66,6 +73,7 @@ def test_every_frame_built_from_the_row_takes_its_fill(tmp_path):
         assert can2.expect(0x123, 1000).data == bytes([0x05]) + b"\x0f" * 7, "a generator's own fill wins"
         assert can1.messages.Status.encode(Mode=5).data == FILLED
         assert can2.messages.Status.encode(Mode=5).data == bytes([5]) + bytes(7), "no fill: as before"
-        with can1.messages.Status.send_cyclic(20, Mode=5):
-            # the generator's frames and the sender's are alike; both are the row's fill
-            assert all(can1.expect(0x123, 1000).data == FILLED for _ in range(3))
+        can3 = net.channels.CAN3
+        # on a row no generator sends on, so every frame is the background sender's
+        with can3.messages.Status.send_cyclic(20, Mode=5):
+            assert all(can3.expect(0x123, 1000).data == bytes([0xA5]) + b"\xaa" * 7 for _ in range(3))

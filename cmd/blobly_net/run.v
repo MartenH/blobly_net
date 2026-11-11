@@ -854,7 +854,7 @@ fn (mut app App) start() {
 	// A generator listing a signal that carries no number (wider than the scalar model): said at
 	// Start, the signal not sent.
 	for sr in app.senders {
-		for w in sim.sender_signal_refusals(sr.sender, app.dbs_for(sr.target())) {
+		for w in sim.sender_signal_refusals(sr.sender, app.gen_dbs(sr)) {
 			app.notify(if sr.chan != '' { '${sr.chan}: ${w}' } else { w })
 		}
 	}

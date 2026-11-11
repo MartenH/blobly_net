@@ -292,6 +292,10 @@ fn test_send_message_fills_the_uncovered_bits_at_the_row_fill() {
 		name:  'CAN2'
 		iface: 'inproc:UTFILL2'
 		db:    db
+	}, ChanInfo{
+		name:  'TAP'
+		iface: 'inproc:UTFILL'
+		db:    db
 	}]) or { panic(err) }
 	env.on_output = fn (s string) {}
 	defer { env.close() }
@@ -301,7 +305,15 @@ fn test_send_message_fills_the_uncovered_bits_at_the_row_fill() {
 			check.equal(f.data, string.char(0xF5, 0xFF, 0xFF, 0xFF))
 			check.equal(bus.send_message("CAN2", "Status", { Mode = 5 }).data, string.char(5, 0, 0, 0))
 		end)
+		test("send_message_cyclic fills at the row fill", function()
+			bus.recv("TAP", 0)
+			local s = bus.send_message_cyclic("CAN1", "Status", { Mode = 7 }, 10)
+			local f = bus.recv("TAP", 500)
+			while f ~= nil and f.data:byte(1) ~= 0xF7 do f = bus.recv("TAP", 500) end
+			s:stop()
+			check.equal(f.data, string.char(0xF7, 0xFF, 0xFF, 0xFF))
+		end)
 	')!
-	assert env.total() == 1
-	assert env.passed() == 1, '${env.results}'
+	assert env.total() == 2
+	assert env.passed() == 2, '${env.results}'
 }

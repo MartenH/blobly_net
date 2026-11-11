@@ -146,8 +146,9 @@ always was.
 file, its lists, the rules, policy, configuration and schema files it is merged by. A merge
 rule or a schema changed changes it where `sha256` stays the same.
 
-Nonzero `dropped`, `unresolved` or `notes` means the ARXML was read only partly; re-run the
-export to see what was left out. Nothing reads this comment back.
+Nonzero `dropped`, `unresolved` or `notes` means the ARXML was read only partly, or that the
+DBC cannot state all of it (`notes` counts a frame's fill of the bits no signal covers, its
+UNUSED-BIT-PATTERN, too); re-run the export to see what was left out. Nothing reads this comment back.
 
 ## Read, not ours
 

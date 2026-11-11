@@ -832,8 +832,10 @@ The order is a generator's own `fill:`, then its row's, then the message's own, 
 message's own is an ARXML PDU's `UNUSED-BIT-PATTERN` (a DBC has no such field): a frame mapping
 several PDUs takes the first PDU's, as it takes the first PDU's timing and protection, and the
 reader says when a later PDU states another; a pattern past `0xFF` is not a byte, said and not
-applied. A generator with `bus:` takes the fill of the row whose databases its message is resolved
-from.
+applied. A generator without `bus:` takes its own row's fill, even where another row shares its
+wire; one with `bus:` takes the fill of the row whose databases its message is resolved from.
+`arxml2dbc` cannot carry a fill into a DBC, so it names each filled frame (and counts it in the
+provenance comment's `notes`).
 
 The fill goes in **before protection**, so an E2E checksum over the payload covers the filled
 bytes, as the real sender's does. A signal is "covering" only in a frame that carries it: in a

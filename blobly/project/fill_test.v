@@ -61,3 +61,29 @@ fn test_fill_order_is_the_generator_then_the_row_then_the_message() {
 	assert own.sent_message(row.row_db(db), m).fill == 0x00
 	assert db.fill == none, 'the database the trace reads is not changed'
 }
+
+// a generator with no bus: is built from its own row's databases, never a sibling's on its wire:
+// the row the GUI and the headless runner both take its fill from (sender_target_rows)
+fn test_a_generator_takes_its_own_rows_fill_not_its_wires() {
+	db := candb.Database{
+		messages: [candb.Message{
+			name: 'M'
+			dlc:  1
+		}]
+	}
+	chs := [Channel{
+		name:  'A'
+		iface: 'inproc:FILLWIRE'
+		fill:  u8(0xFF)
+	}, Channel{
+		name:  'B'
+		iface: 'inproc:FILLWIRE'
+	}]
+	sb := resolve_sender_bus('', chs[1], chs)
+	rows := sender_target_rows(sb, 1, chs)
+	assert rows == [1]
+	assert Sender{}.sent_message(chs[rows[0]].row_db(db), db.messages[0]).fill == 0
+	// a generator naming the wire is built from every row on it, the first defining row's fill
+	wire := resolve_sender_bus('inproc:FILLWIRE', chs[1], chs)
+	assert sender_target_rows(wire, 1, chs) == [0, 1]
+}
