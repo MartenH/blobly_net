@@ -179,3 +179,63 @@ fn test_a_change_send_with_no_stated_spacing_keeps_the_change_gap() {
 	assert g.len > 0
 	assert g.all(it >= f64(change_gap_ms) - 1e-6)
 }
+
+fn test_a_counter_on_a_mixed_message_adds_no_change_sends() {
+	// mixed, cycle 100, no delay and no repetitions: a counter moves with each cyclic send
+	db := candb.parse_dbc(send_type_dbc.replace('BA_ "GenMsgSendType" BO_ 257 1;', 'BA_ "GenMsgSendType" BO_ 257 2;').replace('BA_ "GenMsgDelayTime" BO_ 257 30;',
+		'').replace('BA_ "GenMsgNrOfRepetition" BO_ 257 2;', ''))!
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'Body', {
+			'Value': gen_counter(0, 1, 256)
+		}, [])]
+	}
+	sent := frames_by(mut e, grid(350, 5)).filter(it[1] == '257').map(it[0])
+	assert sent == ['0.0', '100.0', '200.0', '300.0']
+}
+
+fn test_an_event_message_of_constants_and_counters_is_never_sent() {
+	db := candb.parse_dbc(send_type_dbc)!
+	for g in [gen_const(5), gen_counter(0, 1, 256)] {
+		ecu := build_configured_ecu(db, 'Body', {
+			'Value': g
+		}, [])
+		assert !ecu.messages.filter(it.msg.name == 'Event')[0].sends()
+		assert unsent_note(ecu).contains('(Event, Quiet)')
+	}
+	ecu := build_configured_ecu(db, 'Body', {
+		'Value': gen_sine(100, 50, 1, 0)
+	}, [])
+	assert ecu.messages.filter(it.msg.name == 'Event')[0].sends()
+}
+
+fn test_every_cyclic_message_is_due_by_its_start_delay() {
+	db := candb.parse_dbc(send_type_dbc)!
+	e := Engine{
+		ecus: [ecu_from_dbc(db, 'Body')]
+	}
+	assert e.all_due_by_ms() == 250.0
+}
+
+fn test_a_rebuild_mid_burst_keeps_the_burst() {
+	db := candb.parse_dbc(send_type_dbc)!
+	mk := fn [db] () Engine {
+		return Engine{
+			ecus: [build_configured_ecu(db, 'Body', {
+				'Value': gen_stepmod(0.2, 100, 0)
+			}, [])]
+		}
+	}
+	mut e := mk()
+	mut sent := frames_by(mut e, grid(215, 5)).filter(it[1] == '257').map(it[0])
+	// rebuilt after the first of 1 + 2 sends, as the GUI rebuilds when another ECU is toggled
+	mut carry := Carry{}
+	e.save_state(mut carry)
+	mut fresh := mk()
+	fresh.restore_state(carry)
+	mut rest := []f64{}
+	for t := 220.0; t <= 300.0; t += 5 {
+		rest << t
+	}
+	sent << frames_by(mut fresh, rest).filter(it[1] == '257').map(it[0])
+	assert sent == ['200.0', '230.0', '260.0']
+}

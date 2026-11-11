@@ -70,9 +70,14 @@ fn main() {
 		for cfg in ch.all_nodes() {
 			engine.ecus << build_node(db, cfg)
 		}
-		// pump a few rounds of due_frames across a simulated 200ms
+		// pump a few rounds of due_frames across a simulated 200ms, and on to the latest first
+		// send a start delay puts past it
 		mut count := 0
-		for t in [f64(0), 10, 20, 50, 100, 200] {
+		mut times := [f64(0), 10, 20, 50, 100, 200]
+		if engine.all_due_by_ms() > 200 {
+			times << engine.all_due_by_ms()
+		}
+		for t in times {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
@@ -129,10 +134,10 @@ fn main() {
 			}
 		}
 		if cyclic > 0 && count == 0 {
-			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames in 200ms')
+			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames by ${int(times.last())}ms')
 			failed++
 		}
-		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_in_200ms=${count}')
+		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_by_${int(times.last())}ms=${count}')
 	}
 	if failed > 0 {
 		eprintln('FAILED: ${failed} channel(s) loaded nothing or emitted nothing')

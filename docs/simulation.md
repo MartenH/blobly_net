@@ -124,7 +124,8 @@ which keeps its cycle as well and is held back by the delay where a change send 
 where the file states neither a fast cycle nor a delay, change sends are 10 ms apart
 (`sim.change_gap_ms`), so a generator that changes all the time is not sent at the rate the
 simulation loop runs. The values at the start
-are not a change, and a `counter` generator, which moves with each send, does not trigger one. A
+are not a change: only a generator that moves with time (`sine`, `sawtooth`, `stepmod`) starts one,
+since a `const` never changes and a `counter` moves only with a send. A
 message with no cycle and nothing to change it is **not** transmitted, and the node's line in the
 Simulation panel (and the headless runner's output) says how many such messages it has. Send
 those from the Generators panel, or drive them from a script; if a rest-bus test needs event

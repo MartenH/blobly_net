@@ -283,15 +283,15 @@ fn test_freeze_repeats_immediately_after_normal_traffic() {
 // A rebuild mid-freeze kept only the NEXT counter, so the frozen value was lost and the frame
 // after recovery repeated it.
 fn test_freeze_survives_an_engine_rebuild() {
-	mut cache := map[string]int{}
+	mut cache := Carry{}
 	mut e := protected_engine(Fault{ kind: .freeze_ctr })
 	e.due_frames(0)
 	e.due_frames(10)
 	frozen := e.ecus[0].messages[0].last_e2e
-	e.save_counters(mut cache)
+	e.save_state(mut cache)
 
 	mut fresh := protected_engine(Fault{})
-	fresh.restore_counters(cache)
+	fresh.restore_state(cache)
 	f := fresh.due_frames(20)[0].data[0] & 0x0F
 	assert f == u8((frozen + 1) % 16), 'after a rebuild, recovery repeated the frozen counter'
 }
