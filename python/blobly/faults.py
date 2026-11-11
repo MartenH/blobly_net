@@ -1,7 +1,8 @@
 """faults — making a started project's simulated ECUs misbehave on purpose, as Lua's sim.fault does:
 a message dropped, its checksum broken, its E2E counter frozen, or a signal forced past its declared
-range. Which faults may be armed is the engine's rule (sim.FaultTarget.arm, the one Lua asks):
-this module carries the call and types the refusal."""
+range; and holding one signal of a simulated message at a value, as Lua's sim.set does. Which
+faults may be armed and which values set is the engine's rule (sim.FaultTarget, the one Lua asks):
+this module carries the calls and types the refusals."""
 import enum
 import math
 import numbers
@@ -29,6 +30,13 @@ class FaultRefused(Refused):
     counter, out_of_range where no signal can carry a value outside its range. Nothing was armed."""
 
 
+class SignalRefused(Refused):
+    """The engine refused a signal value that could not reach the wire: a DoIP or SOME/IP channel,
+    a node not simulated on that channel, a message the node does not send, a signal the message
+    does not have, its E2E counter or checksum (protection overwrites it), a signal past the
+    payload, or a value past what the signal's width holds. Nothing was set."""
+
+
 class Faults:
     """Fault injection on the project's run, for Project (it supplies _resolve). The faults are the
     process's: a start clears them, and otherwise they last until cleared or their time runs
@@ -54,21 +62,34 @@ class Faults:
         """Lifts every fault."""
         _lib.check(_lib.lib().bb_sim_clear_faults())
 
+    def set_signal(self, channel: "Channel | str", node: str, message: "Message | str",
+                   signal: "Signal | str", value: float) -> None:
+        """Holds `signal` (a Signal or its name) of the simulated `node`'s `message` on `channel` at
+        the physical `value` from its next frame, until changed or cleared: over the node's own
+        source for that signal and under its E2E protection, so the checksum covers it; the other
+        signals, the cycle and the alive counter stay as they are. Keyed by the message's name, as
+        a fault is. Raises SignalRefused where the value could not reach the wire, and
+        BloblyError (code -3) when the project is not started."""
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError(f"value must be a number, not {value!r}")
+        self._signal("set", channel, node, message, signal, float(value))
+
+    def clear_signal(self, channel: "Channel | str", node: str, message: "Message | str",
+                     signal: "Signal | str | None" = None) -> None:
+        """Lets go of the value set on `signal` of the simulated `node`'s `message` on `channel`
+        (None: every signal of the message), which goes out from the project's source again."""
+        self._signal("clear", channel, node, message, signal, 0.0)
+
+    def clear_signals(self) -> None:
+        """Lets go of every value set. A start does too; clear_faults leaves them."""
+        _lib.check(_lib.lib().bb_sim_clear_signals())
+
     def _arm(self, channel, node, message, kind, ms, signal):
-        from .project import Message, Signal
+        from .project import Signal
         lib = _lib.lib()
         with _lib.state_lock:
             c = self._resolve(channel)
-            if isinstance(message, Message):
-                if message.channel is not c:
-                    raise ValueError(f"{message.name} is a message of {message.channel.name}, not of {c.name}")
-                message._live()  # a Message of an earlier run its database no longer has refuses
-                # the fault table keys a message by name: one of a shared name would reach them all
-                if sum(m.name == message.name for m in c.messages) > 1:
-                    raise ValueError(f"{c.name} has more than one message named {message.name}, and a "
-                                     "fault is keyed by name, so it would reach every one; pass the "
-                                     "name to mean all of them")
-                message = message.name
+            message = _message_name(c, message, "fault")
             if isinstance(signal, Signal):
                 signal = signal.name
             rc = lib.bb_sim_fault(c._index, _text("node", node), _text("message", message),
@@ -76,6 +97,40 @@ class Faults:
             if rc == _lib.BB_ERR:
                 raise FaultRefused(_lib.text(lib.bb_last_error()), rc)
             _lib.check(rc)
+
+    def _signal(self, what, channel, node, message, signal, value):
+        from .project import Signal
+        lib = _lib.lib()
+        with _lib.state_lock:
+            c = self._resolve(channel)
+            message = _message_name(c, message, "signal value")
+            if isinstance(signal, Signal):
+                signal = signal.name
+            node_b, message_b = _text("node", node), _text("message", message)
+            if what == "set":
+                rc = lib.bb_sim_set(c._index, node_b, message_b, _text("signal", signal), value)
+            else:
+                rc = lib.bb_sim_clear(c._index, node_b, message_b,
+                                      None if signal is None else _text("signal", signal))
+            if rc == _lib.BB_ERR:
+                raise SignalRefused(_lib.text(lib.bb_last_error()), rc)
+            _lib.check(rc)
+
+
+def _message_name(c, message, what):
+    """`message` as the engine's tables key it: its name. A Message must be of channel `c` and of
+    this run, and its name not shared, since the name would reach every message of it."""
+    from .project import Message
+    if not isinstance(message, Message):
+        return message
+    if message.channel is not c:
+        raise ValueError(f"{message.name} is a message of {message.channel.name}, not of {c.name}")
+    message._live()  # a Message of an earlier run its database no longer has refuses
+    if sum(m.name == message.name for m in c.messages) > 1:
+        raise ValueError(f"{c.name} has more than one message named {message.name}, and a "
+                         f"{what} is keyed by name, so it would reach every one; pass the "
+                         "name to mean all of them")
+    return message.name
 
 
 def _text(name, v):

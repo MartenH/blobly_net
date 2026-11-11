@@ -388,6 +388,9 @@ fn (mut env Env) register_all() {
 	env.st.register('__log', l_log)
 	env.st.register('__sleep', l_sleep)
 	env.st.register('__sim_fault', l_sim_fault)
+	env.st.register('__sim_set', l_sim_set)
+	env.st.register('__sim_clear', l_sim_clear)
+	env.st.register('__sim_clear_signals', l_sim_clear_signals)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
@@ -512,6 +515,35 @@ fn l_sim_fault(l lua.State) i32 {
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	env.chans[ci].fault_target().arm(l.arg_str(2), l.arg_str(3), l.arg_str(4), int(ms_up(l, 5)),
 		l.arg_str(6)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+// l_sim_set holds a signal of a simulated message at a value: sim_set(channel, node, message,
+// signal, value). Which values may be set is sim.FaultTarget.set_signal's to say.
+fn l_sim_set(l lua.State) i32 {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail('sim.set: ${err.msg()}') }
+	if !l.arg_is_number(5) {
+		return l.fail('sim.set: the value is a number, not ${l.arg_given(5)}')
+	}
+	env.chans[ci].fault_target().set_signal(l.arg_str(2), l.arg_str(3), l.arg_str(4),
+		l.arg_num(5)) or { return l.fail('sim.set: ${err.msg()}') }
+	return 0
+}
+
+// l_sim_clear lets go of a value set: sim_clear(channel, node, message, signal), '' every signal
+// of the message.
+fn l_sim_clear(l lua.State) i32 {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail('sim.clear: ${err.msg()}') }
+	env.chans[ci].fault_target().clear_signal(l.arg_str(2), l.arg_str(3), l.arg_str(4)) or {
+		return l.fail('sim.clear: ${err.msg()}')
+	}
+	return 0
+}
+
+fn l_sim_clear_signals(l lua.State) i32 {
+	sim.clear_signal_values()
 	return 0
 }
 

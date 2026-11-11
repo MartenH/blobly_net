@@ -192,9 +192,16 @@ pub fn injected_fault(iface string, node string, msg string) Fault {
 	return injected.get(fault_key(iface, node, msg))
 }
 
-// clear_all drops every injected fault — used when a project is replaced, so a fault armed
-// against the old one does not silently apply to a new project that happens to reuse a name.
+// clear_all drops every injected fault and every value set on a signal (setsignal.v) — used when
+// a project is replaced or a run starts, so neither armed against the old one silently applies to
+// a new project that happens to reuse a name.
 pub fn clear_all() {
+	injected.clear()
+	clear_signal_values()
+}
+
+// clear_faults drops every injected fault, leaving the values set on signals.
+pub fn clear_faults() {
 	injected.clear()
 }
 
@@ -204,9 +211,11 @@ pub fn clear_all() {
 // re-stamped from the table every pass, so a countdown kept on the copy would be overwritten
 // with its original value each time and a timed fault would never expire. That is exactly what
 // happened — `tick` existed and nothing called it, so "drop for 500 ms" dropped forever.
+// The values set on signals are stamped with them.
 pub fn apply_injected(iface string, mut e Engine) {
 	injected.age_to(time.ticks())
 	injected.apply_to(iface, mut e)
+	set_values.apply_to(iface, mut e)
 }
 
 // FaultTable is a fault set shared between whoever injects faults and the loop that applies
