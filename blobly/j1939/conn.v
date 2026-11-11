@@ -41,6 +41,7 @@ pub enum ConnEnd {
 	timeout // an answer did not come in time; this side aborted it
 	aborted // the peer aborted it
 	stopped // this side's caller ended it; aborted
+	lost    // another sender in this process took its lane; nothing more sent
 }
 
 // ConnOut is what one step of a connection produced: frames to send now, in order, and where the
@@ -350,10 +351,16 @@ pub fn (mut r Responder) feed(f transport.CanFrame, now_ms f64) []transport.CanF
 	match id.pgn() {
 		pgn_tp_cm {
 			cm := parse_cm_of(f) or { return [] }
-			if cm.ctrl == cm_rts {
-				if _ := cm.admission(id) {
-					return []
+			if cm.ctrl == cm_bam || (cm.ctrl == cm_rts && not_admitted(cm, id)) {
+				// an announcement this side does not answer still ends the peer's transfer in
+				// progress here, as a listener beside it drops it: aborted (reason 250)
+				if c := r.conns[k] {
+					r.conns.delete(k)
+					return [abort_frame(me, id.sa, abort_other, .responder, c.pgn)]
 				}
+				return []
+			}
+			if cm.ctrl == cm_rts {
 				per := int(cm.raw[4])
 				mut c := Answering{
 					pgn:     cm.pgn
@@ -466,6 +473,13 @@ pub fn abort_target(f transport.CanFrame, sent []Originator, answered Responder)
 	return abort_targets_forward(id, cm, fwd, rev)
 }
 
+fn not_admitted(cm Cm, id Id) bool {
+	if _ := cm.admission(id) {
+		return true
+	}
+	return false
+}
+
 fn refused(cm Cm) bool {
 	if _ := cm.control_refusal() {
 		return true
@@ -537,10 +551,15 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 	mut out := o.start(mono_ms())
 	exchange: for {
 		for x in out.frames {
-			// a stop between the packets of a window ends it there, its abort sent next
-			if out.end == .open && stop != unsafe { nil } && pgn(x.id) == pgn_tp_dt && stop() {
-				out = o.stop()
-				continue exchange
+			if out.end == .open && pgn(x.id) == pgn_tp_dt {
+				// a stop between the packets of a window ends it there, its abort sent next
+				if stop != unsafe { nil } && stop() {
+					out = o.stop()
+					continue exchange
+				}
+				if !o.take_lane(time.sys_mono_now()) {
+					return o.lane_lost()
+				}
 			}
 			bus.send(x) or {
 				if o.open() {
@@ -564,7 +583,9 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 				}
 			}
 		}
-		o.take_lane(time.sys_mono_now())
+		if !o.take_lane(time.sys_mono_now()) {
+			return o.lane_lost()
+		}
 		if stop != unsafe { nil } && stop() {
 			out = o.stop()
 			continue
@@ -581,6 +602,15 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 			return error('${o.what()}: ${err.msg()}')
 		}
 		out = o.feed(fr, mono_ms())
+	}
+}
+
+// lane_lost is the end of a connection whose lane another sender took: nothing more is sent, its
+// abort included, since that sender's connection runs between the same two addresses.
+fn (o Originator) lane_lost() ConnError {
+	return ConnError{
+		end:    .lost
+		detail: '${o.what()}: another sender in this process took its lane; nothing more sent'
 	}
 }
 

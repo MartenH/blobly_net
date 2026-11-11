@@ -150,7 +150,7 @@ fn test_what_cannot_be_a_connection_is_refused() {
 }
 
 // A responder answers only an RTS to its address; a gap aborts (reason 7), a repeat (reason 8),
-// a mis-sized packet (reason 250), a stall (reason 3); a window the RTS limits takes one CTS per window.
+// a mis-sized packet or an announcement it does not answer (reason 250), a stall (reason 3); a window the RTS limits takes one CTS per window.
 fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	mut o := connection_for(prop_cfg(), '', 0)!
 	rts := o.start(0).frames[0]
@@ -173,6 +173,13 @@ fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	r.feed(rts, 8)
 	short := r.feed(transport.CanFrame{ ...packets[0], data: packets[0].data[..5].clone() }, 9)
 	assert short.len == 1 && short[0].data[..3] == [cm_abort, 250, 0xFD] && r.open() == 0
+	// and an announcement it does not answer: an RTS whose sizes disagree, a BAM to it
+	for bad in [[cm_rts, 16, 0, 9, 0xFF, 0x00, 0xEF, 0x00], [cm_bam, 16, 0, 3, 0xFF, 0x00, 0xEF,
+		0x00]] {
+		r.feed(rts, 9)
+		gone := r.feed(transport.CanFrame{ ...rts, data: bad.map(u8(it)) }, 9)
+		assert gone.len == 1 && gone[0].data[..3] == [cm_abort, 250, 0xFD] && r.open() == 0
+	}
 	r.feed(rts, 10)
 	r.feed(packets[0], 11)
 	assert r.poll(11 + conn_t1_ms).len == 0
@@ -462,4 +469,87 @@ fn test_send_connection_waits_from_the_last_packet_written() {
 		}
 	}(mut peer)
 	send_connection(mut tx, prop_cfg(), 100, unsafe { nil })!
+}
+
+// ThiefBus hands the lane of the connection from 0x21 to 0x00 to another sender as it writes the
+// first packet.
+struct ThiefBus {
+mut:
+	inner transport.Bus
+	wire  string
+}
+
+fn (mut b ThiefBus) send(f transport.CanFrame) ! {
+	b.inner.send(f)!
+	if pgn(f.id) == pgn_tp_dt && f.data[0] == 1 {
+		lock tp_lanes {
+			tp_lanes.by[conn_lane(b.wire, 0x21, 0x00)] = Lane{
+				owner: 0
+				until: time.sys_mono_now() + u64(time.second)
+			}
+		}
+	}
+}
+
+fn (mut b ThiefBus) recv(timeout_ms int) !transport.CanFrame {
+	return b.inner.recv(timeout_ms)!
+}
+
+fn (mut b ThiefBus) close() {
+	b.inner.close()
+}
+
+fn (mut b ThiefBus) health() transport.BusHealth {
+	return .unknown
+}
+
+fn (mut b ThiefBus) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn (mut b ThiefBus) reconcile_silence(_ bool) ! {}
+
+fn (mut b ThiefBus) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
+// A connection whose lane another sender takes between its packets sends nothing more.
+fn test_send_connection_stops_when_its_lane_is_taken() {
+	wire := 'inproc:J1939_CONN_THIEF'
+	// row-framed, so the connection knows its wire and so its lane
+	mut tx := transport.row_framed(transport.Bus(ThiefBus{
+		inner: transport.open(wire)!
+		wire:  wire
+	}), wire, 'row')
+	mut peer := transport.open(wire)!
+	mut spy := &Spy{
+		bus: transport.open(wire)!
+	}
+	defer {
+		tx.close()
+		peer.close()
+		spy.bus.close()
+	}
+	spawn fn (mut peer transport.Bus) {
+		mut r := Responder{
+			addresses: [u8(0x00)]
+		}
+		t0 := time.ticks()
+		for time.ticks() - t0 < 1000 {
+			f := peer.recv(10) or { continue }
+			for a in r.feed(f, f64(time.ticks())) {
+				peer.send(a) or {}
+			}
+			if pgn(f.id) == pgn_tp_dt {
+				return
+			}
+		}
+	}(mut peer)
+	send_connection(mut tx, prop_cfg(), 300, unsafe { nil }) or {
+		assert err is ConnError && (err as ConnError).end == .lost, err.msg()
+		spy.drain()
+		assert spy.packets() == 1 && spy.frames.last().data[0] == 1
+		return
+	}
+	assert false, 'lane taken'
 }
