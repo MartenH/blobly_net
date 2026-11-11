@@ -155,6 +155,10 @@ fn test_signals_read_back_unset_and_raw_data() {
 	assert raw.data.len == 8
 	gen_set_data(mut raw, 64, []u8{len: 12})!
 	assert raw.data.len == 12
+	gen_set_data(mut raw, 64, []u8{len: 9}) or {
+		assert err.msg().contains('not a CAN-FD payload size')
+	}
+	assert raw.data.len == 12, 'a length no DLC expresses was taken'
 }
 
 fn test_a_host_with_no_run_refuses_every_call() {

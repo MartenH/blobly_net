@@ -1106,8 +1106,8 @@ int bb_bus_error_counters(int h, int *tx, int *rx);
  * raw frame), so from its next frame the message's template holds it. bb_gen_data copies a raw
  * generator's payload into buf (nothing for a message's) and answers its whole length;
  * bb_gen_set_data sends `len` bytes of `data` from its next frame — refused for a message's
- * generator, and past what a frame on its wire carries (8 bytes, 64 where the row or the wire is
- * CAN-FD). A host that waits for an edit to reach the wire reads bb_generator.applied until it is
+ * generator, past what a frame on its wire carries (8 bytes, 64 where the row or the wire is
+ * CAN-FD), and past 8 bytes for a length no CAN-FD DLC expresses. A host that waits for an edit to reach the wire reads bb_generator.applied until it is
  * 1. */
 int bb_gen_count(void);                                  /* >= 0: how many */
 int bb_gen_find(const char *name);                       /* >= 0: the generator `name` names —

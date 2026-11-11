@@ -243,7 +243,7 @@ what the Generators panel lets a person do.
   template holds it again. Together they make a full restore.
 - `g.data` is a raw generator's payload (`b""` for a message's); `g.data = b"\x02\x00"` sends that
   from the next frame, up to what a frame on its wire carries (8 bytes, 64 where its row or wire
-  is CAN-FD).
+  is CAN-FD); past 8 bytes only a length a CAN-FD DLC expresses (12, 16, 20, 24, 32, 48, 64).
 - `g.applied` is true once the bus took a frame built after the last edit of what it sends
   (`set`, `source`, `unset`, `data`; a cycle change is not one), and `g.wait_applied(timeout_ms=1000)`
   waits for it — `Timeout` when it did not happen in time, as for a generator nobody fires. `sent`

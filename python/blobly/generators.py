@@ -113,7 +113,8 @@ class Generator:
     def data(self) -> bytes:
         """A raw generator's payload (b"" for a message's). Set it (bytes) to send that payload from
         the next frame: refused for a message's generator, and past what a frame on its wire
-        carries (8 bytes, 64 where its row or wire is CAN-FD)."""
+        carries (8 bytes, 64 where its row or wire is CAN-FD), or past 8 bytes of a length no
+        CAN-FD DLC expresses (12, 16, 20, 24, 32, 48 and 64 are)."""
         lib = _lib.lib()
         with _lib.state_lock:
             self._live()

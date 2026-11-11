@@ -3,6 +3,7 @@ module sim
 import math
 import blobly.candb
 import blobly.project
+import blobly.transport
 
 // gencontrol.v — a running generator controlled from a script (Lua's gen.*, Python's
 // Project.generators): what a script is told about one, the rules an edit is held to, and the
@@ -289,13 +290,17 @@ pub fn gen_unset(mut s project.Sender, signal string) ! {
 }
 
 // gen_set_data sends the payload `data` from the next frame: a raw generator's alone, of at most
-// `cap` bytes, what a frame on its wire carries.
+// `cap` bytes, what a frame on its wire carries, and past 8 bytes of a length a CAN-FD DLC
+// expresses, which every bus can send (a vendor backend refuses any other, a software bus pads it).
 pub fn gen_set_data(mut s project.Sender, cap int, data []u8) ! {
 	if s.message != '' {
 		return gen_error(.refused, 'generator "${s.name}" sends message ${s.message}: set its signals, not its bytes')
 	}
 	if data.len > cap {
 		return gen_error(.refused, 'generator "${s.name}": ${data.len} bytes, where a frame on its wire carries at most ${cap}')
+	}
+	if data.len !in transport.fd_lengths {
+		return gen_error(.refused, 'generator "${s.name}": ${data.len} bytes is not a CAN-FD payload size — a DLC expresses ${transport.fd_lengths}')
 	}
 	s.data = data.clone()
 }

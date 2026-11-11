@@ -1025,7 +1025,7 @@ enabled one); in the GUI's Script panel `gen.*` is an error, the generators bein
 | `gen.source(name, signal, src)` | the signal on a value source from the next frame: `src` is `{ type = "sine", offset = 50, amplitude = 10, freq = 1 }`, `type` one of `const`, `sine`, `sawtooth`, `counter`, `stepmod` with the parameters a project writes for it (`step` 1 when omitted, every other 0) |
 | `gen.signals(name)` | the signals it lists as the next frame takes them: `{ Gear = 4, EngineSpeed = { type = "counter", start = 10, step = 5, modulo = 100 } }` — a static one's value, a sourced one's table as `gen.source` takes it, with exactly the parameters its type reads |
 | `gen.unset(name, signal)` | take a signal off its list (what `gen.set` added) from the next frame: the message's template holds it again; with `gen.signals` a full restore |
-| `gen.data(name)` / `gen.set_data(name, bytes)` | a raw generator's payload, a string; set from the next frame, up to what a frame on its wire carries (8 bytes, 64 where its row or wire is CAN-FD) |
+| `gen.data(name)` / `gen.set_data(name, bytes)` | a raw generator's payload, a string; set from the next frame, up to what a frame on its wire carries (8 bytes, 64 where its row or wire is CAN-FD); past 8 bytes only a length a CAN-FD DLC expresses (12, 16, 20, 24, 32, 48, 64) |
 | `gen.wait_applied(name [, timeout_ms])` | wait (1000 ms when omitted) until `gen.info(name).applied`, else an error — `sent` alone cannot say it, since a frame built just before an edit can be counted just after it |
 
 A call that cannot take effect is an error saying why: a cycle out of range, a signal the message
