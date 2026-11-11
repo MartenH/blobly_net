@@ -44,6 +44,7 @@ fn push_signal(l lua.State, s candb.Signal) {
 	l.set_int('start_bit', s.start_bit)
 	l.set_int('length', s.length)
 	l.set_str('byte_order', if s.byte_order == .big_endian { 'big' } else { 'little' })
+	l.set_str('kind', s.kind().name())
 	l.set_bool('signed', s.is_signed)
 	l.set_num('factor', s.factor)
 	l.set_num('offset', s.offset)
@@ -149,7 +150,7 @@ fn decode_as(mode string) !DecodeAs {
 }
 
 // __decode(channel, id, ext, data, as): { Signal = value } for each signal the frame carries
-// (Message.active_signals), or nil for a frame of no message.
+// (Message.active_signals, and Message.byte_signals as strings), or nil for a frame of no message.
 fn l_decode(l lua.State) i32 {
 	mut env := env_of(l)
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
@@ -173,6 +174,13 @@ fn l_decode(l lua.State) i32 {
 				text := s.values[s.raw_value(data)] or { continue }
 				l.set_str(s.name, text)
 			}
+		}
+	}
+	// a byte signal reads as a string of its bytes, physical and raw alike; it has no label
+	if mode != .label {
+		for s in msg.byte_signals(data) {
+			l.push_bytes(s.bytes_value(data) or { continue })
+			l.set_field(s.name)
 		}
 	}
 	return 1

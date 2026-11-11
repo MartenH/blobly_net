@@ -218,6 +218,11 @@ pub fn (l State) arg_is_number(i int) bool {
 	return C.ctlua_type(l, i) == 3
 }
 
+// arg_is_string is whether argument i is a string, not a number that converts to one.
+pub fn (l State) arg_is_string(i int) bool {
+	return C.ctlua_type(l, i) == 4
+}
+
 pub fn (l State) arg_is_num(i int) bool {
 	return C.ctlua_is_num(l, i) != 0
 }

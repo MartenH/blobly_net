@@ -119,6 +119,16 @@ enum bb_kind {
 	BB_KIND_LIN = 3      /* a LIN bus: its frames through bb_lin_* (the LIN block) */
 };
 
+/* What a signal is read and written as (bb_signal.kind, candb.Signal.kind). */
+enum bb_signal_kind {
+	BB_SIGNAL_NUMBER = 0,  /* 1 .. 64 bits: a physical value, bb_encode and bb_decode */
+	BB_SIGNAL_BYTES = 1,   /* wider, from a byte boundary (Intel: start_bit % 8 == 0; Motorola: % 8
+	                          == 7) and whole bytes long: bytes in payload order, bb_encode_bytes
+	                          and bb_decode_bytes */
+	BB_SIGNAL_NONE = 2     /* wider and not whole bytes from a byte boundary: nothing is read or
+	                          written */
+};
+
 /* Where a CAN row's ladder comes from (bb_channel_health_source, transport.health_source). */
 enum bb_health_source {
 	BB_HEALTH_SOURCE_NONE = 0,          /* no controller (a software bus, a non-CAN row): no ladder */
@@ -170,6 +180,7 @@ typedef struct bb_signal {
 	uint8_t multiplexed;  /* present only where the switch reads mux_value */
 	int32_t mux_value;
 	int32_t labels;       /* value-table entries: bb_signal_label's k is 0 .. labels - 1 */
+	uint8_t kind;         /* an enum bb_signal_kind (in what was padding: the layout is unchanged) */
 	double  factor;
 	double  offset;
 	double  minimum;      /* the DBC's [min|max], both 0 where it states none; NOT applied by
@@ -641,8 +652,9 @@ int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, 
 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
  * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused,
- * and so is a signal wider than 64 bits, which carries no number; a value past what the signal's
- * width holds is clamped to the nearer end, NaN encodes as raw 0.
+ * and so is a signal wider than 64 bits, which carries no number (a byte signal's bytes go in
+ * through bb_encode_bytes); a value past what the signal's width holds is clamped to the nearer
+ * end, NaN encodes as raw 0.
  * out gets the message's id, ext and dlc as len, and in `format` the format its database states
  * (bb_message.format) — fd and brs unset —, so bb_bus_send sends it in that format; where the
  * database states none, the row's or wire's declared one. A host sending it in another sets
@@ -650,14 +662,29 @@ int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, 
 int bb_encode(int row, int m, int n, const char *const *signals, const double *values,
               bb_frame *out);
 
+/* Writes the n bytes b, in payload order, into byte signal `signal` (BB_SIGNAL_BYTES) of message
+ * m in f — a frame bb_encode made for m —, leaving every other byte as it is: refused for a name
+ * the message does not have, a signal that is not a byte signal, n not its length / 8, or a
+ * payload f->len does not hold it in. */
+int bb_encode_bytes(int row, int m, const char *signal, const uint8_t *b, int n, bb_frame *f);
+
 /* What a frame says in the row's databases: 0 with *message the message it decodes as (its id and
  * kind, else for an extended frame one of its J1939 PGN), and for each of its signals s < cap
  * values[s] its physical value and active[s] whether the frame carries it (1), or not (0,
  * values[s] 0): a multiplexed signal its switch does not select, a signal whose bits a short
- * payload does not all hold (nor its multiplexor's), or one wider than 64 bits; BB_NONE for no
- * message, or a remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
- * *message set so the host can ask again with arrays of its bb_message.signals. */
+ * payload does not all hold (nor its multiplexor's), or one wider than 64 bits that is not a byte
+ * signal. A byte signal the frame carries is active with values[s] 0: its bytes are
+ * bb_decode_bytes'. BB_NONE for no message, or a remote frame (no data). The arrays hold `cap`: a
+ * message of more signals is refused, with *message set so the host can ask again with arrays of
+ * its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
+
+/* Byte signal s (BB_SIGNAL_BYTES) of message m — the message bb_decode answered — in frame f, its
+ * bytes in payload order into buf as bb_uds_data's (the answer their whole length, length / 8;
+ * past cap they were cut; cap 0 asks for the length alone): refused for a signal that is not a
+ * byte signal, or one f does not carry (its payload does not hold it, or its switch does not
+ * select it). */
+int bb_decode_bytes(int row, const bb_frame *f, int m, int s, uint8_t *buf, int cap);
 
 /* UDS (ISO 14229) on a row: a client over ISO-TP on a CAN row's bus, or over a DoIP row's
  * connection to its entity (ISO 13400: TCP, then routing activation), opened by the rule a Lua

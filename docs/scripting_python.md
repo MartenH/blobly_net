@@ -616,13 +616,19 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   it (two's complement for a signed signal). `raw_labels` has every entry; in `labels`, two keys
   a double cannot tell apart (past 2^53) are one entry. `start_raw` and `start` are its start
   value (`GenSigStartValue`, else its `BA_DEF_DEF_`) as the raw bits and physical, `None` where the
-  database states none: what a simulated node or a generator sends for a signal nothing sets.
+  database states none: what a simulated node or a generator sends for a signal nothing sets. `kind` is what it reads as: `"number"`
+  (1 .. 64 bits), `"bytes"` or `"none"` — see byte signals below.
 - `msg.encode(**signals)` returns the `Frame` the message sends with the named signals at these
   physical values and every other at raw 0, not at its start value; to send the start values,
   name them: `msg.encode(**{s.name: s.start for s in msg.signals if s.start is not None})`. A name the message does not have raises
-  `BloblyError`, and so does a signal wider than 64 bits (a byte array in a CAN FD frame), which
-  carries no number (`Refused`: `Key is 128 bits wide: a value is encoded into 1 .. 64`; so do
-  `send` and `send_cyclic`); a value that is not a number raises `TypeError`. The DBC's range is not
+  `BloblyError`, and so does a number for a signal wider than 64 bits (a byte array in a CAN FD
+  frame), which carries none (`Refused`: `Key is 128 bits wide: a value is encoded into 1 .. 64`;
+  so do `send` and `send_cyclic`); a value that is neither a number nor bytes raises `TypeError`.
+  A **byte signal** — wider than 64 bits, starting on a byte boundary (Intel: its start bit on a
+  byte's bit 0; Motorola: on a byte's bit 7) and whole bytes long, `sig.kind == "bytes"` — takes
+  `bytes` (or a `bytearray`), exactly `length / 8` of them in payload order:
+  `msg.encode(Mode=2, Key=bytes(range(16)))`; bytes for any other signal raise `Refused`, and
+  `send_cyclic` takes numbers only (a byte signal goes out as zeros there). The DBC's range is not
   applied, only the signal's width (a value past it is clamped to the nearer end), so a test can
   send an out-of-range value on purpose. `fd`/`brs` are left unset. Its E2E is not stamped.
 - `msg.send(**signals)` encodes, stamps the E2E the message's database declares (its counter and
@@ -638,7 +644,8 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   from another source address are not its id). `signal` is one of that message's `Signal`s, or
   its name (a name two signals share is refused: pass the `Signal`); an unknown message or signal
   is refused before the wait. `want` is a predicate on the physical value, or a
-  value compared with `==`. Decoded values are floats with the rounding of raw × factor + offset:
+  value compared with `==` — `bytes` for a byte signal, which decodes to bytes. Decoded values
+  are floats with the rounding of raw × factor + offset:
   on a signal of 0.1 steps, raw 3 decodes as 0.30000000000000004, so want `pytest.approx(0.3)` or
   a predicate there. The deadline and the consumed frames are `expect`'s. With `e2e=True` every frame
   of `message` read while waiting must pass its E2E check: the first that does not raises
@@ -647,8 +654,9 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   databases: the message of its id and kind (else, for an extended frame, one with its J1939
   PGN), and each signal the frame carries. A multiplexed signal its multiplexor does not select is
   left out, and so is a signal whose bits a frame shorter than the message does not all hold (or
-  whose multiplexor's it does not), and a signal wider than 64 bits, which carries no number, as
-  Lua's `decode` leaves them out. It returns `None` for a
+  whose multiplexor's it does not), as Lua's `decode` leaves them out. A byte signal's value is
+  its `bytes` in payload order (`can1.decode(frame)["Key"] == b"\x00\x01..."`), and a signal
+  wider than 64 bits that is not one (`kind == "none"`) is left out. It returns `None` for a
   frame of no message, and for a remote frame. Which message a frame decoded as is not returned.
 
 ```python
@@ -2364,7 +2372,7 @@ after `start()`.
 | `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
 | `ch.error_counters()` | An `ErrorCounters`: the controller's transmit and receive error counters as it last reported them; `None` where the backend cannot say ([Health](#8-health)). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
-| `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
+| `ch.decode(frame)` | `{signal: physical value}` (a byte signal's `bytes`), or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
 | `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
@@ -2489,7 +2497,7 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.cycle_fast_ms`, `msg.repetitions`, `msg.delay_ms`, `msg.start_delay_ms` | `GenMsgCycleTimeFast`, `GenMsgNrOfRepetition`, `GenMsgDelayTime`, `GenMsgStartDelayTime`; 0 when none. |
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
-| `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
+| `msg.encode(**signals)` | The `Frame` with these signals at these physical values (a byte signal's `bytes`), every other at raw 0; its E2E not stamped. |
 | `msg.send(*, format=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s; `None` sends it in `msg.format`, else the channel's. |
 | `msg.send_cyclic(period_ms, /, *, e2e=True, format=None, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`, in `format` as `send` takes it: a `CyclicSender`. |
 
@@ -2516,6 +2524,7 @@ A signal of a message (`msg.signals.EngineSpeed`). physical = raw × `factor` + 
 | `sig.name` | Its name. |
 | `sig.start_bit`, `sig.length` | Where it sits, as the DBC numbers it, and its width in bits. |
 | `sig.byte_order` | `"little"` (Intel) or `"big"` (Motorola). |
+| `sig.kind` | `"number"` (1 .. 64 bits), `"bytes"` (wider, from a byte boundary and whole bytes long: `bytes` in `decode` and `encode`, in payload order) or `"none"` (wider and not whole bytes: left out of `decode`, refused by `encode`). |
 | `sig.signed` | Whether the raw value is two's complement. |
 | `sig.factor`, `sig.offset` | The scaling. |
 | `sig.minimum`, `sig.maximum` | The DBC's range; both 0 where it states none. Not applied by `encode`. |

@@ -1551,11 +1551,17 @@ fn l_encode_signal(l lua.State) i32 {
 	sig := msg.signal_named(l.arg_str(3)) or {
 		return l.fail('unknown signal "${l.arg_str(3)}" in ${l.arg_str(2)}')
 	}
+	mut data := l.arg_bytes(5)
+	if l.arg_is_string(4) && !sig.is_scalar() {
+		// a string is a byte signal's bytes in payload order; a number's signal reads one as before
+		sig.set_bytes(mut data, l.arg_bytes(4)) or { return l.fail(err.msg()) }
+		l.push_bytes(data)
+		return 1
+	}
 	why := sig.scalar_refusal()
 	if why != '' {
 		return l.fail(why)
 	}
-	mut data := l.arg_bytes(5)
 	sig.encode(mut data, l.arg_num(4))
 	l.push_bytes(data)
 	return 1

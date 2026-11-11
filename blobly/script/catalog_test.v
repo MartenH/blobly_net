@@ -221,29 +221,56 @@ fn test_decode_reports_raw_values_and_labels_for_what_a_frame_carries() {
 	assert env.passed() == 6, '${env.results}'
 }
 
-// a signal wider than 64 bits carries no number: decode leaves it out and send_message refuses it
-fn test_a_wide_signal_is_left_out_of_decode_and_refused_by_send_message() {
+// a signal wider than 64 bits carries no number: one of whole bytes from a byte boundary reads and
+// encodes as a string of its bytes in payload order, any other is left out, and a number for
+// either is refused
+fn test_a_wide_signal_reads_as_bytes_or_not_at_all() {
 	mut env := new_env([ChanInfo{
 		name:  'CAN1'
 		iface: 'inproc:UTWIDE'
-		db:    candb.parse_dbc('BO_ 1280 ConfigData: 24 A\n SG_ Mode : 0|8@1+ (1,0) [0|255] "" A\n SG_ Key : 8|128@1+ (1,0) [0|0] "" A\n') or {
+		db:    candb.parse_dbc('BO_ 1280 ConfigData: 32 A\n SG_ Mode : 0|8@1+ (1,0) [0|255] "" A\n SG_ Key : 8|128@1+ (1,0) [0|0] "" A\n SG_ KeyBe : 143|72@0+ (1,0) [0|0] "" A\n SG_ Odd : 204|68@1+ (1,0) [0|0] "" A\n') or {
 			panic(err)
 		}
 	}]) or { panic(err) }
 	env.on_output = fn (s string) {}
 	defer { env.close() }
 	env.run_source('
-		test("decode leaves it out", function()
-			local d = decode("CAN1", 0x500, string.rep(string.char(1), 24), false, "raw")
-			check.equal(d.Mode, 1)
-			check.equal(d.Key, nil)
+		local data = ""
+		for i = 0, 31 do data = data .. string.char(i) end
+		test("decode reads a byte signal as a string and leaves the rest out", function()
+			local d = decode("CAN1", 0x500, data, false, "raw")
+			check.equal(d.Mode, 0)
+			check.equal(d.Key, data:sub(2, 17))
+			check.equal(d.KeyBe, data:sub(18, 26))
+			check.equal(d.Odd, nil)
+			check.equal(decode("CAN1", 0x500, data, false).Key, data:sub(2, 17))
+			check.equal(decode("CAN1", 0x500, data, false, "label").Key, nil)
+			check.equal(decode("CAN1", 0x500, data:sub(1, 20), false).KeyBe, nil)
 		end)
-		test("send_message refuses it", function()
+		test("dbc.signal says the kind", function()
+			check.equal(dbc.signal("CAN1", 0x500, "Mode").kind, "number")
+			check.equal(dbc.signal("CAN1", 0x500, "KeyBe").kind, "bytes")
+			check.equal(dbc.signal("CAN1", 0x500, "Odd").kind, "none")
+		end)
+		test("send_message takes a string for a byte signal", function()
+			local key = string.rep(string.char(0xAB), 16)
+			local f = bus.send_message("CAN1", "ConfigData", { Mode = 3, Key = key, KeyBe = "123456789" }, { format = "fd" })
+			check.equal(f.data:sub(2, 17), key)
+			check.equal(f.data:sub(18, 26), "123456789")
+			check.equal(f.data:byte(1), 3)
+		end)
+		test("send_message refuses a number for a wide signal and a string where bytes do not fit", function()
 			local ok, why = pcall(function() bus.send_message("CAN1", "ConfigData", { Key = 1 }) end)
 			check.equal(ok, false)
 			check.truthy(tostring(why):find("Key is 128 bits wide: a value is encoded into 1 .. 64", 1, true))
+			ok, why = pcall(function() bus.send_message("CAN1", "ConfigData", { Odd = 1 }) end)
+			check.truthy(tostring(why):find("Odd is 68 bits wide: a value is encoded into 1 .. 64", 1, true))
+			ok, why = pcall(function() bus.send_message("CAN1", "ConfigData", { Key = "abc" }) end)
+			check.truthy(tostring(why):find("Key takes 16 bytes, not 3", 1, true))
+			ok, why = pcall(function() bus.send_message("CAN1", "ConfigData", { Odd = "123456789" }) end)
+			check.truthy(tostring(why):find("Odd is 68 bits wide from bit 204", 1, true))
 		end)
 	')!
-	assert env.total() == 2
-	assert env.passed() == 2, '${env.results}'
+	assert env.total() == 4
+	assert env.passed() == 4, '${env.results}'
 }

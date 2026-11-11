@@ -962,7 +962,7 @@ function bus.send_message_cyclic(channel, name, sigs, period_ms, opts)
 end
 -- decode raw bytes against the channel`s DBC -> { SignalName = value } for each signal the frame
 -- carries: physical values, or with as = "raw" the field bits, or "label" the value table text
--- (a signal with no text for its value left out)
+-- (a signal with no text for its value left out); a byte signal as a string of its bytes
 function decode(channel, id, data, ext, as)
   if as ~= nil and type(as) ~= "string" then error("decode: as is a string (physical, raw or label)", 2) end
   return __decode(channel, id, ext or false, data, as or "physical")

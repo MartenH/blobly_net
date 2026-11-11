@@ -115,6 +115,7 @@ pub mut:
 	multiplexed u8
 	mux_value   i32
 	labels      i32
+	kind        u8
 	factor      f64
 	offset      f64
 	minimum     f64
@@ -1248,6 +1249,7 @@ pub fn bb_signal_info(row i32, m i32, s i32, out &C.bb_signal) i32 {
 		out.multiplexed = u8(sig.is_multiplexed)
 		out.mux_value = i32(sig.multiplexor_value)
 		out.labels = i32(sig.values.len)
+		out.kind = signal_kind(sig)
 		out.factor = sig.factor
 		out.offset = sig.offset
 		out.minimum = sig.minimum
@@ -1257,6 +1259,15 @@ pub fn bb_signal_info(row i32, m i32, s i32, out &C.bb_signal) i32 {
 		out.has_start = u8(sig.has_start)
 	}
 	return ok()
+}
+
+// signal_kind is a signal's enum bb_signal_kind.
+fn signal_kind(sig candb.Signal) u8 {
+	return match sig.kind() {
+		.number { u8(C.BB_SIGNAL_NUMBER) }
+		.bytes { u8(C.BB_SIGNAL_BYTES) }
+		.nothing { u8(C.BB_SIGNAL_NONE) }
+	}
 }
 
 @[export: 'bb_signal_name']
@@ -1342,8 +1353,70 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 	return ok()
 }
 
+// bb_encode_bytes writes a byte signal's bytes into a frame bb_encode made, by Signal.set_bytes.
+@[export: 'bb_encode_bytes']
+pub fn bb_encode_bytes(row i32, m i32, signal &char, b &u8, n i32, f &C.bb_frame) i32 {
+	if isnil(f) || isnil(signal) {
+		return fail(bb_err, 'encode_bytes: no frame, or no signal name')
+	}
+	if n < 0 || (n > 0 && isnil(b)) {
+		return fail(bb_err, 'encode_bytes: ${n} bytes, and no array of them')
+	}
+	msg := message(row, m) or { return refused(err) }
+	name := unsafe { cstring_to_vstring(signal) }
+	sig := msg.signal_named(name) or { return fail(bb_err, 'unknown signal "${name}" in ${msg.name}') }
+	len := int(f.len)
+	if len > 64 {
+		return fail(bb_err, 'encode_bytes: a payload is at most 64 bytes, not ${len}')
+	}
+	mut data := []u8{len: len}
+	for k in 0 .. len {
+		data[k] = f.data[k]
+	}
+	given := if n > 0 { unsafe { b.vbytes(int(n)) } } else { []u8{} }
+	sig.set_bytes(mut data, given) or { return fail(bb_err, err.msg()) }
+	unsafe {
+		for k in 0 .. len {
+			f.data[k] = data[k]
+		}
+	}
+	return ok()
+}
+
+// bb_decode_bytes is a byte signal of the message bb_decode answered, by Signal.bytes_value, where
+// Message.carried_bytes says the frame carries it.
+@[export: 'bb_decode_bytes']
+pub fn bb_decode_bytes(row i32, f &C.bb_frame, m i32, s i32, buf &u8, cap i32) i32 {
+	if isnil(f) {
+		return fail(bb_err, 'decode_bytes: no frame')
+	}
+	msg := message(row, m) or { return refused(err) }
+	if s < 0 || int(s) >= msg.signals.len {
+		return fail(bb_err, '${msg.name} has no signal ${s} (it has ${msg.signals.len})')
+	}
+	sig := msg.signals[int(s)]
+	why := sig.bytes_refusal()
+	if why != '' {
+		return fail(bb_err, why)
+	}
+	n := int(f.len)
+	if n > 64 || f.rtr != 0 {
+		return fail(bb_err, 'decode_bytes: a frame of ${n} bytes${if f.rtr != 0 { ', remote' } else { '' }} carries no ${sig.name}')
+	}
+	mut data := []u8{len: n}
+	for k in 0 .. n {
+		data[k] = f.data[k]
+	}
+	if !msg.carried_bytes(data)[int(s)] {
+		return fail(bb_err, 'this ${msg.name} frame does not carry ${sig.name}')
+	}
+	got := sig.bytes_value(data) or { return fail(bb_err, err.msg()) }
+	return put_bytes(got, buf, cap)
+}
+
 // bb_decode is the Lua prelude's decode: the message by Database.frame_index (lookup_frame's
-// rule), each signal through Signal.physical, the ones the frame carries by Message.carried.
+// rule), each signal through Signal.physical, the ones the frame carries by Message.carried (and
+// a byte signal's by Message.carried_bytes, its bytes bb_decode_bytes').
 @[export: 'bb_decode']
 pub fn bb_decode(row i32, f &C.bb_frame, message &i32, values &f64, active &u8, cap i32) i32 {
 	if isnil(f) || isnil(message) {
@@ -1377,9 +1450,10 @@ pub fn bb_decode(row i32, f &C.bb_frame, message &i32, values &f64, active &u8, 
 		data[k] = f.data[k]
 	}
 	on := msg.carried(data)
+	bytes_on := msg.carried_bytes(data)
 	for k, sig in msg.signals {
 		unsafe {
-			active[k] = u8(on[k])
+			active[k] = u8(on[k] || bytes_on[k])
 			values[k] = if on[k] { sig.physical(data) } else { 0.0 }
 		}
 	}
