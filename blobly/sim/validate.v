@@ -20,15 +20,24 @@ pub fn validate_node(db candb.Database, node string, gen_signals []string) []str
 		warns << 'node "${node}" sends no message in the DBC — it will transmit nothing'
 		return warns // signal checks are meaningless without messages
 	}
-	mut sigset := map[string]bool{}
+	mut sigset := map[string]candb.Signal{}
 	for m in db.messages_from(node) {
 		for s in m.signals {
-			sigset[s.name] = true
+			sigset[s.name] = s
 		}
 	}
 	for sg in gen_signals {
-		if sg.len > 0 && sg !in sigset {
+		if sg.len == 0 {
+			continue
+		}
+		s := sigset[sg] or {
 			warns << 'signal "${sg}" is not in ${node}\'s messages'
+			continue
+		}
+		// a generator writes a number, which a signal wider than the scalar model has none of
+		why := s.scalar_refusal()
+		if why != '' {
+			warns << '${node}: ${why} — its generator is not applied'
 		}
 	}
 	return warns

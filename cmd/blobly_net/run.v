@@ -851,6 +851,13 @@ fn (mut app App) start() {
 	for w in project.generator_source_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
+	// A generator listing a signal that carries no number (wider than the scalar model): said at
+	// Start, the signal not sent.
+	for sr in app.senders {
+		for w in sim.sender_signal_refusals(sr.sender, app.dbs_for(sr.target())) {
+			app.notify(if sr.chan != '' { '${sr.chan}: ${w}' } else { w })
+		}
+	}
 	// A generator whose `bus:` names something the project cannot settle — two channels sharing
 	// the interface it gives, or two channels answering to the name (#97). It still transmits
 	// where the wire is not in doubt, so this is a warning and not a refusal, but the trace cannot

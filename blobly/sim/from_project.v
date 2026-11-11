@@ -26,8 +26,9 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 // protection_for is how `node` protects a message it sends — the ONE answer stamping, the
 // fault panel, Lua's sim.fault and response-format selection all ask: its protect: entry if it
 // has one (the node's own word, overriding the file), else what the DBC declares (#271). None
-// when neither applies — a Profile 1 entry that cannot be stamped as specified included, which
-// is not stamped at all (validate_protection says why).
+// when neither applies — an entry e2e_problem refuses included (a Profile 1 entry that cannot be
+// stamped as specified, a counter or checksum with no number), which is not stamped at all
+// (validate_protection says why).
 pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
 	for p in cfg.protect {
 		if p.message != m.name {
@@ -37,7 +38,7 @@ pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
 		if !e.active() {
 			return none
 		}
-		if e.profile == p01 && p01_problem(m, e) != none {
+		if e2e_problem(m, e) != none {
 			return none
 		}
 		return e
@@ -274,7 +275,7 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				warns << 'protect: ${why}'
 			}
 		}
-		if why := p01_problem(m, e2e_of(p)) {
+		if why := e2e_problem(m, e2e_of(p)) {
 			warns << 'protect: ${p.message}: ${why} — protection not applied'
 		}
 		if p.data_id_mode != '' && (p.profile != p01 || p.crc == '') {

@@ -625,7 +625,9 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   signal the frame carries: a signal whose bits a frame shorter than its message does not all
   hold is left out (its key is `nil`), as is a multiplexed one its multiplexor does not select
   or whose multiplexor the frame does not hold — so `expect_signal` never matches a value that
-  was not on the wire.
+  was not on the wire. A signal wider than 64 bits (a byte array in a CAN FD frame) carries no
+  number: `decode` leaves it out, and `bus.send_message` / `bus.send_message_cyclic` refuse a
+  value for it (`Key is 128 bits wide: a value is encoded into 1 .. 64`).
 - `as` picks what `decode` reports for each signal the frame carries: `"physical"` (the
   default: raw × factor + offset), `"raw"` (the field's bits as a Lua integer, two's complement
   for a signed signal — the key `raw_labels` is keyed by) or `"label"` (the value table's text

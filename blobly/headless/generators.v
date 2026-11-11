@@ -33,6 +33,8 @@ mut:
 	// a cycle the project gives that a generator cannot have: said at the start, the generator
 	// left with none (a fire still sends it, and gen_start gives it one)
 	cycle_note string
+	// the signals it lists that carry no number (sim.sender_signal_refusals): said at the start
+	signal_notes []string
 	sent    i64
 	spawned bool // its loop was started
 	ended   bool // its loop is out: a fire is not queued for it
@@ -175,6 +177,7 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		for db in g.dbs {
 			if m := db.message_named(s.message) {
 				g.id, g.ext = m.id, m.ext
+				g.signal_notes = sim.sender_signal_refusals(s, g.dbs)
 				return
 			}
 		}

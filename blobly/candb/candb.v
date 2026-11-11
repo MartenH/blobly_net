@@ -323,6 +323,39 @@ pub fn (s Signal) fits(len int) bool {
 	return signal_fits_frame(s, len)
 }
 
+// scalar_bits is the widest signal a number is read from or encoded into: the 64-bit raw scalar
+// raw_value and set_raw work in.
+pub const scalar_bits = 64
+
+// is_scalar is whether the signal carries a number: 1 .. scalar_bits wide. A wider one (a byte
+// array in a CAN FD frame) has none, so decode leaves it out (MuxSwitch.selects) and every encode
+// refuses it (scalar_refusal).
+pub fn (s Signal) is_scalar() bool {
+	return s.length >= 1 && s.length <= scalar_bits
+}
+
+// scalar_refusal is why a value cannot be encoded into the signal, '' when it can.
+pub fn (s Signal) scalar_refusal() string {
+	if s.is_scalar() {
+		return ''
+	}
+	return '${s.name} is ${s.length} bits wide: a value is encoded into 1 .. ${scalar_bits}'
+}
+
+// scalar_notes says each signal wider than scalar_bits, one line each: a load note, since such a
+// signal loads but carries no number to decode or encode.
+pub fn (db Database) scalar_notes() []string {
+	mut out := []string{}
+	for m in db.messages {
+		for s in m.signals {
+			if s.length > scalar_bits {
+				out << '${m.name}: signal ${s.name} is ${s.length} bits wide, past the ${scalar_bits}-bit scalar model — decode leaves it out and encode refuses it'
+			}
+		}
+	}
+	return out
+}
+
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles
 // both Intel (little-endian) and Motorola (big-endian) bit ordering. Bits use
 // the LSB-0 numbering: position p -> byte p/8, bit p%8 (bit 0 = byte LSB).
@@ -447,8 +480,12 @@ pub fn (s Signal) set_raw(mut data []u8, raw u64) {
 	}
 }
 
-// encode converts a physical value to raw and writes it into `data`.
+// encode converts a physical value to raw and writes it into `data`. A signal with no number
+// (is_scalar) is left as it is: every front end refuses it first, by scalar_refusal.
 pub fn (s Signal) encode(mut data []u8, phys f64) {
+	if !s.is_scalar() {
+		return
+	}
 	s.set_raw(mut data, s.raw_from_phys(phys))
 }
 
@@ -491,11 +528,12 @@ pub fn (m Message) multiplexor_index() int {
 }
 
 // active_signals returns the signals actually present in `data`: every signal the payload holds
-// whole, less the multiplexed ones whose selector does not match the multiplexor switch's value.
-// For a non-multiplexed message whose payload holds every signal it returns all signals unchanged.
+// whole, less the multiplexed ones whose selector does not match the multiplexor switch's value
+// and those with no number to read (Signal.is_scalar). For a non-multiplexed message whose
+// payload holds every signal it returns all signals unchanged.
 pub fn (m Message) active_signals(data []u8) []Signal {
 	sw := m.switch_in(data)
-	if !sw.present && m.signals.all(it.fits(data.len)) {
+	if !sw.present && m.signals.all(it.fits(data.len) && it.is_scalar()) {
 		return m.signals
 	}
 	mut out := []Signal{}
@@ -579,9 +617,10 @@ fn read_switch(present bool, mux Signal, data []u8) MuxSwitch {
 	}
 }
 
-// selects is whether a payload of `len` bytes with this switch carries `s`.
+// selects is whether a payload of `len` bytes with this switch carries `s` — a number of it: a
+// signal wider than scalar_bits is never carried.
 fn (sw MuxSwitch) selects(s Signal, len int) bool {
-	if !s.fits(len) {
+	if !s.fits(len) || !s.is_scalar() {
 		return false
 	}
 	return !s.is_multiplexed || !sw.present || (sw.held && u64(s.multiplexor_value) == sw.value)

@@ -557,6 +557,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		}
 	}
 	for mut g in r.gens {
+		for w in g.signal_notes {
+			o.err('${g.channel}: ${w}')
+		}
 		if g.cycle_note != '' {
 			o.err('${g.channel}: generator "${g.s.name}": ${g.cycle_note} — it has none in this run')
 			continue

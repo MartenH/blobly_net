@@ -63,7 +63,7 @@ fn main() {
 		if frame.id == 0x100 && counts[0x100] <= 2 {
 			if m := db.lookup(0x100) {
 				mut parts := []string{}
-				for s in m.signals {
+				for s in m.signals.filter(it.is_scalar()) {
 					parts << '${s.name}=${s.physical(frame.data):.1f}${s.unit}'
 				}
 				println('  0x100 ${m.name}: ${parts.join(', ')}')

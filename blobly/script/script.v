@@ -1551,6 +1551,10 @@ fn l_encode_signal(l lua.State) i32 {
 	sig := msg.signal_named(l.arg_str(3)) or {
 		return l.fail('unknown signal "${l.arg_str(3)}" in ${l.arg_str(2)}')
 	}
+	why := sig.scalar_refusal()
+	if why != '' {
+		return l.fail(why)
+	}
 	mut data := l.arg_bytes(5)
 	sig.encode(mut data, l.arg_num(4))
 	l.push_bytes(data)

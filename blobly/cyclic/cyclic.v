@@ -87,9 +87,14 @@ pub fn check_period(ms int) ! {
 	}
 }
 
+// check_values refuses a value for a signal the message does not have or that carries no number.
 fn check_values(m candb.Message, values map[string]f64) ! {
 	for name, _ in values {
-		m.signal_named(name) or { return error('unknown signal "${name}" in ${m.name}') }
+		sig := m.signal_named(name) or { return error('unknown signal "${name}" in ${m.name}') }
+		why := sig.scalar_refusal()
+		if why != '' {
+			return error(why)
+		}
 	}
 }
 

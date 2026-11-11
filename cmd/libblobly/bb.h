@@ -640,8 +640,9 @@ int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, 
                                                                    past 2^53 */
 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
- * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;
- * a value past what the signal's width holds is clamped to the nearer end, NaN encodes as raw 0.
+ * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused,
+ * and so is a signal wider than 64 bits, which carries no number; a value past what the signal's
+ * width holds is clamped to the nearer end, NaN encodes as raw 0.
  * out gets the message's id, ext and dlc as len, and in `format` the format its database states
  * (bb_message.format) — fd and brs unset —, so bb_bus_send sends it in that format; where the
  * database states none, the row's or wire's declared one. A host sending it in another sets
@@ -652,9 +653,9 @@ int bb_encode(int row, int m, int n, const char *const *signals, const double *v
 /* What a frame says in the row's databases: 0 with *message the message it decodes as (its id and
  * kind, else for an extended frame one of its J1939 PGN), and for each of its signals s < cap
  * values[s] its physical value and active[s] whether the frame carries it (1), or not (0,
- * values[s] 0): a multiplexed signal its switch does not select, or a signal whose bits a short
- * payload does not all hold (nor its multiplexor's); BB_NONE for no message, or a
- * remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
+ * values[s] 0): a multiplexed signal its switch does not select, a signal whose bits a short
+ * payload does not all hold (nor its multiplexor's), or one wider than 64 bits; BB_NONE for no
+ * message, or a remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
  * *message set so the host can ask again with arrays of its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
 
