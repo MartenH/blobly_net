@@ -78,6 +78,62 @@ class TestSimDemo:
         wake.cycle_ms = 500
         assert wake.cycle_ms == 500 and wake.running
 
+    def test_signals_read_back_unset_and_restored(self, sim_demo, can1):
+        rev = sim_demo.generators["Rev to 6000 rpm"]
+        before = rev.signals()
+        assert before == {"EngineSpeed": 6000.0, "Gear": 4.0}
+        rev.set("Gear", 2)
+        rev.source("EngineSpeed", "counter", start=10, step=5, modulo=100)
+        assert not rev.applied
+        assert rev.signals() == {"Gear": 2.0, "EngineSpeed": ("counter", {"start": 10.0, "step": 5.0,
+                                                                          "modulo": 100.0})}
+        rev.fire()
+        rev.wait_applied(timeout_ms=500)
+        assert rev.applied
+        rev.unset(can1.messages.Powertrain.signals.Gear)
+        assert "Gear" not in rev.signals()
+        with pytest.raises(GeneratorRefused, match="lists no signal"):
+            rev.unset("Gear")
+        # the full restore
+        for name in rev.signals().keys() - before.keys():
+            rev.unset(name)
+        for name, v in before.items():
+            rev.set(name, v)
+        assert rev.signals() == before
+        assert sim_demo.generators["Cyclic wake (0x123)"].signals() == {}
+
+    def test_wait_applied_times_out_on_a_generator_nothing_sends(self, sim_demo):
+        hb = sim_demo.generators["Heartbeat pulse"]
+        hb.set("Counter", 7)
+        with pytest.raises(blobly.Timeout, match="fire or start it"):
+            hb.wait_applied(timeout_ms=30)
+        with pytest.raises(ValueError):
+            hb.wait_applied(timeout_ms=0)
+
+    def test_a_raw_payload_is_on_the_wire_once_applied(self, sim_demo, can1):
+        wake = sim_demo.generators["Cyclic wake (0x123)"]
+        assert wake.data == bytes.fromhex("DEADBEEF")
+        assert sim_demo.generators["Heartbeat pulse"].data == b""
+        try:
+            wake.data = b"\x02\x00"
+            assert wake.data == b"\x02\x00"
+            wake.wait_applied(timeout_ms=2000)
+            # the last frame queued is one the bus took after the edit
+            last = None
+            while (f := can1.recv(0)) is not None:
+                if f.id == WAKE and not f.ext:
+                    last = f
+            assert last is not None and last.data == b"\x02\x00"
+            with pytest.raises(GeneratorRefused, match="at most 8"):
+                wake.data = bytes(9)
+            with pytest.raises(GeneratorRefused, match="set its signals"):
+                sim_demo.generators["Heartbeat pulse"].data = b"\x01"
+            with pytest.raises(TypeError):
+                wake.data = 5
+            assert wake.data == b"\x02\x00"
+        finally:
+            wake.data = bytes.fromhex("DEADBEEF")
+
     def test_a_fire_waits_for_the_project_within_its_deadline(self, sim_demo, can1):
         from blobly import _lib
         hb = sim_demo.generators["Heartbeat pulse"]

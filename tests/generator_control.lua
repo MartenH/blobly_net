@@ -65,6 +65,44 @@ test("gen.stop, gen.start and gen.cycle drive a cyclic generator", function()
   check.equal(find("Cyclic wake (0x123)").cycle_ms, 500)
 end)
 
+test("gen.signals reads the values back, gen.unset takes one off, a restore puts them back", function()
+  local g = "Rev to 6000 rpm"
+  local before = gen.signals(g)
+  check.equal(before.EngineSpeed, 6000)
+  check.equal(before.Gear, 4)
+  gen.set(g, "Gear", 2)
+  gen.source(g, "EngineSpeed", { type = "counter", start = 10, step = 5, modulo = 100 })
+  check.truthy(not gen.info(g).applied, "an edit not yet sent reads as applied")
+  local now = gen.signals(g)
+  check.equal(now.Gear, 2)
+  check.equal(now.EngineSpeed.type, "counter")
+  check.equal(now.EngineSpeed.step, 5)
+  check.equal(now.EngineSpeed.amplitude, nil) -- only what a counter reads
+  gen.fire(g)
+  gen.wait_applied(g, 500)
+  gen.unset(g, "Gear")
+  check.equal(gen.signals(g).Gear, nil)
+  -- the restore: every signal back as it was
+  for name, v in pairs(before) do
+    if type(v) == "table" then gen.source(g, name, v) else gen.set(g, name, v) end
+  end
+  local after = gen.signals(g)
+  check.equal(after.EngineSpeed, 6000)
+  check.equal(after.Gear, 4)
+end)
+
+test("gen.set_data changes a raw generator payload, on the wire once gen.wait_applied returns", function()
+  local g = "Cyclic wake (0x123)"
+  check.equal(gen.data(g), fromhex("DE AD BE EF"))
+  gen.set_data(g, fromhex("02 00"))
+  check.equal(gen.data(g), fromhex("02 00"))
+  gen.wait_applied(g, 2000)
+  local f = frames_of("CAN1", 0x123, 700)
+  check.truthy(#f >= 1)
+  check.equal(f[#f].data, fromhex("02 00"))
+  gen.set_data(g, fromhex("DE AD BE EF"))
+end)
+
 test("a generator call that cannot take effect is refused", function()
   local refusals = {
     { function() gen.fire("No such generator") end, "no generator" },
@@ -76,6 +114,11 @@ test("a generator call that cannot take effect is refused", function()
     { function() gen.set("Heartbeat pulse", "NoSignal", 1) end, "has no signal" },
     { function() gen.set("Cyclic wake (0x123)", "Counter", 1) end, "raw frame" },
     { function() gen.start("Heartbeat pulse") end, "no cycle" },
+    { function() gen.unset("Heartbeat pulse", "NoSuchSignal") end, "lists no signal" },
+    { function() gen.unset("Cyclic wake (0x123)", "Counter") end, "raw frame" },
+    { function() gen.set_data("Heartbeat pulse", "x") end, "set its signals" },
+    { function() gen.set_data("Cyclic wake (0x123)", string.rep("x", 9)) end, "at most 8" },
+    { function() gen.set_data("Cyclic wake (0x123)", 5) end, "data is bytes" },
     { function() gen.source("Heartbeat pulse", "Counter", { type = "sine", amp = 1 }) end, "no parameter amp" },
     { function() gen.source("Heartbeat pulse", "Counter", { type = "stepmod", period = 1 }) end, "non-zero count" },
   }

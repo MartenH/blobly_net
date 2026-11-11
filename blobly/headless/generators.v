@@ -36,6 +36,10 @@ mut:
 	// the signals it lists that carry no number (sim.sender_signal_refusals): said at the start
 	signal_notes []string
 	sent    i64
+	// edits of what it sends (a signal's value or source, a signal unset, its payload), and how
+	// many of them the last frame the bus took was built after
+	edits      i64
+	sent_edits i64
 	spawned bool // its loop was started
 	ended   bool // its loop is out: a fire is not queued for it
 	// the fires waiting for the loop, oldest first, and its wake-up when one is queued
@@ -302,8 +306,10 @@ fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
 	s := project.Sender{
 		...g.s
 		signals: g.s.signals.clone()
+		data:    g.s.data.clone()
 	}
 	n := int(g.sent)
+	edits := g.edits
 	g.mu.unlock()
 	el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
 	frame := if s.message != '' {
@@ -314,6 +320,7 @@ fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
 	bus.send(frame) or { return 'not sent: ${err}' }
 	g.mu.lock()
 	g.sent++
+	g.sent_edits = edits
 	g.mu.unlock()
 	return ''
 }
@@ -368,6 +375,13 @@ fn payload_cap(iface string, row string) int {
 	return if transport.clamps_to_classic(iface) && !fd { 8 } else { 64 }
 }
 
+// data_cap is the most a raw frame row `row` sends on `iface` carries: 64 bytes where the row or
+// the wire is CAN-FD, else 8 (a classic frame past 8 bytes is refused or clamped by every bus).
+fn data_cap(iface string, row string) int {
+	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
+	return if fd { 64 } else { 8 }
+}
+
 // sendable is g's refusal when it has nothing to send on.
 fn (mut g Gen) sendable() ! {
 	g.mu.lock()
@@ -414,6 +428,8 @@ fn (mut g Gen) info(stopping bool) sim.GenInfo {
 		cycle_ms: if g.s.cycle_ms > 0 { g.s.cycle_ms } else { 0 }
 		running:  g.cyclic && !stopping
 		sent:     g.sent
+		applied:  g.sent_edits == g.edits
+		data:     if g.s.message == '' { g.s.data.clone() } else { []u8{} }
 		target:   g.open
 		note:     g.note
 	}
@@ -564,6 +580,7 @@ pub fn (mut r Run) gen_value(i int, signal string, value f64) ! {
 		g.mu.unlock()
 	}
 	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, value)!
+	g.edits++
 }
 
 // gen_source gives `signal` of generator g the value source `w` from its next frame.
@@ -574,4 +591,37 @@ pub fn (mut r Run) gen_source(i int, signal string, w project.GenCfg) ! {
 		g.mu.unlock()
 	}
 	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, w)!
+	g.edits++
+}
+
+// gen_signals is generator g's signals as its next frame takes them, each once.
+pub fn (mut r Run) gen_signals(i int) ![]project.SenderSig {
+	mut g := r.gen(i)!
+	g.mu.lock()
+	defer {
+		g.mu.unlock()
+	}
+	return sim.gen_signals(g.s)
+}
+
+// gen_unset takes `signal` off generator g's list from its next frame.
+pub fn (mut r Run) gen_unset(i int, signal string) ! {
+	mut g := r.gen(i)!
+	g.mu.lock()
+	defer {
+		g.mu.unlock()
+	}
+	sim.gen_unset(mut g.s, signal)!
+	g.edits++
+}
+
+// gen_data sends raw generator g's frame with the payload `data` from its next frame.
+pub fn (mut r Run) gen_data(i int, data []u8) ! {
+	mut g := r.gen(i)!
+	g.mu.lock()
+	defer {
+		g.mu.unlock()
+	}
+	sim.gen_set_data(mut g.s, data_cap(g.open, g.row), data)!
+	g.edits++
 }

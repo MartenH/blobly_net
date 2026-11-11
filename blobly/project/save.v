@@ -319,32 +319,8 @@ fn gen_inline(g GenCfg) string {
 // vocabulary (the generator prefixes its own name/value, which it keeps as the fallback).
 fn gen_params_inline(g GenCfg) string {
 	mut parts := []string{}
-	match g.typ {
-		'const' {
-			parts << 'value: ${num(g.value)}'
-		}
-		'sine' {
-			parts << 'offset: ${num(g.offset)}'
-			parts << 'amplitude: ${num(g.amplitude)}'
-			parts << 'freq: ${num(g.freq)}'
-			parts << 'phase: ${num(g.phase)}'
-		}
-		'sawtooth' {
-			parts << 'min: ${num(g.min)}'
-			parts << 'max: ${num(g.max)}'
-			parts << 'period: ${num(g.period)}'
-		}
-		'counter' {
-			parts << 'start: ${num(g.start)}'
-			parts << 'step: ${num(g.step)}'
-			parts << 'modulo: ${num(g.modulo)}'
-		}
-		'stepmod' {
-			parts << 'period: ${num(g.period)}'
-			parts << 'count: ${num(g.count)}'
-			parts << 'base: ${num(g.base)}'
-		}
-		else {}
+	for p in wave_params(g.typ) {
+		parts << '${p}: ${num(g.param(p))}'
 	}
 	if parts.len == 0 {
 		return ''

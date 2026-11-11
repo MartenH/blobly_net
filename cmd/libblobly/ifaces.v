@@ -4,13 +4,16 @@
 // dialog's rule.
 module main
 
+import blobly.project
 import blobly.transport
 
-// Listing is what one listing call found: interfaces, or Vector channels.
+// Listing is what one listing call found: interfaces, Vector channels, or a generator's signals
+// (gen.v).
 struct Listing {
-	ifaces []transport.Interface
-	vector []transport.VectorMapping
-	note   string
+	ifaces  []transport.Interface
+	vector  []transport.VectorMapping
+	signals []project.SenderSig
+	note    string
 }
 
 __global (
@@ -68,7 +71,7 @@ pub fn bb_vector_hardware() i32 {
 @[export: 'bb_listing_count']
 pub fn bb_listing_count(list i32) i32 {
 	l := listing(list) or { return fail(bb_err_handle, 'no listing ${list}') }
-	return ok_count(l.ifaces.len + l.vector.len)
+	return ok_count(l.ifaces.len + l.vector.len + l.signals.len)
 }
 
 @[export: 'bb_listing_note']

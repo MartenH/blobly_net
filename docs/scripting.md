@@ -1015,16 +1015,21 @@ enabled one); in the GUI's Script panel `gen.*` is an error, the generators bein
 
 | Call | Meaning |
 |---|---|
-| `gen.list()` | every generator: `{ name, channel, message, id, ext, trigger, cycle_ms, running, sent, target, note }` — `message` `""` for a raw frame, `trigger` as the project writes it, `running` sending on its cycle now, `sent` the frames its bus took, `target` the interface it sends on, `note` why it cannot send (`""` when it can) |
+| `gen.list()` | every generator: `{ name, channel, message, id, ext, trigger, cycle_ms, running, sent, applied, data, target, note }` — `message` `""` for a raw frame, `trigger` as the project writes it, `running` sending on its cycle now, `sent` the frames its bus took, `applied` that the last of them was built after the last edit of what it sends (`gen.set`, `gen.source`, `gen.unset`, `gen.set_data`; true before any), `data` a raw generator's payload (`""` for a message's), `target` the interface it sends on, `note` why it cannot send (`""` when it can) |
+| `gen.info(name)` | one generator, as `gen.list()` gives it |
 | `gen.fire(name)` | send its current frame once, returning once the bus took it — a first fire of a non-cyclic one opens its bus — within 5 s and the run deadline, or an error; a frame the generator had not taken up when the wait ended is never sent |
 | `gen.start(name [, cycle_ms])` | send it on its cycle from now (its own when omitted; an error when it has none) |
 | `gen.stop(name)` | end its cycle; `gen.fire` still sends it |
 | `gen.cycle(name, cycle_ms)` | a new cycle (1 .. 3600000 ms), from its next frame |
 | `gen.set(name, signal, value)` | the signal at a static value from the next frame, its value source dropped; a signal the generator did not list is added; a multiplexed one is sent where the switch selects its branch |
 | `gen.source(name, signal, src)` | the signal on a value source from the next frame: `src` is `{ type = "sine", offset = 50, amplitude = 10, freq = 1 }`, `type` one of `const`, `sine`, `sawtooth`, `counter`, `stepmod` with the parameters a project writes for it (`step` 1 when omitted, every other 0) |
+| `gen.signals(name)` | the signals it lists as the next frame takes them: `{ Gear = 4, EngineSpeed = { type = "counter", start = 10, step = 5, modulo = 100 } }` — a static one's value, a sourced one's table as `gen.source` takes it, with exactly the parameters its type reads |
+| `gen.unset(name, signal)` | take a signal off its list (what `gen.set` added) from the next frame: the message's template holds it again; with `gen.signals` a full restore |
+| `gen.data(name)` / `gen.set_data(name, bytes)` | a raw generator's payload, a string; set from the next frame, up to what a frame on its wire carries (8 bytes, 64 where its row or wire is CAN-FD) |
+| `gen.wait_applied(name [, timeout_ms])` | wait (1000 ms when omitted) until `gen.info(name).applied`, else an error — `sent` alone cannot say it, since a frame built just before an edit can be counted just after it |
 
 A call that cannot take effect is an error saying why: a cycle out of range, a signal the message
-does not have or its payload does not hold (or any signal of a raw frame), a value that is not finite, a source that cannot be
+does not have or its payload does not hold (or any signal of a raw frame), a signal to unset the generator does not list, a payload for a message's generator or one longer than its wire carries, a value that is not finite, a source that cannot be
 evaluated (a zero period or count, an unknown parameter), a generator with nothing to send on,
 or a send its bus refused (a listen-only row). An edit lasts for the run: the next start brings
 the generators up as the project writes them. `tests/generator_control.lua` is the suite.
@@ -1036,6 +1041,16 @@ gen.fire(3)                                -- the third of gen.list()
 gen.source("Ping ECU (Request)", "ReqCode", { type = "counter", start = 100, modulo = 256 })
 gen.start("Ping ECU (Request)", 20)        -- a manual generator on a cycle of its own
 gen.stop("Cyclic wake (0x123)")
+
+local before = gen.signals("Rev to 6000 rpm")      -- { EngineSpeed = 6000, Gear = 4 }
+gen.set("Rev to 6000 rpm", "Gear", 2)
+gen.fire("Rev to 6000 rpm")
+gen.wait_applied("Rev to 6000 rpm", 500)           -- a frame built after the edit is on the wire
+for name, v in pairs(before) do                    -- the restore (gen.unset what set added)
+  if type(v) == "table" then gen.source("Rev to 6000 rpm", name, v)
+  else gen.set("Rev to 6000 rpm", name, v) end
+end
+gen.set_data("Cyclic wake (0x123)", fromhex("02 00"))
 ```
 
 ### Logging & timing

@@ -261,7 +261,9 @@ function sim.clear_signals() __sim_clear_signals() end
 -- Generators: the run of the project (its `senders:`), each named by its name or "channel/name",
 -- or by its position in gen.list() (a number).
 --   gen.list()                   -> { { name, channel, message, id, ext, trigger, cycle_ms,
---                                       running, sent, target, note }, ... }
+--                                       running, sent, applied, data, target, note }, ... }
+--   gen.info(g)                  -> one of those: applied is true once the bus took a frame
+--                                built after the last edit of what it sends; data a raw payload
 --   gen.fire(g)                  sends its frame once, returning once the bus took it
 --   gen.start(g [, cycle_ms])    sends it on its cycle (its own when omitted)
 --   gen.stop(g)                  ends the cycle; gen.fire still sends it
@@ -270,6 +272,11 @@ function sim.clear_signals() __sim_clear_signals() end
 --   gen.source(g, signal, { type = "sine", offset = 50, amplitude = 10, freq = 1 })
 --                                the signal from a value source (const, sine, sawtooth, counter,
 --                                stepmod; the parameters a project writes), from the next frame
+--   gen.signals(g)               -> { signal = value, signal = { type = "sine", offset = ... } }:
+--                                what the next frame takes; a source table is what gen.source takes
+--   gen.unset(g, signal)         takes a signal off its list: the message template holds it again
+--   gen.data(g) / gen.set_data(g, bytes)   a raw generator payload (a string), from the next frame
+--   gen.wait_applied(g [, timeout_ms])     waits (1000 ms) until gen.info(g).applied, else raises
 gen = {}
 local gen_params = { "value", "offset", "amplitude", "freq", "phase", "min", "max", "period",
   "start", "step", "modulo", "count", "base" }
@@ -287,6 +294,29 @@ function gen.start(g, cycle_ms) local n, p = gsel(g); __gen_start(n, p, cycle_ms
 function gen.stop(g) local n, p = gsel(g); __gen_stop(n, p) end
 function gen.cycle(g, cycle_ms) local n, p = gsel(g); __gen_cycle(n, p, cycle_ms) end
 function gen.set(g, signal, value) local n, p = gsel(g); __gen_set(n, p, signal, value) end
+function gen.info(g) local n, p = gsel(g); return __gen_info(n, p) end
+function gen.signals(g) local n, p = gsel(g); return __gen_signals(n, p) end
+function gen.unset(g, signal) local n, p = gsel(g); __gen_unset(n, p, signal) end
+function gen.data(g) local n, p = gsel(g); return __gen_info(n, p).data end
+function gen.set_data(g, data)
+  if type(data) ~= "string" then error("gen.set_data: data is bytes (a string)", 2) end
+  local n, p = gsel(g)
+  __gen_data(n, p, data)
+end
+function gen.wait_applied(g, timeout_ms)
+  timeout_ms = timeout_ms or 1000
+  local n, p = gsel(g)
+  local deadline = __now_ms() + timeout_ms
+  while true do
+    local i = __gen_info(n, p)
+    if i.applied then return end
+    if __now_ms() >= deadline then
+      error(string.format("gen.wait_applied: %s sent no frame built after its last edit within %d ms (sent %d, %s)",
+        i.name, timeout_ms, i.sent, i.running and "running" or "not running: fire or start it"), 2)
+    end
+    sleep_ms(2)
+  end
+end
 function gen.source(g, signal, src)
   if type(src) ~= "table" or type(src.type) ~= "string" then
     error("gen.source: a source is a table naming its type, { type = \"sine\", ... }", 2)

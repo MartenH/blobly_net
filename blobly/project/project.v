@@ -1599,6 +1599,43 @@ fn parse_sender(s yaml.Any) !Sender {
 // signals and a generator's, because it is one vocabulary (see SenderSig.wave).
 pub const wave_kinds = ['const', 'sine', 'sawtooth', 'counter', 'stepmod']
 
+// wave_param_names is every parameter a value source may have, in GenCfg's order.
+pub const wave_param_names = ['value', 'offset', 'amplitude', 'freq', 'phase', 'min', 'max',
+	'period', 'start', 'step', 'modulo', 'count', 'base']
+
+// wave_params is the parameters a source of type `typ` reads, in the order a project writes
+// them; none for a type outside wave_kinds.
+pub fn wave_params(typ string) []string {
+	return match typ {
+		'const' { ['value'] }
+		'sine' { ['offset', 'amplitude', 'freq', 'phase'] }
+		'sawtooth' { ['min', 'max', 'period'] }
+		'counter' { ['start', 'step', 'modulo'] }
+		'stepmod' { ['period', 'count', 'base'] }
+		else { []string{} }
+	}
+}
+
+// param is the source's parameter `name` (one of wave_param_names), 0 for any other name.
+pub fn (g GenCfg) param(name string) f64 {
+	return match name {
+		'value' { g.value }
+		'offset' { g.offset }
+		'amplitude' { g.amplitude }
+		'freq' { g.freq }
+		'phase' { g.phase }
+		'min' { g.min }
+		'max' { g.max }
+		'period' { g.period }
+		'start' { g.start }
+		'step' { g.step }
+		'modulo' { g.modulo }
+		'count' { g.count }
+		'base' { g.base }
+		else { 0 }
+	}
+}
+
 // gen_source_invalid reports why a value source cannot be evaluated, or '' when it is fine. Two
 // things make one unusable, and both otherwise reach sim.Gen.value() and come out as garbage on
 // the wire: a type outside the vocabulary (gen_from_cfg falls through to a CONSTANT, so a
