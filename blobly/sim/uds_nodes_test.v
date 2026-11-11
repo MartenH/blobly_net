@@ -361,3 +361,96 @@ fn test_functional_id_is_answered_unless_it_is_a_physical_one() {
 	assert uds_nodes(mixed)[0].functional == 0
 	assert validate_uds(mixed).any(it.contains('frame format'))
 }
+
+fn test_diag_servers_decides_the_wire() {
+	row := project.Channel{
+		name:    'CAN1'
+		adapter: 'virtual'
+		address: 'W'
+		iface:   'inproc:W'
+	}
+	off := project.Channel{
+		...row
+		builtin_uds: false
+	}
+	plain := [project.NodeCfg{
+		name: 'BodyECU'
+	}]
+	assert diag_servers([], plain, [row], row) == .builtin
+	assert diag_servers([], plain, [off], off) == .off
+	bad := [project.NodeCfg{
+		name: 'BCM'
+		uds:  project.UdsCfg{}
+	}]
+	assert diag_servers(uds_nodes(bad), bad, [row], row) == .rejected
+	good := [project.NodeCfg{
+		name: 'BCM'
+		uds:  project.UdsCfg{
+			rx: 0x7E1
+			tx: 0x7E9
+		}
+	}]
+	assert diag_servers(uds_nodes(good), good, [off], off) == .nodes, 'a node of its own still answers'
+}
+
+fn test_uds_nodes_declare_io_and_memory() {
+	nodes := [project.NodeCfg{
+		name: 'BCM'
+		uds:  project.UdsCfg{
+			rx:     0x7E1
+			tx:     0x7E9
+			io:     [project.IoCfg{
+				id:   0x1234
+				size: 1
+			}, project.IoCfg{
+				id:   0x1F234
+				size: 1
+			}]
+			memory: [project.MemCfg{
+				address: 0x2000_0000
+				size:    256
+			}, project.MemCfg{
+				address: 0x3000_0000
+				size:    0
+			}]
+		}
+	}]
+	mut srv := uds_nodes(nodes)[0].server
+	assert srv.io_start.keys() == [u16(0x1234)]
+	assert srv.memory.len == 1
+	assert srv.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x05]) == [u8(0x6F), 0x12, 0x34, 0x03, 0x05]
+	assert srv.handle([u8(0x23), 0x14, 0x20, 0x00, 0x00, 0x00, 0x01]) == [u8(0x63), 0x00]
+	warns := validate_uds(nodes)
+	assert warns.any(it.contains('IO DID 0x1F234 is above the 16-bit range'))
+	assert warns.any(it.contains('memory at 0x30000000 size 0'))
+}
+
+fn test_validate_uds_reports_overlapping_memory_and_io_listed_twice() {
+	nodes := [project.NodeCfg{
+		name: 'BCM'
+		uds:  project.UdsCfg{
+			rx:     0x7E1
+			tx:     0x7E9
+			dids:   [project.DidCfg{
+				id:   0x1234
+				text: 'x'
+			}]
+			io:     [project.IoCfg{
+				id:   0x1234
+				size: 1
+			}]
+			memory: [project.MemCfg{
+				address: 0x1000
+				size:    16
+			}, project.MemCfg{
+				address: 0x100F
+				size:    4
+			}]
+		}
+	}]
+	warns := validate_uds(nodes)
+	assert warns.any(it.contains('IO DID 0x1234 is also listed under dids:'))
+	assert warns.any(it.contains('overlaps the range at 0x1000'))
+	mut srv := uds_nodes(nodes)[0].server
+	assert srv.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00], '0x22 reads the IO value'
+}

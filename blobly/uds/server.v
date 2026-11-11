@@ -2,7 +2,8 @@
 // It rides an isotp.Channel (e.g. the software ISO-TP over the in-process bus), so
 // a simulated ECU can answer diagnostic requests with no Python and no kernel
 // ISO-TP. Mirrors uds_server.py: 0x10 session control, 0x22 RDBI (DID table),
-// 0x3E tester present; unknown service/DID → negative response. Also 0x11 (the diagnostic state
+// 0x3E tester present (and 0xF186, 0x2F, 0x23 and 0x3D: io_memory.v); unknown service/DID →
+// negative response. Also 0x11 (the diagnostic state
 // back to power-on), 0x19 01/02/0A (the DTC table: count, by status mask, all) and 03/04/06 (its
 // snapshots and extended data, shaped as blobly_emb's fault memory answers them), 0x14 (clears it)
 // and 0x85 (acknowledged — this server records no faults, so there is nothing to suspend), and
@@ -17,6 +18,10 @@ pub struct Server {
 pub mut:
 	dids     map[u16][]u8 // ReadDataByIdentifier table (0x22/0x2E)
 	dtcs     []Dtc        // ReadDTCInformation table (0x19 01/02/0A), cleared by 0x14
+	// the IO DIDs 0x2F controls, each one's start value (its current value is in dids), and the
+	// memory ranges 0x23/0x3D reach (io_memory.v); empty = the service is not supported
+	io_start map[u16][]u8
+	memory   []MemRange
 	// each DTC's snapshot DID values, captured when the server serves its first request: a freeze
 	// frame is history, so a later 0x2E to one of its DIDs must not rewrite it
 	snap_vals  map[u32]map[u16][]u8
@@ -141,6 +146,11 @@ fn (mut s Server) answer(req []u8) []u8 {
 				resp << data
 				return resp
 			}
+			if data := s.session_did(did) {
+				mut resp := [u8(0x62), req[1], req[2]]
+				resp << data
+				return resp
+			}
 			return neg(sid, 0x31) // requestOutOfRange
 		}
 		0x2E { // WriteDataByIdentifier
@@ -148,6 +158,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 				return neg(sid, 0x13)
 			}
 			did := (u16(req[1]) << 8) | u16(req[2])
+			if _ := s.session_did(did) {
+				return neg(sid, 0x31) // the active session is read, never written
+			}
 			s.dids[did] = req[3..].clone()
 			return [u8(0x6E), req[1], req[2]]
 		}
@@ -190,6 +203,15 @@ fn (mut s Server) answer(req []u8) []u8 {
 		}
 		0x3E { // TesterPresent
 			return [u8(0x7E), 0x00]
+		}
+		0x2F {
+			return if s.io_start.len > 0 { s.io_control(req) } else { neg(sid, 0x11) }
+		}
+		0x23 {
+			return if s.memory.len > 0 { s.read_memory(req) } else { neg(sid, 0x11) }
+		}
+		0x3D {
+			return if s.memory.len > 0 { s.write_memory(req) } else { neg(sid, 0x11) }
 		}
 		0x11 { // ECUReset: the diagnostic state back to power-on (a simulated ECU has no core to restart)
 			if req.len < 2 {

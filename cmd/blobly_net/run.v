@@ -1244,7 +1244,16 @@ fn (mut app App) start() {
 			sc.iface) {
 			app.notify(n)
 		}
-		if diag_nodes.len == 0 {
+		decision := sim.diag_servers(diag_nodes, peers, app.proj.channels, sc.pch)
+		if decision == .rejected {
+			// a broken `uds:` block must not look like a working ECU: no built-in server stands in
+			app.notify('${sc.pch.name}: every configured UDS node was rejected — not starting the default server in their place')
+			continue
+		}
+		if decision == .off {
+			continue // `builtin_uds: false`: frames without diagnostics
+		}
+		if decision == .builtin {
 			dflt := sim.describe_default(&desc_sys, sc.pch.name, sc.iface, diag_tx_id, diag_rx_id)
 			for n in dflt.notes {
 				app.notify(n)

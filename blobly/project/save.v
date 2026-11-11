@@ -66,6 +66,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.j1939 {
 			b.writeln('    j1939: true')
 		}
+		if ch.kind() == .can && !ch.builtin_uds {
+			b.writeln('    builtin_uds: false')
+		}
 		if n := ch.nm {
 			ext := if n.ext && n.hi <= 0x7FF { ', ext: true' } else { '' }
 			b.writeln('    nm: { lo: 0x${n.lo:X}, hi: 0x${n.hi:X}${ext}, timeout_ms: ${n.timeout_ms} }')
@@ -177,6 +180,18 @@ pub fn (p Project) to_yaml() string {
 						b.writeln('          dtcs:')
 						for t in u.dtcs {
 							b.writeln('            - { code: "0x${t.code:06X}", status: ${t.status} }')
+						}
+					}
+					if u.io.len > 0 {
+						b.writeln('          io:')
+						for x in u.io {
+							b.writeln('            - { id: "0x${x.id:X}", size: ${x.size} }')
+						}
+					}
+					if u.memory.len > 0 {
+						b.writeln('          memory:')
+						for m in u.memory {
+							b.writeln('            - { address: "0x${m.address:X}", size: ${m.size} }')
 						}
 					}
 				}

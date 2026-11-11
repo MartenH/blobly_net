@@ -81,6 +81,7 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 				srv.put_did(u16(d.id), value)
 			}
 		}
+		declare_io_memory(mut srv, c, max_did)
 		if c.dtcs.len > 0 && spec.faults.len == 0 {
 			notes << 'it has no fault memory (no [[fault]]), so 0x19 is not served and the `dtcs:` of the project are not'
 		} else {

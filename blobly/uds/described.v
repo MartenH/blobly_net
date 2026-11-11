@@ -17,7 +17,8 @@
 // names), so sysview fills a ServerSpec and this builds from it. What a simulated ECU cannot do it
 // refuses rather than acknowledges: 0x28 is serviceNotSupported (nothing here gates the simulated
 // traffic), and the programming handoff (0x10 02) is conditionsNotCorrect once its gates pass —
-// there is no bootloader to hand the ECU to.
+// there is no bootloader to hand the ECU to. 0x2F and 0x23/0x3D are served for the IO DIDs and
+// memory ranges a project declares (io_memory.v), behind their table rows like any service.
 module uds
 
 import time
@@ -347,6 +348,8 @@ fn (s &Server) supported(sid u8) bool {
 		0x11 { s.spec.serves_reset }
 		0x14, 0x19, 0x85 { s.spec.faults.len > 0 }
 		0x27 { s.spec.security_mask() != 0 }
+		0x2F { s.io_start.len > 0 }
+		0x23, 0x3D { s.memory.len > 0 }
 		else { false }
 	}
 }
@@ -406,6 +409,9 @@ fn (mut s Server) answer_described(req []u8) []u8 {
 		0x27 { s.d_security(req, now) }
 		0x3E { s.d_tester_present(req) }
 		0x14, 0x19, 0x85 { s.answer_dtc(req) }
+		0x2F { s.io_control(req) }
+		0x23 { s.read_memory(req) }
+		0x3D { s.write_memory(req) }
 		else { neg(sid, 0x11) }
 	}
 }
@@ -493,6 +499,10 @@ fn (mut s Server) d_read(req []u8) []u8 {
 	mut ids := []u16{}
 	for k := 1; k + 1 < req.len; k += 2 {
 		id := u16(req[k]) << 8 | u16(req[k + 1])
+		if _ := s.session_did(id) {
+			ids << id
+			continue
+		}
 		d := s.readable(id) or { continue }
 		if d.read.level != 0 && s.unlocked != d.read.level {
 			return neg(0x22, 0x33)
@@ -504,13 +514,18 @@ fn (mut s Server) d_read(req []u8) []u8 {
 	}
 	mut total := 1
 	for id in ids {
-		total += 2 + (s.dids[id] or { []u8{} }).len
+		total += 2 + (s.dids[id] or { s.session_did(id) or { []u8{} } }).len
 	}
 	if total > s.spec.resp_cap() {
 		return neg(0x22, 0x14) // responseTooLong: more than the carrier takes in one answer
 	}
 	mut resp := [u8(0x62)]
 	for id in ids {
+		if v := s.session_did(id) {
+			resp << [u8(id >> 8), u8(id)]
+			resp << v
+			continue
+		}
 		d := s.did_spec(id) or { continue }
 		if d.source == .live {
 			s.refresh_live(d)

@@ -41,9 +41,24 @@ pub const schema_version = 13
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
 	// v13 — a CAN-FD data phase's own sample point (`data_sample_point`), which an older build
-	// drops on its next structured save, and the data phase samples where the arbitration does.
+	// drops on its next structured save, and the data phase samples where the arbitration does;
+	// a row turning off the built-in UDS server (`builtin_uds: false`), and a simulated ECU's IO
+	// DIDs (`io:`) and memory ranges (`memory:`). An older build drops each on its next
+	// structured save: the built-in server answers again, and 0x2F/0x23/0x3D go unanswered.
 	if p.channels.any(it.data_sample_point != 0) {
 		return 13
+	}
+	for c in p.channels {
+		if c.kind() == .can && !c.builtin_uds {
+			return 13
+		}
+		for n in c.nodes {
+			if u := n.uds {
+				if u.io.len > 0 || u.memory.len > 0 {
+					return 13
+				}
+			}
+		}
 	}
 	// v12 — a LIN bus as a row of `buses:` (`adapter: lin`), which an older build reads as a CAN
 	// channel. (v11's top-level `lin:` list is read into such rows.)
@@ -258,6 +273,24 @@ pub mut:
 	// A functional request id this ECU also answers (0x7DF on an 11-bit bus), 0 = none. The
 	// answers go out on `tx` like any other; see uds.serve_step.
 	functional u64
+	// IO DIDs it controls through 0x2F, and memory ranges 0x23/0x3D read and write (v13)
+	io     []IoCfg
+	memory []MemCfg
+}
+
+// IoCfg is one IO DID a simulated ECU controls (0x2F), zeros of `size` bytes at start. Both wide,
+// like DidCfg.id, so validation sees an out-of-range value instead of a narrowed valid one.
+pub struct IoCfg {
+pub mut:
+	id   u32
+	size u32
+}
+
+// MemCfg is one memory range a simulated ECU reads (0x23) and writes (0x3D), zeros at start.
+pub struct MemCfg {
+pub mut:
+	address u64
+	size    u32
 }
 
 // DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
@@ -462,6 +495,9 @@ pub mut:
 	// counter and checksum a bench needs checked.
 	verify   []ProtectCfg
 	simulate []string  // shorthand: ECU node names to simulate with default behaviour
+	// builtin_uds false: no built-in 0x7E0/0x7E8 diagnostic server on this row's wire when no
+	// node of it has a `uds:` block (`builtin_uds: false`, v13; builtin_uds_off is the rule)
+	builtin_uds bool = true
 	nodes    []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders  []Sender  // interactive generators: triggerable custom frames
 	replay   ?Replay
@@ -989,6 +1025,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		mode:         mode_from(c.value('mode').default_to('normal').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
 		j1939:        c.value('j1939').default_to(false).bool()
+		builtin_uds:  c.value('builtin_uds').default_to(true).bool()
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	ch.data_sample_point = c.value('data_sample_point').default_to(f64(0)).f64()
@@ -1421,6 +1458,28 @@ fn parse_node(n yaml.Any) NodeCfg {
 				ucfg.dtcs << DtcCfg{
 					code:   clamp_u32(parse_id_wide(t.value('code').str()))
 					status: clamp_i64_u32(t.value('status').default_to(i64(0x09)).i64())
+				}
+			}
+		}
+		if xs := u.value_opt('io') {
+			for x in xs.array() {
+				if !hex_id_is_clean(x.value('id').str()) {
+					ucfg.malformed << 'io ${x.value('id').str()}'
+				}
+				ucfg.io << IoCfg{
+					id:   clamp_u32(parse_id_wide(x.value('id').str()))
+					size: clamp_i64_u32(x.value('size').default_to(i64(0)).i64())
+				}
+			}
+		}
+		if ms := u.value_opt('memory') {
+			for m in ms.array() {
+				if !hex_id_is_clean(m.value('address').str()) {
+					ucfg.malformed << 'memory ${m.value('address').str()}'
+				}
+				ucfg.memory << MemCfg{
+					address: parse_id_wide(m.value('address').str())
+					size:    clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
 				}
 			}
 		}

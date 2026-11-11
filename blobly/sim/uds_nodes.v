@@ -80,6 +80,29 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	return out
 }
 
+// DiagServers is which diagnostic servers a wire's simulated nodes start.
+pub enum DiagServers {
+	nodes    // the nodes' own (uds_nodes found some)
+	builtin  // the built-in server on 0x7E0/0x7E8: no node has a `uds:` block
+	off      // none: an enabled row of the wire says `builtin_uds: false`
+	rejected // none: every `uds:` block was refused, and the built-in one does not stand in
+}
+
+// diag_servers decides it for the wire `row` is on, given the servers uds_nodes built from the
+// wire's nodes `peers` and the project's rows. The GUI and the headless runner both ask this.
+pub fn diag_servers(servers []UdsNode, peers []project.NodeCfg, rows []project.Channel, row project.Channel) DiagServers {
+	if servers.len > 0 {
+		return .nodes
+	}
+	if peers.any(it.uds != none) {
+		return .rejected
+	}
+	if project.builtin_uds_off(rows, row) {
+		return .off
+	}
+	return .builtin
+}
+
 // functional_usable: a configured functional id that is a CAN id of the node's own frame format
 // (an 11-bit broadcast to a 29-bit ECU is a combination no ISO 15765-4 tester uses) and no
 // served ECU's physical id. The ONE rule: uds_nodes applies it, validate_uds explains it.
@@ -125,7 +148,29 @@ fn build_server(cfg project.UdsCfg, max_did int, max_dtc int) uds.Server {
 			status: u8(t.status)
 		}
 	}
+	declare_io_memory(mut srv, cfg, max_did)
 	return srv
+}
+
+// max_memory_range is the largest memory range a simulated ECU declares: its contents are held
+// in memory, and one 0x23 answer carries at most a carrier's transfer of it anyway.
+pub const max_memory_range = 1 << 20
+
+// declare_io_memory gives a server the block's IO DIDs (0x2F) and memory ranges (0x23/0x3D), the
+// ones validate_content does not refuse. Shared by the project's servers and the described ones.
+fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, max_did int) {
+	for x in cfg.io {
+		if x.id > 0xFFFF || x.size == 0 || x.size > u32(max_did) || u16(x.id) in srv.io_start {
+			continue // reported by validate_content
+		}
+		srv.declare_io(u16(x.id), int(x.size))
+	}
+	for m in cfg.memory {
+		if m.size == 0 || m.size > max_memory_range || m.address > max_u64 - u64(m.size) + 1 {
+			continue // reported by validate_content
+		}
+		srv.declare_memory(m.address, int(m.size))
+	}
 }
 
 // uds_nodes_doip builds the servers for a DoIP channel. A DoIP node has NO CAN identifiers —
@@ -177,6 +222,35 @@ fn validate_content(name string, cfg project.UdsCfg, max_did int, carrier string
 			// handle() prepends a 3-byte header; past the carrier's limit the transfer cannot
 			// be sent and the send error is discarded, so the tester sees only a timeout
 			warns << 'uds on "${name}": DID 0x${d.id:X} is ${d.value_len()} bytes — over the ${max_did}-byte ${carrier} limit'
+		}
+	}
+	mut seen_io := map[u32]bool{}
+	for x in cfg.io {
+		if x.id > 0xFFFF {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is above the 16-bit range — ignored'
+		} else if x.size == 0 || x.size > u32(max_did) {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} size ${x.size} is not 1..${max_did} bytes — ignored'
+		} else if x.id in seen_io {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is declared more than once — the first is served'
+		} else if x.id in seen_did {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is also listed under dids: — 0x22 reads the IO value'
+		}
+		seen_io[x.id] = true
+	}
+	for i, m in cfg.memory {
+		if m.size == 0 || m.size > max_memory_range {
+			warns << 'uds on "${name}": memory at 0x${m.address:X} size ${m.size} is not 1..${max_memory_range} bytes — ignored'
+			continue
+		}
+		if m.address > max_u64 - u64(m.size) + 1 {
+			warns << 'uds on "${name}": memory at 0x${m.address:X} size ${m.size} runs past the 64-bit address space — ignored'
+			continue
+		}
+		for o in cfg.memory[..i] {
+			if o.size > 0 && m.address < o.address + u64(o.size) && o.address < m.address + u64(m.size) {
+				warns << 'uds on "${name}": memory at 0x${m.address:X} overlaps the range at 0x${o.address:X} — a request is served from one range only'
+				break
+			}
 		}
 	}
 	return warns
