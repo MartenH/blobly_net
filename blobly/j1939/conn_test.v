@@ -149,8 +149,8 @@ fn test_what_cannot_be_a_connection_is_refused() {
 	assert false
 }
 
-// A responder answers only an RTS to its address; a gap aborts (reason 7), a stall aborts
-// (reason 3); a window the RTS limits takes one CTS per window.
+// A responder answers only an RTS to its address; a gap aborts (reason 7), a repeat (reason 8),
+// a stall (reason 3); a window the RTS limits takes one CTS per window.
 fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	mut o := connection_for(prop_cfg(), '', 0)!
 	rts := o.start(0).frames[0]
@@ -164,6 +164,11 @@ fn test_a_responder_answers_its_address_and_gives_up_on_a_stall() {
 	packets := o.feed(r.feed(rts, 0)[0], 1).frames
 	gap := r.feed(packets[1], 2)
 	assert gap.len == 1 && gap[0].data[..3] == [cm_abort, 7, 0xFD] && r.open() == 0
+	// a packet already in aborts too (reason 8), as the listener beside it drops the transfer
+	r.feed(rts, 5)
+	r.feed(packets[0], 6)
+	dup := r.feed(packets[0], 7)
+	assert dup.len == 1 && dup[0].data[..3] == [cm_abort, 8, 0xFD] && r.open() == 0
 	r.feed(rts, 10)
 	r.feed(packets[0], 11)
 	assert r.poll(11 + conn_t1_ms).len == 0
@@ -325,4 +330,65 @@ fn test_send_connection_reads_no_answer_meant_for_the_lane_holder() {
 	holder.free_lane(time.sys_mono_now())
 	got := <-ch
 	assert got.contains('no CTS'), got
+}
+
+// Spy reads what a handle of its own sees on the wire, for a stop that asks it.
+@[heap]
+struct Spy {
+mut:
+	bus    transport.Bus
+	frames []transport.CanFrame
+}
+
+fn (mut s Spy) drain() {
+	for {
+		f := s.bus.recv(0) or { return }
+		s.frames << f
+	}
+}
+
+fn (s &Spy) packets() int {
+	return s.frames.filter(pgn(it.id) == pgn_tp_dt).len
+}
+
+// A stop asked between the packets of a window ends the connection there: no packet after it,
+// and the abort (reason 250).
+fn test_send_connection_stops_between_packets() {
+	wire := 'inproc:J1939_CONN_STOP'
+	mut tx := transport.open(wire)!
+	mut peer := transport.open(wire)!
+	mut spy := &Spy{
+		bus: transport.open(wire)!
+	}
+	defer {
+		tx.close()
+		peer.close()
+		spy.bus.close()
+	}
+	spawn fn (mut peer transport.Bus) {
+		mut r := Responder{
+			addresses: [u8(0x00)]
+		}
+		t0 := time.ticks()
+		for time.ticks() - t0 < 2000 {
+			f := peer.recv(10) or { continue }
+			for a in r.feed(f, f64(time.ticks())) {
+				peer.send(a) or {}
+			}
+			if f.data[0] == cm_abort {
+				return
+			}
+		}
+	}(mut peer)
+	send_connection(mut tx, prop_cfg(), 0, fn [mut spy] () bool {
+		spy.drain()
+		return spy.packets() >= 1
+	}) or {
+		assert err is ConnError && (err as ConnError).end == .stopped, err.msg()
+		spy.drain()
+		assert spy.packets() == 1
+		assert spy.frames.last().data[..3] == [cm_abort, 250, 0xFC]
+		return
+	}
+	assert false, 'stopped'
 }

@@ -31,6 +31,7 @@ pub const conn_per_cts = u8(8)
 // abort reasons this side sends (J1939-21; abort_reason names every one)
 const abort_timeout = u8(3)
 const abort_bad_sequence = u8(7)
+const abort_duplicate = u8(8)
 const abort_other = u8(250)
 
 // ConnEnd is how a connection stands, or how it ended.
@@ -281,8 +282,9 @@ fn (o Originator) abort_frame(reason u8) transport.CanFrame {
 
 // Responder answers RTS/CTS connections aimed at `addresses`: a CTS for each window (as many
 // packets as the RTS allows per CTS), the end-of-message acknowledgement once the last packet is
-// in, an abort for a packet out of sequence (reason 7) or for packets that stop (reason 3: T2 after
-// a CTS, T1 between packets). It keeps no data: a listener beside it rejoins the message.
+// in, an abort for a packet out of sequence (reason 7) or one already in (reason 8, as a listener
+// beside it drops the transfer) or for packets that stop (reason 3: T2 after a CTS, T1 between
+// packets). It keeps no data: a listener beside it rejoins the message.
 pub struct Responder {
 pub mut:
 	addresses []u8
@@ -353,12 +355,10 @@ pub fn (mut r Responder) feed(f transport.CanFrame, now_ms f64) []transport.CanF
 		pgn_tp_dt {
 			mut c := r.conns[k] or { return [] }
 			seq := int(f.data[0])
-			if seq < c.next {
-				return [] // a packet repeated: already in
-			}
-			if seq > c.next {
+			if seq != c.next {
 				r.conns.delete(k)
-				return [abort_frame(me, id.sa, abort_bad_sequence, .responder, c.pgn)]
+				why := if seq >= 1 && seq < c.next { abort_duplicate } else { abort_bad_sequence }
+				return [abort_frame(me, id.sa, why, .responder, c.pgn)]
 			}
 			c.next++
 			c.deadline = now_ms + conn_t1_ms
@@ -470,8 +470,13 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 	// subscribed before the RTS goes out, so its answer cannot pass the reader by
 	rd.recv(0) or {}
 	mut out := o.start(mono_ms())
-	for {
+	exchange: for {
 		for x in out.frames {
+			// a stop between the packets of a window ends it there, its abort sent next
+			if out.end == .open && stop != unsafe { nil } && pgn(x.id) == pgn_tp_dt && stop() {
+				out = o.stop()
+				continue exchange
+			}
 			bus.send(x) or {
 				if o.open() {
 					bus.send(o.abort_frame(abort_other)) or {}

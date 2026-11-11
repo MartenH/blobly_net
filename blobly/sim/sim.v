@@ -281,6 +281,8 @@ pub mut:
 	// answers for the addresses its nodes' J1939 messages are sent from
 	conns   []j1939.Originator
 	answers j1939.Responder
+	// the frames of those connections it sent that its own connections have yet to read (local)
+	local []transport.CanFrame
 	// the clock of the last step, which on_frame reads
 	now_ms f64
 	// why a message is never sent, said once per message (take_notes), and which were said
@@ -438,6 +440,7 @@ mut:
 // or dropped by a fault leaves it as it was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	e.now_ms = now_ms
+	e.carry_local(send)
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
@@ -478,9 +481,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	// connections past their wait are aborted, and so are the ones it answers whose packets stopped
 	for k := 0; k < e.conns.len; k++ {
 		out := e.conns[k].poll(now_ms)
-		for f in out.frames {
-			send(f)
-		}
+		e.send_conn(out.frames, send)
 		if out.end != .open {
 			e.conn_ended(e.conns[k], out)
 			e.conns.delete(k)
@@ -489,9 +490,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 			e.conns[k].take_lane(time.sys_mono_now())
 		}
 	}
-	for f in e.answers.poll(now_ms) {
-		send(f)
-	}
+	e.send_conn(e.answers.poll(now_ms), send)
 }
 
 // record_sent makes `last` its message's last sent, unless a later frame of it already is.
@@ -675,8 +674,7 @@ fn (mut e Engine) emit(f transport.CanFrame, msg candb.Message, send fn (f trans
 
 // connect opens message `msg`'s RTS/CTS connection for frame `f`: its RTS handed to `send`, the
 // rest driven by the frames on_frame reads and timed by step — or, aimed at an address another of
-// its own nodes answers for, carried through at once (with_local), every frame still handed to
-// `send`. False — the period's message not sent — while a connection between the same two
+// its own nodes answers for, by step a hop at a time (carry_local). False — the period's message not sent — while a connection between the same two
 // addresses is still going on, here or by another sender in this process (its lane).
 fn (mut e Engine) connect(f transport.CanFrame, msg candb.Message, send fn (f transport.CanFrame) bool) bool {
 	id := j1939.decompose(f.id)
@@ -697,21 +695,32 @@ fn (mut e Engine) connect(f transport.CanFrame, msg candb.Message, send fn (f tr
 		return false
 	}
 	e.conns << o
-	for fr in e.with_local(rts)[1..] {
-		send(fr)
-	}
+	e.local << rts[0]
 	return true
 }
 
-// with_local is `frames`, which the engine sends, each followed in turn by what its own
-// connections make of it (j1939_frame): its own frames never come back to it off the wire, so a
-// connection between two of its nodes is carried here, frame by frame in wire order.
-fn (mut e Engine) with_local(frames []transport.CanFrame) []transport.CanFrame {
-	mut q := frames.clone()
-	for i := 0; i < q.len; i++ {
-		q << e.j1939_frame(q[i])
+// carry_local hands its own connections the connection frames it sent since the last step (its
+// own frames never come back to it off the wire), and `send` what they make of them: a connection
+// between two of its nodes goes a hop a step — an RTS's CTS, a CTS's window, a window's CTS or
+// acknowledgement — as it would between two nodes.
+fn (mut e Engine) carry_local(send fn (f transport.CanFrame) bool) {
+	sent := e.local
+	e.local = []
+	for f in sent {
+		e.send_conn(e.j1939_frame(f), send)
 	}
-	return q
+}
+
+// send_conn hands `send` a connection's `frames` in order, up to the first it refuses, and keeps
+// those it took for its own connections to read at the next step (carry_local): a frame that did
+// not go out is never read as sent, so a connection it belonged to times out rather than completes.
+fn (mut e Engine) send_conn(frames []transport.CanFrame, send fn (f transport.CanFrame) bool) {
+	for f in frames {
+		if !send(f) {
+			return
+		}
+		e.local << f
+	}
 }
 
 // conn_ended lets a finished connection's lane go and says, once per message and outcome, one
@@ -823,7 +832,7 @@ pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
 // message has period 0, so due_frames never touches it and its send count would otherwise
 // stay at zero forever — a receiver checking the counter would reject every single response.
 pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
-	mut out := e.with_local(e.j1939_frame(f))
+	mut out := e.j1939_frame(f)
 	for i := 0; i < e.ecus.len; i++ {
 		for r in e.ecus[i].rules {
 			if f.id != r.req_id {

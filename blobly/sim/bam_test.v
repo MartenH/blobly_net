@@ -153,14 +153,15 @@ fn test_an_unanswered_connection_is_aborted_and_said_once() {
 	assert body.take_notes().len == 0
 }
 
-// Two of the engine's own nodes: the connection is carried at once, every frame on the wire in
+// Two of the engine's own nodes: the connection goes a hop a step, every frame on the wire in
 // order — RTS, CTS, three packets, the acknowledgement.
 fn test_a_connection_between_two_of_its_own_nodes() {
 	mut e := Engine{
 		ecus: [j1939_node('Body', 'PropA_Cfg', 1000), j1939_node('Engine', 'EEC1', 0)]
 	}
-	frames, _ := steps(mut e, 400)
+	frames, at := steps(mut e, 400)
 	assert frames.map(it.data[0]) == [j1939.cm_rts, j1939.cm_cts, 1, 2, 3, j1939.cm_eom_ack]
+	assert at == [0.0, 5, 10, 10, 10, 15]
 	mut r := j1939.Reassembler{}
 	mut done := []j1939.Assembled{}
 	for f in frames {
@@ -250,6 +251,27 @@ fn test_a_slow_write_moves_the_next_frame() {
 struct SentAt {
 mut:
 	at []int
+}
+
+// Between two of its own nodes, a packet the transport refuses is not read as sent: the
+// connection is not acknowledged: the responder's packets stop, it aborts, and that is said.
+fn test_a_refused_packet_between_its_own_nodes_times_out() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 2000), j1939_node('Engine', 'EEC1', 0)]
+	}
+	mut out := &FrameBox{}
+	for t := 0; t <= 2000; t += 5 {
+		e.step(f64(t), fn [mut out] (f transport.CanFrame) bool {
+			if j1939.pgn(f.id) == j1939.pgn_tp_dt && f.data[0] == 2 {
+				return false
+			}
+			out.frames << f
+			return true
+		})
+	}
+	assert !out.frames.any(it.data[0] == j1939.cm_eom_ack)
+	notes := e.take_notes()
+	assert notes.len == 1 && notes[0].contains('timeout'), notes.str()
 }
 
 // A loop ending with connections open aborts what the engine sends and answers, and lets the
