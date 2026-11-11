@@ -100,6 +100,7 @@ pub fn bb_gen_info(g i32, out &C.bb_generator) i32 {
 		out.ext = u8(i.ext)
 		out.running = u8(i.running)
 		out.sendable = u8(i.note == '' && i.target != '')
+		out.applied = u8(i.applied)
 		out.cycle_ms = i32(i.cycle_ms)
 		out.sent = i.sent
 	}
@@ -199,5 +200,99 @@ pub fn bb_gen_source(g i32, signal &char, w &C.bb_wave) i32 {
 		base:      w.base
 	}
 	r.gen_source(int(g), vstr(signal), src) or { return gen_failed(err) }
+	return ok()
+}
+
+@[export: 'bb_gen_signals']
+pub fn bb_gen_signals(g i32) i32 {
+	mut r := gen_run() or { return refused(err) }
+	sigs := r.gen_signals(int(g)) or { return gen_failed(err) }
+	return keep_listing(Listing{
+		signals: sigs
+	})
+}
+
+// gen_signal_row is row `i` of signal listing `list`.
+fn gen_signal_row(list i32, i i32) !project.SenderSig {
+	l := listing(list) or { return error_with_code('no listing ${list}', int(bb_err_handle)) }
+	if i < 0 || int(i) >= l.signals.len {
+		return error('signal ${i}: listing ${list} has ${l.signals.len}')
+	}
+	return l.signals[int(i)]
+}
+
+@[export: 'bb_gen_signal_info']
+pub fn bb_gen_signal_info(list i32, i i32, out &C.bb_gen_signal) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'gen_signal_info: no bb_gen_signal to fill')
+	}
+	sig := gen_signal_row(list, i) or { return refused(err) }
+	w := sig.wave
+	reads := project.wave_params(w.typ)
+	mut bits := u16(0)
+	for k, p in project.wave_param_names {
+		if p in reads {
+			bits |= u16(1) << k
+		}
+	}
+	unsafe {
+		out.value = sig.value
+		out.sourced = u8(w.typ != '')
+		out.reads = bits
+		out.source = C.bb_wave{
+			kind:      nil
+			value:     w.value
+			offset:    w.offset
+			amplitude: w.amplitude
+			freq:      w.freq
+			phase:     w.phase
+			min:       w.min
+			max:       w.max
+			period:    w.period
+			start:     w.start
+			step:      w.step
+			modulo:    w.modulo
+			count:     w.count
+			base:      w.base
+		}
+	}
+	return ok()
+}
+
+@[export: 'bb_gen_signal_text']
+pub fn bb_gen_signal_text(list i32, i i32, which i32, buf &char, cap i32) i32 {
+	sig := gen_signal_row(list, i) or { return refused(err) }
+	s := match which {
+		i32(C.BB_GEN_SIGNAL_NAME) { sig.name }
+		i32(C.BB_GEN_SIGNAL_KIND) { sig.wave.typ }
+		else { return fail(bb_err, 'gen_signal_text: no text ${which}') }
+	}
+	return put(s, buf, cap)
+}
+
+@[export: 'bb_gen_unset']
+pub fn bb_gen_unset(g i32, signal &char) i32 {
+	if isnil(signal) {
+		return fail(bb_err, 'gen_unset: no signal')
+	}
+	mut r := gen_run() or { return refused(err) }
+	r.gen_unset(int(g), vstr(signal)) or { return gen_failed(err) }
+	return ok()
+}
+
+@[export: 'bb_gen_data']
+pub fn bb_gen_data(g i32, buf &u8, cap i32) i32 {
+	i := gen_info(g) or { return gen_failed(err) }
+	return put_bytes(i.data, buf, cap)
+}
+
+@[export: 'bb_gen_set_data']
+pub fn bb_gen_set_data(g i32, data &u8, n i32) i32 {
+	if n < 0 || (n > 0 && isnil(data)) {
+		return fail(bb_err, 'gen_set_data: ${n} bytes at ${if isnil(data) { 'NULL' } else { 'a buffer' }}')
+	}
+	mut r := gen_run() or { return refused(err) }
+	bytes := if n == 0 { []u8{} } else { unsafe { data.vbytes(int(n)).clone() } }
+	r.gen_data(int(g), bytes) or { return gen_failed(err) }
 	return ok()
 }

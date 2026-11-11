@@ -52,6 +52,7 @@ pub mut:
 	ext      u8
 	running  u8
 	sendable u8
+	applied  u8
 	cycle_ms i32
 	sent     i64
 }
@@ -72,6 +73,14 @@ pub mut:
 	modulo    f64
 	count     f64
 	base      f64
+}
+
+pub struct C.bb_gen_signal {
+pub mut:
+	value   f64
+	sourced u8
+	reads   u16
+	source  C.bb_wave
 }
 
 pub struct C.bb_frame {

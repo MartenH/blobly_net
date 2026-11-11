@@ -388,6 +388,9 @@ typedef struct bb_generator {
 	uint8_t  ext;       /* a 29-bit identifier */
 	uint8_t  running;   /* sending on its cycle now */
 	uint8_t  sendable;  /* it has a bus to send on; BB_GEN_NOTE says why not */
+	uint8_t  applied;   /* the last frame its bus took was built after the last edit of what it
+	                       sends (bb_gen_set, bb_gen_source, bb_gen_unset, bb_gen_set_data); 1
+	                       before any edit */
 	int32_t  cycle_ms;  /* its cycle, 0 for none */
 	int64_t  sent;      /* frames its bus took, fired and cyclic alike */
 } bb_generator;
@@ -410,6 +413,21 @@ typedef struct bb_wave {
 	const char *kind;
 	double value, offset, amplitude, freq, phase, min, max, period, start, step, modulo, count, base;
 } bb_wave;
+
+/* One signal of a generator (bb_gen_signal_info), as its next frame takes it. */
+typedef struct bb_gen_signal {
+	double   value;    /* its static value: sent with no source, the fallback beside one */
+	uint8_t  sourced;  /* it is on a value source, which `source` holds */
+	uint16_t reads;    /* the parameters the source's kind reads: bit i is bb_wave's i-th after
+	                      `kind` (value bit 0 .. base bit 12) */
+	bb_wave  source;   /* its kind NULL: BB_GEN_SIGNAL_KIND names it */
+} bb_gen_signal;
+
+/* What bb_gen_signal_text copies out. */
+enum bb_gen_signal_text {
+	BB_GEN_SIGNAL_NAME = 0,
+	BB_GEN_SIGNAL_KIND = 1   /* its source's kind, "" for none */
+};
 
 /* Replay and recording (bb_replay_*, bb_record_*). */
 enum bb_replay_state {   /* player.State */
@@ -1079,7 +1097,18 @@ int bb_bus_error_counters(int h, int *tx, int *rx);
  * from the value source *w; a signal its message does not have (or whose payload does not hold
  * it), a raw frame's, a non-finite value
  * and a source that cannot be evaluated (an unknown type, a zero period or count) are refused. A
- * signal the generator did not list is added. */
+ * signal the generator did not list is added.
+ *
+ * bb_gen_signals answers a LISTING (>= 0, the Interfaces block's: bb_listing_count, then
+ * bb_listing_free) of the signals generator g lists, each once, as its next frame takes them
+ * (none for a raw frame), read row by row with bb_gen_signal_info and bb_gen_signal_text.
+ * bb_gen_unset takes `signal` off its list (refused when it lists none of that name, or sends a
+ * raw frame), so from its next frame the message's template holds it. bb_gen_data copies a raw
+ * generator's payload into buf (nothing for a message's) and answers its whole length;
+ * bb_gen_set_data sends `len` bytes of `data` from its next frame — refused for a message's
+ * generator, past what a frame on its wire carries (8 bytes, 64 where the row or the wire is
+ * CAN-FD), and past 8 bytes for a length no CAN-FD DLC expresses. A host that waits for an edit to reach the wire reads bb_generator.applied until it is
+ * 1. */
 int bb_gen_count(void);                                  /* >= 0: how many */
 int bb_gen_find(const char *name);                       /* >= 0: the generator `name` names —
                                                             its name or "channel/name"; BB_ERR for
@@ -1095,6 +1124,13 @@ int bb_gen_stop(int g);
 int bb_gen_cycle(int g, int cycle_ms);
 int bb_gen_set(int g, const char *signal, double value);
 int bb_gen_source(int g, const char *signal, const bb_wave *w);
+int bb_gen_signals(int g);                               /* >= 0: a listing */
+int bb_gen_signal_info(int list, int i, bb_gen_signal *out);
+int bb_gen_signal_text(int list, int i, int which, char *buf, int cap);  /* >= 0: the length;
+                                                            which is an enum bb_gen_signal_text */
+int bb_gen_unset(int g, const char *signal);
+int bb_gen_data(int g, uint8_t *buf, int cap);           /* >= 0: the payload's whole length */
+int bb_gen_set_data(int g, const uint8_t *data, int len);
 
 /* Replay and recording to a file (blobly/replay), as the Lua replay.start and record.start.
  *

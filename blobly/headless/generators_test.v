@@ -151,6 +151,70 @@ fn test_a_script_fires_edits_and_cycles_the_runs_generators() {
 	assert false, 'a stopped run fired'
 }
 
+// a script reads a generator's signals back, takes one off its list and changes a raw payload,
+// and is told when the bus has taken a frame built after its last edit
+fn test_a_script_reads_signals_unsets_one_and_sets_raw_data() {
+	mut r, mut bus := gen_run()!
+	defer {
+		bus.close()
+		r.stop()
+	}
+	gs := r.generators()
+	ping, raw := sim.gen_find(gs, 'Ping')!, sim.gen_find(gs, 'Raw')!
+	assert gs[ping].applied && gs[raw].applied, 'nothing edited, yet not applied'
+	assert gs[raw].data == [u8(1), 2] && gs[ping].data.len == 0
+
+	sigs := r.gen_signals(ping)!
+	assert sigs.len == 1 && sigs[0].name == 'ReqCode' && sigs[0].value == 1 && sigs[0].wave.typ == ''
+	r.gen_source(ping, 'ReqCode', project.GenCfg{ typ: 'counter', start: 5, modulo: 16 })!
+	src := r.gen_signals(ping)!
+	assert src.len == 1 && src[0].wave.typ == 'counter' && src[0].wave.start == 5
+		&& src[0].value == 1
+	assert !r.gen_info(ping)!.applied, 'an edit not yet sent reads as applied'
+	r.gen_fire(ping, 0)!
+	assert r.gen_info(ping)!.applied
+	assert next_of(mut bus, 0x101, 1000)?.data[0] == 5
+
+	// unset: the signal carries the template again, and is no longer listed
+	r.gen_unset(ping, 'ReqCode')!
+	assert r.gen_signals(ping)!.len == 0
+	r.gen_fire(ping, 0)!
+	assert next_of(mut bus, 0x101, 1000)?.data[0] == 0
+	if _ := r.gen_unset(ping, 'ReqCode') {
+		assert false, 'a signal not listed was unset'
+	} else {
+		assert err.msg().contains('lists no signal')
+	}
+
+	// a raw payload, on the cyclic generator: once applied, the last frame queued carries it
+	r.gen_data(raw, [u8(9), 8, 7])!
+	assert r.gen_info(raw)!.data == [u8(9), 8, 7]
+	t0 := time.ticks()
+	for !r.gen_info(raw)!.applied {
+		assert time.ticks() - t0 < 1000, 'the new payload never went out'
+		time.sleep(2 * time.millisecond)
+	}
+	mut last := []u8{}
+	for {
+		f := bus.recv(0) or { break }
+		if f.id == 0x321 {
+			last = f.data.clone()
+		}
+	}
+	assert last == [u8(9), 8, 7]
+	assert r.gen_signals(raw)!.len == 0
+
+	// refusals: a raw generator has no signals to unset, a message one no bytes, and a classic
+	// wire carries 8
+	mut refused := []string{}
+	r.gen_unset(raw, 'X') or { refused << err.msg() }
+	r.gen_data(ping, [u8(1)]) or { refused << err.msg() }
+	r.gen_data(raw, []u8{len: 9}) or { refused << err.msg() }
+	assert refused.len == 3 && refused[0].contains('raw frame') && refused[1].contains('signals')
+		&& refused[2].contains('at most 8'), refused.str()
+	assert r.gen_info(raw)!.data == [u8(9), 8, 7], 'a refused payload replaced the last'
+}
+
 // a fire given up on, or reached past its time, is never sent; one taken is not dropped
 fn test_a_fire_given_up_is_not_sent_later() {
 	mut f := &Fire{

@@ -3,11 +3,13 @@ module sim
 import math
 import blobly.candb
 import blobly.project
+import blobly.transport
 
 // gencontrol.v — a running generator controlled from a script (Lua's gen.*, Python's
 // Project.generators): what a script is told about one, the rules an edit is held to, and the
 // interface the run that owns the generators answers (headless.Run). The edits are the ones the
-// GUI's Generators panel makes: fire, cyclic on and off, the cycle, a signal's value or source.
+// GUI's Generators panel makes: fire, cyclic on and off, the cycle, a signal's value or source —
+// and a signal taken off the list, and a raw generator's payload.
 
 // gen_cycle_max_ms is the longest cycle a generator may be given: an hour.
 pub const gen_cycle_max_ms = 3_600_000
@@ -53,8 +55,12 @@ pub:
 	cycle_ms int    // 0 when it has none
 	running  bool   // sending on its cycle now
 	sent     i64    // frames the bus took, by fire and cycle alike
-	target   string // the interface it sends on, '' when it has none
-	note     string // why it cannot send, '' when it can
+	// the last frame the bus took was built after the last edit of what it sends (a signal's
+	// value or source, a signal unset, its payload); true before any edit
+	applied bool
+	data    []u8   // a raw generator's payload, empty for a message's
+	target  string // the interface it sends on, '' when it has none
+	note    string // why it cannot send, '' when it can
 }
 
 // GenControl is a run's generators, by index into `generators()`. A host that runs none answers
@@ -69,6 +75,9 @@ mut:
 	gen_cycle(g int, ms int) !
 	gen_value(g int, signal string, value f64) !
 	gen_source(g int, signal string, w project.GenCfg) !
+	gen_signals(g int) ![]project.SenderSig
+	gen_unset(g int, signal string) !
+	gen_data(g int, data []u8) !
 }
 
 // NoGens is a host with no generator control: the GUI, whose generators are its panel's.
@@ -105,6 +114,18 @@ pub fn (mut n NoGens) gen_value(g int, signal string, value f64) ! {
 }
 
 pub fn (mut n NoGens) gen_source(g int, signal string, w project.GenCfg) ! {
+	return gen_error(.refused, no_gens)
+}
+
+pub fn (mut n NoGens) gen_signals(g int) ![]project.SenderSig {
+	return gen_error(.refused, no_gens)
+}
+
+pub fn (mut n NoGens) gen_unset(g int, signal string) ! {
+	return gen_error(.refused, no_gens)
+}
+
+pub fn (mut n NoGens) gen_data(g int, data []u8) ! {
 	return gen_error(.refused, no_gens)
 }
 
@@ -238,4 +259,48 @@ pub fn gen_set_source(mut s project.Sender, dbs []candb.Database, cap int, signa
 	mut src := w
 	src.signal = signal
 	s.signals[i].wave = src
+}
+
+// gen_signals is the signals generator `s` lists, each once, in the order first listed, with its
+// last entry: the one its frame takes. A raw generator lists none.
+pub fn gen_signals(s project.Sender) []project.SenderSig {
+	mut out := []project.SenderSig{}
+	mut at := map[string]int{}
+	for sig in s.signals {
+		if i := at[sig.name] {
+			out[i] = sig
+		} else {
+			at[sig.name] = out.len
+			out << sig
+		}
+	}
+	return out
+}
+
+// gen_unset takes `signal` off the generator's list, every entry of its name, so from the next
+// frame it carries what the message's template holds. A signal it does not list is refused.
+pub fn gen_unset(mut s project.Sender, signal string) ! {
+	if s.message == '' {
+		return gen_error(.refused, 'generator "${s.name}" sends a raw frame: it has no signals')
+	}
+	if !s.signals.any(it.name == signal) {
+		return gen_error(.refused, 'generator "${s.name}" lists no signal "${signal}"')
+	}
+	s.signals = s.signals.filter(it.name != signal)
+}
+
+// gen_set_data sends the payload `data` from the next frame: a raw generator's alone, of at most
+// `cap` bytes, what a frame on its wire carries, and past 8 bytes of a length a CAN-FD DLC
+// expresses, which every bus can send (a vendor backend refuses any other, a software bus pads it).
+pub fn gen_set_data(mut s project.Sender, cap int, data []u8) ! {
+	if s.message != '' {
+		return gen_error(.refused, 'generator "${s.name}" sends message ${s.message}: set its signals, not its bytes')
+	}
+	if data.len > cap {
+		return gen_error(.refused, 'generator "${s.name}": ${data.len} bytes, where a frame on its wire carries at most ${cap}')
+	}
+	if data.len !in transport.fd_lengths {
+		return gen_error(.refused, 'generator "${s.name}": ${data.len} bytes is not a CAN-FD payload size — a DLC expresses ${transport.fd_lengths}')
+	}
+	s.data = data.clone()
 }

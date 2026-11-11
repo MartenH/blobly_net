@@ -1,10 +1,12 @@
 """generators — a started project's generators (its `senders:`), as Lua's gen.* has them: fire one,
-start and stop its cycle, change the cycle, and put a signal at a value or on a value source. The
-rules are the engine's (blobly/headless/generators.v, blobly/sim/gencontrol.v); this module carries
+start and stop its cycle, change the cycle, put a signal at a value or on a value source, read the
+signals back or take one off, change a raw generator's payload, and wait until an edit is on the
+wire. The rules are the engine's (blobly/headless/generators.v, blobly/sim/gencontrol.v); this module carries
 the calls and types the refusals."""
 import ctypes
 import math
 import numbers
+import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -27,8 +29,9 @@ class Generator:
     """One generator of the run: `name`, `channel` (the name of the channel it is written under),
     `message` (its DBC message, "" for a raw frame) and `trigger` ("manual", "key" or "cyclic", as
     the project writes it) are fixed; `id`, `ext`, `running`, `cycle_ms`, `sent` (frames its bus
-    took), `target` (the interface it sends on) and `note` (why it cannot send, "" when it can) are
-    read from the run as they are now. It belongs to the run that listed it: after a stop and a
+    took), `applied` (that frame was built after the last edit), `data` (a raw generator's payload),
+    `target` (the interface it sends on) and `note` (why it cannot send, "" when it can) are read
+    from the run as they are now. It belongs to the run that listed it: after a stop and a
     start it goes on working while the run has a generator of its name and channel at its
     position, and refuses otherwise."""
     name: str
@@ -80,6 +83,47 @@ class Generator:
     def sent(self) -> int:
         """Frames its bus took, fired and cyclic alike."""
         return self._info().sent
+
+    @property
+    def applied(self) -> bool:
+        """The last frame its bus took was built after the last edit of what it sends (set, source,
+        unset, data); True before any edit. A cycle changed is not such an edit."""
+        return bool(self._info().applied)
+
+    def wait_applied(self, timeout_ms: float = 1000) -> None:
+        """Waits until `applied`: the bus took a frame built after the last edit. Raises Timeout
+        when it did not within timeout_ms — a generator not on its cycle sends only when fired."""
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, numbers.Real) or not math.isfinite(timeout_ms):
+            raise TypeError(f"timeout_ms is a finite number of ms, not {timeout_ms!r}")
+        if timeout_ms <= 0:
+            raise ValueError(f"timeout_ms {timeout_ms}: a wait is more than 0 ms")
+        until = time.monotonic() + timeout_ms / 1000
+        while True:
+            info = self._info()
+            if info.applied:
+                return
+            left = until - time.monotonic()
+            if left <= 0:
+                how = "on its cycle" if info.running else "not on its cycle: fire or start it"
+                raise _lib.Timeout(f"generator {self.name!r} sent no frame built after its last edit within "
+                                   f"{timeout_ms} ms ({info.sent} sent, {how})", _lib.BB_ERR_TIMEOUT)
+            time.sleep(min(0.002, left))
+
+    @property
+    def data(self) -> bytes:
+        """A raw generator's payload (b"" for a message's). Set it (bytes) to send that payload from
+        the next frame: refused for a message's generator, and past what a frame on its wire
+        carries (8 bytes, 64 where its row or wire is CAN-FD), or past 8 bytes of a length no
+        CAN-FD DLC expresses (12, 16, 20, 24, 32, 48 and 64 are)."""
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._live()
+            return _lib.bytes_of(lib.bb_gen_data, self._index)
+
+    @data.setter
+    def data(self, data: bytes) -> None:
+        d = _lib.byte_data("data", data)
+        self._call(lambda lib: lib.bb_gen_set_data, d, len(d))
 
     @property
     def cycle_ms(self) -> int:
@@ -168,6 +212,35 @@ class Generator:
                 raise TypeError(f"{k} is a finite number, not {v!r}")
             setattr(w, k, float(v))
         self._call(lambda lib: lib.bb_gen_source, _name(signal), ctypes.byref(w))
+
+    def signals(self) -> dict[str, float | tuple[str, dict[str, float]]]:
+        """The signals it lists, as its next frame takes them: a static one's value, or a sourced
+        one's (kind, parameters) — exactly the parameters that kind reads, so `source(name, kind,
+        **params)` puts it back. {} for a raw frame. A signal not listed carries what the message's
+        template holds."""
+        lib = _lib.lib()
+        listing = self._call(lambda lib: lib.bb_gen_signals)
+        try:
+            out: dict[str, float | tuple[str, dict[str, float]]] = {}
+            for i in range(_lib.check(lib.bb_listing_count(listing))):
+                info = _lib.BbGenSignal()
+                _lib.check(lib.bb_gen_signal_info(listing, i, ctypes.byref(info)))
+                name = _lib.string(lib.bb_gen_signal_text, listing, i, _lib.GEN_SIGNAL_NAME)
+                if not info.sourced:
+                    out[name] = info.value
+                    continue
+                kind = _lib.string(lib.bb_gen_signal_text, listing, i, _lib.GEN_SIGNAL_KIND)
+                out[name] = (kind, {p: getattr(info.source, p) for b, p in enumerate(_lib.WAVE_PARAMS)
+                                    if info.reads >> b & 1})
+            return out
+        finally:
+            lib.bb_listing_free(listing)
+
+    def unset(self, signal: "Signal | str") -> None:
+        """Takes `signal` (a Signal or its name) off its list from the next frame, so the message's
+        template holds it again: what a restore does with a signal `set()` or `source()` added.
+        Refused for a signal it does not list."""
+        self._call(lambda lib: lib.bb_gen_unset, _name(signal))
 
     def __repr__(self) -> str:
         what = self.message or "raw"

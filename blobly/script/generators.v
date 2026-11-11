@@ -16,6 +16,10 @@ fn (mut env Env) register_gens() {
 	env.st.register('__gen_cycle', l_gen_cycle)
 	env.st.register('__gen_set', l_gen_set)
 	env.st.register('__gen_source', l_gen_source)
+	env.st.register('__gen_info', l_gen_info)
+	env.st.register('__gen_signals', l_gen_signals)
+	env.st.register('__gen_unset', l_gen_unset)
+	env.st.register('__gen_data', l_gen_data)
 }
 
 // gen_arg is the generator arguments 1 and 2 name: a position (1-based) when 2 is one, else a name.
@@ -41,25 +45,75 @@ fn ms_arg(l lua.State, i int, what string) !int {
 	return int(v)
 }
 
+// push_gen pushes generator `g` as a table.
+fn push_gen(l lua.State, g sim.GenInfo) {
+	l.new_table()
+	l.set_str('name', g.name)
+	l.set_str('channel', g.channel)
+	l.set_str('message', g.message)
+	l.set_int('id', i64(g.id))
+	l.set_bool('ext', g.ext)
+	l.set_str('trigger', g.trigger)
+	l.set_int('cycle_ms', g.cycle_ms)
+	l.set_bool('running', g.running)
+	l.set_int('sent', g.sent)
+	l.set_bool('applied', g.applied)
+	l.set_str('data', g.data.bytestr())
+	l.set_str('target', g.target)
+	l.set_str('note', g.note)
+}
+
 fn l_gen_list(l lua.State) i32 {
 	mut env := env_of(l)
 	l.new_table()
 	for i, g in env.gens.generators() {
-		l.new_table()
-		l.set_str('name', g.name)
-		l.set_str('channel', g.channel)
-		l.set_str('message', g.message)
-		l.set_int('id', i64(g.id))
-		l.set_bool('ext', g.ext)
-		l.set_str('trigger', g.trigger)
-		l.set_int('cycle_ms', g.cycle_ms)
-		l.set_bool('running', g.running)
-		l.set_int('sent', g.sent)
-		l.set_str('target', g.target)
-		l.set_str('note', g.note)
+		push_gen(l, g)
 		l.set_index(i + 1)
 	}
 	return 1
+}
+
+fn l_gen_info(l lua.State) i32 {
+	mut env := env_of(l)
+	g := gen_arg(l) or { return l.fail('gen.info: ${err.msg()}') }
+	info := env.gens.gen_info(g) or { return l.fail('gen.info: ${err.msg()}') }
+	push_gen(l, info)
+	return 1
+}
+
+// __gen_signals(name, position) -> { signal = value, signal = { type = kind, <its parameters> } }
+fn l_gen_signals(l lua.State) i32 {
+	mut env := env_of(l)
+	g := gen_arg(l) or { return l.fail('gen.signals: ${err.msg()}') }
+	sigs := env.gens.gen_signals(g) or { return l.fail('gen.signals: ${err.msg()}') }
+	l.new_table()
+	for sig in sigs {
+		if sig.wave.typ == '' {
+			l.set_num(sig.name, sig.value)
+			continue
+		}
+		l.new_table()
+		l.set_str('type', sig.wave.typ)
+		for p in project.wave_params(sig.wave.typ) {
+			l.set_num(p, sig.wave.param(p))
+		}
+		l.set_field(sig.name)
+	}
+	return 1
+}
+
+fn l_gen_unset(l lua.State) i32 {
+	mut env := env_of(l)
+	g := gen_arg(l) or { return l.fail('gen.unset: ${err.msg()}') }
+	env.gens.gen_unset(g, l.arg_str(3)) or { return l.fail('gen.unset: ${err.msg()}') }
+	return 0
+}
+
+fn l_gen_data(l lua.State) i32 {
+	mut env := env_of(l)
+	g := gen_arg(l) or { return l.fail('gen.set_data: ${err.msg()}') }
+	env.gens.gen_data(g, l.arg_bytes(3)) or { return l.fail('gen.set_data: ${err.msg()}') }
+	return 0
 }
 
 fn l_gen_fire(l lua.State) i32 {

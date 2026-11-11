@@ -236,9 +236,22 @@ what the Generators panel lets a person do.
   `g.source(signal, kind, **params)` on a value source: `"const"`, `"sine"`, `"sawtooth"`,
   `"counter"` or `"stepmod"`, with the parameters a project writes for it. `signal` is a `Signal`
   or its name; one the generator did not list is added.
+- `g.signals()` reads them back as the next frame takes them: `{"Gear": 4.0, "EngineSpeed":
+  ("counter", {"start": 10.0, "step": 5.0, "modulo": 100.0})}` — a static signal's value, a
+  sourced one's kind and exactly the parameters it reads, so `g.source(name, kind, **params)`
+  puts it back. `g.unset(signal)` takes a signal off the list (what `set` added), so the message's
+  template holds it again. Together they make a full restore.
+- `g.data` is a raw generator's payload (`b""` for a message's); `g.data = b"\x02\x00"` sends that
+  from the next frame, up to what a frame on its wire carries (8 bytes, 64 where its row or wire
+  is CAN-FD); past 8 bytes only a length a CAN-FD DLC expresses (12, 16, 20, 24, 32, 48, 64).
+- `g.applied` is true once the bus took a frame built after the last edit of what it sends
+  (`set`, `source`, `unset`, `data`; a cycle change is not one), and `g.wait_applied(timeout_ms=1000)`
+  waits for it — `Timeout` when it did not happen in time, as for a generator nobody fires. `sent`
+  alone cannot say this: a frame built just before an edit can be counted just after it.
 - **What could not take effect is refused** with `blobly.GeneratorRefused`: a cycle outside 1 ..
   3600000 ms, a signal its message does not have or its payload does not hold (or any signal of a
-  raw frame), a value that is
+  raw frame), a signal to unset it does not list, a payload for a message's generator or one
+  longer than its wire carries, a value that is
   not finite, a source that cannot be evaluated (a zero period or count), a generator with
   nothing to send on (its `note` says why), and a send its bus refused (a listen-only row).
 - Edits last for the run: a new start brings the generators up as the project writes them. A
@@ -260,6 +273,20 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     hb.start(20)                                           # a manual one runs on a cycle too
     net.run(200)
     print(hb.sent, wake.running)                           # about 11, False
+
+    rev = net.generators["Rev to 6000 rpm"]
+    before = rev.signals()                                 # {"EngineSpeed": 6000.0, "Gear": 4.0}
+    rev.set("Gear", 2)
+    rev.fire()
+    rev.wait_applied(timeout_ms=500)                       # the bus took a frame built after the edit
+    for name in rev.signals().keys() - before.keys():      # the restore: what set() added goes...
+        rev.unset(name)
+    for name, v in before.items():                         # ...and the rest is put back
+        if isinstance(v, tuple):
+            rev.source(name, v[0], **v[1])
+        else:
+            rev.set(name, v)
+    wake.data = b"\x02\x00"                                # a raw payload, from the next frame
 ```
 
 ---
@@ -2762,6 +2789,11 @@ wire, and set nothing.
 | `g.running` | Sending on its cycle now. |
 | `g.cycle_ms` | Its cycle, 0 for none; set it (1 .. 3600000) to change it from the next frame. |
 | `g.sent` | Frames its bus took, fired and cyclic alike. |
+| `g.applied` | The last frame its bus took was built after the last edit of what it sends (`set`, `source`, `unset`, `data`); `True` before any edit. |
+| `g.wait_applied(timeout_ms=1000)` | Waits until `g.applied`; `Timeout` when it did not happen within `timeout_ms`. |
+| `g.data` | A raw generator's payload (`b""` for a message's); set it (bytes) to send that from the next frame (8 bytes at most, 64 on a CAN-FD row or wire). |
+| `g.signals()` | The signals it lists as the next frame takes them: `{name: value}` for a static one, `{name: (kind, params)}` for a sourced one, `params` exactly what that kind reads; `{}` for a raw frame. |
+| `g.unset(signal)` | Takes `signal` off its list from the next frame: the message's template holds it again. |
 | `g.target`, `g.note` | The interface it sends on, and why it cannot send (`""` when it can). |
 | `g.fire(timeout_ms=5000)` | Sends its current frame once; returns once the bus took it. `Timeout` after `timeout_ms` (at most 5000). |
 | `g.start(cycle_ms=None)`, `g.stop()` | Sends it on its cycle (its own for `None` or 0); ends that. |

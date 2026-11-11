@@ -121,6 +121,46 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 	assert refusals == 12
 }
 
+// the signals read back each once, as the frame takes them; one unset is off the list; a payload
+// is a raw generator's, within its cap
+fn test_signals_read_back_unset_and_raw_data() {
+	mut s := project.Sender{
+		name:    'Ping'
+		message: 'Request'
+		signals: [project.SenderSig{
+			name:  'ReqCode'
+			value: 1
+		}, project.SenderSig{
+			name:  'Aux'
+			value: 3
+		}, project.SenderSig{
+			name:  'ReqCode'
+			value: 2
+		}]
+	}
+	sigs := gen_signals(s)
+	assert sigs.map(it.name) == ['ReqCode', 'Aux'] && sigs[0].value == 2
+	gen_unset(mut s, 'ReqCode')!
+	assert s.signals.map(it.name) == ['Aux'], 'an earlier entry of the name was left to take effect'
+	gen_unset(mut s, 'ReqCode') or { assert err.msg().contains('lists no signal') }
+	gen_set_data(mut s, 8, [u8(1)]) or { assert err.msg().contains('set its signals') }
+	mut raw := project.Sender{
+		name: 'Raw'
+		id:   0x123
+	}
+	assert gen_signals(raw).len == 0
+	gen_unset(mut raw, 'X') or { assert err.msg().contains('raw frame') }
+	gen_set_data(mut raw, 8, []u8{len: 8})!
+	gen_set_data(mut raw, 8, []u8{len: 9}) or { assert err.msg().contains('at most 8') }
+	assert raw.data.len == 8
+	gen_set_data(mut raw, 64, []u8{len: 12})!
+	assert raw.data.len == 12
+	gen_set_data(mut raw, 64, []u8{len: 9}) or {
+		assert err.msg().contains('not a CAN-FD payload size')
+	}
+	assert raw.data.len == 12, 'a length no DLC expresses was taken'
+}
+
 fn test_a_host_with_no_run_refuses_every_call() {
 	mut c := GenControl(NoGens{})
 	assert c.generators().len == 0

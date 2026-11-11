@@ -325,7 +325,8 @@ FLASH_AUTH = {0: "skipped", 1: "authenticated", 2: "not required"}
 class BbGenerator(ctypes.Structure):
     """bb_generator, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("running", ctypes.c_uint8),
-                ("sendable", ctypes.c_uint8), ("cycle_ms", ctypes.c_int32), ("sent", ctypes.c_int64)]
+                ("sendable", ctypes.c_uint8), ("applied", ctypes.c_uint8), ("cycle_ms", ctypes.c_int32),
+                ("sent", ctypes.c_int64)]
 
 
 # bb_wave's parameters after its kind, in its order
@@ -336,6 +337,16 @@ WAVE_PARAMS = ("value", "offset", "amplitude", "freq", "phase", "min", "max", "p
 class BbWave(ctypes.Structure):
     """bb_wave, field for field."""
     _fields_ = [("kind", ctypes.c_char_p)] + [(p, ctypes.c_double) for p in WAVE_PARAMS]
+
+
+class BbGenSignal(ctypes.Structure):
+    """bb_gen_signal, field for field."""
+    _fields_ = [("value", ctypes.c_double), ("sourced", ctypes.c_uint8), ("reads", ctypes.c_uint16),
+                ("source", BbWave)]
+
+
+# enum bb_gen_signal_text
+GEN_SIGNAL_NAME, GEN_SIGNAL_KIND = range(2)
 
 
 # enum bb_gen_text
@@ -663,6 +674,12 @@ def _declare(lib):
         "bb_gen_cycle": ([c_int, c_int], c_int),
         "bb_gen_set": ([c_int, c_char_p, ctypes.c_double], c_int),
         "bb_gen_source": ([c_int, c_char_p, P(BbWave)], c_int),
+        "bb_gen_signals": ([c_int], c_int),
+        "bb_gen_signal_info": ([c_int, c_int, P(BbGenSignal)], c_int),
+        "bb_gen_signal_text": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_gen_unset": ([c_int, c_char_p], c_int),
+        "bb_gen_data": ([c_int, c_char_p, c_int], c_int),
+        "bb_gen_set_data": ([c_int, c_char_p, c_int], c_int),
         # the system model (nodes.py); a const uint8_t * is declared c_char_p, its length beside it
         "bb_system_path": ([c_char_p, c_int], c_int),
         "bb_node_count": ([], c_int),

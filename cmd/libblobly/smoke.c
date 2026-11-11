@@ -110,6 +110,14 @@ static int (*bb_gen_fire_p)(int, int64_t, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
 static int (*bb_gen_run_p)(int64_t *);
+static int (*bb_gen_signals_p)(int);
+static int (*bb_gen_signal_info_p)(int, int, bb_gen_signal *);
+static int (*bb_gen_signal_text_p)(int, int, int, char *, int);
+static int (*bb_gen_unset_p)(int, const char *);
+static int (*bb_gen_data_p)(int, uint8_t *, int);
+static int (*bb_gen_set_data_p)(int, const uint8_t *, int);
+static int (*bb_listing_count_p)(int);
+static int (*bb_listing_free_p)(int);
 static int (*bb_cyclic_start_p)(int, const bb_frame *, int);
 static int (*bb_cyclic_data_p)(int, const uint8_t *, int);
 static int (*bb_cyclic_status_p)(int, bb_cyclic_info *);
@@ -552,6 +560,22 @@ static int gen_steps(void) {
 	CHECK(bb_gen_cycle_p(wake, 0) == BB_ERR && strstr(bb_last_error_p(), "a cycle is 1"), "cycle 0 must refuse");
 	CHECK(bb_gen_set_p(wake, "Counter", 1) == BB_ERR && strstr(bb_last_error_p(), "raw frame"), "a raw frame has no signals");
 	CHECK(bb_gen_find_p("nope") == BB_ERR, "an unknown generator must refuse");
+	int list = bb_gen_signals_p(hb);
+	bb_gen_signal sig;
+	char name[32], kind[16];
+	CHECK(list >= 0 && bb_listing_count_p(list) == 1 && bb_gen_signal_info_p(list, 0, &sig) == 0
+		&& sig.sourced && sig.source.modulo == 256 && sig.reads == ((1 << 8) | (1 << 9) | (1 << 10))
+		&& bb_gen_signal_text_p(list, 0, BB_GEN_SIGNAL_NAME, name, sizeof name) == 7 && strcmp(name, "Counter") == 0
+		&& bb_gen_signal_text_p(list, 0, BB_GEN_SIGNAL_KIND, kind, sizeof kind) == 7 && strcmp(kind, "counter") == 0,
+		"its signals read back");
+	CHECK(bb_listing_free_p(list) == 0 && bb_gen_unset_p(hb, "Counter") == 0 && bb_gen_info_p(hb, &g) == 0
+		&& !g.applied, "a signal unset, not yet on the wire");
+	uint8_t data[8];
+	const uint8_t two[2] = {2, 0};
+	CHECK(bb_gen_data_p(wake, data, sizeof data) == 4 && data[0] == 0xDE && bb_gen_set_data_p(wake, two, 2) == 0
+		&& bb_gen_data_p(wake, data, sizeof data) == 2 && data[0] == 2, "a raw payload read and set");
+	CHECK(bb_gen_set_data_p(hb, two, 2) == BB_ERR && strstr(bb_last_error_p(), "set its signals"),
+		"a message generator takes no payload");
 	printf("ok   generators fired, cycled and refused by name\n");
 	return 0;
 }
@@ -840,6 +864,9 @@ int main(int argc, char **argv) {
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
+	SYM(bb_gen_signals); SYM(bb_gen_signal_info); SYM(bb_gen_signal_text); SYM(bb_gen_unset); SYM(bb_gen_data);
+	SYM(bb_gen_set_data);
+	SYM(bb_listing_count); SYM(bb_listing_free);
 	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop); SYM(bb_cyclic_free);
 	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path); SYM(bb_vector_assign); SYM(bb_vector_release);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present); SYM(bb_uds_cancel);
