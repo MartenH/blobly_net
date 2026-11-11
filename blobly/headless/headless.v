@@ -153,8 +153,9 @@ pub mut:
 	// each CAN wire's NM configuration, by destination key, by nm.configure over the run's system
 	// model and every project row on the wire with its databases (the GUI's rule); filled by start
 	nm_wires map[string]nm.Config
-	// the system model the run's simulated diagnostic servers are described by (described_system):
-	// what a script names a node by (sysview.System.node_named); empty when none describes it
+	// the system model the run's simulated diagnostic servers are described by (described_system),
+	// with the nodes the rows describe by ODX (sysview.System.with_odx_nodes): what a script names
+	// a node by (sysview.System.node_named); empty when none describes it
 	sys sysview.System
 }
 
@@ -340,7 +341,12 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	// the description the simulated diagnostic servers answer by (sim.describe): the system.toml
 	// the GUI's Diagnostics panel would read for this project
 	desc_sys := described_system(proj_path, proj, o)
-	r.sys = desc_sys
+	// what a script names nodes by: the system.toml's, and those the rows describe by ODX
+	run_sys, odx_notes := desc_sys.with_odx_nodes(os.dir(proj_path), proj.channels)
+	for note in odx_notes {
+		o.err(note)
+	}
+	r.sys = run_sys
 	for ci, ch in proj.channels {
 		if ch.kind() != .can {
 			continue

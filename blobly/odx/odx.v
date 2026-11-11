@@ -1,0 +1,708 @@
+// odx — an ECU's diagnostic description read from ODX (ISO 22901-1): a PDX (the ZIP it is
+// packaged in), one ODX file, or a folder of them. The reader is an EXTRACTOR, not a model of ODX:
+// for one base or ECU variant (its parents' services and DTCs inherited, a NOT-INHERITED service
+// left out) it finds the ReadDataByIdentifier (0x22) and WriteDataByIdentifier (0x2E) services,
+// lays out each DID's value from its parameters' data object properties and structures, and
+// lists the DTCs of its DTC-DOPs. What it does not read is SAID, never read as 0: every service of
+// another kind, every job and every layer element it does not use is counted (`Variant.notes`), a
+// DID whose value it cannot lay out is kept as bytes of its size with the reason, and a value it
+// cannot read at all (a malformed number) is refused by element and value.
+module odx
+
+import os
+import flatxml
+
+// PartKind is what one part of a DID's value holds, as its coded type says: an unsigned or signed
+// integer (big-endian), an ASCII text, or bytes.
+pub enum PartKind {
+	unsigned
+	signed
+	text
+	bytes
+}
+
+// Part is one VALUE parameter of a DID, its coded type IDENTICAL to its physical one.
+pub struct Part {
+pub:
+	name   string
+	kind   PartKind
+	offset int // its first byte in the DID's value
+	size   int // bytes
+}
+
+// Did is one data identifier the variant's 0x22 and 0x2E services name.
+pub struct Did {
+pub:
+	id       u16
+	name     string // the value parameter's SHORT-NAME where there is one, else the service's
+	readable bool   // a 0x22 service reads it
+	writable bool   // a 0x2E service writes it
+	// the value's size in bytes; -1 when the description does not fix it
+	size int = -1
+	// the value's parts, back to back from byte 0, when the reader lays out every one; empty when
+	// it does not, and the value is bytes of `size`
+	parts []Part
+}
+
+// Dtc is one DTC of a DTC-DOP: its SHORT-NAME, its 24-bit TROUBLE-CODE, its display form and text.
+pub struct Dtc {
+pub:
+	name    string
+	code    u32
+	display string
+	text    string
+}
+
+// Variant is what one base or ECU variant describes.
+pub struct Variant {
+pub:
+	name  string
+	layer string // BASE-VARIANT or ECU-VARIANT
+	dids  []Did
+	dtcs  []Dtc
+	// what the reader did not read, or read only in part: each said once
+	notes []string
+}
+
+// Db is the documents of one ODX source, indexed.
+pub struct Db {
+pub:
+	path  string
+	files []string // every ODX file read (the PDX itself for a PDX)
+	notes []string // what reading the documents had to say
+mut:
+	docs   []&flatxml.Doc
+	ids    map[string]flatxml.Node // every element with an ID, by it
+	layers map[string]flatxml.Node // every base and ECU variant, by SHORT-NAME
+}
+
+// variant_layers are the layers a project names: a variant to describe an ECU by.
+const variant_layers = ['BASE-VARIANT', 'ECU-VARIANT']
+
+// load reads `path`: a .pdx (every ODX document inside it), one ODX file, or a folder of ODX files.
+pub fn load(path string) !Db {
+	mut db := Db{
+		path: path
+	}
+	mut notes := []string{}
+	mut files := []string{}
+	if os.is_dir(path) {
+		mut names := os.ls(path) or { return error('cannot list ${path}: ${err}') }
+		names.sort()
+		for n in names {
+			p := os.join_path(path, n)
+			if os.is_file(p) && is_odx_name(n) {
+				db.add_doc(os.read_bytes(p) or { return error('cannot read ${p}: ${err}') }, p)!
+				files << p
+			}
+		}
+		if files.len == 0 {
+			return error('${path}: no ODX file (.odx, .odx-d, ...) in it')
+		}
+	} else {
+		data := os.read_bytes(path) or { return error('cannot read ${path}: ${err}') }
+		files << path
+		if path.to_lower().ends_with('.pdx') {
+			entries := read_zip(data) or { return error('${path}: ${err}') }
+			mut skipped := 0
+			for e in entries {
+				if is_odx_name(e.name) {
+					db.add_doc(e.data, '${path}#${e.name}')!
+				} else {
+					skipped++
+				}
+			}
+			if skipped > 0 {
+				notes << '${path}: ${skipped} file(s) of the PDX are not ODX (its index, attachments); not read'
+			}
+		} else {
+			db.add_doc(data, path)!
+		}
+	}
+	notes << db.index()
+	return Db{
+		...db
+		files: files
+		notes: notes
+	}
+}
+
+// is_odx_name: a file name an ODX document is stored under (.odx, .odx-d, .odx-c, .odx-cs, ...).
+fn is_odx_name(name string) bool {
+	n := name.to_lower()
+	return n.ends_with('.odx') || n.contains('.odx-')
+}
+
+fn (mut db Db) add_doc(data []u8, where string) ! {
+	doc := flatxml.parse_bytes(data, where) or { return error('${where}: ${err}') }
+	if doc.root_node().name() != 'ODX' {
+		return error('${where}: the root element is <${doc.root_node().name()}>, not <ODX>')
+	}
+	db.docs << doc
+}
+
+// index finds every element with an ID and every variant layer, saying an ID or variant name given
+// twice (the first is kept).
+fn (mut db Db) index() []string {
+	mut notes := []string{}
+	for doc in db.docs {
+		for i in 0 .. doc.len() {
+			if !doc.is_element(u32(i)) {
+				continue
+			}
+			n := doc.node(u32(i))
+			id := n.attr('ID')
+			if id != '' {
+				if id in db.ids {
+					notes << '${doc.path}: ID "${id}" is given twice; the first is read'
+				} else {
+					db.ids[id] = n
+				}
+			}
+			if n.name() in variant_layers {
+				sn := short_name(n)
+				if sn in db.layers {
+					notes << '${doc.path}: two variants are named "${sn}"; the first is read'
+				} else {
+					db.layers[sn] = n
+				}
+			}
+		}
+	}
+	return notes
+}
+
+// variants are the base and ECU variants' names, sorted.
+pub fn (db &Db) variants() []string {
+	mut out := db.layers.keys()
+	out.sort()
+	return out
+}
+
+// kids are `n`'s child elements named `name`, in order.
+fn kids(n flatxml.Node, name string) []flatxml.Node {
+	mut out := []flatxml.Node{}
+	for c in n.children_named(name) {
+		out << c
+	}
+	return out
+}
+
+fn short_name(n flatxml.Node) string {
+	return n.child('SHORT-NAME').text().trim_space()
+}
+
+// ref is the element an `ID-REF` attribute of `n` names.
+fn (db &Db) ref(n flatxml.Node) ?flatxml.Node {
+	if !n.ok() {
+		return none
+	}
+	return db.ids[n.attr('ID-REF')] or { none }
+}
+
+// Resolve is one variant's resolution in progress: its layers, nearest first, and what it found.
+struct Resolve {
+mut:
+	chain   []flatxml.Node
+	notes   []string
+	ignored map[string]int // element kinds not read, counted
+}
+
+// variant resolves the variant called `name`: refused for a name no variant has, naming those there are.
+pub fn (db &Db) variant(name string) !Variant {
+	top := db.layers[name] or {
+		return error('no variant "${name}" in ${db.path}; there are: ${db.variants().join(', ')}')
+	}
+	mut r := Resolve{}
+	db.walk_layers(top, mut r, 0)
+	// the services, nearest layer first: a SHORT-NAME seen is overridden further up
+	mut seen := map[string]bool{}
+	mut found := map[u16]Did{}
+	for li, layer in r.chain {
+		ex := r.excluded_at(li, db)
+		for c in layer.child('DIAG-COMMS').children() {
+			mut svc := c
+			if c.name() == 'DIAG-COMM-REF' {
+				svc = db.ref(c) or {
+					r.notes << 'DIAG-COMM-REF "${c.attr('ID-REF')}" names nothing; not read'
+					continue
+				}
+			}
+			sn := short_name(svc)
+			if sn in seen || sn in ex {
+				continue
+			}
+			seen[sn] = true
+			if svc.name() != 'DIAG-SERVICE' {
+				r.ignored[svc.name()]++
+				continue
+			}
+			db.service(svc, mut r, mut found)
+		}
+		for c in layer.children() {
+			if c.name() !in read_layer_children {
+				r.ignored[c.name()]++
+			}
+		}
+		for c in layer.child('DIAG-DATA-DICTIONARY-SPEC').children() {
+			if c.name() !in read_dds_children {
+				r.ignored['DIAG-DATA-DICTIONARY-SPEC/${c.name()}']++
+			}
+		}
+	}
+	mut dids := found.values()
+	dids.sort(a.id < b.id)
+	mut notes := r.notes.clone()
+	mut keys := r.ignored.keys()
+	keys.sort()
+	if keys.len > 0 {
+		notes << 'not read: ' + keys.map('${r.ignored[it]} x ${it}').join(', ')
+	}
+	return Variant{
+		name:  name
+		layer: top.name()
+		dids:  dids
+		dtcs:  db.dtcs(r.chain, mut notes)
+		notes: notes
+	}
+}
+
+// the layer children the reader uses, or that describe and carry no behaviour
+const read_layer_children = ['SHORT-NAME', 'LONG-NAME', 'DESC', 'ADMIN-DATA', 'COMPANY-DATAS',
+	'SDGS', 'DIAG-DATA-DICTIONARY-SPEC', 'DIAG-COMMS', 'REQUESTS', 'POS-RESPONSES', 'NEG-RESPONSES',
+	'GLOBAL-NEG-RESPONSES', 'PARENT-REFS']
+
+// the data dictionary sections the reader uses (UNIT-SPEC describes and changes no byte)
+const read_dds_children = ['DATA-OBJECT-PROPS', 'STRUCTURES', 'DTC-DOPS', 'UNIT-SPEC', 'ADMIN-DATA',
+	'SDGS']
+
+// walk_layers appends `layer` and then its parents (PARENT-REFS), depth first, each once.
+fn (db &Db) walk_layers(layer flatxml.Node, mut r Resolve, depth int) {
+	if depth > 16 || r.chain.any(it.i == layer.i && it.doc == layer.doc) {
+		return
+	}
+	r.chain << layer
+	for p in layer.child('PARENT-REFS').children_named('PARENT-REF') {
+		parent := db.ref(p) or {
+			r.notes << '${short_name(layer)}: PARENT-REF "${p.attr('ID-REF')}" names nothing; its services are not inherited'
+			continue
+		}
+		db.walk_layers(parent, mut r, depth + 1)
+	}
+}
+
+// excluded_at is the services the chain's layer `li` does not pass on: every NOT-INHERITED-DIAG-COMM
+// of a PARENT-REF naming it from a layer nearer the variant.
+fn (r &Resolve) excluded_at(li int, db &Db) map[string]bool {
+	mut out := map[string]bool{}
+	target := r.chain[li]
+	for k in 0 .. li {
+		for p in r.chain[k].child('PARENT-REFS').children_named('PARENT-REF') {
+			parent := db.ref(p) or { continue }
+			if parent.i != target.i || parent.doc != target.doc {
+				continue
+			}
+			for ni in p.child('NOT-INHERITED-DIAG-COMMS').children_named('NOT-INHERITED-DIAG-COMM') {
+				out[ni.child('DIAG-COMM-SNREF').attr('SHORT-NAME')] = true
+			}
+		}
+	}
+	return out
+}
+
+// service reads one DIAG-SERVICE: a 0x22 or 0x2E of one DID is a DID read or written, any other
+// service is counted by its service id.
+fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
+	sn := short_name(svc)
+	req := db.ref(svc.child('REQUEST-REF')) or {
+		r.notes << 'service ${sn}: no REQUEST; not read'
+		return
+	}
+	params := kids(req.child('PARAMS'), 'PARAM')
+	sid := const_at(params, 0, 8, mut r, sn) or {
+		r.notes << 'service ${sn}: no service id at byte 0; not read'
+		return
+	}
+	if sid != 0x22 && sid != 0x2E {
+		r.ignored['DIAG-SERVICE 0x${sid:02X}']++
+		return
+	}
+	id := const_at(params, 1, 16, mut r, sn) or {
+		r.notes << 'service ${sn} (0x${sid:02X}): no single 16-bit DID at byte 1 (a TABLE-KEY, or several DIDs); not read'
+		return
+	}
+	mut values := []flatxml.Node{}
+	if sid == 0x22 {
+		resp := db.ref(svc.child('POS-RESPONSE-REFS').child('POS-RESPONSE-REF')) or {
+			r.notes << 'service ${sn} (0x22 0x${id:04X}): no POS-RESPONSE, so its value is not known; not read'
+			return
+		}
+		values = kids(resp.child('PARAMS'), 'PARAM')
+	} else {
+		values = params.clone()
+	}
+	mut lay := Layout{}
+	db.lay_out(values, 3, 0, mut lay, r.chain, 0)
+	lay.finish()
+	vname := lay.name(sn)
+	if lay.why.len > 0 {
+		r.notes << 'DID 0x${id:04X} (${sn}): ${lay.why.join('; ')} — read as ${if lay.size >= 0 {
+			'${lay.size} bytes'
+		} else {
+			'bytes of no fixed size'
+		}}'
+	}
+	parts := if lay.why.len == 0 { lay.parts.clone() } else { []Part{} }
+	if prev := found[u16(id)] {
+		same := prev.size == lay.size && prev.parts == parts
+		mut d := Did{
+			...prev
+			name:     if prev.name == '' { vname } else { prev.name }
+			readable: prev.readable || sid == 0x22
+			writable: prev.writable || sid == 0x2E
+		}
+		if !same {
+			r.notes << 'DID 0x${id:04X}: ${sn} lays its value out unlike the service read before it; not written'
+			d = Did{
+				...d
+				writable: false
+			}
+		}
+		found[u16(id)] = d
+		return
+	}
+	found[u16(id)] = Did{
+		id:       u16(id)
+		name:     vname
+		readable: sid == 0x22
+		writable: sid == 0x2E
+		size:     lay.size
+		parts:    parts
+	}
+}
+
+// const_at is the CODED-CONST parameter's value at `at_byte` of `bits` width, none when there is none.
+fn const_at(params []flatxml.Node, at_byte int, bits int, mut r Resolve, sn string) ?u64 {
+	for p in params {
+		pos := int_of(p.child('BYTE-POSITION').text()) or { -1 }
+		if p.attr('xsi:type') != 'CODED-CONST' || pos != at_byte {
+			continue
+		}
+		width := int_of(p.child('DIAG-CODED-TYPE').child('BIT-LENGTH').text()) or { -1 }
+		if width != bits {
+			return none
+		}
+		raw := p.child('CODED-VALUE').text()
+		v := int_of(raw) or {
+			r.notes << 'service ${sn}: CODED-VALUE "${raw}" is not an integer; not read'
+			return none
+		}
+		if v < 0 || v >= i64(1) << bits {
+			r.notes << 'service ${sn}: CODED-VALUE ${v} does not fit ${bits} bits; not read'
+			return none
+		}
+		return u64(v)
+	}
+	return none
+}
+
+// int_of reads a decimal or `0x` hex integer, none for anything else (never 0).
+fn int_of(t string) ?i64 {
+	s := t.trim_space()
+	if s.len == 0 {
+		return none
+	}
+	if s.starts_with('0x') || s.starts_with('0X') {
+		if s.len == 2 || !s[2..].bytes().all(it.is_hex_digit()) || s.len > 18 {
+			return none
+		}
+		return i64(s[2..].parse_uint(16, 63) or { return none })
+	}
+	body := if s[0] == `-` { s[1..] } else { s }
+	if body.len == 0 || body.len > 18 || !body.bytes().all(it.is_digit()) {
+		return none
+	}
+	return s.parse_int(10, 64) or { none }
+}
+
+// max_struct_depth bounds structures inside structures: a description naming itself is refused.
+const max_struct_depth = 8
+
+// Layout is a DID's value as its parameters lay it out.
+struct Layout {
+mut:
+	parts  []Part
+	values []string // the SHORT-NAMEs of the value parameters at the top level
+	size   int      // bytes; -1 once a part's size is unknown
+	sized  bool = true
+	why    []string // why the value is not laid out part by part
+}
+
+// lay_out reads `params` from byte `base` of their message (3 for a DID's response or write
+// request, 0 inside a structure), each part placed at `at` plus its position.
+fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, chain []flatxml.Node, depth int) {
+	if depth > max_struct_depth {
+		lay.why << 'structures nested past ${max_struct_depth}'
+		lay.sized = false
+		return
+	}
+	mut next := base // where a parameter with no BYTE-POSITION goes: after the one before it
+	for p in params {
+		typ := p.attr('xsi:type')
+		pname := short_name(p)
+		posv := p.child('BYTE-POSITION')
+		mut pos := next
+		if posv.ok() {
+			pos = int(int_of(posv.text()) or { -1 })
+			if pos < 0 {
+				lay.why << '${pname}: BYTE-POSITION "${posv.text()}" is not an integer'
+				lay.sized = false
+				return
+			}
+		} else if next < 0 {
+			lay.why << '${pname}: no BYTE-POSITION after a parameter of no fixed size'
+			lay.sized = false
+			return
+		}
+		if pos < base {
+			continue // the service id and the DID, before the value
+		}
+		if typ != 'VALUE' {
+			lay.why << '${pname}: a ${typ} parameter inside the value'
+			end := db.const_end(p)
+			next = if end >= 0 { pos + end } else { -1 }
+			lay.extend(at + pos - base, end)
+			continue
+		}
+		bpv := p.child('BIT-POSITION')
+		if bpv.ok() && (int_of(bpv.text()) or { -1 }) != 0 {
+			lay.why << '${pname}: BIT-POSITION "${bpv.text()}"'
+		}
+		if base > 0 {
+			lay.values << pname
+		}
+		dop := db.dop_of(p, chain) or {
+			lay.why << '${pname}: ${err.msg()}'
+			lay.sized = false
+			next = -1
+			continue
+		}
+		start := at + pos - base
+		mut size := -1
+		match dop.name() {
+			'DATA-OBJECT-PROP' {
+				size = lay.coded(pname, dop, start)
+			}
+			'STRUCTURE' {
+				mut inner := Layout{}
+				db.lay_out(kids(dop.child('PARAMS'), 'PARAM'), 0, start, mut inner, chain, depth + 1)
+				inner.finish_from(start)
+				size = if inner.sized { inner.size } else { -1 }
+				bsv := dop.child('BYTE-SIZE')
+				if bsv.ok() {
+					bs := int_of(bsv.text()) or { -1 }
+					if bs < 0 {
+						inner.why << 'its STRUCTURE ${short_name(dop)}: BYTE-SIZE "${bsv.text()}" is not an integer'
+					} else if size >= 0 && int(bs) > size {
+						inner.why << 'its STRUCTURE ${short_name(dop)} is ${bs} bytes, its parameters ${size}'
+						size = int(bs)
+					}
+				}
+				for w in inner.why {
+					lay.why << '${pname}: ${w}'
+				}
+				for q in inner.parts {
+					lay.parts << q
+				}
+			}
+			else {
+				lay.why << '${pname}: its DOP is a ${dop.name()}'
+			}
+		}
+		lay.extend(start, size)
+		next = if size >= 0 { pos + size } else { -1 }
+	}
+}
+
+// extend counts a part of `size` bytes at `start` (-1: no fixed size) into the value's size.
+fn (mut lay Layout) extend(start int, size int) {
+	if size < 0 {
+		lay.sized = false
+		return
+	}
+	if start + size > lay.size {
+		lay.size = start + size
+	}
+}
+
+// const_end is the size in bytes of a non-VALUE parameter by its coded type; -1 when not fixed.
+fn (db &Db) const_end(p flatxml.Node) int {
+	if bl := int_of(p.child('DIAG-CODED-TYPE').child('BIT-LENGTH').text()) {
+		if bl > 0 && bl % 8 == 0 {
+			return int(bl / 8)
+		}
+	}
+	if bl := int_of(p.child('BYTE-LENGTH').text()) {
+		return int(bl)
+	}
+	return -1
+}
+
+// coded lays out one parameter of a DATA-OBJECT-PROP at `start`, returning its size in bytes (-1
+// when not fixed); a coding this reader does not hold is said, the part's bytes still counted.
+fn (mut lay Layout) coded(pname string, dop flatxml.Node, start int) int {
+	dct := dop.child('DIAG-CODED-TYPE')
+	if dct.attr('xsi:type') != 'STANDARD-LENGTH-TYPE' {
+		lay.why << '${pname}: a ${dct.attr('xsi:type')} (no fixed length)'
+		return -1
+	}
+	bits := int(int_of(dct.child('BIT-LENGTH').text()) or {
+		lay.why << '${pname}: BIT-LENGTH "${dct.child('BIT-LENGTH').text()}" is not an integer'
+		return -1
+	})
+	if bits <= 0 || bits % 8 != 0 {
+		lay.why << '${pname}: ${bits} bits, not whole bytes'
+		return -1
+	}
+	size := bits / 8
+	base := dct.attr('BASE-DATA-TYPE')
+	cat := dop.child('COMPU-METHOD').child('CATEGORY').text().trim_space()
+	mut ok := true
+	if cat != 'IDENTICAL' {
+		lay.why << '${pname}: COMPU-METHOD ${if cat == '' { '(none)' } else { cat }}'
+		ok = false
+	}
+	if dct.child('BIT-MASK').ok() {
+		lay.why << '${pname}: a BIT-MASK'
+		ok = false
+	}
+	if dct.attr('IS-HIGHLOW-BYTE-ORDER') == 'false' && base in ['A_UINT32', 'A_INT32'] {
+		lay.why << '${pname}: low byte first'
+		ok = false
+	}
+	kind := match base {
+		'A_UINT32' { PartKind.unsigned }
+		'A_INT32' { PartKind.signed }
+		'A_ASCIISTRING' { PartKind.text }
+		'A_BYTEFIELD' { PartKind.bytes }
+		else {
+			lay.why << '${pname}: BASE-DATA-TYPE ${base}'
+			ok = false
+			PartKind.bytes
+		}
+	}
+	if kind in [.unsigned, .signed] && size > 4 {
+		lay.why << '${pname}: ${bits} bits, past the 32 an ${base} holds'
+		ok = false
+	}
+	if ok {
+		lay.parts << Part{
+			name:   pname
+			kind:   kind
+			offset: start
+			size:   size
+		}
+	}
+	return size
+}
+
+// dop_of is the DOP a VALUE parameter names, by DOP-REF or by DOP-SNREF in the variant's layers.
+fn (db &Db) dop_of(p flatxml.Node, chain []flatxml.Node) !flatxml.Node {
+	r := p.child('DOP-REF')
+	if r.ok() {
+		return db.ref(r) or { error('DOP-REF "${r.attr('ID-REF')}" names nothing') }
+	}
+	s := p.child('DOP-SNREF')
+	if s.ok() {
+		want := s.attr('SHORT-NAME')
+		for layer in chain {
+			for section in layer.child('DIAG-DATA-DICTIONARY-SPEC').children() {
+				for d in section.children() {
+					if short_name(d) == want {
+						return d
+					}
+				}
+			}
+		}
+		return error('DOP-SNREF "${want}" names nothing in the variant')
+	}
+	return error('no DOP-REF')
+}
+
+// finish settles the value: its size, and whether its parts are back to back from byte 0.
+fn (mut lay Layout) finish() {
+	lay.finish_from(0)
+}
+
+fn (mut lay Layout) finish_from(start int) {
+	if !lay.sized {
+		lay.size = -1
+	} else if lay.size < start {
+		lay.size = start
+	}
+	if lay.size >= 0 {
+		lay.size -= start
+	}
+	if lay.why.len > 0 {
+		return
+	}
+	lay.parts.sort(a.offset < b.offset)
+	mut end := start
+	for q in lay.parts {
+		if q.offset != end {
+			lay.why << 'byte ${end - start} is in no parameter'
+			return
+		}
+		end += q.size
+	}
+	if lay.size >= 0 && end - start != lay.size {
+		lay.why << 'bytes ${end - start}..${lay.size - 1} are in no parameter'
+	}
+}
+
+// name is what to call the value: its one value parameter's SHORT-NAME, else the service's.
+fn (lay &Layout) name(service string) string {
+	return if lay.values.len == 1 { lay.values[0] } else { service }
+}
+
+// dtcs are the DTCs of the variant's DTC-DOPs, nearest layer first; a code given twice is read once.
+fn (db &Db) dtcs(chain []flatxml.Node, mut notes []string) []Dtc {
+	mut out := []Dtc{}
+	mut seen := map[u32]bool{}
+	for layer in chain {
+		for dop in layer.child('DIAG-DATA-DICTIONARY-SPEC').child('DTC-DOPS').children_named('DTC-DOP') {
+			for c in dop.child('DTCS').children() {
+				mut d := c
+				if c.name() == 'DTC-REF' {
+					d = db.ref(c) or {
+						notes << 'DTC-REF "${c.attr('ID-REF')}" names nothing; not read'
+						continue
+					}
+				}
+				if d.name() != 'DTC' {
+					continue
+				}
+				raw := d.child('TROUBLE-CODE').text()
+				code := int_of(raw) or {
+					notes << 'DTC ${short_name(d)}: TROUBLE-CODE "${raw}" is not an integer; not read'
+					continue
+				}
+				if code <= 0 || code > 0xFFFFFF {
+					notes << 'DTC ${short_name(d)}: TROUBLE-CODE ${code} is not a 3-byte DTC; not read'
+					continue
+				}
+				if u32(code) in seen {
+					continue
+				}
+				seen[u32(code)] = true
+				out << Dtc{
+					name:    short_name(d)
+					code:    u32(code)
+					display: d.child('DISPLAY-TROUBLE-CODE').text().trim_space()
+					text:    d.child('TEXT').text().trim_space()
+				}
+			}
+		}
+	}
+	return out
+}

@@ -141,6 +141,9 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 			.tx_saturations {
 				notes << 'DID 0x${x.id:04X} (sent values saturated) reads 0: the simulation does not count them'
 			}
+			.fields, .text, .data {
+				notes << 'DID 0x${x.id:04X}: the ECU holds its value; the simulation serves zeros'
+			}
 			.unknown {}
 		}
 		dids << uds.DidSpec{

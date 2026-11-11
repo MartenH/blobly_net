@@ -48,6 +48,14 @@ pub enum DidKind {
 	param_status // one status byte per parameter
 	tx_saturations // the count of sent values held to their DBC range: a u32, big-endian
 	unknown      // none of the above: its size is not known here
+	fields       // values the ECU holds, laid out by an imported description (ODX): its fields
+	text         // a text the ECU holds, of the size an imported description (ODX) gives
+	data         // bytes the ECU holds, of the size an imported description (ODX) gives, if any
+}
+
+// is_text: the value is a text — a fixed one (ascii) or the ECU's (text).
+pub fn (x DidDesc) is_text() bool {
+	return x.kind in [.ascii, .text]
 }
 
 // DidDesc is one `[[did]]`.
@@ -285,12 +293,12 @@ pub fn (d &EcuDesc) did_name(id u16) string {
 // the caller shows the bytes.
 pub fn (d &EcuDesc) decode_did(id u16, data []u8) string {
 	x := d.did(id) or { return '' }
-	if x.kind != .ascii && !x.laid_out() {
+	if !x.is_text() && !x.laid_out() {
 		return ''
 	}
 	ts := x.texts(data) or { return '' }
 	match x.kind {
-		.ascii {
+		.ascii, .text {
 			return '"${ts[0]}"'
 		}
 		.param_status {

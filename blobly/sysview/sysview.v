@@ -68,6 +68,7 @@ pub mut:
 	writes   []string // signal names its FB handlers write
 	ecu_err  string   // non-empty: its ecu.toml could not be read/parsed
 	desc     EcuDesc  // its diagnostic description (faults, DIDs, parameters)
+	odx      string   // `<source>#<variant>` for a node a project row describes by ODX (odxnodes.v)
 }
 
 // IdUse is one allocated identifier on a bus, for the allocation table.

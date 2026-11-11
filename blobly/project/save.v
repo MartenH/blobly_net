@@ -79,6 +79,16 @@ pub fn (p Project) to_yaml() string {
 				b.writeln('    nm: { cycle_ms: ${n.cycle_ms} }')
 			}
 		}
+		if ch.diagnostics.len > 0 {
+			b.writeln('    diagnostics:')
+			for d in ch.diagnostics {
+				b.writeln('      - node: ${yaml_scalar(d.node)}')
+				b.writeln('        odx: ${yaml_scalar(d.odx)}')
+				b.writeln('        variant: ${yaml_scalar(d.variant)}')
+				b.writeln('        tx: "0x${d.tx:X}"')
+				b.writeln('        rx: "0x${d.rx:X}"')
+			}
+		}
 		b.writeln('    enabled: ${ch.enabled}')
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')

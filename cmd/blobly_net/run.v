@@ -1445,6 +1445,9 @@ fn (app &App) described_path() string {
 struct ScriptSys {
 	sys  sysview.System
 	path string
+	// the project's rows and folder, whose `diagnostics:` entries name nodes by ODX
+	proj_dir string
+	rows     []project.Channel
 }
 
 // script_system is the model for a script started now. GUI thread: diag_sys is written there, and
@@ -1452,11 +1455,15 @@ struct ScriptSys {
 fn (app &App) script_system() ScriptSys {
 	if app.running {
 		return ScriptSys{
-			sys: if app.diag_sys_ok { app.diag_sys } else { sysview.System{} }
+			sys:      if app.diag_sys_ok { app.diag_sys } else { sysview.System{} }
+			proj_dir: os.dir(app.proj_path)
+			rows:     app.proj.channels.clone()
 		}
 	}
 	return ScriptSys{
-		path: app.described_path()
+		path:     app.described_path()
+		proj_dir: os.dir(app.proj_path)
+		rows:     app.proj.channels.clone()
 	}
 }
 

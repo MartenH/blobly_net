@@ -235,6 +235,9 @@ fn did_kind_code(k sysview.DidKind) i32 {
 		.param_status { i32(C.BB_DID_PARAM_STATUS) }
 		.tx_saturations { i32(C.BB_DID_TX_SATURATIONS) }
 		.unknown { i32(C.BB_DID_UNKNOWN) }
+		.fields { i32(C.BB_DID_FIELDS) }
+		.text { i32(C.BB_DID_TEXT) }
+		.data { i32(C.BB_DID_DATA) }
 	}
 }
 

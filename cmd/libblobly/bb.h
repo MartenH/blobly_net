@@ -464,7 +464,7 @@ typedef struct bb_reach {
 	uint32_t rx;    /* its response id */
 } bb_reach;
 
-/* Where a DID's value comes from (bb_did.kind), as the ecu.toml declares it. */
+/* Where a DID's value comes from (bb_did.kind), as the ecu.toml (or a row's ODX) declares it. */
 enum bb_did_kind {
 	BB_DID_ASCII = 0,           /* a fixed text */
 	BB_DID_BYTES = 1,           /* fixed bytes */
@@ -472,7 +472,10 @@ enum bb_did_kind {
 	BB_DID_PARAM = 3,           /* a coded parameter */
 	BB_DID_PARAM_STATUS = 4,    /* one status byte per parameter: 0 default, 1 coded, 2 reverted */
 	BB_DID_TX_SATURATIONS = 5,  /* how many sent values were held to their DBC range */
-	BB_DID_UNKNOWN = 6          /* none of these, or not declared: its bytes, of no known layout */
+	BB_DID_UNKNOWN = 6,         /* none of these, or not declared: its bytes, of no known layout */
+	BB_DID_FIELDS = 7,          /* the ECU's values, laid out by an ODX description */
+	BB_DID_TEXT = 8,            /* the ECU's text, of the size an ODX description gives */
+	BB_DID_DATA = 9             /* the ECU's bytes, of the size an ODX description gives, if any */
 };
 
 /* A DID a node lists (bb_did_info). Its name is bb_did_name's, a gate's sessions bb_did_session's. */
