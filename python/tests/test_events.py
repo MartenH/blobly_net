@@ -322,6 +322,21 @@ class TestWaitOn:
         assert got is None
         assert clock.t == pytest.approx(0.05, abs=1e-7), "slept a whole slice past the deadline"
 
+    def test_the_sleep_is_measured_by_the_reading_that_tested_the_deadline(self):
+        class Quiet:
+            def look(self):
+                return None, False
+        # 0.0 sets the deadline (1.0), 0.0 is the second look's check, 0.9 the check before the sleep;
+        # a fourth reading (1.1) would make the sleep's length negative
+        clock, sleeps = iter([0.0, 0.0, 0.9, 1.1, 1.1]), []
+
+        def sleep(ms):
+            assert ms >= 0, f"slept {ms} ms"
+            sleeps.append(ms)
+        got, rr = wait_on([Quiet(), Quiet()], 1.0, 0, lambda: next(clock), sleep)
+        assert (got, rr) == (None, 0)
+        assert sleeps == [pytest.approx(0.1)]
+
     def test_a_wait_longer_than_a_c_int_is_asked_in_pieces(self):
         asked = []
 
