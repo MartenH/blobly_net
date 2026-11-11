@@ -990,8 +990,8 @@ the engine's, the one the trace's `verify:` runs, and Lua's `frame.e2e` is the s
   purpose (a wrong Data ID to test a receiver's rejection path) reads as a receiver would read it:
   `bad_crc`.
 - The counter is judged against the frame of that id the channel read before it, on the same
-  handle: the first frame after the handle opens (each test, under the pytest plugin) is judged on
-  its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
+  handle: the first frame after the handle opens (once per run under the pytest plugin, which
+  keeps the handle from test to test) is judged on its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
   for any receiver, and so does the first good frame after a run of `bad_crc` ones.
 - `timeout` is measured between the stamps the bus gave the frames (SocketCAN's kernel stamp, the
   CAN bridge's clock). A frame with no stamp, whose time is when it was read (`inproc:`, `udp:`,
@@ -1678,7 +1678,7 @@ added the option.
 
 | fixture | what |
 |---|---|
-| `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own. Each test starts with the CAN channels' handles opened fresh as its setup ends: it hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
+| `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own; with `blobly_run = session` it is the session's (below). Each test's setup reads away what the CAN channels' handles hold queued, opening a handle that is not open, and lets go of the channels' UDS clients: the test hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued, while the channel stays on the bus. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
 | `can1`, `can2`, ... | One per enabled channel of the project, named after it: the started project's `Channel` of that name. |
 | `diag` | A `UdsClient`, closed after the test: on the project's first enabled CAN channel at the default ids (0x7E0 out, 0x7E8 back), else its first DoIP one, or on the channel a test names with `@pytest.mark.parametrize("diag", ["DoIP1"], indirect=True)` ([DoIP](#11-doip)). A name no channel has is a node of the system model, and the fixture a `NodeClient` on it (`["zone_a"]`, [Nodes and their DIDs](#nodes-and-their-dids)). Other ids are `can2.uds(tx, rx)` in the test. |
 
@@ -1689,8 +1689,43 @@ configures. A name two channels come to, a Python keyword, or another fixture's 
 pytest's own such as `tmp_path`, another plugin's) gets no fixture, and pytest warns at its start which channels those are; a test reaches them as
 `project.channels[...]`. A fixture of the same name in a suite's conftest.py is the suite's.
 
-What a test changes in the simulated ECUs (a UDS session, cleared DTCs) lasts until its module's
-run ends. A test file:
+**One run per module, or per session.** Between two modules the run stops: the simulated nodes'
+and generators' frames pause, a vendor adapter's channel leaves the bus, and the next module starts
+everything from its initial state. A device under test that supervises those frames sees a timeout
+at every module boundary. `blobly_run = session` in the ini file keeps one run for the whole
+session, and `--blobly-run=session` (or `--blobly-run=module`) on the command line overrides it:
+
+```ini
+[pytest]
+blobly_project = projects/sim-demo.blobnet
+blobly_run = session
+```
+
+Under `session` a module cannot bring up a project of its own, since a process holds one run, and
+what a test changed in a simulated node or a generator (a session, a DTC, a generator's value or
+cycle) reaches the next module. The per-test rules stay: handlers dropped, background senders
+stopped, faults cleared, a run a test stopped started again.
+
+**A channel stays on the bus from test to test.** Its handle is opened at the first test of the run
+and kept until the run stops, since closing it takes a vendor adapter's channel off the bus (where
+the adapter is the only other node, the device's frames go unacknowledged while it is away). Each
+setup reads the handle's queue away, for at most 200 ms, so a busy bus cannot hold the setup. So
+what a handle counts runs from that first test, not from each test: `load()` and `diagnostics()`,
+the NM reading (`ch.nm()`), the J1939 address directory and the transfers in progress
+(`ch.j1939()`), and the E2E counter check. The J1939 messages and faults completed from the frames
+a setup reads away are let go as those frames are; a LIN bus is tapped afresh for each test, which
+holds no device.
+
+**A row that does not open** at a test's start (an adapter unplugged, a Vector channel with no
+hardware assigned) is said, by the ini value `blobly_channels`:
+
+| `blobly_channels` | what |
+|---|---|
+| `lazy` (default) | The tests run; one `PytestWarning` per row and run names the row, its interface and the adapter's message (`blobly: CAN2 (vector:2@500000) did not open: ...`), and the test that uses the row meets the error. For a suite that runs on purpose with a row's hardware absent. |
+| `required` | Every enabled row must open, LIN buses included: otherwise each test's setup is an error with that one line as its message, no traceback. |
+
+What a test changes in the simulated ECUs (a UDS session, cleared DTCs) lasts until its run ends:
+the module's, or the session's. A test file:
 
 ```python
 def test_the_sut_answers(can1):
@@ -2530,11 +2565,14 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 
 | name | what |
 |---|---|
-| `project` | Fixture: the started `Project`, its run the test module's; each test hears what arrives from its start, and its handlers and faults go with it. |
+| `project` | Fixture: the started `Project`, its run the test module's (or the session's, `blobly_run`); each test hears what arrives from its start, its channels kept on the bus, and its handlers and faults go with it. |
 | `can1`, ... | Fixtures: one per enabled channel, named after it (lowercased, `_` for what a Python name cannot hold). |
 | `diag` | Fixture: a `UdsClient` on the first enabled CAN channel (at 0x7E0 / 0x7E8), else the first DoIP one, or on the one named by parametrizing it indirectly — a `NodeClient` when the name is a node's of the system model; closed after the test. |
 | `blobly_project` | Ini value: the project, relative to the ini file. |
 | `--blobly-project=PATH` | Command line: the project, relative to the working directory; overrides the ini value. |
+| `blobly_run` | Ini value: `module` (default), a run per test module, or `session`, one run for the session. |
+| `--blobly-run=SCOPE` | Command line: `module` or `session`; overrides the ini value. |
+| `blobly_channels` | Ini value: `lazy` (default), a row that does not open warned of once per run, or `required`, each test's setup an error. |
 
 ---
 

@@ -1,6 +1,6 @@
 """pytest_plugin — Blobly Net in a pytest suite: the suite's project, started for each test module
-and stopped after its last test, and a fixture for each of its channels. A suite asks for it
-explicitly, in its root conftest.py:
+(or once for the session) and stopped after its last test, and a fixture for each of its channels.
+A suite asks for it explicitly, in its root conftest.py:
 
     pytest_plugins = ["blobly.pytest_plugin"]
 
@@ -12,13 +12,20 @@ The project is the ini value `blobly_project` (relative to the ini file), or the
 `--blobly-project=PATH` (relative to the working directory), which overrides it. Write that with
 `=`: pytest reads a separate PATH as a test path before a conftest's plugin has added the option.
 
+The ini value `blobly_run` is how long a run lasts: `module` (the default), or `session` for one
+run the whole session long; `--blobly-run=session` (or `=module`) overrides it. The ini value
+`blobly_channels` is what a row that does not open at a test's start costs: `lazy` (the default)
+warns once per row and run, and the test that uses the row meets the error; `required` makes it
+an error in every test's setup.
+
 Fixtures:
   project    the started blobly.Project. Its run is the module's: started at the module's first
              use, stopped after its last test, so one module's simulation state never reaches the
-             next. Each test gets the CAN channels' handles opened fresh as it starts, so it hears
-             what arrives from then on and nothing an earlier test left queued; after it, the
-             handlers it registered are dropped, so no later run() calls them, and the faults it
-             armed are cleared.
+             next (with blobly_run = session, the session's). Each test starts with what the CAN
+             channels' handles hold queued read away, a handle not open opened, so it hears what
+             arrives from then on and nothing an earlier test left queued, while the wire stays
+             held; after it, the handlers it registered are dropped, so no later run() calls them,
+             and the faults it armed are cleared.
   can1, ...  one per enabled channel, named after it: lowercased, every character that cannot be
              in a Python name made "_", and "_" put before a leading digit ("CAN-1" is can_1). A
              name two channels come to, a Python keyword, or another fixture's (this plugin's,
@@ -38,18 +45,24 @@ import collections
 import keyword
 import os
 import re
+import warnings
 from collections.abc import Iterator
 
 import pytest
 
 from . import __version__, init, version
 from ._lib import BloblyError
+from .events import monotonic_ms
+from .j1939 import _discard as _discard_j1939
 from .project import Channel, Project
 from .uds import UdsClient
 
 RESERVED = {"project", "diag", "request", "_blobly_run"}  # this plugin's fixtures, and pytest's request
 _PATH = pytest.StashKey[str]()  # the project configure found
 _NAMES = pytest.StashKey[list]()  # its enabled channels' names
+RUNS = ("module", "session")  # blobly_run's values, the default first
+CHANNELS = ("lazy", "required")  # blobly_channels' values, the default first
+DRAIN_MS = 200  # how long a test's setup reads a channel's queue away at most
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -57,6 +70,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="the .blobnet project the blobly fixtures start, relative to the working "
                           "directory (overrides the blobly_project ini value)")
     parser.addini("blobly_project", "the .blobnet project the blobly fixtures start, relative to the ini file")
+    parser.addoption("--blobly-run", metavar="SCOPE", default=None,
+                     help="how long a run of the project lasts: module or session (overrides the "
+                          "blobly_run ini value)")
+    parser.addini("blobly_run", "how long a run of the project lasts: module (the default) or session")
+    parser.addini("blobly_channels", "a row that does not open at a test's start: lazy (the default, "
+                                     "warned once per run) or required (the test's setup errors)")
 
 
 def project_path(config: pytest.Config) -> str | None:
@@ -76,6 +95,31 @@ def project_path(config: pytest.Config) -> str | None:
     return path
 
 
+def _choice(config: pytest.Config, ini: str, option: str | None, values: tuple[str, ...]) -> str:
+    """A setting that is one of `values`: the command line's `option` when given, else the ini
+    value, else the first of them. Anything else is refused."""
+    given = config.getoption(option) if option else None
+    if option and given is not None:
+        value, source = given, "--" + option.replace("_", "-")
+    else:
+        value, source = config.getini(ini) or values[0], f"{ini} in the ini file"
+    if value not in values:
+        raise pytest.UsageError(f"blobly: {source} is {value!r}; it is {' or '.join(values)}")
+    return value
+
+
+def run_scope(config: pytest.Config) -> str:
+    """How long a run of the suite's project lasts, the run fixture's scope: "module" (the
+    default) or "session"; --blobly-run, else the ini value blobly_run."""
+    return _choice(config, "blobly_run", "blobly_run", RUNS)
+
+
+def channels_rule(config: pytest.Config) -> str:
+    """What a row that does not open at a test's start costs: "lazy" (the default) or "required";
+    the ini value blobly_channels."""
+    return _choice(config, "blobly_channels", None, CHANNELS)
+
+
 def fixture_name(channel: str) -> str:
     """The fixture a channel of this name gets: "CAN-1" is can_1, "2nd bus" is _2nd_bus."""
     name = re.sub(r"\W", "_", channel.lower(), flags=re.ASCII)
@@ -90,6 +134,8 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError("no Blobly Net project: give --blobly-project=PATH, or set blobly_project "
                                 "in the ini file")
     config.stash[_PATH] = path
+    run_scope(config)  # refused here rather than at the first test
+    channels_rule(config)
     try:
         init()  # pytest configures on the main thread, where bb.h requires the library be loaded
         config.stash[_NAMES] = [ch.name for ch in Project(path).load().channels]  # loading transmits nothing
@@ -135,20 +181,33 @@ def pytest_report_header(config: pytest.Config) -> str:
     return f"blobly {__version__}, engine {version()}, project {config.stash[_PATH]}"
 
 
-@pytest.fixture(scope="module")
-def _blobly_run(request: pytest.FixtureRequest) -> Iterator[Project]:
-    """The module's run of the suite's project."""
+class _Run:
+    """A run of the suite's project as the fixtures hold it: the project, and the rows whose
+    failure to open has been warned of in it."""
+
+    def __init__(self, net: Project) -> None:
+        self.net = net
+        self.said: set[str] = set()
+
+
+def _run_scope(fixture_name: str, config: pytest.Config) -> str:
+    return run_scope(config)
+
+
+@pytest.fixture(scope=_run_scope)
+def _blobly_run(request: pytest.FixtureRequest) -> Iterator[_Run]:
+    """The module's run of the suite's project, or the session's (blobly_run)."""
     with Project(request.config.stash[_PATH]) as net:
-        yield net
+        yield _Run(net)
 
 
 @pytest.fixture
-def project(_blobly_run: Project) -> Iterator[Project]:
+def project(_blobly_run: _Run, request: pytest.FixtureRequest) -> Iterator[Project]:
     """The started project; what a test registers on it and leaves queued goes with the test."""
-    net = _blobly_run
-    if not net.started:  # an earlier test of the module stopped it
+    net = _blobly_run.net
+    if not net.started:  # an earlier test of the run stopped it
         net.start()
-    _reopen(net)
+    _say_unopened(request.config, _blobly_run, _reopen(net))
     yield net
     net._forget()
     if net.started:
@@ -182,25 +241,59 @@ def diag(project: Project, request: pytest.FixtureRequest) -> Iterator[UdsClient
         yield client
 
 
-def _reopen(net: Project) -> None:
-    """Each CAN channel's handle opened now and read once, so what arrives before the test's
-    first use of it is kept for it, and nothing from before: the read is what makes a handle on
-    a shared wire (PCAN, CANsub, the CAN bridge) a subscriber, where an unread one keeps only
-    its first second. Each LIN bus is tapped afresh the same way; a value an earlier test set
-    with `set()` stays, since it is what the simulated node publishes."""
+def _say_unopened(config: pytest.Config, run: _Run, unopened: list[tuple[str, str, str]]) -> None:
+    """The rows that did not open said: under blobly_channels = required the test's setup fails on
+    one line naming every one; otherwise a PytestWarning per row, once in the run."""
+    said = [f"{name} ({iface}) did not open: {why}" for name, iface, why in unopened]
+    if not said:
+        return
+    if channels_rule(config) == "required":
+        pytest.fail("blobly: " + "; ".join(said), pytrace=False)
+    for (name, _, _), text in zip(unopened, said):
+        if name not in run.said:
+            run.said.add(name)
+            warnings.warn(pytest.PytestWarning("blobly: " + text), stacklevel=2)
+
+
+def _reopen(net: Project) -> list[tuple[str, str, str]]:
+    """Each CAN channel's handle read until nothing is queued (opened first where it is not open),
+    so what arrives before the test's first use of it is kept for it, and nothing from before,
+    without letting go of the wire: the read is also what makes a handle on a shared wire (PCAN,
+    CANsub, the CAN bridge) a subscriber, where an unread one keeps only its first second. The
+    row's UDS clients and ISO-TP channels are let go. Each LIN bus is tapped afresh, which holds
+    no device; a value an earlier test set with `set()` stays, since it is what the simulated
+    node publishes. Returns (name, interface, error) for each row that did not open."""
+    unopened = []
     for b in net.lin if net.started else []:
         try:
             b.close()  # a project's bus is untapped, and tapped again at once
             b._handle()
-        except BloblyError:
-            pass  # the test that uses the bus meets the error
+        except BloblyError as e:
+            unopened.append((b.name, b.address, str(e)))
     for ch in net.channels:
-        try:
-            ch.close()
-        except BloblyError:
-            pass  # a handle already gone is closed enough
+        ch._let_go_clients()
         if ch.kind == "can":
             try:
-                ch.look()
+                _drain(ch)
             except BloblyError:
-                pass  # the test that uses the channel meets the error
+                try:  # a handle that will not read is replaced
+                    ch.close()
+                except BloblyError:
+                    pass  # a handle already gone is closed enough
+                try:
+                    _drain(ch)
+                except BloblyError as e:
+                    unopened.append((ch.name, ch.iface, str(e)))
+    return unopened
+
+
+def _drain(ch: Channel) -> None:
+    """What the channel's handle holds queued read away, the handle opened where it is not: until
+    a look finds nothing, or DRAIN_MS at most, so a busy bus cannot hold a test's setup; and the
+    J1939 messages and faults those frames completed let go."""
+    end = monotonic_ms() + DRAIN_MS
+    while True:
+        f, spent = ch.look()
+        if (f is None and not spent) or monotonic_ms() >= end:
+            break
+    _discard_j1939(ch, ch._handle())
