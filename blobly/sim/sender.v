@@ -74,3 +74,13 @@ pub fn next_due(slot u64, period u64, done u64) u64 {
 	}
 	return slot + ((done - slot) / period + 1) * period
 }
+
+// wait_until is how long a sending loop waits at `now` for a frame due at `due` (one clock's
+// units): none when it is due already, never longer than `cap`, which bounds how late the loop
+// sees a stop or a change.
+pub fn wait_until(due u64, now u64, cap u64) u64 {
+	if due <= now {
+		return 0
+	}
+	return if due - now < cap { due - now } else { cap }
+}

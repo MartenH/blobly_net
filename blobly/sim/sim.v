@@ -273,8 +273,61 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	}
 }
 
-// transmit sends what is due on `bus` and publishes what a described server's live DIDs read —
-// the one body both simulation loops (the GUI's and the headless runner's) run each pass.
+// loop_wait_ms is the longest a simulation loop's receive waits when nothing is due sooner: how
+// late it sees a stop or an injected fault.
+pub const loop_wait_ms = 5
+
+// since_ms is the time since `t0_ns` on the monotonic clock (time.sys_mono_now), in ms — the
+// clock a simulation loop runs its engine on, since time.ticks() is the 15.6 ms tick on Windows.
+pub fn since_ms(t0_ns u64) f64 {
+	return f64(time.sys_mono_now() - t0_ns) / 1e6
+}
+
+// next_due_ms is when the engine's next cyclic message is due on its clock, or none.
+pub fn (e &Engine) next_due_ms() ?f64 {
+	mut next := 0.0
+	mut any := false
+	for ecu in e.ecus {
+		for m in ecu.messages {
+			if m.period_ms > 0 && (!any || m.next_ms < next) {
+				next = m.next_ms
+				any = true
+			}
+		}
+	}
+	if !any {
+		return none
+	}
+	return next
+}
+
+// recv_wait_ms is how long a simulation loop's receive may wait at now_ms: until the next due
+// message (rounded up, so the pass after it finds the message due), at most loop_wait_ms.
+pub fn (e &Engine) recv_wait_ms(now_ms f64) int {
+	next := e.next_due_ms() or { return loop_wait_ms }
+	if next <= now_ms {
+		return 0
+	}
+	wait := math.ceil(next - now_ms)
+	return if wait < loop_wait_ms { int(wait) } else { loop_wait_ms }
+}
+
+// serve_pass is one turn of a simulation loop started at `t0_ns` (time.sys_mono_now): the
+// injected faults, what is due sent, then a receive bounded by the next due message, answering
+// the request it brings — the one body the GUI's and the headless runner's loops run each pass.
+pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, chan_name string) {
+	// re-stamped every pass, so a fault a script injects mid-run takes effect on the next frame
+	apply_injected(iface, mut e)
+	transmit(mut e, mut bus, since_ms(t0_ns), iface, chan_name)
+	if frame := bus.recv(e.recv_wait_ms(since_ms(t0_ns))) {
+		for resp in e.on_frame(frame) {
+			bus.send(resp) or {}
+		}
+	}
+}
+
+// transmit sends what is due on `bus` and publishes what a described server's live DIDs read,
+// each pass of serve_pass.
 pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, chan_name string) {
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }
@@ -288,14 +341,12 @@ pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, c
 // the smoke tool and (later) the GUI's measurement thread. The bus should be a
 // dedicated instance for this node (so it doesn't hear its own sends).
 pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
-	t0 := time.ticks()
-	deadline := t0 + i64(duration_ms)
-	for time.ticks() < deadline {
-		now_ms := f64(time.ticks() - t0)
-		for f in e.due_frames(now_ms) {
+	t0 := time.sys_mono_now()
+	for since_ms(t0) < f64(duration_ms) {
+		for f in e.due_frames(since_ms(t0)) {
 			bus.send(f) or {}
 		}
-		if frame := bus.recv(5) {
+		if frame := bus.recv(e.recv_wait_ms(since_ms(t0))) {
 			for resp in e.on_frame(frame) {
 				bus.send(resp) or {}
 			}

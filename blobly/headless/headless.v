@@ -650,20 +650,9 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 	for n in nodes {
 		engine.ecus << r.build_node(db, n)
 	}
-	t0 := time.ticks()
+	t0 := time.sys_mono_now()
 	for r.ctl.running {
-		// Re-stamped every pass, so a fault a script injects mid-run takes effect on the next
-		// frame rather than at the next rebuild — which for the headless runner never comes.
-		// The elapsed time ages timed faults; without it "drop for 500 ms" drops forever.
-		// The table owns its own clock, so calling this from every bus loop is safe.
-		sim.apply_injected(fault_iface, mut engine)
-		now_ms := f64(time.ticks() - t0)
-		sim.transmit(mut engine, mut bus, now_ms, fault_iface, chan_name)
-		if frame := bus.recv(5) {
-			for resp in engine.on_frame(frame) {
-				bus.send(resp) or {}
-			}
-		}
+		sim.serve_pass(mut engine, mut bus, t0, fault_iface, chan_name)
 	}
 	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
 	// handle still answers with the wire's totals (codex round 12 on #231).

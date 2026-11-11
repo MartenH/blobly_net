@@ -280,7 +280,7 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 		mut wait := u64(20)
 		if cyc {
 			due := sim.next_due(slot, period, done)
-			wait = if due <= after { 0 } else if due - after < wait { due - after } else { wait }
+			wait = sim.wait_until(due, after, wait)
 		}
 		// woken early by a fire queued, a start or a cycle changed
 		select {

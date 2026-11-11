@@ -207,7 +207,7 @@ fn (mut s Sender) run() {
 		}
 		after := time.sys_mono_now() / 1_000_000
 		due := sim.next_due(slot, period, done)
-		wait := if due <= after { u64(0) } else if due - after < poll_ms { due - after } else { u64(poll_ms) }
+		wait := sim.wait_until(due, after, u64(poll_ms))
 		select {
 			_ := <-s.wake {}
 			i64(wait) * time.millisecond {}
