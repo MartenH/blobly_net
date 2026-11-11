@@ -376,12 +376,15 @@ fn (s &Server) row(sid u8) (ServiceSpec, bool) {
 }
 
 // enter_session relocks and voids an outstanding seed, every entry included the one already
-// active.
+// active; entering the default session (a reset and S3 included) returns IO control too.
 fn (mut s Server) enter_session(session u8) {
 	s.unlocked = 0
 	s.seed_lvl = 0
 	s.sec_seed = []u8{}
 	s.session = session
+	if session == 1 {
+		s.return_io_control()
+	}
 }
 
 fn (mut s Server) answer_described(req []u8) []u8 {

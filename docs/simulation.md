@@ -409,7 +409,9 @@ it is `requestOutOfRange`.
 An `io:` DID is zeros of its `size` at start and reads back through `0x22` what `0x2F` left it at:
 `03` shortTermAdjustment sets it (the control state must be `size` bytes), `02`
 freezeCurrentState keeps it, and `00` returnControlToECU and `01` resetToDefault put the start
-value back; every positive answer carries the value as it then stands. `0x23` ReadMemoryByAddress
+value back; every positive answer carries the value as it then stands. Entering the default
+session (`10 01`, or S3 running out on a described server) and an ECU reset (`0x11`) put every
+`io:` DID back to its start value too, as ISO 14229-1 has them end input/output control. `0x23` ReadMemoryByAddress
 and `0x3D` WriteMemoryByAddress take the addressAndLengthFormatIdentifier of ISO 14229-1 (high
 nibble the size's bytes, low nibble the address's, 1..8 each) and must lie inside ONE declared
 range; memory is zeros at start, at most 1 MiB a range. An undeclared IO DID or address, an

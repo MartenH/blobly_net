@@ -134,6 +134,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 			// ISO 14229-1: every session transition locks the server again
 			s.unlocked = 0
 			s.sec_seed = []u8{}
+			if session == 1 {
+				s.return_io_control()
+			}
 			return [u8(0x50), session, 0x00, 0x32, 0x01, 0xF4] // + default P2 timings
 		}
 		0x22 { // ReadDataByIdentifier
@@ -226,6 +229,7 @@ fn (mut s Server) answer(req []u8) []u8 {
 			s.session = 1
 			s.unlocked = 0
 			s.sec_seed = []u8{}
+			s.return_io_control()
 			return [u8(0x51), req[1]]
 		}
 		else {

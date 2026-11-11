@@ -71,6 +71,14 @@ fn (mut s Server) io_control(req []u8) []u8 {
 	return resp
 }
 
+// return_io_control puts every IO DID back to its start value: what entering the default session
+// and an ECU reset do to control 0x2F took over.
+fn (mut s Server) return_io_control() {
+	for id, start in s.io_start {
+		s.dids[id] = start.clone()
+	}
+}
+
 // MemRequest is a 0x23/0x3D request's address and size, and where its record starts.
 struct MemRequest {
 	address u64

@@ -65,6 +65,28 @@ fn test_s3_ends_a_quiet_session() {
 	assert s.handle([u8(0x2E), 0x01, 0x02, 0x05]) == [u8(0x7F), 0x2E, 0x31] // back in default
 }
 
+// adjust_io takes IO DID 0x1234 to 5 in the extended session
+fn adjust_io(mut s Server) {
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x05])[0] == 0x6F
+	assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x05]
+}
+
+fn test_a_described_server_returns_io_control_on_default_reset_and_s3() {
+	mut now := &FakeClock{}
+	mut s := gated(now)
+	s.declare_io(0x1234, 1)
+	adjust_io(mut s)
+	assert s.handle([u8(0x10), 0x01])[0] == 0x50
+	assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00]
+	adjust_io(mut s)
+	assert s.handle([u8(0x11), 0x01])[0] == 0x51
+	assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00]
+	adjust_io(mut s)
+	now.t += 5001 // past S3
+	assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00]
+}
+
 fn test_suppressed_positive_answers_are_withheld() {
 	mut now := &FakeClock{}
 	mut s := gated(now)
