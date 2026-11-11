@@ -4,7 +4,7 @@ as their own process, as a user runs them. They check that the project comes fro
 start and neither the frames an earlier test left queued nor its handlers or faults, that a test which
 stopped the run leaves it started for the next, that the run ends with its module (or with the
 session, by blobly_run), that a channel's handle is kept from test to test and what it held read
-away, that a row which does not open is warned of once or, by blobly_channels, fails each test's
+away, its E2E counter check begun again at each test, that a row which does not open is warned of once or, by blobly_channels, fails each test's
 setup, that a failed expectation is a clean failure in pytest's output and in its --junitxml report,
 that `diag` takes a node of the system model by its name, and that a run from the repository's root
 collects."""
@@ -211,6 +211,24 @@ def test_c_reads_nothing_from_before_it(project):
 '''
 
 
+# the counter a test read last is not what the next test is judged against: test_b's first frame,
+# its counter 7 after test_a's 0 and 1, is judged on its CRC alone, as after a drop fault since cleared
+E2E_SUITE = '''import blobly.e2e
+
+
+def test_a_reads_two_frames(e2e, e2e_tap):
+    for _ in range(2):
+        e2e.messages.BrakeCommand.send(Demand=100)
+        e2e_tap.expect(e2e_tap.messages.BrakeCommand, timeout_ms=500, e2e=True)
+
+
+def test_b_judges_from_its_first_frame(e2e, e2e_tap):
+    data = blobly.e2e.p01_protect(bytes(4), data_id=8705, crc_pos=2, counter_pos=3, counter=7)
+    e2e.send(0x302, data)
+    assert e2e_tap.expect(0x302, timeout_ms=500, e2e=True).data == data
+'''
+
+
 def write_all(d, files):
     for name, text in files.items():
         write(d, name, text)
@@ -340,6 +358,14 @@ class TestPlugin:
         out = r.stdout + r.stderr
         assert r.returncode == 0, out
         assert "3 passed" in out, out
+
+    def test_the_e2e_check_begins_at_each_test(self, tmp_path):
+        write_all(tmp_path, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\n", "test_e2e.py": E2E_SUITE})
+        e2e_demo = os.path.join(REPO, "projects", "e2e-demo.blobnet")
+        r = pytest_run(tmp_path, f"--blobly-project={e2e_demo}")
+        out = r.stdout + r.stderr
+        assert r.returncode == 0, out
+        assert "2 passed" in out, out
 
     def test_diag_on_a_node_of_the_system_model(self, tmp_path):
         # the ini makes tmp_path the run's root, so the child does not look above it into the

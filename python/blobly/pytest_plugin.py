@@ -290,10 +290,13 @@ def _reopen(net: Project) -> list[tuple[str, str, str]]:
 def _drain(ch: Channel) -> None:
     """What the channel's handle holds queued read away, the handle opened where it is not: until
     a look finds nothing, or DRAIN_MS at most, so a busy bus cannot hold a test's setup; and the
-    J1939 messages and faults those frames completed let go."""
+    J1939 messages and faults those frames completed let go, and the E2E counter check begun again
+    at the next frame, so what an earlier test did to a sender (a drop fault since cleared) is not
+    judged in this one."""
     end = monotonic_ms() + DRAIN_MS
     while True:
         f, spent = ch.look()
         if (f is None and not spent) or monotonic_ms() >= end:
             break
     _discard_j1939(ch, ch._handle())
+    ch._judge_afresh()

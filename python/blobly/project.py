@@ -743,6 +743,15 @@ class Channel(Bus):
             for c in list(self._uds):
                 c._let_go()
 
+    def _judge_afresh(self) -> None:
+        """Gives the open handle a new E2E reader, the handle kept: the next frame of each message
+        is judged on its CRC alone, as after an open, and no gap before it is a timeout."""
+        h = self._handle()
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._current()
+            _lib.check(lib.bb_e2e_attach(h, self._index))
+
     def __repr__(self) -> str:
         return f"<Channel {self.name}>"
 

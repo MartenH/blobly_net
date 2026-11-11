@@ -234,7 +234,8 @@ names the project. The rules are in
   channel, named after it; `diag` is a UDS client on the first CAN channel, or on the one a test
   names with `@pytest.mark.parametrize("diag", ["DoIP1"], indirect=True)`. A test hears what
   arrives from its start, and its handlers and faults do not reach the next test; what it changed
-  in a simulated ECU lasts until its module ends.
+  in a simulated ECU lasts until its module ends (until the session ends with `blobly_run =
+  session` in the ini file, or `--blobly-run=session`).
 - A test is a few lines, and names no project (the ini file or `--blobly-project` does):
 
   ```python

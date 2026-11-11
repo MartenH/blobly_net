@@ -990,8 +990,8 @@ the engine's, the one the trace's `verify:` runs, and Lua's `frame.e2e` is the s
   purpose (a wrong Data ID to test a receiver's rejection path) reads as a receiver would read it:
   `bad_crc`.
 - The counter is judged against the frame of that id the channel read before it, on the same
-  handle: the first frame after the handle opens (once per run under the pytest plugin, which
-  keeps the handle from test to test) is judged on its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
+  handle: the first frame after the handle opens (and under the pytest plugin, which keeps the
+  handle from test to test, the first in each test) is judged on its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
   for any receiver, and so does the first good frame after a run of `bad_crc` ones.
 - `timeout` is measured between the stamps the bus gave the frames (SocketCAN's kernel stamp, the
   CAN bridge's clock). A frame with no stamp, whose time is when it was read (`inproc:`, `udp:`,
@@ -1712,8 +1712,10 @@ the adapter is the only other node, the device's frames go unacknowledged while 
 setup reads the handle's queue away, for at most 200 ms, so a busy bus cannot hold the setup. So
 what a handle counts runs from that first test, not from each test: `load()` and `diagnostics()`,
 the NM reading (`ch.nm()`), the J1939 address directory and the transfers in progress
-(`ch.j1939()`), and the E2E counter check. The J1939 messages and faults completed from the frames
-a setup reads away are let go as those frames are; a LIN bus is tapped afresh for each test, which
+(`ch.j1939()`). The J1939 messages and faults completed from the frames a setup reads away are let
+go as those frames are, and the E2E counter check begins again at each test (its first frame of a
+message judged on its CRC alone), so a sender's counter an earlier test moved on (a `drop` fault,
+since cleared) is not judged in a later one; a LIN bus is tapped afresh for each test, which
 holds no device.
 
 **A row that does not open** at a test's start (an adapter unplugged, a Vector channel with no
