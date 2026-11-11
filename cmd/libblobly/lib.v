@@ -1391,7 +1391,10 @@ pub fn bb_decode_bytes(row i32, f &C.bb_frame, m i32, s i32, buf &u8, cap i32) i
 		return fail(bb_err, 'decode_bytes: no frame')
 	}
 	msg := message(row, m) or { return refused(err) }
-	sig := signal(row, m, s) or { return refused(err) }
+	if s < 0 || int(s) >= msg.signals.len {
+		return fail(bb_err, '${msg.name} has no signal ${s} (it has ${msg.signals.len})')
+	}
+	sig := msg.signals[int(s)]
 	why := sig.bytes_refusal()
 	if why != '' {
 		return fail(bb_err, why)

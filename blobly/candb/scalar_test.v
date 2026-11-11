@@ -152,14 +152,24 @@ fn test_set_bytes() {
 	be.set_bytes(mut data, []u8{len: 9, init: u8(index + 1)})!
 	assert be.bytes_value(data)! == []u8{len: 9, init: u8(index + 1)}
 	assert data[25] == 1 && data[33] == 9 && data[24] == 0 && data[34] == 0
-	key.set_bytes(mut data, []u8{len: 15}) or {
+	before := data.clone()
+	if _ := key.set_bytes(mut data, []u8{len: 15}) {
+		assert false
+	} else {
 		assert err.msg() == 'Key takes 16 bytes, not 15'
 	}
-	sig_of(db, 'ConfigData', 'Mode').set_bytes(mut data, [u8(1)]) or {
+	if _ := sig_of(db, 'ConfigData', 'Mode').set_bytes(mut data, [u8(1)]) {
+		assert false
+	} else {
 		assert err.msg() == 'Mode is a number (8 bits), not bytes'
 	}
+	assert data == before
 	mut short := []u8{len: 10}
-	key.set_bytes(mut short, b) or { assert err.msg().contains('past a payload of 10') }
+	if _ := key.set_bytes(mut short, b) {
+		assert false
+	} else {
+		assert err.msg().contains('past a payload of 10')
+	}
 	assert short == []u8{len: 10}
 }
 
