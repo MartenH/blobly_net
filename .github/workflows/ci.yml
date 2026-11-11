@@ -281,7 +281,7 @@ jobs:
       # browser view) is vendored in libs/markdown, which is already on -path.
       - name: Native deps (apt)
         run: |
-          sudo apt-get update
+          sh scripts/ci_apt_direct.sh
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 
