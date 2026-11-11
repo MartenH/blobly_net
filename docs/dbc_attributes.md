@@ -79,8 +79,9 @@ SIG_GROUP_ 291 TorqueGroup 1 : Torque_CRC Torque_Counter Torque;
   header is at the window's first byte offset by the CRC's place in it. The CRC and counter must
   lie inside it. Profiles 1 and 5 and the primitives all work per window.
 - A frame's windows must not overlap; a declaration whose window overlaps one before it is not
-  applied, and the simulation says so. A `BO_`-scope declaration is the whole payload, so it
-  cannot sit beside a group's.
+  applied, and the simulation says so. "Before" is the order a Save writes, not the file's: the
+  `BO_`-scope declaration first, then by the signal each sits on, so a Save cannot change which
+  one applies. A `BO_`-scope declaration is the whole payload, so it cannot sit beside a group's.
 - A signal held by no `SIG_GROUP_`, or by several, has no window: the declaration is not applied,
   and the load notes say so. A file-wide default fills in a group's declaration as it does a
   message's.

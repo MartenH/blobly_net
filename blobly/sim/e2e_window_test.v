@@ -276,3 +276,30 @@ fn test_an_empty_entry_beside_a_window_leaves_the_window_checked() {
 	assert !validate_protection(db, node).any(it.contains('only the first applies')), validate_protection(db,
 		node).str()
 }
+
+// of two declarations whose windows overlap, the one applied is the same after a Save
+fn test_overlapping_declarations_keep_their_precedence_through_a_save() {
+	db := candb.parse_dbc('BU_: Ecu
+BO_ 293 Over: 8 Ecu
+ SG_ Z_CRC : 0|8@1+ (1,0) [0|255] "" X
+ SG_ A_CRC : 8|8@1+ (1,0) [0|255] "" X
+ SG_ A_Ctr : 16|4@1+ (1,0) [0|15] "" X
+ SG_ Z_Ctr : 24|4@1+ (1,0) [0|15] "" X
+BA_ "E2ECrcSignal" SG_ 293 Z_CRC "Z_CRC";
+BA_ "E2ECounterSignal" SG_ 293 Z_CRC "Z_Ctr";
+BA_ "E2EProfile" SG_ 293 Z_CRC "P01";
+BA_ "E2EDataId" SG_ 293 Z_CRC 1;
+BA_ "E2ECrcSignal" SG_ 293 A_CRC "A_CRC";
+BA_ "E2ECounterSignal" SG_ 293 A_CRC "A_Ctr";
+BA_ "E2EProfile" SG_ 293 A_CRC "P01";
+BA_ "E2EDataId" SG_ 293 A_CRC 2;
+SIG_GROUP_ 293 ZG 1 : Z_CRC Z_Ctr;
+SIG_GROUP_ 293 AG 1 : A_CRC A_Ctr;
+') or {
+		panic(err)
+	}
+	before := declared_e2e(db.messages[0]).map(it.group)
+	again := candb.parse_dbc(db.to_dbc()) or { panic(err) }
+	assert before.len == 1
+	assert declared_e2e(again.messages[0]).map(it.group) == before
+}

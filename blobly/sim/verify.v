@@ -242,7 +242,7 @@ fn (mut v Verifier) timed(i int, got Violation, clock string, t_ns i64) Violatio
 // declaration of a window over the same bytes (BO_ scope being the whole payload); 0 for none.
 pub fn declared_timeout_ms(m candb.Message, e E2e) u32 {
 	a0, a1 := e.bytes(m)
-	for d in m.e2e {
+	for d in m.e2e_in_order() {
 		if !d.has_timeout {
 			continue
 		}

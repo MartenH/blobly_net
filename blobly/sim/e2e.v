@@ -235,13 +235,14 @@ pub fn declared_e2e(m candb.Message) []E2e {
 	return ws
 }
 
-// declared_set is the windows a message's declarations give, and why each one left out was:
-// it cannot be applied (declared_problem), or its window clashes with one given before it — each
+// declared_set is the windows a message's declarations give, in their precedence
+// (candb.Message.e2e_in_order), and why each one left out was: it cannot be applied
+// (declared_problem), or its window clashes with one given before it — each
 // reason with its declaration (candb.E2eDecl.where_in).
 pub fn declared_set(m candb.Message) ([]E2e, []DeclRefusal) {
 	mut out := []E2e{}
 	mut refused := []DeclRefusal{}
-	for d in m.e2e {
+	for d in m.e2e_in_order() {
 		if !d.declared() {
 			continue
 		}

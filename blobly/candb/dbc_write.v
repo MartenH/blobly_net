@@ -496,11 +496,7 @@ fn e2e_attrs(msgs []Message, scope string) []DbcAttr {
 	mut max_id := u32(65535)
 	mut max_tmo := u32(65535)
 	for m in msgs {
-		mut decls := m.e2e.filter((it.signal == '') == (scope == 'BO_'))
-		decls.sort_with_compare(fn (a &E2eDecl, b &E2eDecl) int {
-			return a.signal.compare(b.signal)
-		})
-		for d0 in decls {
+		for d0 in m.e2e_in_order().filter((it.signal == '') == (scope == 'BO_')) {
 			d := d0.as_saved()
 			sg := d.signal
 			if d.counter != '' {

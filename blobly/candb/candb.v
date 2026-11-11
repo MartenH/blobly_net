@@ -256,6 +256,17 @@ pub fn (m Message) e2e_states_anything() bool {
 	return m.e2e.any(it.states_anything())
 }
 
+// e2e_in_order is the message's declarations in the order they take precedence, which is the
+// order a Save writes them: the whole payload's (BO_) first, then by the signal each sits on — so
+// of two whose windows overlap, which one applies does not depend on how the file was laid out.
+pub fn (m Message) e2e_in_order() []E2eDecl {
+	mut out := m.e2e.clone()
+	out.sort_with_compare(fn (a &E2eDecl, b &E2eDecl) int {
+		return a.signal.compare(b.signal)
+	})
+	return out
+}
+
 // frame_e2e is the declaration at BO_ scope (the whole payload), if the file states one.
 pub fn (m Message) frame_e2e() ?E2eDecl {
 	for d in m.e2e {
