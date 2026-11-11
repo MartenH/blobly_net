@@ -39,7 +39,7 @@ fn set_engine() Engine {
 			messages: [SimMessage{
 				msg:       set_msg()
 				period_ms: 10
-				e2e:       set_e2e
+				e2e:       [set_e2e]
 			}]
 		}]
 	}
@@ -307,11 +307,13 @@ fn test_a_later_protected_message_of_the_name_protects_the_name() {
 	protected := candb.Message{
 		...plain
 		id:  0x201
-		e2e: candb.E2eDecl{
-			counter: 'Counter'
-			crc:     'CRC'
-			profile: 'crc8_j1850'
-		}
+		e2e: [
+			candb.E2eDecl{
+				counter: 'Counter'
+				crc:     'CRC'
+				profile: 'crc8_j1850'
+			},
+		]
 	}
 	db := candb.Database{
 		nodes:    ['ECU']
@@ -320,7 +322,7 @@ fn test_a_later_protected_message_of_the_name_protects_the_name() {
 	cfg := project.NodeCfg{
 		name: 'ECU'
 	}
-	assert from_project(db, cfg).messages.all(it.e2e.crc == 'CRC')
+	assert from_project(db, cfg).messages.all(it.e2e.len == 1 && it.e2e[0].crc == 'CRC')
 	t := FaultTarget{
 		channel: 'CAN1'
 		iface:   'inproc:SET'

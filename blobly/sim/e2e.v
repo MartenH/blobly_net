@@ -100,6 +100,123 @@ pub mut:
 	// autosar_p01's DataIDMode: 'both' (default: low byte, then high), 'low', or 'alt' (the
 	// low byte when the counter is even, the high byte when odd). NIBBLE is not supported.
 	data_id_mode string
+	// The WINDOW it protects (#615): `length` bytes from `offset`, the bytes its checksum covers
+	// and its CRC and counter lie in; `length` 0 is the message's whole payload. `group` names it
+	// (a signal group's, or the entry's CRC signal), '' for the whole payload.
+	group  string
+	offset int
+	length int
+}
+
+// label is the window's name as a script reads it: its group's, else the message's.
+pub fn (e E2e) label(m candb.Message) string {
+	return if e.group != '' { e.group } else { m.name }
+}
+
+// bytes is the first byte of the window and the one past its last, within the message's payload.
+pub fn (e E2e) bytes(m candb.Message) (int, int) {
+	if e.length == 0 {
+		return 0, m.payload_len()
+	}
+	return e.offset, e.offset + e.length
+}
+
+// window_of clips the window to `n`, the bytes the profile covers of the frame as it stands.
+fn (e E2e) window_of(n int) (int, int) {
+	if e.length == 0 {
+		return 0, n
+	}
+	start := if e.offset < n { e.offset } else { n }
+	end := if e.offset + e.length < n { e.offset + e.length } else { n }
+	return start, end
+}
+
+// any_active: any window of a message's protection protects something.
+pub fn any_active(ws []E2e) bool {
+	return ws.any(it.active())
+}
+
+// window_problem says why `e`'s window cannot be stamped or checked on `m`, if it cannot: past the
+// payload, or not holding its CRC and counter whole.
+pub fn window_problem(m candb.Message, e E2e) ?string {
+	if e.length == 0 {
+		return none
+	}
+	if e.offset < 0 || e.length < 0 {
+		return 'its window (offset ${e.offset}, length ${e.length}) is not one'
+	}
+	n := m.payload_len()
+	if e.offset + e.length > n {
+		return 'its window, bytes ${e.offset}..${e.offset + e.length - 1}, lies past the ${n}-byte payload of ${m.name}'
+	}
+	for name in [e.crc, e.counter] {
+		if name == '' {
+			continue
+		}
+		sig := m.signal_named(name) or { continue }
+		a, b := sig.byte_range()
+		if a < e.offset || b >= e.offset + e.length {
+			return '"${name}" (bytes ${a}..${b}) is not inside its window, bytes ${e.offset}..${e.offset + e.length - 1}'
+		}
+	}
+	return none
+}
+
+// shape_problem says why `e` cannot be stamped or checked on `m` at all, if it cannot: its window,
+// then e2e_problem (a counter or checksum with no number, then the AUTOSAR profile it names) — the
+// ONE rule the protect: and verify: validation, a DBC declaration (stated_problem), protection_for
+// and the verifiers ask.
+pub fn shape_problem(m candb.Message, e E2e) ?string {
+	if why := window_problem(m, e) {
+		return why
+	}
+	return e2e_problem(m, e)
+}
+
+// clash_with says why `e` (its group named) cannot be one of `m`'s windows beside `kept`, if it
+// cannot: a message's windows are disjoint, or one window's CRC would be covered by another's
+// computed first; and each has a name of its own, which a script reads its verdict and a fault
+// targets it by.
+pub fn clash_with(kept []E2e, m candb.Message, e E2e) ?string {
+	a0, a1 := e.bytes(m)
+	for k in kept {
+		b0, b1 := k.bytes(m)
+		if a0 < b1 && b0 < a1 {
+			return 'its window overlaps the one of ${k.label(m)}'
+		}
+		if k.label(m) == e.label(m) {
+			return 'its window is named ${e.label(m)}, as another one is'
+		}
+	}
+	return none
+}
+
+// window_name is what a protect: or verify: entry's window is called: the signal group of `m`
+// holding its CRC (else its counter) signal, else that signal's name; '' for the whole payload.
+pub fn window_name(m candb.Message, e E2e) string {
+	if e.length == 0 {
+		return ''
+	}
+	anchor := if e.crc != '' { e.crc } else { e.counter }
+	g := m.group_holding(anchor) or { return anchor }
+	return g.name
+}
+
+// windows_of is the protection the usable entries for one message describe, one window each: an
+// entry naming no window is the whole payload, and an entry whose window clashes with one taken
+// before it (clash_with) is left out — so of several naming none, the first applies (validate_protection and
+// validate_verify say so).
+pub fn windows_of(m candb.Message, entries []project.ProtectCfg) []E2e {
+	mut out := []E2e{}
+	for p in entries {
+		mut e := e2e_of(p)
+		e.group = window_name(m, e)
+		if clash_with(out, m, e) != none {
+			continue
+		}
+		out << e
+	}
+	return out
 }
 
 pub const p01 = 'autosar_p01'
@@ -110,37 +227,76 @@ pub fn crc_width(profile string) int {
 	return if profile == p05 { 16 } else { 8 }
 }
 
-// declared_e2e is the protection a message's DBC declares (#271), if it declares a usable one:
-// what its sender stamps when no protect: entry says otherwise. The reason is returned beside it
-// when the declaration cannot be applied, for validate_protection to say.
-pub fn declared_e2e(m candb.Message) ?E2e {
-	if !m.e2e.declared() {
-		return none
-	}
-	e := e2e_of_decl(m.e2e)
-	if declared_problem(m, e) != '' {
-		return none
-	}
-	return e
+// declared_e2e is the protection a message's DBC declares (#271), one window per usable
+// declaration (#615): what its sender stamps when no protect: entry says otherwise. Empty when it
+// declares none it can apply.
+pub fn declared_e2e(m candb.Message) []E2e {
+	ws, _ := declared_set(m)
+	return ws
 }
 
-// e2e_of_decl is the protection a DBC declaration states — the one conversion.
-pub fn e2e_of_decl(d candb.E2eDecl) E2e {
+// declared_set is the windows a message's declarations give, in their precedence
+// (candb.Message.e2e_in_order), and why each one left out was: it cannot be applied
+// (declared_problem), or its window clashes with one given before it — each
+// reason with its declaration (candb.E2eDecl.where_in).
+pub fn declared_set(m candb.Message) ([]E2e, []DeclRefusal) {
+	mut out := []E2e{}
+	mut refused := []DeclRefusal{}
+	for d in m.e2e_in_order() {
+		if !d.declared() {
+			continue
+		}
+		why := declared_problem(m, d)
+		if why != '' {
+			refused << DeclRefusal{d, why}
+			continue
+		}
+		e := e2e_of_decl(m, d) or { continue }
+		if o := clash_with(out, m, e) {
+			refused << DeclRefusal{d, o}
+			continue
+		}
+		out << e
+	}
+	return out, refused
+}
+
+// DeclRefusal is a declaration declared_set leaves out, and why.
+pub struct DeclRefusal {
+pub:
+	decl candb.E2eDecl
+	why  string
+}
+
+// e2e_of_decl is the protection a DBC declaration states — the one conversion: its window the
+// signal group its attributes sit on (candb.Message.e2e_window).
+pub fn e2e_of_decl(m candb.Message, d candb.E2eDecl) !E2e {
+	w := m.e2e_window(d)!
 	return E2e{
 		counter: d.counter
 		crc:     d.crc
 		profile: d.profile
 		data_id: if d.has_data_id { ?u32(d.data_id) } else { none }
+		group:   w.name
+		offset:  w.offset
+		length:  w.length
 	}
 }
 
-// declared_problem says why a message's DBC E2E declaration cannot be stamped — '' when it can.
+// declared_problem says why a DBC E2E declaration of `m` cannot be stamped — '' when it can.
 // Every shape a protect: entry is warned about is REFUSED here: an entry is the operator's own
 // word, applied with a warning, but a declaration is applied with none, so it must be exact.
-pub fn declared_problem(m candb.Message, e E2e) string {
-	if m.e2e.bad_data_id != '' {
-		return 'its E2EDataId ${m.e2e.bad_data_id} is not a Data ID'
+pub fn declared_problem(m candb.Message, d candb.E2eDecl) string {
+	if d.bad_data_id != '' {
+		return 'its E2EDataId ${d.bad_data_id} is not a Data ID'
 	}
+	e := e2e_of_decl(m, d) or { return err.msg() }
+	return stated_problem(m, e)
+}
+
+// stated_problem says why protection `e` stated by a declaration cannot be stamped on `m` exactly —
+// '' when it can.
+pub fn stated_problem(m candb.Message, e E2e) string {
 	if e.profile !in candb.e2e_profiles {
 		return 'its profile "${e.profile}" is not one this app implements'
 	}
@@ -168,7 +324,7 @@ pub fn declared_problem(m candb.Message, e E2e) string {
 			return 'its crc "${name}" is ${sig[0].length} bits, and its profile produces ${crc_width(e.profile)}'
 		}
 	}
-	if why := e2e_problem(m, e) {
+	if why := shape_problem(m, e) {
 		return why
 	}
 	return ''
@@ -183,6 +339,8 @@ pub fn e2e_of(p project.ProtectCfg) E2e {
 		profile:      p.profile
 		data_id:      p.data_id
 		data_id_mode: p.data_id_mode
+		offset:       p.offset or { 0 }
+		length:       p.length or { 0 }
 	}
 }
 
@@ -261,11 +419,10 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 	return none
 }
 
-// e2e_problem says why `e` cannot be stamped or checked on `msg`, if it cannot — the ONE rule
-// the protect: and verify: validation, a DBC declaration (declared_problem), protection_for and
-// the verifiers ask: a counter or checksum with no number (candb.Signal.is_scalar), which no
-// stamp writes and no check reads, so it would pass as protected and checked while it is neither;
-// then the AUTOSAR profile's own (autosar_problem).
+// e2e_problem says why `e` cannot be stamped or checked on `msg`, if it cannot, its window aside
+// (shape_problem, the one rule, asks it after the window): a counter or checksum with no number
+// (candb.Signal.is_scalar), which no stamp writes and no check reads, so it would pass as
+// protected and checked while it is neither; then the AUTOSAR profile's own (autosar_problem).
 pub fn e2e_problem(msg candb.Message, e E2e) ?string {
 	for sig in msg.signals {
 		if sig.name != '' && (sig.name == e.counter || sig.name == e.crc) && !sig.is_scalar() {
@@ -308,8 +465,8 @@ pub fn p05_problem(msg candb.Message, e E2e) ?string {
 }
 
 // autosar_problem says why `e` cannot be stamped or checked as the AUTOSAR profile it names, if
-// it cannot: Profile 1's rule (p01_problem), then Profile 5's (p05_problem). e2e_problem, which
-// every validation, the stamping and the checking ask, asks it after the scalar rule.
+// it cannot: Profile 1's rule (p01_problem), then Profile 5's (p05_problem). e2e_problem asks it
+// after the scalar rule.
 pub fn autosar_problem(msg candb.Message, e E2e) ?string {
 	if why := p01_problem(msg, e) {
 		return why
@@ -343,8 +500,10 @@ fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u16 {
 	}
 	// the message's payload, never padding past it: an FD length rounded up is the wire's
 	n := if data.len < msg.payload_len() { data.len } else { msg.payload_len() }
-	mut input := data[..n].clone()
-	sig.set_raw(mut input, 0) // a checksum cannot cover itself: computed with its field zeroed
+	mut whole := data[..n].clone()
+	sig.set_raw(mut whole, 0) // a checksum cannot cover itself: computed with its field zeroed
+	start, end := e.window_of(n)
+	mut input := whole[start..end].clone()
 	if id := e.data_id {
 		// ALL FOUR bytes, little-endian. Appending only the low byte made 0x012A and 0x022A
 		// produce identical checksums — two messages the data id exists to keep apart.
@@ -373,10 +532,12 @@ fn (e E2e) p01_crc(msg candb.Message, sig candb.Signal, data []u8) u8 {
 			}
 		}
 	}
-	// the profile's DataLength is the message's: bytes a frame carries past its DBC length
-	// (padding, an FD length rounded up) are not the sender's to have covered
+	// the profile's DataLength is the window's, of the message: bytes a frame carries past its
+	// DBC length (padding, an FD length rounded up) are not the sender's to have covered
 	n := if data.len < msg.dlc { data.len } else { msg.dlc }
-	return p01_crc_bytes(data[..n], at, u16(e.data_id or { u32(0) }), e.data_id_mode, u8(ctr)) or {
+	start, end := e.window_of(n)
+	return p01_crc_bytes(data[start..end], at - start, u16(e.data_id or { u32(0) }), e.data_id_mode,
+		u8(ctr)) or {
 		0 // refused by p01_problem before anything is stamped
 	}
 }
@@ -418,7 +579,8 @@ pub fn p01_crc_bytes(data []u8, crc_at int, data_id u16, mode string, counter u8
 fn (e E2e) p05_crc(msg candb.Message, sig candb.Signal, data []u8) u16 {
 	at := crc16_byte(sig) or { return 0 } // refused by p05_problem; nothing sensible to stamp
 	n := if data.len < msg.dlc { data.len } else { msg.dlc }
-	return p05_crc_bytes(data[..n], at, u16(e.data_id or { u32(0) })) or {
+	start, end := e.window_of(n)
+	return p05_crc_bytes(data[start..end], at - start, u16(e.data_id or { u32(0) })) or {
 		0 // refused by p05_problem before anything is stamped
 	}
 }

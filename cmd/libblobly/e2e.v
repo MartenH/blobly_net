@@ -15,6 +15,8 @@ struct E2eJudge {
 mut:
 	reader &sim.E2eReader = unsafe { nil }
 	gen    u64
+	// each window's verdict on the last frame received on the handle (bb_e2e_groups), none for none
+	windows []sim.WindowVerdict
 }
 
 __global (
@@ -75,6 +77,7 @@ pub fn bb_e2e_attach(h i32, row i32) i32 {
 // e2e_verdict is bb_frame.e2e for a frame the handle received: its row's verdict while the run it
 // was attached in is the one started, BB_E2E_NONE otherwise.
 fn (mut hd BusHandle) e2e_verdict(fr transport.CanFrame) u8 {
+	hd.judge.windows = []
 	if isnil(hd.judge.reader) {
 		return u8(C.BB_E2E_NONE)
 	}
@@ -85,7 +88,47 @@ fn (mut hd BusHandle) e2e_verdict(fr transport.CanFrame) u8 {
 		return u8(C.BB_E2E_NONE)
 	}
 	v := hd.judge.reader.judge(fr) or { return u8(C.BB_E2E_NONE) }
+	hd.judge.windows = hd.judge.reader.last_windows()
 	return e2e_code(v)
+}
+
+@[export: 'bb_e2e_groups']
+pub fn bb_e2e_groups(h i32) i32 {
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	defer {
+		hd.leave()
+	}
+	ok()
+	return i32(hd.judge.windows.len)
+}
+
+// window is window i of the last frame received on the handle.
+fn (hd &BusHandle) window(i i32) !sim.WindowVerdict {
+	if i < 0 || int(i) >= hd.judge.windows.len {
+		return error('the last frame has no E2E window ${i} (it has ${hd.judge.windows.len})')
+	}
+	return hd.judge.windows[int(i)]
+}
+
+@[export: 'bb_e2e_group_name']
+pub fn bb_e2e_group_name(h i32, i i32, buf &char, cap i32) i32 {
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	defer {
+		hd.leave()
+	}
+	w := hd.window(i) or { return fail(bb_err, err.msg()) }
+	return put(w.name, buf, cap)
+}
+
+@[export: 'bb_e2e_group_verdict']
+pub fn bb_e2e_group_verdict(h i32, i i32) i32 {
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	defer {
+		hd.leave()
+	}
+	w := hd.window(i) or { return fail(bb_err, err.msg()) }
+	ok()
+	return i32(e2e_code(w.verdict))
 }
 
 // e2e_code is bb.h's enum bb_e2e for a verdict, by variant: one added to sim.Violation fails this

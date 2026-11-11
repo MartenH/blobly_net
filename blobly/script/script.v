@@ -1558,7 +1558,7 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_bytes(frame.data)
 	push_received(l, frame, t_ns)
 	push_e2e(l, env.e2e_verdict(name, frame))
-	return 9
+	return 10
 }
 
 fn l_msg_template(l lua.State) i32 {

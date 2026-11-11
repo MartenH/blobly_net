@@ -213,7 +213,7 @@ fn (t FaultTarget) sent_by(node string, msg string) ![]candb.Message {
 fn (t FaultTarget) settable(node string, msg string, signal string) ![]candb.Signal {
 	ms := t.sent_by(node, msg)!
 	prot := t.protection(node, msg)
-	if signal != '' && (signal == prot.counter || signal == prot.crc) {
+	if signal != '' && prot.any(it.counter == signal || it.crc == signal) {
 		return error('"${signal}" on "${msg}" is stamped by its E2E protection, which overwrites a value set on it')
 	}
 	mut found := []candb.Signal{}

@@ -426,20 +426,20 @@ BA_ "E2ETimeout" BO_ 770 soon;
 '
 	db := parse_dbc(text) or { panic(err) }
 	m := db.lookup(769) or { panic('no BrakeStatus') }
-	assert m.e2e.counter == 'BrakeCounter' && m.e2e.crc == 'BrakeCrc'
-	assert m.e2e.profile == 'autosar_p01' && m.e2e.has_data_id && m.e2e.data_id == 68
-	assert m.e2e.has_timeout && m.e2e.timeout_ms == 300
-	assert (db.lookup(770) or { panic('no Other') }).e2e.bad_timeout == 'soon'
+	assert m.e2e[0].counter == 'BrakeCounter' && m.e2e[0].crc == 'BrakeCrc'
+	assert m.e2e[0].profile == 'autosar_p01' && m.e2e[0].has_data_id && m.e2e[0].data_id == 68
+	assert m.e2e[0].has_timeout && m.e2e[0].timeout_ms == 300
+	assert (db.lookup(770) or { panic('no Other') }).e2e[0].bad_timeout == 'soon'
 	o := db.lookup(770) or { panic('no Other') }
 	// kept as said, so the simulation can refuse it by name — never read as "no Data ID"
-	assert o.e2e.bad_data_id == 'bogus' && !o.e2e.has_data_id
+	assert o.e2e[0].bad_data_id == 'bogus' && !o.e2e[0].has_data_id
 	again := parse_dbc(db.to_dbc()) or { panic(err) }
 	a := again.lookup(769) or { panic('lost') }
 	assert a.e2e == m.e2e, 'the E2E contract did not survive a save'
 	o2 := again.lookup(770) or { panic('lost') }
 	// a malformed value is dropped by a Save (it would break other tools), never turned into one:
 	// the writer's E2EDataId default 0 does not become this message's Data ID
-	assert !o2.e2e.has_data_id && !o2.e2e.has_timeout
+	assert !o2.e2e_states_anything()
 	assert !again.to_dbc().contains('bogus') && !again.to_dbc().contains('soon')
 	assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 769 "P01";'), 'Profile 1 is written as P01'
 }
@@ -450,7 +450,7 @@ fn test_e2e_profile_1_spellings() {
 		db := parse_dbc('BO_ 1 A: 8 N\n SG_ S : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2EProfile" BO_ 1 "${v}";\n') or {
 			panic(err)
 		}
-		assert db.messages[0].e2e.profile == 'autosar_p01', v
+		assert db.messages[0].e2e[0].profile == 'autosar_p01', v
 	}
 	assert profile_from_dbc('crc8_j1850') == 'crc8_j1850'
 }
@@ -461,7 +461,7 @@ fn test_e2e_profile_5_spellings() {
 		db := parse_dbc('BO_ 1 A: 8 N\n SG_ S : 0|16@1+ (1,0) [0|65535] "" X\nBA_ "E2EProfile" BO_ 1 "${v}";\n') or {
 			panic(err)
 		}
-		assert db.messages[0].e2e.profile == 'autosar_p05', v
+		assert db.messages[0].e2e[0].profile == 'autosar_p05', v
 		assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 1 "P05";'), v
 	}
 	assert profile_to_dbc('autosar_p05') == 'P05'
@@ -482,10 +482,10 @@ BA_ "E2ECounterSignal" BO_ 256 "K";
 '
 	db := parse_dbc(text) or { panic(err) }
 	a := db.lookup(256) or { panic('no A') }
-	assert a.e2e.profile == 'autosar_p01'
+	assert a.e2e[0].profile == 'autosar_p01'
 	b := db.lookup(257) or { panic('no B') }
-	assert !b.e2e.declared()
-	mut d := a.e2e
+	assert !b.e2e_declared()
+	mut d := a.e2e[0]
 	d.follow_rename('C', 'Crc')
 	assert d.crc == 'Crc'
 	d.forget('K')
@@ -510,19 +510,19 @@ BA_ "E2ECrcSignal" BO_ 2 "C";
 BA_ "E2ETimeout" BO_ 3 300;
 BA_ "E2EDataId" BO_ 4 ;
 ') or { panic(err) }
-	a := db.messages[0].e2e
+	a := db.messages[0].e2e[0]
 	assert a.has_timeout && a.timeout_ms == 0, 'an explicit 0 was overridden by the default'
-	b := db.messages[1].e2e
+	b := db.messages[1].e2e[0]
 	assert b.has_timeout && b.timeout_ms == 500, 'a nonzero default fills a declared message'
-	t := db.messages[2].e2e
+	t := db.messages[2].e2e[0]
 	assert !t.declared() && t.states_anything() && t.timeout_ms == 300, 'a timeout alone declares no protection'
-	assert db.messages[3].e2e.bad_data_id == '(empty)'
+	assert db.messages[3].e2e[0].bad_data_id == '(empty)'
 	again := parse_dbc(db.to_dbc()) or { panic(err) }
-	assert again.messages[0].e2e == a && again.messages[2].e2e == t
+	assert again.messages[0].e2e[0] == a && again.messages[2].e2e[0] == t
 	zero := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_DEF_DEF_ "E2ETimeout" 0;\nBA_ "E2ECrcSignal" BO_ 1 "C";\n') or {
 		panic(err)
 	}
-	assert !zero.messages[0].e2e.has_timeout, 'a default of 0 stated a timeout'
+	assert !zero.messages[0].e2e[0].has_timeout, 'a default of 0 stated a timeout'
 }
 
 // the writer's spelling is P01 whatever the model holds, and a zero-padded value is its number
@@ -530,8 +530,8 @@ fn test_e2e_writer_fixpoint_and_padded_numbers() {
 	mut db := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2ECrcSignal" BO_ 1 "C";\nBA_ "E2ETimeout" BO_ 1 00000000300;\nBA_ "E2EDataId" BO_ 1 0068;\n') or {
 		panic(err)
 	}
-	assert db.messages[0].e2e.timeout_ms == 300 && db.messages[0].e2e.data_id == 68
-	db.messages[0].e2e.profile = 'PROFILE_01'
+	assert db.messages[0].e2e[0].timeout_ms == 300 && db.messages[0].e2e[0].data_id == 68
+	db.messages[0].e2e[0].profile = 'PROFILE_01'
 	once := db.to_dbc()
 	assert once.contains('BA_ "E2EProfile" BO_ 1 "P01";')
 	assert (parse_dbc(once) or { panic(err) }).to_dbc() == once, 'the writer is not a fixpoint'
@@ -661,4 +661,79 @@ fn test_frame_format_records_with_candb_spacing() {
 	}
 	got := db.messages.map(it.format)
 	assert got == [candb.MsgFormat.classic, .fd], got.str()
+}
+
+// #615: E2E at SG_ scope protects the signal group holding the signal its attributes sit on, its
+// window the bytes the group's members span; read with its SIG_GROUP_ records and written back
+fn test_e2e_signal_group_windows() {
+	text := 'BU_: Ecu
+BO_ 291 EngineData: 8 Ecu
+ SG_ Speed_CRC : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Speed_Counter : 8|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ Speed : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ Torque_CRC : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Torque_Counter : 40|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ Torque : 55|16@0+ (1,0) [0|65535] "" Vector__XXX
+BA_DEF_ SG_ "E2EDataId" INT 0 65535;
+BA_ "E2ECrcSignal" SG_ 291 Speed_CRC "Speed_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Speed_CRC "Speed_Counter";
+BA_ "E2EProfile" SG_ 291 Speed_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Speed_CRC 68;
+BA_ "E2ECrcSignal" SG_ 291 Torque_CRC "Torque_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Torque_CRC "Torque_Counter";
+BA_ "E2EProfile" SG_ 291 Torque_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Torque_CRC 69;
+BA_ "E2ETimeout" SG_ 291 Torque_CRC 200;
+SIG_GROUP_ 291 SpeedGroup 1 : Speed_CRC Speed_Counter Speed;
+SIG_GROUP_ 291 TorqueGroup 1 : Torque_CRC Torque_Counter Torque;
+'
+	db := parse_dbc(text) or { panic(err) }
+	m := db.messages[0]
+	assert m.e2e.len == 2 && m.groups.len == 2
+	sw := m.e2e_window(m.e2e[0]) or { panic(err) }
+	assert sw.name == 'SpeedGroup' && sw.offset == 0 && sw.length == 4
+	// a big-endian member: bit 55 is byte 6's MSB, its 16 bits end in byte 7
+	tw := m.e2e_window(m.e2e[1]) or { panic(err) }
+	assert tw.name == 'TorqueGroup' && tw.offset == 4 && tw.length == 4
+	assert m.e2e[1].crc == 'Torque_CRC' && m.e2e[1].data_id == 69 && m.e2e[1].timeout_ms == 200
+	assert m.frame_e2e() == none
+	assert db.e2e_notes().len == 0
+	once := db.to_dbc()
+	assert once.contains('BA_DEF_ SG_ "E2EDataId" INT 0 65535;')
+	assert once.contains('BA_ "E2EDataId" SG_ 291 Torque_CRC 69;')
+	assert once.contains('SIG_GROUP_ 291 SpeedGroup 1 : Speed_CRC Speed_Counter Speed;')
+	again := parse_dbc(once) or { panic(err) }
+	assert again.messages[0].e2e == m.e2e && again.messages[0].groups == m.groups
+	assert again.to_dbc() == once, 'the writer is not a fixpoint'
+	// a rename follows into the declaration and the group; a deletion moves the declaration
+	mut e := m
+	e.rename_signal('Torque_CRC', 'TqCrc')
+	assert e.e2e[1].signal == 'TqCrc' && e.e2e[1].crc == 'TqCrc' && 'TqCrc' in e.groups[1].signals
+	e.forget_signal('TqCrc')
+	assert e.e2e[1].signal == 'Torque_Counter' && e.e2e[1].crc == ''
+	assert 'TqCrc' !in e.groups[1].signals
+}
+
+// an E2E attribute at a scope the reader does not take, or naming a message the file does not
+// define, is a load note, as is an SG_ declaration no signal group holds
+fn test_e2e_attributes_not_read_are_said() {
+	text := 'BO_ 1 A: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BA_ "E2EProfile" BU_ N "P01";
+BA_ "E2EProfile" "P01";
+BA_ "E2ECrcSignal" BO_ 9 "C";
+BA_ "E2ECrcSignal" SG_ 1 C "C";
+BA_REL_ "E2EDataId" BU_SG_REL_ N SG_ 1 C 68;
+'
+	db := parse_dbc(text) or { panic(err) }
+	notes := db.e2e_notes()
+	assert notes.len == 5, notes.str()
+	assert notes[0].starts_with('"E2EProfile" at BU_ scope is not read')
+	assert notes[1].starts_with('"E2EProfile" at network scope is not read')
+	assert notes[2].contains('BO_ 9 names a message the file does not define')
+	assert notes[3].starts_with('"E2EDataId" at BU_SG_REL_ scope is not read')
+	assert notes[4] == 'A.C: no SIG_GROUP_ of A holds "C" — its E2E declaration is not applied'
+	// the SG_ declaration is written back; the four records not read are not
+	assert db.save_drops().len == 4
+	assert db.to_dbc().contains('BA_ "E2ECrcSignal" SG_ 1 C "C";')
 }

@@ -728,6 +728,9 @@ def _declare(lib):
         "bb_vector_release": ([c_int], c_int),
         # E2E on a row's frames (project.py, e2e.py)
         "bb_e2e_attach": ([c_int, c_int], c_int),
+        "bb_e2e_groups": ([c_int], c_int),
+        "bb_e2e_group_name": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_e2e_group_verdict": ([c_int, c_int], c_int),
         "bb_framing_attach": ([c_int, c_int], c_int),
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
         # background senders (cyclic.py) and the keep-alive (uds.py)

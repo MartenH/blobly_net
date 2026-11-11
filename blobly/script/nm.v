@@ -158,7 +158,7 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms
 		frame:   fn [ep, name] (f transport.CanFrame) {
 			mut e := unsafe { ep }
 			e.frame_read(name, f, transport.received_now(f))
-			_ = e.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
+			_ = e.e2e_verdict(name, f) or { E2eSeen{} } // its message's E2E reader sees every frame the script reads
 		}
 		idle:    fn [ep, name] () {
 			mut e := unsafe { ep }

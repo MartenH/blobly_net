@@ -912,7 +912,8 @@ int bb_doip_listen(int port, int window_ms, int ip6, bb_doip_announcement *out, 
  * until bb_stop, BB_ERR_STATE otherwise; any thread). `kind` is "drop", "bad_crc",
  * "freeze_counter" or "out_of_range"; "clear" lifts the message's fault. `ms` > 0 ends it after
  * that long, 0 or less leaves it until cleared. `signal` (NULL or "": one is chosen) is the one
- * out_of_range forces past its declared range. A fault that could not take effect is refused with
+ * out_of_range forces past its declared range; for bad_crc and freeze_counter it names the E2E
+ * window the fault acts on (bb_e2e_group_name's name; NULL or "": every window). A fault that could not take effect is refused with
  * BB_ERR, as Lua refuses it: a DoIP or SOME/IP row, an unknown kind, a node not simulated on
  * the row, a message `node` does not send, bad_crc where it stamps no checksum, freeze_counter where it stamps no E2E counter,
  * out_of_range where no signal can carry a value outside its range. The faults are the process's,
@@ -981,6 +982,16 @@ int bb_e2e_p05_protect(uint8_t *data, int n, int data_id, int counter,
  * after its stamp has still used its counter, as AUTOSAR's protect counts each frame it protects.
  * Any thread. */
 int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
+/* A message may be protected in several WINDOWS, a signal group's bytes each with its own CRC,
+ * counter and Data ID (a DBC's E2E attributes at SG_ scope, or protect:/verify: entries naming
+ * offset: and length:); bb_frame.e2e is then the worst of their verdicts (truncated, then bad_crc,
+ * timeout, skipped, repeated). bb_e2e_groups is how many windows the last frame bb_bus_recv read on
+ * h was judged in (0 where it was not judged), bb_e2e_group_name window i's name (its signal
+ * group's, else the message's; into the caller's buffer as bb_message_name's) and
+ * bb_e2e_group_verdict its verdict, an enum bb_e2e. On the handle's own thread. */
+int bb_e2e_groups(int h);                        /* >= 0: how many windows */
+int bb_e2e_group_name(int h, int i, char *buf, int cap); /* >= 0: the length */
+int bb_e2e_group_verdict(int h, int i);          /* >= 0: an enum bb_e2e */
 /* bb_framing_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start; BB_ERR
  * for a row of another wire than the handle's): a frame bb_bus_send sends on it from then on with
  * fd 0 and no format stated goes out in that row's format, as the loaded project declares it at

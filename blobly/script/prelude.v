@@ -213,6 +213,10 @@ function sleep_ms(ms) __sleep(ms) end
 -- `channel` first, because a project may run the same node and message names on two buses and
 -- dropping a frame on the wrong one invalidates observations nobody was testing.
 --   sim.fault("CAN1", "SUT", "Powertrain", "drop", 3000)
+-- The sixth argument is the signal out_of_range forces, or for bad_crc and freeze_counter the E2E
+-- window they act on, by its name (a signal group, as frame.e2e_groups names it); every window
+-- when omitted.
+--   sim.fault("CAN1", "SUT", "EngineData", "bad_crc", 0, "TorqueGroup")
 -- e2e: AUTOSAR E2E Profile 1 for frames a script builds itself (the simulation stamps its own).
 --   e2e.p01_crc(frame, data_id, crc_pos, counter_pos [, mode])  -> the CRC byte for the frame as it
 --     stands (the CRC byte itself is not covered; mode "both" (default), "low" or "alt")
@@ -930,15 +934,16 @@ function bus.error_counters(channel)
 end
 -- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock),
 -- e2e its E2E verdict ("ok", "bad_crc", "repeated", "skipped", "truncated", "timeout"), nil where
--- its message has none: the verify: entry of the channel for it, else what its DBC declares
-function __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
+-- its message has none: the verify: entry of the channel for it, else what its DBC declares; the
+-- worst of its windows, and e2e_groups each window by name (a signal group, else the message)
+function __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e, e2e_groups)
   return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms,
-    e2e = e2e }
+    e2e = e2e, e2e_groups = e2e_groups }
 end
 function bus.recv(channel, timeout_ms)
-  local id, ext, data, fd, brs, esi, rtr, t_ms, e2e = __bus_recv(channel, timeout_ms or 1000)
+  local id, ext, data, fd, brs, esi, rtr, t_ms, e2e, groups = __bus_recv(channel, timeout_ms or 1000)
   if id == nil then return nil end
-  return __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
+  return __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e, groups)
 end
 -- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
 -- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
@@ -1549,10 +1554,10 @@ function run(duration_ms)
     local wait = math.ceil(wake - now)
     if wait < 0 then wait = 0 end
     if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
-    local ch, id, ext, data, fd, brs, esi, rtr, t_ms, e2e = __wait_frame(wait, table.unpack(__listened))
+    local ch, id, ext, data, fd, brs, esi, rtr, t_ms, e2e, groups = __wait_frame(wait, table.unpack(__listened))
     if ch then
       taken = taken + 1
-      inflight[#inflight + 1] = { ch = ch, f = __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e), i = 1, n = taken,
+      inflight[#inflight + 1] = { ch = ch, f = __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e, groups), i = 1, n = taken,
         callers = {} }
       deliver_inflight()
     end

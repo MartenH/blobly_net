@@ -361,3 +361,58 @@ channels:
 		assert again.version == 13, spelling
 	}
 }
+
+// #615: an entry names its window by offset and length, both or neither; a project that does is
+// v13, and a save keeps them
+fn test_protect_window_keys() {
+	p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    verify:
+      - { message: M, crc: A, counter: B, profile: autosar_p01, data_id: 0x44, offset: 0, length: 4 }
+      - { message: M, crc: C, counter: D, profile: autosar_p01, data_id: 0x45, offset: 0x4, length: 4 }
+      - { message: M, crc: C, offset: 4 }
+      - { message: M, crc: C, offset: 1, length: 0 }
+      - { message: M, crc: C, offset: x, length: 4 }
+      - { message: M, crc: C, offset: "", length: "" }
+') or {
+		panic(err)
+	}
+	v := p.channels[0].verify
+	assert v[0].offset or { -1 } == 0 && v[0].length or { -1 } == 4 && v[0].window()
+	assert v[1].offset or { -1 } == 4 && !v[1].window_malformed
+	assert v[2].window_malformed && !v[2].window(), 'an offset alone is no window'
+	assert v[3].window_malformed, 'a window of no bytes'
+	assert v[4].window_malformed
+	assert v[5].window_malformed, 'empty keys are no window'
+	assert version_for(p) == 13
+	again := parse(p.to_yaml()) or { panic(err) }
+	assert again.version == 13
+	assert again.channels[0].verify[1].offset or { -1 } == 4
+	assert again.channels[0].verify[1].length or { -1 } == 4
+	// a malformed window is written back as given, so the entry stays ignored and not widened
+	for i in 2 .. 6 {
+		assert again.channels[0].verify[i].window_malformed, '${i}'
+	}
+	assert again.channels[0].verify[2].offset_text or { '?' } == '4'
+	assert again.channels[0].verify[2].length_text == none
+	assert again.channels[0].verify[3].length_text or { '?' } == '0'
+	assert again.channels[0].verify[4].offset_text or { '?' } == 'x'
+	assert again.channels[0].verify[5].offset_text or { '?' } == ''
+	only := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    verify:
+      - { message: M, crc: C, counter: D, profile: autosar_p01, data_id: 0x44, offset: 0 }
+') or {
+		panic(err)
+	}
+	assert version_for(only) == 13
+	twice := parse(only.to_yaml()) or { panic(err) }
+	assert twice.channels[0].verify[0].window_malformed
+	assert twice.version == 13
+}

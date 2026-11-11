@@ -171,7 +171,7 @@ fn test_responses_are_protected_and_advance() {
 		messages: [SimMessage{
 			msg:       resp_msg
 			period_ms: 0 // request-driven: due_frames will never touch it
-			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+			e2e:       [E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
 		}]
 		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
 	}
@@ -271,7 +271,7 @@ fn test_protected_response_uses_the_response_dlc() {
 		messages: [SimMessage{
 			msg:       resp_msg
 			period_ms: 0
-			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+			e2e:       [E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
 		}]
 		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
 	}
@@ -340,7 +340,7 @@ fn test_a_protection_field_past_the_payload_is_said() {
 	}
 	why := '"CRC" lies past the 4-byte payload of Protected, so nothing writes it'
 	assert validate_protection(db, cfg) == ['protect: ${why}']
-	assert declared_problem(short, e2e_of(cfg.protect[0])) == why
+	assert stated_problem(short, e2e_of(cfg.protect[0])) == why
 }
 
 // Two entries for one message: the engine keys protection by message name, so the second
@@ -617,11 +617,13 @@ fn wide_e2e_msg(crc_wide bool) candb.Message {
 		id:      0x321
 		dlc:     24
 		sender:  'ECU'
-		e2e:     candb.E2eDecl{
-			counter: if crc_wide { '' } else { 'Ctr' }
-			crc:     if crc_wide { 'Ctr' } else { 'Crc' }
-			profile: 'sum8'
-		}
+		e2e:     [
+			candb.E2eDecl{
+				counter: if crc_wide { '' } else { 'Ctr' }
+				crc:     if crc_wide { 'Ctr' } else { 'Crc' }
+				profile: 'sum8'
+			},
+		]
 		signals: [
 			candb.Signal{
 				name:       'Crc'
@@ -652,15 +654,15 @@ fn test_a_wide_e2e_field_is_refused_everywhere() {
 		messages: [m]
 	}
 	why := 'counter Ctr is 128 bits wide: a value is encoded into 1 .. 64, so nothing stamps or checks it'
-	e := e2e_of_decl(m.e2e)
+	e := e2e_of_decl(m, m.e2e[0]) or { panic(err) }
 	assert (e2e_problem(m, e) or { '' }) == why
 	// the declaration: not applied, said, not stamped by a script, not judged on receipt
-	assert declared_problem(m, e) == why
-	assert declared_e2e(m) == none
+	assert declared_problem(m, m.e2e[0]) == why
+	assert declared_e2e(m).len == 0
 	bare := project.NodeCfg{
 		name: 'ECU'
 	}
-	assert protection_for(bare, m) == none
+	assert protection_for(bare, m).len == 0
 	assert validate_protection(db, bare).any(it.contains('cannot be applied — ${why}'))
 	mut st := E2eStamper{}
 	mut data := []u8{len: 24}
@@ -680,7 +682,7 @@ fn test_a_wide_e2e_field_is_refused_everywhere() {
 		name:    'ECU'
 		protect: [entry]
 	}
-	assert protection_for(node, m) == none
+	assert protection_for(node, m).len == 0
 	assert validate_protection(db, node).contains('protect: WideE2e: ${why} — protection not applied')
 	assert verifiers_for(db, [node], []).by_key.len == 0
 	// a verify: entry: unusable and said

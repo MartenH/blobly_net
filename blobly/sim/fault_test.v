@@ -44,7 +44,7 @@ fn protected_engine(f Fault) Engine {
 			messages: [SimMessage{
 				msg:       faulted_msg()
 				period_ms: 10
-				e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+				e2e:       [E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
 				fault:     f
 			}]
 		}]
@@ -98,9 +98,9 @@ fn test_out_of_range_exceeds_the_declared_maximum() {
 	assert raw == 0xFFFF, 'the signal must carry its maximum encodable value'
 	assert f64(raw) > 250, 'and that must exceed the declared maximum'
 	prot := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	assert can_force_out_of_range(faulted_msg(), 'Speed', prot)
+	assert can_force_out_of_range(faulted_msg(), 'Speed', [prot])
 	// a signal with no declared range has no out-of-range value to send
-	assert !can_force_out_of_range(faulted_msg(), 'AliveCounter', prot)
+	assert !can_force_out_of_range(faulted_msg(), 'AliveCounter', [prot])
 }
 
 // A timed fault expires by itself: "drop for three seconds and watch the DTC" is the gesture,
@@ -173,12 +173,12 @@ fn test_timed_fault_ages_on_the_shared_table() {
 fn test_protection_fields_are_not_offered_for_range_faults() {
 	m := faulted_msg()
 	prot := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	assert !can_force_out_of_range(m, 'CRC', prot), 'the checksum field cannot carry it'
-	assert !can_force_out_of_range(m, 'AliveCounter', prot), 'nor the counter field'
-	assert can_force_out_of_range(m, 'Speed', prot)
+	assert !can_force_out_of_range(m, 'CRC', [prot]), 'the checksum field cannot carry it'
+	assert !can_force_out_of_range(m, 'AliveCounter', [prot]), 'nor the counter field'
+	assert can_force_out_of_range(m, 'Speed', [prot])
 	// with no protection configured, the same signals are judged on their own merits
 	bare := E2e{}
-	assert !can_force_out_of_range(m, 'AliveCounter', bare), 'no declared range'
+	assert !can_force_out_of_range(m, 'AliveCounter', [bare]), 'no declared range'
 }
 
 // A negative factor puts the physical maximum at raw ZERO, so testing all-ones alone reported
@@ -222,7 +222,7 @@ fn test_response_counter_resumes_cleanly_after_a_freeze() {
 		messages: [SimMessage{
 			msg:       resp
 			period_ms: 0
-			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+			e2e:       [E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
 			fault:     Fault{ kind: .freeze_ctr }
 		}]
 		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
@@ -399,7 +399,7 @@ fn test_out_of_range_refuses_a_wide_signal() {
 			},
 		]
 	}
-	assert !can_force_out_of_range(wide, 'Key', E2e{})
+	assert !can_force_out_of_range(wide, 'Key', []E2e{})
 	wt := FaultTarget{
 		...t
 		db: candb.Database{

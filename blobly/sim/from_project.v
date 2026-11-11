@@ -23,36 +23,34 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 }
 
 // from_project builds the ECU a NodeCfg describes.
-// protection_for is how `node` protects a message it sends — the ONE answer stamping, the
-// fault panel, Lua's sim.fault and response-format selection all ask: its protect: entry if it
-// has one (the node's own word, overriding the file), else what the DBC declares (#271). None
-// when neither applies — an entry e2e_problem refuses included (a Profile 1 entry that cannot be
-// stamped as specified, a counter or checksum with no number), which is not stamped at all
-// (validate_protection says why).
-pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
-	for p in cfg.protect {
-		if p.message != m.name {
-			continue
-		}
-		e := e2e_of(p)
-		if !e.active() {
-			return none
-		}
-		if e2e_problem(m, e) != none {
-			return none
-		}
-		return e
+// protection_for is how `node` protects a message it sends, one E2e per window — the ONE answer
+// stamping, the fault panel, Lua's sim.fault and response-format selection all ask: its protect:
+// entries if it has any (the node's own word, overriding the file), else what the DBC declares
+// (#271). Empty when neither applies — an entry that cannot be stamped as specified is not
+// stamped at all (validate_protection says why).
+pub fn protection_for(cfg project.NodeCfg, m candb.Message) []E2e {
+	mine := cfg.protect.filter(it.message == m.name)
+	if mine.len > 0 {
+		return windows_of(m, mine.filter(stampable(m, it)))
 	}
 	return declared_e2e(m)
 }
 
-// protections is what `cfg`'s node stamps on each message it sends, by name — the map the
-// engine attaches to every message of that name, so the last protected message of a name decides.
-pub fn protections(db candb.Database, cfg project.NodeCfg) map[string]E2e {
-	mut prot := map[string]E2e{}
+// stampable: a protect: entry that protects something and can be stamped as written.
+fn stampable(m candb.Message, p project.ProtectCfg) bool {
+	e := e2e_of(p)
+	return e.active() && !p.window_malformed && shape_problem(m, e) == none
+}
+
+// protections is what `cfg`'s node stamps on each message it sends, by name, per window — the map
+// the engine attaches to every message of that name, so the last protected message of a name
+// decides.
+pub fn protections(db candb.Database, cfg project.NodeCfg) map[string][]E2e {
+	mut prot := map[string][]E2e{}
 	for m in db.messages_from(cfg.name) {
-		if e := protection_for(cfg, m) {
-			prot[m.name] = e
+		ws := protection_for(cfg, m)
+		if ws.len > 0 {
+			prot[m.name] = ws
 		}
 	}
 	return prot
@@ -175,7 +173,7 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 					continue
 				}
 				// the same question resp_is_extended asks: an entry, or a declaration it stamps
-				if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
+				if cfg.protect.any(it.message == m.name) || protection_for(cfg, m).len > 0 {
 					protected_hits++
 				}
 			}
@@ -192,27 +190,51 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 	// applied must be said — and an entry that differs from one overrides it, which is legitimate
 	// (a wrong Data ID on purpose) but worth saying
 	for m in db.messages_from(cfg.name) {
-		if !m.e2e.declared() {
+		if !m.e2e_declared() {
 			continue
 		}
 		mine := cfg.protect.filter(it.message == m.name)
 		if mine.len == 0 {
-			why := declared_problem(m, e2e_of_decl(m.e2e))
-			// a malformed Data ID is said once, by the reader's load note (candb.e2e_notes)
-			if why != '' && m.e2e.bad_data_id == '' {
-				warns << 'dbc: the E2E declaration of ${m.name} cannot be applied — ${why}; ${m.name} is sent unprotected'
+			_, refused := declared_set(m)
+			for r in refused {
+				// a malformed Data ID and a window the file does not resolve are said once, by
+				// the reader's load notes (candb.e2e_notes)
+				if r.decl.bad_data_id != '' || !window_resolves(m, r.decl) {
+					continue
+				}
+				warns << 'dbc: the E2E declaration of ${r.decl.where_in(m)} cannot be applied — ${r.why}; it is sent unprotected'
 			}
-		} else {
-			p := mine[0]
-			d := m.e2e
-			id := p.data_id or { u32(0) }
-			if p.counter != d.counter || p.crc != d.crc || p.profile != d.profile
-				|| (p.data_id != none) != d.has_data_id || id != d.data_id {
-				warns << 'protect: ${m.name} differs from the E2E the DBC declares — the protect: entry applies'
-			}
+		} else if !same_as_declared(m, mine) {
+			warns << 'protect: ${m.name} differs from the E2E the DBC declares — the protect: entries apply'
 		}
 	}
-	mut seen := map[string]bool{}
+	mut seen := map[string]int{}
+	for p in cfg.protect {
+		seen[p.message]++
+	}
+	for msg, n in seen {
+		if n < 2 {
+			continue
+		}
+		m := msgs[msg] or { continue }
+		// the entries protection_for stamps from; the rest are said one by one below
+		entries := cfg.protect.filter(it.message == msg && stampable(m, it))
+		if entries.len > 1 && entries.any(!it.window()) {
+			// one window per entry: an entry naming none is the whole payload, which any other overlaps
+			warns << 'protect: "${msg}" appears more than once and not every entry names its window (offset:/length:) — only the first applies; give each its window, or put counter and crc in ONE entry'
+			continue
+		}
+		mut kept := []E2e{}
+		for p in entries {
+			mut e := e2e_of(p)
+			e.group = window_name(m, e)
+			if why := clash_with(kept, m, e) {
+				warns << 'protect: ${msg}: the window at byte ${e.offset}: ${why} — not applied'
+				continue
+			}
+			kept << e
+		}
+	}
 	for p in cfg.protect {
 		// Neither field set = nothing to apply. E2e.active() is false, every frame goes out
 		// bare, and the panel still counts the entry as protection — so say it plainly. A
@@ -220,13 +242,9 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		if p.counter == '' && p.crc == '' {
 			warns << 'protect: "${p.message}" sets neither counter nor crc — nothing is protected'
 		}
-		// The engine keys protection by message, so a second entry for the same message
-		// REPLACES the first. Splitting a counter and a checksum across two entries reads
-		// perfectly and loses one of them, with both still displayed.
-		if p.message in seen {
-			warns << 'protect: "${p.message}" appears more than once — only the last entry applies; put counter and crc in ONE entry'
+		if p.window_malformed {
+			warns << 'protect: the window of "${p.message}" is not two whole numbers, offset: and length: (> 0) — protection not applied'
 		}
-		seen[p.message] = true
 		m := msgs[p.message] or {
 			warns << 'protect: message "${p.message}" is not sent by ${cfg.name} — protection not applied'
 			continue
@@ -275,7 +293,7 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				warns << 'protect: ${why}'
 			}
 		}
-		if why := e2e_problem(m, e2e_of(p)) {
+		if why := shape_problem(m, e2e_of(p)) {
 			warns << 'protect: ${p.message}: ${why} — protection not applied'
 		}
 		if p.data_id_mode != '' && (p.profile != p01 || p.crc == '') {
@@ -301,7 +319,7 @@ fn resp_is_extended(db candb.Database, cfg project.NodeCfg, id u32) bool {
 		if m.id != id {
 			continue
 		}
-		if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
+		if cfg.protect.any(it.message == m.name) || protection_for(cfg, m).len > 0 {
 			return m.ext
 		}
 		if first == none {
@@ -312,10 +330,40 @@ fn resp_is_extended(db candb.Database, cfg project.NodeCfg, id u32) bool {
 }
 
 // attach_protection applies per-message protection to an already-built ECU.
-pub fn attach_protection(mut ecu SimEcu, prot map[string]E2e) {
+pub fn attach_protection(mut ecu SimEcu, prot map[string][]E2e) {
 	for i, m in ecu.messages {
-		if e := prot[m.msg.name] {
-			ecu.messages[i].e2e = e
+		if ws := prot[m.msg.name] {
+			ecu.messages[i].e2e = ws.clone()
 		}
 	}
+}
+
+// same_as_declared: a message's protect: entries state what its DBC declares, window for window.
+fn same_as_declared(m candb.Message, entries []project.ProtectCfg) bool {
+	decl := declared_e2e(m)
+	ws := windows_of(m, entries)
+	if decl.len != ws.len {
+		return false
+	}
+	for i, e in ws {
+		d := decl[i]
+		if e.counter != d.counter || e.crc != d.crc || e.profile != d.profile
+			|| !same_data_id(e.data_id, d.data_id) || e.offset != d.offset || e.length != d.length {
+			return false
+		}
+	}
+	return true
+}
+
+// window_resolves: the window of declaration `d` is one the file states.
+fn window_resolves(m candb.Message, d candb.E2eDecl) bool {
+	m.e2e_window(d) or { return false }
+	return true
+}
+
+// same_data_id: two Data IDs are both absent, or both present and equal.
+fn same_data_id(a ?u32, b ?u32) bool {
+	x := a or { return b == none }
+	y := b or { return false }
+	return x == y
 }

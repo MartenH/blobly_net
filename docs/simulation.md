@@ -251,8 +251,47 @@ AUTOSAR profile describes.
 | `profile` | `autosar_p01` (also spelled `P01` or `PROFILE_01`, as in a DBC's `E2EProfile`), `autosar_p05` (also `P05` or `PROFILE_05`), or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8`. A project using `autosar_p05` declares schema v13 |
 | `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums. `autosar_p01` and `autosar_p05` require one, 16 bits |
 | `data_id_mode` | `autosar_p01` only: `both` (default: the low byte, then the high byte), `low`, or `alt` (the low byte when the counter is even, the high byte when it is odd). `nibble` is not supported |
+| `offset`, `length` | the window it protects, in bytes, both or neither — omitted, the whole payload. One entry per window when a frame carries several protected signal groups ([below](#several-protected-signal-groups-in-one-frame-windows)); schema v13 |
 
 Both are named by **signal**, so width, bit position and byte order come from the DBC.
+
+### Several protected signal groups in one frame (windows)
+
+AUTOSAR protects a *signal group*, not a frame: one frame can carry several groups, each a window
+of bytes with its own CRC, counter and Data ID. Give each its own entry naming its **window in
+bytes** — `offset` and `length`, both or neither:
+
+```yaml
+        protect:
+          - { message: EngineData, crc: Speed_CRC, counter: Speed_Counter, profile: autosar_p01, data_id: 0x44, offset: 0, length: 4 }
+          - { message: EngineData, crc: Torque_CRC, counter: Torque_Counter, profile: autosar_p01, data_id: 0x45, offset: 4, length: 4 }
+```
+
+- The profile is computed over the window alone, as if it were the frame (Profile 1's CRC covers
+  the window's bytes but the CRC's; Profile 5's header is where its CRC signal is in the window).
+  Profiles 1 and 5 and the primitives all work per window, and one frame may mix them.
+- The CRC and the counter must lie inside the window, and the window inside the payload; an entry
+  that breaks either is reported and not applied.
+- A frame's windows must not overlap, and each is named apart (by the signal group holding its
+  CRC, else the CRC signal): an entry whose window overlaps one listed before it, or would be
+  named like it, is reported and not applied. An entry naming no window is the whole payload, so beside another
+  entry for the message only the first applies, as before windows existed.
+- Every window is stamped on every send with the same counter step, and checked on receive with
+  its own counter state; the frame's verdict is the **worst** of its windows' (truncated, then
+  bad_crc, timeout, skipped, repeated), and a script reads each window's too
+  (`Frame.e2e_groups` in Python, `frame.e2e_groups` in Lua, `bb_e2e_group_*` in C), keyed by its
+  name: the DBC signal group holding its CRC signal (else its counter), else that signal's name.
+- `verify:` entries name windows the same way.
+- A DBC states the same with its `E2E*` attributes at `SG_` scope and `SIG_GROUP_` records
+  ([dbc_attributes.md](dbc_attributes.md#several-windows-in-one-frame-signal-groups)); its sender
+  stamps every group with no `protect:` entry, and a script judges every group.
+- `bad_crc` and `freeze_counter` act on every window, or on the one named
+  (`sim.fault(channel, node, message, "bad_crc", 0, "TorqueGroup")` in Lua,
+  `net.fault(..., group="TorqueGroup")` in Python). A window frozen alone resumes one step past
+  the value it repeated, as a freeze of every window does, while the other windows went on.
+- A project using `offset:`/`length:` declares schema v13: an older build would read every entry
+  as the whole payload. A window given with one key, or with a value that is not a whole number,
+  is ignored with a warning, and a Save writes it back as written rather than dropping it.
 
 ### AUTOSAR E2E Profile 1 (`autosar_p01`)
 

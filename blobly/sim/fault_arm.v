@@ -34,9 +34,10 @@ pub fn fault_kind_of(kind string) !FaultKind {
 
 // arm puts `kind` on `node`'s `msg` on this channel for `ms` milliseconds (0 or less: until
 // cleared), forcing `signal` out of range for out_of_range (one chosen when empty, as the
-// Simulation panel offers one); a kind of clear lifts it. Refused: an Ethernet row, an unknown
-// kind, a node not simulated here, a message `node` does not send, and a kind that would change
-// no bit on the wire.
+// Simulation panel offers one); for bad_crc and freeze_counter `signal` names the E2E window it
+// acts on (its group, E2e.label; empty for every window). A kind of clear lifts it. Refused: an
+// Ethernet row, an unknown kind, a node not simulated here, a message `node` does not send, a
+// window it does not stamp, and a kind that would change no bit on the wire.
 pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal string) ! {
 	if t.not_can != '' {
 		return error('"${t.channel}" is a ${t.not_can} channel — nothing simulates on it, so a fault there could never take effect')
@@ -55,7 +56,21 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 		return error('"${node}" does not send "${msg}" on ${t.channel}')
 	}
 	t.announced_refusal(node, m[0], k)!
-	prot := t.protection(node, msg)
+	all := t.protection(node, msg)
+	mut prot := all.clone()
+	mut group := ''
+	if k in [.bad_crc, .freeze_ctr] && signal != '' {
+		prot = all.filter(it.label(m[0]) == signal)
+		if prot.len == 0 {
+			names := all.map(it.label(m[0]))
+			return error('"${msg}" on "${node}" has no E2E window "${signal}"${if names.len > 0 {
+				' (its windows: ${names.join(', ')})'
+			} else {
+				''
+			}}')
+		}
+		group = prot[0].group
+	}
 	mut sg := signal
 	match k {
 		.out_of_range {
@@ -77,24 +92,31 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 			}
 		}
 		.bad_crc {
-			if prot.crc == '' {
-				why := t.unapplied(node, m[0])
-				return error('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing${why}')
+			crcs := prot.filter(it.crc != '')
+			if crcs.len == 0 {
+				return error('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing${t.unapplied(node, m[0])}')
 			}
-			past_payload_refusal(m, prot.crc, 'bad_crc')!
+			for e in crcs {
+				past_payload_refusal(m, e.crc, 'bad_crc')!
+			}
+			sg = ''
 		}
 		.freeze_ctr {
 			// the E2E counter is what freezes; a `counter` generator is an ordinary signal
-			if prot.counter == '' {
-				why := t.unapplied(node, m[0])
-				return error('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing${why}')
+			ctrs := prot.filter(it.counter != '')
+			if ctrs.len == 0 {
+				return error('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing${t.unapplied(node, m[0])}')
 			}
-			past_payload_refusal(m, prot.counter, 'freeze_counter')!
+			for e in ctrs {
+				past_payload_refusal(m, e.counter, 'freeze_counter')!
+			}
+			sg = ''
 		}
 		else {}
 	}
 	inject(t.iface, node, msg, Fault{
 		kind:         k
+		group:        group
 		signal:       sg
 		remaining_ms: ms
 	})
@@ -120,15 +142,15 @@ fn wide_refusal(msgs []candb.Message, field string, kind string) ! {
 	}
 }
 
-// protection is what `node` stamps on `msg` here (empty when none): the protection the engine
-// attaches to its messages of that name (protections).
-fn (t FaultTarget) protection(node string, msg string) E2e {
+// protection is what `node` stamps on `msg` here, per window (empty when none): the protection the
+// engine attaches to its messages of that name (protections).
+fn (t FaultTarget) protection(node string, msg string) []E2e {
 	for n in t.nodes {
 		if n.name == node {
-			return protections(t.db, n)[msg] or { E2e{} }
+			return protections(t.db, n)[msg] or { []E2e{} }
 		}
 	}
-	return E2e{}
+	return []E2e{}
 }
 
 // FaultOffer is what can be put on one message of one simulated node: the kinds that take effect
@@ -139,22 +161,22 @@ pub:
 	oor_signal string
 }
 
-// fault_offer is the faults that take effect on `node`'s `msg`, `prot` what it stamps there (the
-// protection the engine attaches to its messages of that name, protections) and `anns` the
-// announcements of its wire: bad_crc where it stamps a checksum the payload holds, freeze_counter
-// where it stamps an E2E counter, out_of_range where a signal has a value outside its range — and on
+// fault_offer is the faults that take effect on `node`'s `msg`, `prot` what it stamps there per
+// window (the protection the engine attaches to its messages of that name, protections) and `anns`
+// the announcements of its wire: bad_crc where a window stamps a checksum the payload holds,
+// freeze_counter where one stamps an E2E counter, out_of_range where a signal has a value outside its range — and on
 // a frame it announces NM on, drop alone, since the announcement goes out in its place.
-pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot E2e, anns []nm.Announce) FaultOffer {
+pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot []E2e, anns []nm.Announce) FaultOffer {
 	mut kinds := [FaultKind.none_, .drop]
 	if announced_frame(anns, node.name, msg) {
 		return FaultOffer{
 			kinds: kinds
 		}
 	}
-	if prot.crc != '' && past_payload(msg, prot.crc) == none {
+	if prot.any(it.crc != '' && past_payload(msg, it.crc) == none) {
 		kinds << .bad_crc
 	}
-	if prot.counter != '' && past_payload(msg, prot.counter) == none {
+	if prot.any(it.counter != '' && past_payload(msg, it.counter) == none) {
 		kinds << .freeze_ctr
 	}
 	mut oor := ''
@@ -174,24 +196,30 @@ pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot E2e, anns []nm.
 }
 
 // unapplied says why `node` stamps nothing on `m` although a protect: entry or the DBC's
-// declaration names protection for it (e2e_problem, declared_problem), as a clause a refusal
-// ends with; '' when nothing names any.
+// declaration names protection for it (shape_problem, declared_problem), as a clause a refusal
+// ends with; '' when nothing names any. Its protect: entries are asked before the file's
+// declarations, since an entry overrides them.
 fn (t FaultTarget) unapplied(node string, m candb.Message) string {
 	for n in t.nodes {
 		if n.name != node {
 			continue
 		}
-		for p in n.protect {
-			if p.message == m.name {
-				why := e2e_problem(m, e2e_of(p)) or { return '' }
+		mine := n.protect.filter(it.message == m.name)
+		for p in mine {
+			if why := shape_problem(m, e2e_of(p)) {
 				return ' (its protect: entry is not applied: ${why})'
 			}
 		}
+		if mine.len > 0 {
+			return ''
+		}
 	}
-	if m.e2e.declared() {
-		why := declared_problem(m, e2e_of_decl(m.e2e))
-		if why != '' {
-			return ' (its E2E declaration is not applied: ${why})'
+	for d in m.e2e {
+		if d.declared() {
+			why := declared_problem(m, d)
+			if why != '' {
+				return ' (its E2E declaration is not applied: ${why})'
+			}
 		}
 	}
 	return ''

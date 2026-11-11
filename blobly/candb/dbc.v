@@ -29,6 +29,9 @@ pub mut:
 	// what the DBC reader read and refused (a send attribute or start value that is not one), one
 	// line each; said by open_database
 	read_notes []string
+	// the E2E attributes the reader did not take — at a scope other than BO_ and SG_, or naming a
+	// message the file does not define — one line each, said by e2e_notes and save_drops
+	e2e_unread []string
 }
 
 // ArxmlBus is what an ARXML cluster states about the bus that carries it.
@@ -446,7 +449,8 @@ mut:
 	// silence. Resolved once the whole file, its enums and defaults included, is read.
 	fmt_value string
 	brs_value string
-	e2e       E2eDecl
+	e2e       []E2eDecl
+	groups    []SignalGroup
 	sigs      []SigBuilder
 }
 
@@ -475,6 +479,7 @@ pub fn parse_dbc(text string) !Database {
 	mut nodes := []string{}
 	mut e2e_defaults := []string{}
 	mut send := SendAttrs{} // the send attributes and start values, resolved after the loop
+	mut e2e_unread := []string{}
 
 	for raw_line in text.split_into_lines() {
 		// an attribute record matched with its blanks collapsed (attr_record): CANdb++ writes two
@@ -505,7 +510,16 @@ pub fn parse_dbc(text string) !Database {
 		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
 		} else if line.starts_with('BA_ "E2E') {
-			apply_e2e_attr(mut msgs, by_id, line)
+			if why := apply_e2e_attr(mut msgs, by_id, line) {
+				e2e_unread << why
+			}
+		} else if line.starts_with('BA_REL_ "E2E') {
+			// a relation-scope value: BA_REL_ "<name>" BU_SG_REL_ <node> SG_ <id> <signal> <value>;
+			f := line.fields()
+			place := if f.len > 2 { f[2] } else { 'relation' }
+			e2e_unread << '${f[1]} at ${place} scope is not read (an E2E attribute is read at BO_ and SG_ scope) — not applied, and a Save drops it'
+		} else if line.starts_with('SIG_GROUP_ ') {
+			apply_sig_group(mut msgs, by_id, line)
 		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
 			// a file-wide default is a declaration too, as for VFrameFormat: applied below to
 			// every message that states any E2E attribute of its own
@@ -552,8 +566,10 @@ pub fn parse_dbc(text string) !Database {
 			continue
 		}
 		for mut mb in msgs {
-			if mb.e2e.declared() {
-				set_e2e_field(mut mb.e2e, f[1], f[2..].join(' ').trim_space(), false)
+			for mut d in mb.e2e {
+				if d.declared() {
+					set_e2e_field(mut d, f[1], f[2..].join(' ').trim_space(), false)
+				}
 			}
 		}
 	}
@@ -604,14 +620,16 @@ pub fn parse_dbc(text string) !Database {
 			j1939:   frame_enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
 			format:  frame_format_of(first_set(mb.fmt_value, fmt_default), fmt_choices, first_set(mb.brs_value,
 				brs_default), brs_choices)
-			e2e:     mb.e2e
+			e2e:     mb.e2e.clone()
 			signals: sigs
+			groups:  mb.groups.clone()
 		}
 	}
 	return Database{
 		messages:   out
 		nodes:      nodes
 		read_notes: read_notes
+		e2e_unread: e2e_unread
 	}
 }
 
@@ -634,16 +652,75 @@ fn apply_tx_bu(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 
 // apply_e2e_attr parses one of #271's E2E contract attributes — `BA_ "E2ECounterSignal" BO_ <id>
 // "<signal>";`, likewise E2ECrcSignal and E2EProfile, and `BA_ "E2EDataId" BO_ <id> <n>;` — onto
-// its message. A value that is not what the attribute holds is left unset rather than guessed.
-fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+// its message, or at SG_ scope (`BA_ "E2EDataId" SG_ <id> <signal> <n>;`) onto the declaration of
+// the signal group holding that signal (#615). A value that is not what the attribute holds is
+// left unset rather than guessed. Answers why a record was not read: another scope, or a message
+// the file does not define.
+fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) ?string {
 	f := line.trim_right(';').fields()
 	// f: BA_ "<name>" BO_ <id> <value…> — the value may be missing, which is malformed, not absent
-	if f.len < 4 || f[2] != 'BO_' {
+	if f.len < 3 {
+		return none
+	}
+	scope := f[2]
+	if scope != 'BO_' && scope != 'SG_' {
+		place := if scope in ['BU_', 'EV_'] {
+			'${scope} scope'
+		} else {
+			'network scope'
+		}
+		return '${f[1]} at ${place} is not read (an E2E attribute is read at BO_ and SG_ scope) — not applied, and a Save drops it'
+	}
+	if f.len < 4 {
+		return none
+	}
+	idx := by_id[u32(f[3].u64())] or {
+		return '${f[1]} ${scope} ${f[3]} names a message the file does not define — not applied, and a Save drops it'
+	}
+	mut signal := ''
+	mut at := 4
+	if scope == 'SG_' {
+		if f.len < 5 {
+			return none
+		}
+		signal = f[4]
+		at = 5
+	}
+	i := decl_index(mut msgs[idx].e2e, signal)
+	set_e2e_field(mut msgs[idx].e2e[i], f[1], if f.len > at { f[at..].join(' ').trim_space() } else {
+		''
+	}, true)
+	return none
+}
+
+// decl_index is the position of the declaration whose attributes sit on `signal` ('' for BO_),
+// added when the message has none yet.
+fn decl_index(mut list []E2eDecl, signal string) int {
+	for i, d in list {
+		if d.signal == signal {
+			return i
+		}
+	}
+	list << E2eDecl{
+		signal: signal
+	}
+	return list.len - 1
+}
+
+// apply_sig_group parses `SIG_GROUP_ <id> <name> <repetitions> : <signal> <signal> …;` onto its
+// message.
+fn apply_sig_group(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	colon := line.index(':') or { return }
+	head := line[..colon].fields()
+	if head.len < 3 {
 		return
 	}
-	idx := by_id[u32(f[3].u64())] or { return }
-	set_e2e_field(mut msgs[idx].e2e, f[1], if f.len > 4 { f[4..].join(' ').trim_space() } else { '' },
-		true)
+	idx := by_id[u32(head[1].u64())] or { return }
+	msgs[idx].groups << SignalGroup{
+		name:        head[2]
+		repetitions: if head.len > 3 { head[3].int() } else { 1 }
+		signals:     line[colon + 1..].trim_space().trim_right(';').fields()
+	}
 }
 
 // set_e2e_field sets one attribute on a declaration — `overwrite` false for a default, which

@@ -3,7 +3,7 @@
 A DBC is the one file the whole bench shares: blobly_net reads it to decode, simulate and
 check traffic, and blobly_emb's generator (loom2v) reads it to build the ECU. Where the DBC's
 own grammar has no place for something both sides must agree on, we add a **message
-attribute** (`BA_ … BO_ <id> …`). This page is the definition of every attribute we add, for
+attribute** (`BA_ … BO_ <id> …`), or a signal attribute where it protects a signal group. This page is the definition of every attribute we add, for
 both repositories. Change it here first, and change both readers together.
 
 Attributes we did not invent but do read are listed at the end, so the line between "ours" and
@@ -48,6 +48,48 @@ BA_ "E2ETimeout" BO_ 769 300;
 | `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1, the one both sides implement. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. `"P05"` is AUTOSAR E2E Profile 5 (CRC-16/CCITT-FALSE, an 8-bit counter 0..255), which blobly_net implements and blobly_emb does not; `"PROFILE_05"` and `"autosar_p05"` read the same. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
 | `E2EDataId` | INT | the 16-bit Data ID that goes into the CRC. 0 is a valid Data ID, so a message without this attribute has none, and Profiles 1 and 5 refuse it |
 | `E2ETimeout` | INT, ms | the receiver's E2E sender-loss timeout: no *valid* frame within this time and the receiver reports `timeout` (blobly_emb REQ-E2E-002). A sender ignores it. 0 means no timeout. On its own it declares no protection |
+
+### Several windows in one frame: signal groups
+
+AUTOSAR protects a *signal group*, not a frame, so one frame can carry several groups, each a
+window of bytes with its own CRC, counter and Data ID. A DBC converted from an AUTOSAR system
+description says so with `SIG_GROUP_` records and the same five attributes at **`SG_` scope**,
+stated on the group's CRC signal (its counter signal where it has no CRC):
+
+```
+BA_DEF_ SG_ "E2ECounterSignal" STRING;
+BA_DEF_ SG_ "E2ECrcSignal" STRING;
+BA_DEF_ SG_ "E2EProfile" STRING;
+BA_DEF_ SG_ "E2EDataId" INT 0 65535;
+BA_ "E2ECrcSignal" SG_ 291 Speed_CRC "Speed_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Speed_CRC "Speed_Counter";
+BA_ "E2EProfile" SG_ 291 Speed_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Speed_CRC 68;
+BA_ "E2ECrcSignal" SG_ 291 Torque_CRC "Torque_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Torque_CRC "Torque_Counter";
+BA_ "E2EProfile" SG_ 291 Torque_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Torque_CRC 69;
+SIG_GROUP_ 291 SpeedGroup 1 : Speed_CRC Speed_Counter Speed;
+SIG_GROUP_ 291 TorqueGroup 1 : Torque_CRC Torque_Counter Torque;
+```
+
+- The **window** is the bytes the members of the `SIG_GROUP_` holding that signal span, from the
+  first byte any of them touches to the last. The profile is computed over the window alone, as
+  if it were the frame: Profile 1's CRC covers the window's bytes but the CRC's, Profile 5's
+  header is at the window's first byte offset by the CRC's place in it. The CRC and counter must
+  lie inside it. Profiles 1 and 5 and the primitives all work per window.
+- A frame's windows must not overlap; a declaration whose window overlaps one before it is not
+  applied, and the simulation says so. "Before" is the order a Save writes, not the file's: the
+  `BO_`-scope declaration first, then by the signal each sits on, so a Save cannot change which
+  one applies. A `BO_`-scope declaration is the whole payload, so it cannot sit beside a group's.
+- A signal held by no `SIG_GROUP_`, or by several, has no window: the declaration is not applied,
+  and the load notes say so. A file-wide default fills in a group's declaration as it does a
+  message's.
+- blobly_net writes the attributes back where it read them, `SG_`-scope ones with a `BA_DEF_ SG_`
+  definition, and every `SIG_GROUP_` record. A file using both scopes gets a definition for each.
+- An `E2E*` attribute at any other scope (`BU_`, `EV_`, a relation, the whole network) or naming a
+  message the file does not define is not read, and the load notes say so; a Save drops it.
+- blobly_emb reads the `BO_` scope only.
 
 Rules both readers follow:
 

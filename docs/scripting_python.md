@@ -1070,7 +1070,7 @@ match, a counter that stops, a signal past its declared range. They are Lua's `s
 by the same rule in the engine. [simulation.md](simulation.md#fault-injection) has what each one
 does on the wire and why.
 
-- `net.fault(channel, node, message, kind, ms=None, signal=None)` arms `kind` on the simulated
+- `net.fault(channel, node, message, kind, ms=None, signal=None, *, group=None)` arms `kind` on the simulated
   `node`'s `message` on `channel`, for `ms` milliseconds (rounded up) or, with `None`, until it is
   cleared. `channel` is a `Channel` or its name, `message` a `Message` or its name, `node` the
   simulated node's name as the project gives it. A fault is keyed by the message's **name**: by
@@ -1084,13 +1084,18 @@ does on the wire and why.
   | `FaultKind.FREEZE_COUNTER`, `"freeze_counter"` | sent, its E2E alive counter stopped |
   | `FaultKind.OUT_OF_RANGE`, `"out_of_range"` | sent with `signal` (a `Signal` or its name) past its declared range; with `None` the engine picks a signal that can carry it |
 
+  A message protected in several E2E windows (signal groups) has `bad_crc` and `freeze_counter`
+  act on every window, or on the one `group=` names (`net.fault(ch, "Ecu", "EngineData",
+  "bad_crc", group="TorqueGroup")`, the name `Frame.e2e_groups` gives it): the others go on
+  passing.
+
 - `net.clear_fault(channel, node, message)` lifts that message's fault; `net.clear_faults()` lifts
   every one. A start clears them too, and a fault armed with `ms` ends by itself.
 - **A fault that could not take effect is refused**, with `blobly.FaultRefused` saying why: a DoIP
   or SOME/IP channel, an unknown kind, a node not simulated on that channel (a sender the DBC
   names is not enough), a message the node does not send,
   `bad_crc` where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter
-  (its `protect:` entry or the DBC's E2E declaration), `out_of_range` where no signal has a value
+  (its `protect:` entry or the DBC's E2E declaration), a `group` the message has no window of, `out_of_range` where no signal has a value
   outside its range. Armed, such a fault would change nothing, and a test of it would pass for
   the wrong reason. sim-demo protects no message, so there `bad_crc` and `freeze_counter` are
   refused. A fault needs the project started (`BloblyError`, code -3, otherwise).
@@ -1178,6 +1183,14 @@ the engine's, the one the trace's `verify:` runs, and Lua's `frame.e2e` is the s
 | `E2eStatus.TRUNCATED`, `"truncated"` | it is shorter than its message, so its E2E fields are not all there |
 | `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter new: not a repeat, nor a value the profile never sends) |
 | `None` | its message has no E2E on the channel, or it is a remote frame |
+
+**A frame protected in several windows** — signal groups, each its own CRC, counter and Data ID
+over its bytes (a DBC's `E2E*` attributes at `SG_` scope, or `verify:` entries naming
+`offset:`/`length:`: [simulation.md](simulation.md#several-protected-signal-groups-in-one-frame-windows))
+— is judged in each, and `f.e2e` is the worst of their verdicts (truncated, then bad_crc,
+timeout, skipped, repeated). **`f.e2e_groups`** is each window's, by its name: the signal group
+holding its CRC signal, else that signal's name, else the message's for the whole payload:
+`f.e2e_groups == {"SpeedGroup": "ok", "TorqueGroup": "bad_crc"}` reads `f.e2e == "bad_crc"`.
 
 - **Both are contracts a receiver holds a sender to**: the `verify:` entry is the row's own word for
   what the ECU under test must send, the declaration the network's. A simulated node's `protect:`
@@ -2390,7 +2403,7 @@ break in either, raises `ValueError`, and the engine refuses the rest at `load()
 | `net.interfaces` | The interface overrides by row name, a `dict` (empty for none); every load applies them. |
 | `net.started` | Whether this project is running. |
 | `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)`, `net.wait(duration_ms)` | The event loop: see `EventLoop`. |
-| `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
+| `net.fault(channel, node, message, kind, ms=None, signal=None, *, group=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared; `group` the E2E window `bad_crc` or `freeze_counter` acts on (every window when `None`). `FaultRefused` where it could not take effect. |
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
 | `net.set_signal(channel, node, message, signal, value)` | Holds one signal of a simulated node's message at a physical value from its next frame, until changed or cleared, while the project is started. `SignalRefused` where it could not reach the wire. |
@@ -2546,7 +2559,7 @@ What `ch.error_counters()` returns where the backend can say: a named tuple ([He
 
 ### `Frame`
 
-`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None, t_ms=None, e2e=None)`:
+`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None, t_ms=None, e2e=None, e2e_groups=None)`:
 a CAN frame, as `recv` returns it and as `encode` builds it.
 
 | member | what |
@@ -2559,8 +2572,9 @@ a CAN frame, as `recv` returns it and as `encode` builds it.
 | `f.rtr` | A remote frame (no payload). |
 | `f.esi` | CAN-FD's error-state indicator. |
 | `f.t_ms` | When a received frame arrived, in ms on the `blobly.now_ms()` clock: its receive stamp where the backend has one, else when `recv` read it; `None` on a frame not received. Not part of the value. |
-| `f.e2e` | A received frame's E2E verdict, an `E2eStatus`, where its message has E2E on its channel; `None` otherwise, and on a frame not received. Not part of the value. |
-| `f == g`, `hash(f)` | Every field but `t_ms` and `e2e` equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
+| `f.e2e` | A received frame's E2E verdict, an `E2eStatus`, where its message has E2E on its channel — the worst of its windows' where it is protected in several; `None` otherwise, and on a frame not received. Not part of the value. |
+| `f.e2e_groups` | Each window's verdict, `{name: E2eStatus}` — the signal group's name, else the message's — where `f.e2e` is not `None`; `None` otherwise. Not part of the value. |
+| `f == g`, `hash(f)` | Every field but `t_ms`, `e2e` and `e2e_groups` equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
 
 ### `Message`
 
