@@ -277,6 +277,15 @@ Quirks. The first one is the worst thing in this file, and everything under it f
   `C:\Users\Public\Documents\Vector\XL Driver Library <version>\bin`. The loader tries the
   bare name first, then that directory. A bench can have a healthy VN device and Vector
   Hardware Manager installed with no XL library present at all.
+- **Each port has its own receive queue, and only its own reads empty it** — Vector is not
+  behind the shared reader, so a script that pauses reading leaves its frames there. A port asks
+  for the most the XL API allows (`vector_rx_queue`, `vector_names.v`: 32768 events classic,
+  524288 bytes CAN-FD, about 16 s and 4 s of a 2000 frame/s bus); a driver that refuses that size
+  is opened at 256 events / 64 KiB and says so once on stderr. An overflow is still counted: the
+  event after the loss carries the queue-overflow bit in its header (`XL_EVENT_FLAG_OVERRUN` in a
+  classic event's `flags`, `XL_CAN_QUEUE_OVERFLOW` in an FD event's `flagsChip`), and
+  `diagnostics().dropped` counts those events — overruns, not frames, since the driver does not
+  say how many were lost.
 - **`,silent` reaches the transceiver** — ACK-free output is set *before* the channel is
   activated, the only ordering that is safe against a running vehicle. A project's
   `listen_only:` is translated to it, and `cmd/vectorcheck --channel N` defaults to silent.
