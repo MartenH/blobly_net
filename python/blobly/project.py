@@ -1301,14 +1301,15 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             # the path in the filesystem's bytes, not UTF-8
             rc = lib.bb_load_flags(os.fsencode(self.path), pairs.encode(),
                                    _lib.BB_LOAD_STRICT if self.strict else 0)
+            # this load's notes, a refused one's too: a strict refusal's lines, else none
+            self._notes = _notes(lib)
             if rc < 0:
                 e = _lib.error(rc)
-                if self.strict and isinstance(e, Refused) and lib.bb_note_count() > 0:
+                if self.strict and isinstance(e, Refused) and self._notes:
                     # every line the load refused: bb_last_error may be cut short
                     raise Refused(f"{self.path}: a strict load refuses what this build does not read:\n  "
-                                  + "\n  ".join(_notes(lib)), rc) from None
+                                  + "\n  ".join(self._notes), rc) from None
                 raise e
-            self._notes = _notes(lib)
             old = list(self._channels) if self._channels is not None else []
             for c in old:
                 try:
@@ -1337,8 +1338,9 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         """What the last load of this project said about the file, one line each: its unknown keys
         (`unknown key `cycle_msec` in channel "CAN1" / generator "G" (known: ...)`), references that
         resolve only from the working directory, and per DBC the records it did not
-        read (`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`). Empty before
-        the first load."""
+        read (`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`). After a strict
+        load's refusal, the lines it refused; after any other refusal, none. Empty before the first
+        load."""
         return list(self._notes)
 
     def _drop_gone(self, rows):

@@ -50,13 +50,17 @@ def test_a_clean_project_says_nothing_and_loads_strictly():
 def test_strict_refuses_listing_every_line(tmp_path):
     write(tmp_path, "u.dbc", DBC)
     path = write(tmp_path, "p.blobnet", project(key="bitrat"))
+    net = blobly.Project(path, strict=True)
     with pytest.raises(blobly.Refused) as e:
-        blobly.Project(path, strict=True).load()
+        net.load()
     text = str(e.value)
     assert "a strict load refuses what this build does not read" in text
     for want in ("unknown key `bitrat`", "unknown key `cycle_msec`",
                  'u.dbc: not read: attribute "GenSigSendType" × 1, SIG_VALTYPE_ × 1'):
         assert want in text
+    # the refused load's lines are its notes
+    assert len(net.notes) == 3 and all(n in text for n in net.notes)
+    assert net.notes[0].startswith("unknown key `bitrat`")
     # a refused load starts nothing, and the next one is the library's to make
     assert blobly.Project(SIM_DEMO).load().notes == []
 

@@ -502,7 +502,7 @@ pub fn parse_dbc(text string) !Database {
 		// an attribute record matched with its blanks collapsed (attr_record): CANdb++ writes two
 		// spaces after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
 		line := attr_record(raw_line.trim_space())
-		unread.begin(raw_line, line)
+		unread.begin(line)
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
 			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }

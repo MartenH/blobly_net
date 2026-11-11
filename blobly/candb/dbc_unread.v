@@ -17,12 +17,19 @@ mut:
 	cont   bool // the current line began inside such a string
 }
 
-// begin is told every line before it is dispatched.
-fn (mut u Unread) begin(raw string, line string) {
+// begin is told every line before it is dispatched. The NS_ list ends at the first line that is
+// not one of its entries, however either is indented.
+fn (mut u Unread) begin(line string) {
 	u.cont = u.in_str
-	if u.in_ns && line != '' && !raw.starts_with(' ') && !raw.starts_with('\t') {
+	if u.in_ns && line != '' && !is_ns_entry(line) {
 		u.in_ns = false
 	}
+}
+
+// is_ns_entry is whether a line is shaped like an entry of the NS_ list: record keywords only
+// (`CM_`, `CM_ SG_`, `BS_:`), each ending in an underscore as every DBC keyword does.
+fn is_ns_entry(line string) bool {
+	return line.fields().all(is_keyword(it.trim_right(':')) && it.trim_right(':').ends_with('_'))
 }
 
 // end is told every line after it is dispatched: a line with an odd number of unescaped quotes

@@ -53,6 +53,23 @@ fn test_comments_are_not_unread() {
 	assert db.unread == [], '${db.unread}'
 }
 
+// The NS_ list ends where its entries do, whatever the indentation of the records after it.
+fn test_the_ns_list_ends_at_its_last_entry() {
+	db := parse_dbc('NS_ :
+CM_
+	SIG_VALTYPE_
+	CM_ SG_
+	BS_:
+  BS_:
+  BU_: Body
+  BO_ 256 Door: 8 Body
+   SG_ Speed : 0|32@1- (1,0) [0|0] "" Body
+  SIG_VALTYPE_ 256 Speed : 1;
+')!
+	assert db.messages.len == 1
+	assert db.unread == ['SIG_VALTYPE_ × 1'], '${db.unread}'
+}
+
 fn test_open_database_says_the_unread_records_in_one_note() {
 	dir := os.join_path(os.vtmp_dir(), 'unread_${os.getpid()}')
 	os.mkdir_all(dir)!
