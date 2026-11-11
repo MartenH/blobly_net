@@ -280,6 +280,10 @@ fn test_a_message_sender_sends_its_declared_or_stated_format() {
 	got := frames_within(mut rx, 0x100, 40)
 	assert s.stop()
 	assert got.len > 0 && got.all(it.fd && !it.brs)
+	// what the first sender sent while it stopped is still queued: not the second one's
+	for {
+		rx.recv(0) or { break }
+	}
 	mut b := start(transport.open('inproc:CYC_FMT')!, Spec{
 		by_message: true
 		message:    m
