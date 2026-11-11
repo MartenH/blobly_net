@@ -85,9 +85,9 @@ pub:
 // Gate is a `read`/`write` table: the sessions the service is served in (none listed = any) and
 // the security LEVEL it needs (1..max_security_level, as blobly_emb's ecu.toml numbers them —
 // level L is unlocked with 0x27 requestSeed 2L-1 and sendKey 2L; 0 = none). `declared` false is
-// no gate at all — for `write`, not writable. `unresolved`: what the description asks that it
-// gives no meaning (an ODX state no service enters) — the gate is then not known, and no write
-// is planned by it.
+// no gate at all — for `write`, not writable. `unresolved`: why what the description asks is not
+// known (an ODX state no service enters, alternatives one gate cannot state) — no write is then
+// planned by it.
 pub struct Gate {
 pub:
 	declared   bool
@@ -106,7 +106,7 @@ pub fn (g Gate) words() string {
 		parts << 'level ${g.level}'
 	}
 	if g.unresolved != '' {
-		parts << 'unresolved ${g.unresolved}'
+		parts << 'unresolved (${g.unresolved})'
 	}
 	return if parts.len == 0 { 'open' } else { parts.join(', ') }
 }

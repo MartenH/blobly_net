@@ -153,11 +153,11 @@ fn test_an_unresolved_gate_plans_no_write() {
 		id:         0x0120
 		write_gate: odx_gate(odx.Gate{
 			declared:   true
-			unresolved: ['Extended']
+			unresolved: ['Extended, a state no 0x10 service enters']
 		}, true)
 	}
-	assert x.write_gate.words() == 'unresolved Extended'
-	assert x.write_refusal() or { '' } == 'not writable: its write gate needs Extended, which the description gives no meaning'
+	assert x.write_gate.words() == 'unresolved (Extended, a state no 0x10 service enters)'
+	assert x.write_refusal() or { '' } == 'not writable: its write gate is not known: Extended, a state no 0x10 service enters'
 }
 
 fn test_an_odx_node_on_two_rows_is_one_node_and_a_clash_is_refused() {

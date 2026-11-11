@@ -348,7 +348,7 @@ pub fn (x DidDesc) label() string {
 // one no tester here knows, or a gate the description leaves unresolved.
 pub fn (x DidDesc) write_sessions() ![]u8 {
 	if x.write_gate.unresolved != '' {
-		return error('its write gate needs ${x.write_gate.unresolved}, which the description gives no meaning')
+		return error('its write gate is not known: ${x.write_gate.unresolved}')
 	}
 	mut out := []u8{}
 	for s in x.write_gate.sessions {

@@ -151,7 +151,7 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 			'write': x.write_gate
 		} {
 			if g.unresolved != '' {
-				notes << 'DID 0x${x.id:04X}: its ${key} gate needs ${g.unresolved}, which the description gives no meaning; the simulation does not serve that'
+				notes << 'DID 0x${x.id:04X}: its ${key} gate is not known: ${g.unresolved}; the simulation does not serve that'
 			}
 		}
 		dids << uds.DidSpec{

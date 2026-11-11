@@ -127,11 +127,57 @@ fn test_a_state_two_session_services_enter_gates_on_both() {
 	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x01), 0x03], 0, []}
 }
 
+// second_trim_write is the fixture with a second 0x2E service of TrimOffset, preconditions `pre`.
+fn second_trim_write(s string, pre string) string {
+	return s.replace('<DIAG-SERVICE ID="DS_HardReset">',
+		'<DIAG-SERVICE ID="DS_TrimOffset_Write2"><SHORT-NAME>TrimOffset_Write2</SHORT-NAME>${pre}<REQUEST-REF ID-REF="RQ_TrimOffset_Write" /><POS-RESPONSE-REFS><POS-RESPONSE-REF ID-REF="PR_TrimOffset_Write" /></POS-RESPONSE-REFS></DIAG-SERVICE><DIAG-SERVICE ID="DS_HardReset">')
+}
+
+// key_l2_request is a 0x27 04 sendKey request.
+const key_l2_request = '<REQUEST ID="RQ_Key_L2"><SHORT-NAME>RQ_Key_L2</SHORT-NAME><PARAMS><PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID"><SHORT-NAME>SID</SHORT-NAME><BYTE-POSITION>0</BYTE-POSITION><CODED-VALUE>39</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></PARAM><PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION"><SHORT-NAME>SecurityAccessType</SHORT-NAME><BYTE-POSITION>1</BYTE-POSITION><CODED-VALUE>4</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></PARAM></PARAMS></REQUEST>'
+
+fn test_several_security_levels_are_alternatives_no_gate_states() {
+	// a second sendKey (0x27 04, level 2) entering Level1 too
+	v := variant_with('twokeys', fn (s string) string {
+		return s.replace('<DIAG-SERVICE ID="DS_HardReset">',
+			'<DIAG-SERVICE ID="DS_Key_L2"><SHORT-NAME>SecurityLevel2_SendKey</SHORT-NAME><STATE-TRANSITION-REFS><STATE-TRANSITION-REF ID-REF="ST_Unlock1" /></STATE-TRANSITION-REFS><REQUEST-REF ID-REF="RQ_Key_L2" /></DIAG-SERVICE><DIAG-SERVICE ID="DS_HardReset">').replace('<REQUEST ID="RQ_Seed_L1">',
+			key_l2_request + '<REQUEST ID="RQ_Seed_L1">')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, [
+		'level 1 or 2, alternatives one gate cannot state',
+	]}
+	assert v.notes.any(it.contains('VIN_Write') && it.contains('security levels 1, 2 are alternatives'))
+	// a gate asking no level is unchanged
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
+}
+
+fn test_two_write_services_serve_a_did_in_either_gate() {
+	// a second write of TrimOffset, in the default session
+	v := variant_with('twowrites', fn (s string) string {
+		return second_trim_write(s, '<PRE-CONDITION-STATE-REFS><PRE-CONDITION-STATE-REF ID-REF="S_Default" /></PRE-CONDITION-STATE-REFS>')
+	})!
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03), 0x01], 0, []}
+	// one with no precondition opens it
+	o := variant_with('openwrite', fn (s string) string {
+		return second_trim_write(s, '')
+	})!
+	assert did_of(o, 0x0120).write_gate == Gate{}
+	// one needing a level the other does not: no gate states both
+	l := variant_with('levelwrite', fn (s string) string {
+		return second_trim_write(s, '<PRE-CONDITION-STATE-REFS><PRE-CONDITION-STATE-REF ID-REF="S_Extended" /><PRE-CONDITION-STATE-REF ID-REF="S_Level1" /></PRE-CONDITION-STATE-REFS>')
+	})!
+	g := did_of(l, 0x0120).write_gate
+	assert g.declared && g.unresolved == [
+		'session 0x03 or session 0x03, level 1, two services\' gates one gate cannot state',
+	]
+	assert l.notes.any(it.contains('0x0120') && it.contains('two services\' gates'))
+}
+
 fn test_a_state_no_service_enters_is_said_and_left_out() {
 	v := variant_with('noenter', fn (s string) string {
 		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToExtended" />', '')
 	})!
-	assert did_of(v, 0x0120).write_gate == Gate{true, []u8{}, 0, ['Extended']}
+	assert did_of(v, 0x0120).write_gate == Gate{true, []u8{}, 0, ['Extended, a state no 0x10 service enters']}
 	assert v.notes.any(it.contains('TrimOffset_Write')
 		&& it.contains('session state Extended is entered by no 0x10 service'))
 }
@@ -140,7 +186,7 @@ fn test_an_unresolved_security_state_leaves_the_level_unknown() {
 	v := variant_with('nokey', fn (s string) string {
 		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_Unlock1" />', '')
 	})!
-	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, ['Level1']}
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, ['Level1, a state no 0x27 sendKey enters']}
 	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
 }
 

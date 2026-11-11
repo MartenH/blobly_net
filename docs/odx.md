@@ -58,9 +58,12 @@ included. A layer reached on two ways passes on what either way passes on.
   write service's. A state of a `STATE-CHART` whose `SEMANTIC` names `SESSION` is the session the
   sub-function of every `0x10` service whose `STATE-TRANSITION-REFS` enter it (its chart's start
   state: the default session); one of a `SECURITY` chart is the level of every `0x27` sendKey
-  (sub-function 2L) whose transitions enter it (its start state: locked). States of one chart are alternatives: each
-  session is listed (one ISO does not name by its sub-function, `0x40`), the lowest level is
-  needed. A write is then refused until the connection has
+  (sub-function 2L) whose transitions enter it (its start state: locked). States of one chart are
+  alternatives: each session is listed (one ISO does not name by its sub-function, `0x40`), a
+  locked state among them needs no level, and several levels make the gate **unresolved**, since a
+  level unlocks itself and no other. A DID two services read, or two write, is served in either's
+  gate: one with no precondition opens it, two of one level list both's sessions, and any other
+  pair is **unresolved**. A write is then refused until the connection has
   switched and unlocked as the gate asks (`WriteGated` in Python, the error's words in Lua); no
   precondition is no gate (a write service's: written in any session).
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
@@ -90,7 +93,7 @@ headless runner's stderr, the Script panel in the GUI):
 - a precondition it cannot give a meaning — a state no `0x10` / `0x27` transition enters and that
   is not its chart's start state, a chart whose `SEMANTIC` is neither, a precondition on a
   parameter's value — is said and left out of the gate; where a session or security state left
-  out has no other of its chart beside it, the gate is **unresolved** (its words say which state),
+  out has no other of its chart beside it, the gate is **unresolved** (its words say why),
   and no write is planned by it rather than one sent as if the gate were open;
 - a value that is not a number where one belongs (a `BYTE-POSITION`, a `TROUBLE-CODE`) is named
   with its text, and that DID's layout or that DTC is not read;

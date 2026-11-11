@@ -158,7 +158,7 @@ fn odx_gate(g odx.Gate, declared bool) Gate {
 		declared:   declared
 		sessions:   g.sessions.map(uds.session_name(it))
 		level:      g.level
-		unresolved: g.unresolved.join('/')
+		unresolved: g.unresolved.join('; ')
 	}
 }
 

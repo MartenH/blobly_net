@@ -68,9 +68,9 @@ pub:
 
 // Gate is what a service's PRE-CONDITION-STATE-REFS ask for: the sessions it is served in, as 0x10
 // sub-functions (none = any), and the security level it needs (0 = none). `declared` false: the
-// service names no precondition. `unresolved`: the session or security states it needs that no
-// service gives a meaning, where no other state of that kind is named — what the gate asks is
-// then not known, never `any`.
+// service names no precondition. `unresolved`: why what the gate asks is not known — a session or
+// security state no service gives a meaning, where no other of its kind is named; alternatives one
+// gate cannot state — each said as a phrase, and the gate is then never `any`.
 pub struct Gate {
 pub:
 	declared   bool
@@ -568,7 +568,18 @@ fn (db &Db) service(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 				name:       if prev.name == '' { vname } else { prev.name }
 				readable:   prev.readable || sid == 0x22
 				writable:   prev.writable || sid == 0x2E
-				write_gate: if sid == 0x2E && !prev.writable { gate } else { prev.write_gate }
+				read_gate:  if sid == 0x22 {
+					either(prev.read_gate, gate, mut r, 'DID 0x${id:04X} (${sn})')
+				} else {
+					prev.read_gate
+				}
+				write_gate: if sid == 0x2E && !prev.writable {
+					gate
+				} else if sid == 0x2E {
+					either(prev.write_gate, gate, mut r, 'DID 0x${id:04X} (${sn})')
+				} else {
+					prev.write_gate
+				}
 			}
 		}
 		if !same {
@@ -666,10 +677,11 @@ fn state_named(chart flatxml.Node, name string) ?flatxml.Node {
 // gate_of is what a service's PRE-CONDITION-STATE-REFS ask for. A state of a SESSION chart is the
 // sessions every 0x10 transition entering it establishes (its chart's start state: the default
 // session); one of a SECURITY chart the levels the 0x27 sendKey transitions entering it unlock
-// (its start state: locked, no level). States of one chart are alternatives: the sessions are each listed, the lowest level is
-// needed. A state it cannot give a meaning, or a precondition on a parameter's value, is said and
-// left out of the gate; a session or security state left out with no other of its kind beside it
-// is `unresolved`, since leaving it out would open the gate.
+// (its start state: locked, no level). States of one chart are alternatives: the sessions are
+// each listed, and a locked state among them needs no level; several levels are `unresolved`. A
+// state it cannot give a meaning, or a precondition on a parameter's value, is said and left out
+// of the gate; a session or security state left out with no other of its kind beside it is
+// `unresolved`, since leaving it out would open the gate.
 fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Resolve, what string) Gate {
 	refs := kids(svc.child('PRE-CONDITION-STATE-REFS'), 'PRE-CONDITION-STATE-REF')
 	if refs.len == 0 {
@@ -700,7 +712,7 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 				[u8(0x01)]
 			} else {
 				r.notes << '${what}: session state ${short_name(st)} is entered by no 0x10 service; not read'
-				lost_sessions << short_name(st)
+				lost_sessions << '${short_name(st)}, a state no 0x10 service enters'
 				continue
 			}
 			for s in entered {
@@ -715,20 +727,11 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 				levels << 0
 			} else {
 				r.notes << '${what}: security state ${short_name(st)} is entered by no 0x27 sendKey; not read'
-				lost_levels << short_name(st)
+				lost_levels << '${short_name(st)}, a state no 0x27 sendKey enters'
 				continue
 			}
 		} else {
 			r.notes << '${what}: state ${short_name(st)} of chart ${short_name(chart)} (SEMANTIC "${sem}") is no session or security state; not read'
-		}
-	}
-	mut level := 0
-	if levels.len > 0 && 0 !in levels {
-		level = levels[0]
-		for l in levels {
-			if l < level {
-				level = l
-			}
 		}
 	}
 	mut unresolved := []string{}
@@ -738,12 +741,80 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 	if levels.len == 0 {
 		unresolved << lost_levels
 	}
+	// a locked state among the alternatives needs no unlock; several levels are alternatives a
+	// gate of one level cannot state, since a level unlocks itself and no other
+	mut level := 0
+	if 0 !in levels {
+		mut distinct := []int{}
+		for l in levels {
+			if l !in distinct {
+				distinct << l
+			}
+		}
+		distinct.sort()
+		if distinct.len == 1 {
+			level = distinct[0]
+		} else if distinct.len > 1 {
+			r.notes << '${what}: security levels ${distinct.map(it.str()).join(', ')} are alternatives one gate cannot state; not written by it'
+			unresolved << 'level ${distinct.map(it.str()).join(' or ')}, alternatives one gate cannot state'
+		}
+	}
 	return Gate{
 		declared:   true
 		sessions:   sessions
 		level:      level
 		unresolved: unresolved
 	}
+}
+
+// either is the gate of a DID two services serve, each by its own gate: one with no precondition
+// opens it, gates of one level are served in either's sessions, and gates one gate cannot state
+// together are `unresolved`.
+fn either(a Gate, b Gate, mut r Resolve, what string) Gate {
+	if a == b {
+		return a
+	}
+	if !a.declared || !b.declared {
+		return Gate{}
+	}
+	if a.level == b.level && a.unresolved.len == 0 && b.unresolved.len == 0 {
+		mut sessions := []u8{}
+		if a.sessions.len > 0 && b.sessions.len > 0 {
+			sessions = a.sessions.clone()
+			for x in b.sessions {
+				if x !in sessions {
+					sessions << x
+				}
+			}
+		}
+		return Gate{
+			declared: true
+			sessions: sessions
+			level:    a.level
+		}
+	}
+	r.notes << '${what}: served by ${a.phrase()} or by ${b.phrase()}, two services\' gates one gate cannot state; not written by it'
+	return Gate{
+		declared:   true
+		unresolved: ['${a.phrase()} or ${b.phrase()}, two services\' gates one gate cannot state']
+	}
+}
+
+// phrase is the gate in a few words: `session 0x03, level 1`, `any session`.
+fn (g Gate) phrase() string {
+	mut parts := []string{}
+	parts << if g.sessions.len > 0 {
+		'session ${g.sessions.map('0x${it:02X}').join('/')}'
+	} else {
+		'any session'
+	}
+	if g.level != 0 {
+		parts << 'level ${g.level}'
+	}
+	if g.unresolved.len > 0 {
+		parts << 'unresolved (${g.unresolved.join('; ')})'
+	}
+	return parts.join(', ')
 }
 
 // shapes are parts as the bytes lay them out, their names left out.
