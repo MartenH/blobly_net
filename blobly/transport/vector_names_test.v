@@ -626,6 +626,33 @@ fn test_an_assignment_is_refused_while_a_run_is_started() {
 	assert false, 'assigned while a run was started'
 }
 
+fn test_a_release_clears_only_a_channel_the_driver_answered_for() {
+	assert release_refusal(3, .taken) == none
+	assert release_refusal(3, .empty) == none
+	assert release_refusal(3, .unreadable) or { '' }.contains('would not say')
+	assert release_refusal(3, .absent) or { '' }.contains('not registered')
+	assert release_refusal(0, .taken) or { '' }.contains('1 to 64')
+	assert release_refusal(65, .empty) or { '' }.contains('1 to 64')
+}
+
+fn test_a_release_is_refused_while_a_run_is_started() {
+	vector_release_checked(1, true) or {
+		assert err is AssignWhileRunning, err.msg()
+		return
+	}
+	assert false, 'released while a run was started'
+}
+
+fn test_a_release_is_refused_by_name_without_the_driver() {
+	$if !windows {
+		vector_release_checked(1, false) or {
+			assert err.msg() == 'the Vector XL backend is Windows-only'
+			return
+		}
+		assert false, 'released without a driver'
+	}
+}
+
 fn test_an_unregistered_channel_names_the_remedy_on_open() {
 	unregistered := lookup_refusal(5, -1013) or { '' }
 	assert unregistered.starts_with('vector:5 is not registered in application blobly_net — map it in Discover → Assign')

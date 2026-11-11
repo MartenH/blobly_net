@@ -204,3 +204,13 @@ pub fn bb_vector_assign(app i32, hw_type i32, hw_index i32, hw_channel i32, crea
 	}
 	return ok()
 }
+
+@[export: 'bb_vector_release']
+pub fn bb_vector_release(app i32) i32 {
+	// refused while a run is started or still letting go of its wires (BB_ERR_STATE), as assign is
+	cleared := transport.vector_release_checked(int(app), !isnil(bb_run) || !released()) or {
+		code := if err is transport.AssignWhileRunning { bb_err_state } else { bb_err }
+		return fail(code, 'vector release: ${err.msg()}')
+	}
+	return ok_count(if cleared { 1 } else { 0 })
+}

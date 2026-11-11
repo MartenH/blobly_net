@@ -163,12 +163,17 @@ def test_on_linux_vector_is_refused_as_windows_only():
     hw = vector.VectorHardware("VN1630A Channel 1", "", 57, 0, 0, 0, 500000, 0, True, True, True, False, False)
     with pytest.raises(blobly.Refused, match="Windows-only"):
         vector.assign(1, hw, create=True)
+    with pytest.raises(blobly.Refused, match="Windows-only"):
+        vector.release(1)
 
 
 def test_vector_assign_is_refused_while_a_project_is_started(sim_demo):
     hw = vector.VectorHardware("VN1630A Channel 1", "", 57, 0, 0, 0, 500000, 0, True, True, True, False, False)
     with pytest.raises(blobly.BloblyError, match="not while a run is started") as e:
         vector.assign(1, hw, create=True)
+    assert e.value.code == _lib.BB_ERR_STATE
+    with pytest.raises(blobly.BloblyError, match="not while a run is started") as e:
+        vector.release(1)
     assert e.value.code == _lib.BB_ERR_STATE
 
 
@@ -177,6 +182,8 @@ def test_vector_arguments_are_checked():
         vector.slot("1")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         vector.assign(1, "VN1630A")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        vector.release(True)
     if vector.driver() is None:  # a Windows bench with the driver
         with pytest.raises(blobly.Refused, match="1 to 64"):
             vector.slot(65)

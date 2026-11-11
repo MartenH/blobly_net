@@ -404,8 +404,9 @@ with blobly.open("inproc:CHECK") as a, blobly.open("inproc:CHECK") as b:
 ### Vector channel assignment
 
 `blobly.vector` reads the Vector driver's channels and maps an application channel to a physical
-one, as the Discover dialog's Assign does, with its refusals. Windows only: on Linux `driver()`
-says why, `assignments()` is `[]`, and `slot()` and `assign()` raise `Refused` by name.
+one, as the Discover dialog's Assign does, with its refusals, and clears a mapping with
+`release()`. Windows only: on Linux `driver()` says why, `assignments()` is `[]`, and `slot()`,
+`assign()` and `release()` raise `Refused` by name.
 
 ```python
 from blobly import vector
@@ -428,8 +429,26 @@ else:
   so creating is never assumed. The mapping persists across reboots. While a project is started it
   raises `BloblyError` with code `-3` (the wrong state), whatever the arguments: the mapping is the
   driver's, persistent, under ports the run may hold open — stop the project first.
+- **`release(app)`** clears `vector:<app>` so it points at no hardware, and answers `True`, or
+  `False` when it pointed at nothing already (nothing written). The channel stays registered:
+  Vector Hardware Manager shows it as *Not assigned*, and `slot(app)` is then `"empty"`, ready
+  for `assign`. It refuses, writing nothing, when the driver cannot be used or `app` is
+  `"unreadable"` or `"absent"` (clearing an unregistered channel would register it), and while a
+  project is started it raises `BloblyError` with code `-3`, as `assign` does. A script that
+  assigns channels for a run can put the machine back afterwards:
+
+  ```python
+  from blobly import vector
+
+  if vector.driver() is None:
+      before = {hw.app: hw for hw in vector.assignments() if hw.app}
+      if 8 in before:
+          vector.release(8)          # vector:8 points at nothing; vector.slot(8) == "empty"
+          vector.assign(8, before[8])  # and back: assign reads the hardware afresh
+  ```
 - **Not verified by CI**: no runner has a Vector adapter. The rules are V tests
-  (`blobly/transport/vector_names_test.v`); assigning on hardware is checked by hand on a VN1630A.
+  (`blobly/transport/vector_names_test.v`); assigning and releasing on hardware are checked by
+  hand on a VN1630A.
 
 ### LIN
 
@@ -2062,6 +2081,7 @@ the block.
 | `blobly.vector.assignments()` | Every physical channel the driver lists, each a `blobly.vector.VectorHardware`; `[]` where the driver cannot be used. |
 | `blobly.vector.slot(app)` | Application channel `app` (1..64): `"taken"`, `"empty"`, `"absent"` or `"unreadable"`. `Refused` where the driver cannot be used. |
 | `blobly.vector.assign(app, hw, *, create=False)` | Points `vector:<app>` at `hw`, with the Discover dialog's refusals; an `"absent"` channel only with `create=True` ([Vector channel assignment](#vector-channel-assignment)). |
+| `blobly.vector.release(app)` | Clears `vector:<app>` so it points at no hardware, the channel kept registered: `True`, or `False` when it pointed at nothing already; `"unreadable"` and `"absent"` refused ([Vector channel assignment](#vector-channel-assignment)). |
 | `blobly.vector.VectorHardware` | One physical channel (also `blobly.VectorHardware`): see `VectorHardware`. |
 
 ### Module `blobly.lin`

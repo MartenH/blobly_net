@@ -1192,7 +1192,13 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * assigned, the application channel taken or unreadable, or ABSENT — not registered, which
  * writing it creates — unless `create` is nonzero, the caller saying creating it is meant. The
  * mapping persists across reboots. While a run is started it is BB_ERR_STATE, nothing written:
- * the mapping is the driver's, under ports the run may hold open. */
+ * the mapping is the driver's, under ports the run may hold open.
+ *
+ * bb_vector_release clears application channel `app` so it points at no hardware, the channel
+ * staying registered ("Not assigned" in Vector Hardware Manager): 1 when a mapping was cleared,
+ * 0 when it pointed at nothing already (nothing written). Refused (BB_ERR, nothing written) where
+ * the driver cannot be used or `app` is unreadable or absent (clearing would register it);
+ * BB_ERR_STATE while a run is started, as bb_vector_assign. */
 enum bb_fd {
 	BB_FD_UNKNOWN = -1,  /* nothing asked could say */
 	BB_FD_NO = 0,        /* classic only (a SocketCAN link at mtu 16) */
@@ -1247,6 +1253,7 @@ int bb_vector_driver(char *buf, int cap);           /* >= 0: the length of why t
                                                        cannot be used; "" when it can */
 int bb_vector_slot(int app);                        /* >= 0: an enum bb_vector_slot */
 int bb_vector_assign(int app, int hw_type, int hw_index, int hw_channel, int create);
+int bb_vector_release(int app);                     /* >= 0: 1 cleared, 0 it pointed at nothing */
 #endif /* BB_FROM_V */
 
 /* Background cyclic senders (blobly/cyclic, cmd/libblobly/cyclic.v), as the Lua bus.send_cyclic: a

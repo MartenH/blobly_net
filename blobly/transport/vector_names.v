@@ -549,6 +549,25 @@ pub fn assign_refusal(app int, slot AppSlot, create_ok bool) ?string {
 	return none
 }
 
+// release_refusal reports why application channel `app` must not be cleared, or none when it may
+// be: `taken` is cleared, `empty` already points at nothing (nothing to write); `unreadable` is
+// refused, since nothing is known of what is there, and so is `absent` — clearing writes the
+// channel, which would CREATE the registration it does not have.
+pub fn release_refusal(app int, slot AppSlot) ?string {
+	if app < 1 || app > 64 {
+		return 'Vector application channels are numbered 1 to 64'
+	}
+	return match slot {
+		.unreadable {
+			'the Vector driver would not say what vector:${app} points at — refusing rather than writing a mapping it did not report. Try again in a moment.'
+		}
+		.absent {
+			'vector:${app} is not registered under "blobly_net" — there is nothing to release, and clearing it would register it'
+		}
+		.empty, .taken { none }
+	}
+}
+
 // AssignWhileRunning is why an application channel is not assigned while a run is started (#288):
 // the mapping is the driver's, persistent and machine-wide, and the run may hold ports open on the
 // very channel it would retarget. Typed, so a host answers it as its own state refusal (the C
@@ -561,9 +580,10 @@ pub fn (e AssignWhileRunning) msg() string {
 	return 'not while a run is started: an assignment rewrites the Vector driver\'s persistent channel mapping under ports the run may hold open — stop the run first'
 }
 
-// assign_run_refusal is the one rule for assigning during a run, which the GUI's Discover dialog,
-// Lua's vector.assign and the C ABI's bb_vector_assign all go by (vector_assign_checked asks it
-// first): refused while `running`, none otherwise.
+// assign_run_refusal is the one rule for assigning (or releasing) during a run, which the GUI's
+// Discover dialog, Lua's vector.assign / vector.release and the C ABI's bb_vector_assign /
+// bb_vector_release all go by (vector_assign_checked and vector_release_checked ask it first):
+// refused while `running`, none otherwise.
 pub fn assign_run_refusal(running bool) ?AssignWhileRunning {
 	return if running { AssignWhileRunning{} } else { none }
 }

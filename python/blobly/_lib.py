@@ -688,6 +688,7 @@ def _declare(lib):
         "bb_vector_driver": ([c_char_p, c_int], c_int),
         "bb_vector_slot": ([c_int], c_int),
         "bb_vector_assign": ([c_int, c_int, c_int, c_int, c_int], c_int),
+        "bb_vector_release": ([c_int], c_int),
         # E2E on a row's frames (project.py, e2e.py)
         "bb_e2e_attach": ([c_int, c_int], c_int),
         "bb_framing_attach": ([c_int, c_int], c_int),

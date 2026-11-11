@@ -60,6 +60,11 @@ test("Vector assignment says why it cannot be used", function()
   check.truthy(not pcall(vector.slot, 1), "a slot was read without a driver")
 end)
 
+test("a Vector release takes the application channel whole", function()
+  check.truthy(not pcall(vector.release, 1.5), "a fraction was taken")
+  check.truthy(not pcall(vector.release, "1"), "a string was taken")
+end)
+
 test("Vector assignment is refused while the run is started", function()
   local why = vector.driver()
   if why == nil then return end -- a Windows bench with the XL driver: never write its mapping here
@@ -68,4 +73,8 @@ test("Vector assignment is refused while the run is started", function()
   -- cmd/script's run holds for the whole script; the GUI's Script panel may run this stopped
   check.truthy(not ok and (err:find("not while a run is started", 1, true) or err:find(why, 1, true)),
     "the refusal names the cause: " .. err)
+  ok, err = pcall(vector.release, 1)
+  err = tostring(err)
+  check.truthy(not ok and (err:find("not while a run is started", 1, true) or err:find(why, 1, true)),
+    "the release refusal names the cause: " .. err)
 end)
