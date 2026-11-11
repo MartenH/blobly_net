@@ -572,7 +572,8 @@ typedef struct bb_write_needs {
                                      write gate needs; bb_write_needs says which */
 #define BB_ERR_CANCELLED    (-14) /* a UDS call ended by bb_uds_cancel from another thread: the
                                      request may have gone out, and its answer is not waited for;
-                                     on DoIP the connection is let go (the next call opens another) */
+                                     on DoIP the connection is let go (the next call opens another);
+                                     a bb_message_send ended by bb_message_cancel */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -1581,9 +1582,12 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
  * format, or BB_FORMAT_CLASSIC stated), as the transport protocol's broadcast (j1939.message_frames):
  * one TP.CM BAM and its TP.DT packets from the message's source address, priority 7, 50 ms apart,
  * the last padded with 0xFF. The call returns once the last is sent — 50 ms a packet, so up to
- * 12.75 s for 1785 bytes — or a bb_bus_close from another thread ends it, the rest unsent. A J1939
- * message to one node (a PDU1 group whose destination is not 0xFF) takes an RTS/CTS connection,
- * which is not sent: BB_ERR. On the handle's own thread. */
+ * 12.75 s for 1785 bytes — or a bb_bus_close from another thread ends it, the rest unsent, as does
+ * bb_message_cancel (from any thread), after which it answers BB_ERR_CANCELLED; a cancel asked before
+ * the send began is not its. A BAM waits first for any other sender of this process broadcasting
+ * from the same source address on the wire, since J1939-21 lets a node have one in progress. A
+ * J1939 message to one node (a PDU1 group whose destination is not 0xFF) takes an RTS/CTS
+ * connection, which is not sent: BB_ERR. On the handle's own thread. */
 typedef struct bb_payload {
 	uint32_t id;
 	uint8_t  ext;
@@ -1596,6 +1600,7 @@ int bb_encode_payload(int row, int m, int n, const char *const *signals, const d
                       bb_payload *out);
 int bb_e2e_stamp_payload(int row, int m, bb_payload *p);
 int bb_message_send(int h, int row, int m, const bb_payload *p);
+int bb_message_cancel(int h);
 #endif /* BB_FROM_V */
 
 /* Network management on a row's frames (cmd/libblobly/nm.v, blobly/nm): who reports in on the

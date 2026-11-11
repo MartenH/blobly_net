@@ -667,7 +667,8 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   A J1939 message (`msg.j1939`) longer than 8 bytes whose frame goes out classic is sent as the
   transport protocol's broadcast — one TP.CM BAM and its TP.DT packets from the message's source
   address, 50 ms apart, the last padded with 0xFF ([j1939.md](j1939.md#sending-a-message-longer-than-8-bytes))
-  — and the call returns once the last packet is out, 50 ms a packet; `format="classic"` sends it so
+  — and the call returns once the last packet is out, 50 ms a packet (Ctrl-C ends it between
+  packets, the rest unsent); `format="classic"` sends it so
   on an FD row too. `msg.encode()` gives such a message whole, up to 1785 bytes; `msg.send_cyclic`
   sends one BAM a period.
 - `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`

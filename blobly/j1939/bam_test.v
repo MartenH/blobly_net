@@ -1,5 +1,6 @@
 module j1939
 
+import time
 import blobly.transport
 
 // long_msg is a message of `n` bytes at `id`, each byte its index.
@@ -89,8 +90,8 @@ fn test_the_pacer_spaces_frames_and_serialises_a_lane() {
 	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
 	b := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x21), 10)) or { panic(err) }
 	mut p := Pacer{}
-	p.add('w/21', a, 1)
-	p.add('w/21', b, 2)
+	p.add('pacer_spaces', a, 1)
+	p.add('pacer_spaces', b, 2)
 	mut out := &Sent{}
 	for t := 0; t <= 600; t += 5 {
 		now := f64(t)
@@ -129,13 +130,14 @@ fn test_the_pacer_keeps_the_latest_of_a_waiting_message_and_ends_a_refused_trans
 	first := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
 	other := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x21), 20)) or { panic(err) }
 	mut p := Pacer{}
-	p.add('l', first, 1)
-	p.add('l', other, 2)
-	p.add('l', other, 3) // replaces the waiting one
+	p.add('pacer_latest', first, 1)
+	p.add('pacer_latest', other, 2)
+	p.add('pacer_latest', other, 3) // replaces the waiting one
 	assert p.pending() == 2
 	// another lane goes alongside
-	p.add('m', bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x22), 9)) or { panic(err) },
-		4)
+	p.add('pacer_latest', bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x22), 9)) or {
+		panic(err)
+	}, 4)
 	mut out := &Sent{}
 	p.pump(0, fn [mut out] (f transport.CanFrame, tag int) bool {
 		out.tags << tag
@@ -157,7 +159,7 @@ fn test_send_paced_puts_a_bam_on_a_bus() {
 	frames := bam_frames(msg) or { panic(err) }
 	mut rx := transport.open('inproc:bam_paced') or { panic(err) }
 	mut tx := transport.open('inproc:bam_paced') or { panic(err) }
-	send_paced(mut tx, frames, 2, unsafe { nil }) or { panic(err) }
+	send_paced(mut tx, frames, 2, '', unsafe { nil }) or { panic(err) }
 	mut got := []transport.CanFrame{}
 	for _ in 0 .. frames.len {
 		got << rx.recv(500) or { panic(err) }
@@ -165,7 +167,7 @@ fn test_send_paced_puts_a_bam_on_a_bus() {
 	done, faults := rejoined(got, 2)
 	assert faults.len == 0 && done.len == 1 && done[0].data == msg.data
 	// a stop ends it between frames
-	send_paced(mut tx, frames, 2, fn () bool {
+	send_paced(mut tx, frames, 2, '', fn () bool {
 		return true
 	}) or {
 		assert err.msg().contains('stopped after 1')
@@ -179,8 +181,8 @@ fn test_send_paced_puts_a_bam_on_a_bus() {
 fn test_abandon_drops_a_tags_transfers() {
 	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
 	mut p := Pacer{}
-	p.add('l', a, 1)
-	p.add('m', a, 2)
+	p.add('', a, 1)
+	p.add('pacer_abandon', a, 2)
 	p.abandon(1)
 	assert p.pending() == 1
 }
@@ -194,4 +196,55 @@ fn test_a_j1939_message_stated_classic_keeps_its_length_for_its_bam() {
 		assert false, 'any other message stated classic carries 8 bytes'
 	}
 	assert (stated(.fd, msg, true) or { panic(err) }).fd
+}
+
+// two senders of one source address on one wire — a blocking one on its thread and a pacer — take
+// turns: one BAM at a time, each rejoined whole
+fn test_senders_of_one_source_address_on_a_wire_take_turns() {
+	wire := 'inproc:bam_lanes'
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 60)) or { panic(err) }
+	b := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x21), 60)) or { panic(err) }
+	mut rx := transport.open(wire) or { panic(err) }
+	defer {
+		rx.close()
+	}
+	mut p := Pacer{
+		gap_ms: 2
+	}
+	p.add(wire, b, 1)
+	// the pacer's first frame claims the lane before the thread starts
+	p.pump(f64(time.ticks()), fn (f transport.CanFrame, tag int) bool {
+		mut tx := transport.open('inproc:bam_lanes') or { return false }
+		tx.send(f) or { return false }
+		tx.close()
+		return true
+	})
+	th := spawn fn (wire string, frames []transport.CanFrame) string {
+		mut tx := transport.open(wire) or { return err.msg() }
+		defer {
+			tx.close()
+		}
+		send_paced(mut tx, frames, 2, lane_key(wire, 0x21), unsafe { nil }) or { return err.msg() }
+		return ''
+	}(wire, a)
+	for p.pending() > 0 {
+		p.pump(f64(time.ticks()), fn (f transport.CanFrame, tag int) bool {
+			mut tx := transport.open('inproc:bam_lanes') or { return false }
+			tx.send(f) or { return false }
+			tx.close()
+			return true
+		})
+		time.sleep(time.millisecond)
+	}
+	assert th.wait() == ''
+	mut got := []transport.CanFrame{}
+	for _ in 0 .. a.len + b.len {
+		got << rx.recv(500) or { panic(err) }
+	}
+	done, faults := rejoined(got, 2)
+	assert faults.len == 0
+	assert done.map(it.pgn) == [u32(0xFF11), 0xFF10]
+	// a lane of another address, or of another wire, is not held by this one's
+	assert lane_take(lane_key(wire, 0x22), lane_owner(), time.sys_mono_now(), hold_ns())
+	assert lane_key(wire, 0x21) != lane_key('inproc:bam_lanes2', 0x21)
 }

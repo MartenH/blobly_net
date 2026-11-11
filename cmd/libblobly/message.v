@@ -4,6 +4,7 @@
 // out classic, as its BAM (j1939.send_message, the rule every send path asks).
 module main
 
+import sync.stdatomic
 import blobly.j1939
 import blobly.project
 import blobly.transport
@@ -89,10 +90,30 @@ pub fn bb_message_send(h i32, row i32, m i32, p &C.bb_payload) i32 {
 	defer {
 		hd.leave()
 	}
+	// a cancel asked before this send is not this send's
+	stdatomic.store_i64(&hd.cancel, 0)
+	closing := &hd.closing
+	cancel := &hd.cancel
+	stop := fn [closing, cancel] () bool {
+		return stdatomic.load_i64(closing) != 0 || stdatomic.load_i64(cancel) != 0
+	}
 	// as the row it is attached to, framed for that row and the wire in one policy read (framing.v)
 	mut bus := transport.Bus(hd.bus)
-	j1939.send_message(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939, hd.stop) or {
+	j1939.send_message(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939, stop) or {
+		if stdatomic.load_i64(cancel) != 0 {
+			return fail(bb_err_cancelled, 'send: cancelled: ${err.msg()}')
+		}
 		return fail(bb_err, 'send: ${err.msg()}')
 	}
+	return ok()
+}
+
+// bb_message_cancel ends the bb_message_send in progress on handle h between its frames, the rest
+// unsent, which then answers BB_ERR_CANCELLED; nothing when none is. From any thread.
+@[export: 'bb_message_cancel']
+pub fn bb_message_cancel(h i32) i32 {
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	stdatomic.store_i64(&hd.cancel, 1)
+	hd.leave()
 	return ok()
 }

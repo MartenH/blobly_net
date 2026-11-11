@@ -276,6 +276,16 @@ pub mut:
 	row   string
 	// the BAMs in progress, a transfer at a time per source address (j1939.Pacer)
 	tp j1939.Pacer
+	// why a message is never sent, said once per message (take_notes), and which were said
+	notes []string
+	said  map[string]bool
+}
+
+// take_notes is what the engine has to say since it was last asked: a message it never sends.
+pub fn (mut e Engine) take_notes() []string {
+	out := e.notes
+	e.notes = []
+	return out
 }
 
 // Carry is what an engine rebuild carries over, kept by the caller for the whole run: each
@@ -416,7 +426,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 // belongs to (Engine.emit: one frame, or a J1939 message's BAM on the engine's pacer).
 fn (mut m SimMessage) emit(now_ms f64, mut e Engine, send fn (f transport.CanFrame) bool) {
 	mut f := m.build(now_ms / 1000.0)
-	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && e.emit(f, m.msg.j1939, send) {
+	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && e.emit(f, m.msg, send) {
 		m.last_t = now_ms / 1000.0
 		m.last_n = m.send_n
 		m.last_set = m.set
@@ -540,17 +550,25 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 	}
 }
 
-// emit hands a message's frame `f` to `send` as one frame, or — j1939.message_frames: a message
-// `declared` J1939 of more than 8 bytes going out classic — queues its BAM on the engine's pacer,
-// whose frames `step` hands on bam_gap_ms apart. False for a frame refused, or a message neither
-// one frame nor a BAM carries (a J1939 message to one node, which needs RTS/CTS).
-fn (mut e Engine) emit(f transport.CanFrame, declared bool, send fn (f transport.CanFrame) bool) bool {
+// emit hands message `msg`'s frame `f` to `send` as one frame, or — j1939.message_frames: a
+// message declared J1939 of more than 8 bytes going out classic — queues its BAM on the engine's
+// pacer, whose frames `step` hands on bam_gap_ms apart. False for a frame refused, or a message
+// neither one frame nor a BAM carries (a J1939 message to one node, which needs RTS/CTS), which
+// is said once (take_notes).
+fn (mut e Engine) emit(f transport.CanFrame, msg candb.Message, send fn (f transport.CanFrame) bool) bool {
 	out := transport.framed_for_wire(e.iface, transport.CanFrame{ ...f, row: e.row })
-	frames := j1939.message_frames(f, declared, out.fd) or { return false }
+	frames := j1939.message_frames(f, msg.j1939, out.fd) or {
+		key := '${msg.name}/${msg.id}'
+		if !e.said[key] {
+			e.said[key] = true
+			e.notes << '${msg.name} is never sent: ${err.msg()}'
+		}
+		return false
+	}
 	if frames.len == 1 {
 		return send(frames[0])
 	}
-	e.tp.add('${j1939.decompose(f.id).sa}', frames, 0)
+	e.tp.add(e.iface, frames, 0)
 	return true
 }
 

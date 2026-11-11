@@ -568,6 +568,7 @@ mut:
 	bus     &transport.MeteredBus // counts its load (metrics.v)
 	users   i64 // calls inside `bus` now
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
+	cancel  i64 // bb_message_cancel: the bb_message_send in progress ends between its frames
 	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
 	stop fn () bool = unsafe { nil }
 	// the row bb_e2e_attach bound its frames' E2E verdicts to (e2e.v)

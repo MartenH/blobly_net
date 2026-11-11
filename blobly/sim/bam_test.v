@@ -86,3 +86,24 @@ fn test_on_an_fd_row_the_message_is_one_frame() {
 	frames, _ := steps(mut e, 400)
 	assert frames.len == 1 && frames[0].data.len == 20
 }
+
+// A long J1939 message to one node, which only RTS/CTS carries, is not sent, and is said once.
+fn test_a_message_to_one_node_is_said_once_and_not_sent() {
+	db := candb.load_dbc_file(j1939_dbc) or { panic(err) }
+	msg := db.message_named('PropA_Cfg') or { panic('no PropA_Cfg') }
+	assert msg.j1939 && msg.dlc > 8
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'Body'
+			messages: [SimMessage{
+				msg:       msg
+				period_ms: 100
+			}]
+		}]
+	}
+	frames, _ := steps(mut e, 400)
+	assert frames.len == 0
+	notes := e.take_notes()
+	assert notes.len == 1 && notes[0].contains('PropA_Cfg') && notes[0].contains('RTS/CTS')
+	assert e.take_notes().len == 0
+}

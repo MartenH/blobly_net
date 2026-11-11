@@ -280,6 +280,21 @@ pub fn frame_out(b Bus, f CanFrame) CanFrame {
 	return f.unstated()
 }
 
+// wire_of is the interface `b` sends on, as frame_out reads it: a row's or a policed bus's, through
+// a meter to what it meters; '' for a bus that does not say.
+pub fn wire_of(b Bus) string {
+	if b is RowFramedBus {
+		return b.iface
+	}
+	if b is MeteredBus {
+		return wire_of(b.inner)
+	}
+	if b is SilentBus {
+		return b.iface
+	}
+	return ''
+}
+
 pub fn (mut r RowFramedBus) recv(timeout_ms int) !CanFrame {
 	return r.inner.recv(timeout_ms)!
 }

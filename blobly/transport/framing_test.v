@@ -476,4 +476,8 @@ fn test_frame_out_is_what_each_handle_sends() {
 	assert frame_out(plain, CanFrame{ ...f, row: 'FD' }).fd
 	stated := FrameFormat.classic.stamp(CanFrame{ id: 0x10, data: []u8{len: 8} }) or { panic(err) }
 	assert !frame_out(fd_tx, stated).fd
+	// and the wire each sends on, through a meter too
+	assert wire_of(fd_tx) == 'inproc:frame_out'
+	assert wire_of(metered(fd_tx, 'inproc:frame_out', 250000, 0)) == 'inproc:frame_out'
+	assert wire_of(plain) == 'inproc:frame_out'
 }

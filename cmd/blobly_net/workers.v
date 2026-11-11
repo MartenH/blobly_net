@@ -248,7 +248,8 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
 			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
 			engine = sim.Engine{
-				tp: engine.tp
+				tp:   engine.tp
+				said: engine.said
 			}
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
@@ -262,6 +263,9 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 		// The panel used to write a map on App that only the panel read, so a script launched
 		// from the Script panel reported success and changed nothing on the bus.
 		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.proj_idx, sc.pch.name)
+		for note in engine.take_notes() {
+			notify_gen(app, gen, '${sc.pch.name}: simulation: ${note}')
+		}
 	}
 	bus.close()
 }
@@ -287,6 +291,7 @@ fn gen_loop(app &App) {
 	mut slots := map[u64]GenSlot{} // by SenderRT.uid
 	a.mu.lock()
 	a.gen_tp = j1939.Pacer{} // nothing of an earlier run's transfers
+	a.gen_tp_xfers = map[int]GenTpXfer{}
 	a.mu.unlock()
 	for a.running {
 		now := time.sys_mono_now() / 1_000_000
@@ -381,11 +386,14 @@ fn gen_loop(app &App) {
 	}
 }
 
-// GenTpDest is where a generator's BAM goes: its row, channel and wire, as tx_on_chan takes them.
-struct GenTpDest {
+// GenTpXfer is a generator's BAM in progress: where it goes, as tx_on_chan takes it, and the fire it
+// is (the generator set's epoch and its send index), counted once its last frame is out.
+struct GenTpXfer {
 	row   int
 	chan  string
 	iface string
+	epoch u64
+	n     int
 }
 
 // TpDue collects the BAM frames due in one pass, from inside a closure.
@@ -397,7 +405,8 @@ mut:
 }
 
 // send_gen_tp sends the generators' BAM frames due by `now_ms`, taken under app.mu and sent
-// outside it; a frame its tap refuses ends the transfers to that destination.
+// outside it: a frame its tap refuses ends its transfer, and a transfer whose last frame went out
+// counts its generator's send (gen_send_n), as a one-frame fire counts a delivered frame.
 fn (mut app App) send_gen_tp(now_ms f64) {
 	mut due := &TpDue{}
 	app.mu.lock()
@@ -406,15 +415,27 @@ fn (mut app App) send_gen_tp(now_ms f64) {
 		due.tags << tag
 		return true
 	})
-	dests := app.gen_tp_dests.clone()
+	mut last := []bool{}
+	mut xs := []GenTpXfer{}
+	for tag in due.tags {
+		last << !app.gen_tp.has(tag)
+		xs << app.gen_tp_xfers[tag] or { GenTpXfer{} }
+	}
 	app.mu.unlock()
 	for k, f in due.frames {
-		d := dests[due.tags[k]]
-		if !app.tx_on_chan(d.row, d.chan, d.iface, f) {
-			app.mu.lock()
-			app.gen_tp.abandon(due.tags[k])
-			app.mu.unlock()
+		tag := due.tags[k]
+		x := xs[k]
+		sent := app.tx_on_chan(x.row, x.chan, x.iface, f)
+		if sent && !last[k] {
+			continue
 		}
+		app.mu.lock()
+		app.gen_tp.abandon(tag)
+		app.gen_tp_xfers.delete(tag)
+		if sent && app.gen_state_epoch == x.epoch {
+			app.gen_send_n[u64(tag)] = x.n + 1
+		}
+		app.mu.unlock()
 	}
 }
 

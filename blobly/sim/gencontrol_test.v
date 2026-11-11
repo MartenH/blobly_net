@@ -48,39 +48,39 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 		}]
 	}
 	// a value drops the source; a signal not listed yet is added
-	gen_set_value(mut s, [db], 64, 'ReqCode', 5)!
+	gen_set_value(mut s, [db], 64, false, 'ReqCode', 5)!
 	assert s.signals[0].value == 5 && s.signals[0].wave.typ == ''
-	gen_set_source(mut s, [db], 64, 'Aux', project.GenCfg{ typ: 'counter', step: 2 })!
+	gen_set_source(mut s, [db], 64, false, 'Aux', project.GenCfg{ typ: 'counter', step: 2 })!
 	assert s.signals.len == 2 && s.signals[1].wave.typ == 'counter' && s.signals[1].wave.signal == 'Aux'
 	frame := sender_message_frame(s, [db], 3, 0) or { panic('no frame') }
 	assert frame.data[0] == 5 && frame.data[1] == 6
 	mut refusals := 0
-	gen_set_value(mut s, [db], 64, 'Nope', 1) or { refusals++ }
-	gen_set_value(mut s, [db], 64, 'ReqCode', math.inf(1)) or { refusals++ }
-	gen_set_source(mut s, [db], 64, 'ReqCode', project.GenCfg{ typ: '' }) or { refusals++ }
-	gen_set_source(mut s, [db], 64, 'ReqCode', project.GenCfg{ typ: 'stepmod', period: 1 }) or {
+	gen_set_value(mut s, [db], 64, false, 'Nope', 1) or { refusals++ }
+	gen_set_value(mut s, [db], 64, false, 'ReqCode', math.inf(1)) or { refusals++ }
+	gen_set_source(mut s, [db], 64, false, 'ReqCode', project.GenCfg{ typ: '' }) or { refusals++ }
+	gen_set_source(mut s, [db], 64, false, 'ReqCode', project.GenCfg{ typ: 'stepmod', period: 1 }) or {
 		refusals++
 	}
-	gen_set_source(mut s, [db], 64, 'ReqCode', project.GenCfg{ typ: 'wobble' }) or { refusals++ }
+	gen_set_source(mut s, [db], 64, false, 'ReqCode', project.GenCfg{ typ: 'wobble' }) or { refusals++ }
 	mut raw := project.Sender{
 		name: 'Raw'
 		id:   0x321
 	}
-	gen_set_value(mut raw, [db], 64, 'ReqCode', 1) or {
+	gen_set_value(mut raw, [db], 64, false, 'ReqCode', 1) or {
 		assert err.msg().contains('raw frame')
 		refusals++
 	}
 	// a signal past the payload is never sent; one listed twice is edited where the frame reads it
 	short := candb.parse_dbc('BO_ 257 Request: 1 Tester\n SG_ ReqCode : 0|8@1+ (1,0) [0|255] "" SUT\n SG_ Aux : 8|8@1+ (1,0) [0|255] "" SUT\n')!
-	gen_set_value(mut s, [short], 64, 'Aux', 1) or {
+	gen_set_value(mut s, [short], 64, false, 'Aux', 1) or {
 		assert err.msg().contains('do not hold Aux'), err.msg()
 		refusals++
 	}
 	assert refusals == 7
 	// a classic wire that clamps carries 8 bytes: a signal past them is never sent
 	wide := candb.parse_dbc('BO_ 257 Request: 9 Tester\n SG_ ReqCode : 0|8@1+ (1,0) [0|255] "" SUT\n SG_ Tail : 64|8@1+ (1,0) [0|255] "" SUT\n')!
-	gen_set_value(mut s, [wide], 64, 'Tail', 1)!
-	gen_set_value(mut s, [wide], 8, 'Tail', 1) or { refusals++ }
+	gen_set_value(mut s, [wide], 64, false, 'Tail', 1)!
+	gen_set_value(mut s, [wide], 8, false, 'Tail', 1) or { refusals++ }
 	assert refusals == 8
 	s.signals.delete(s.signals.len - 1)
 	assert s.signals.len == 2, 'a refused edit added nothing'
@@ -94,7 +94,7 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 			value: 2
 		}]
 	}
-	gen_set_value(mut twice, [db], 64, 'ReqCode', 42)!
+	gen_set_value(mut twice, [db], 64, false, 'ReqCode', 42)!
 	assert (sender_message_frame(twice, [db], 0, 0) or { panic('no frame') }).data[0] == 42
 	gen_cycle_check(1)!
 	gen_cycle_check(gen_cycle_max_ms)!
@@ -105,7 +105,7 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 	mut t := project.Sender{
 		message: 'Twins'
 	}
-	gen_set_value(mut t, [twins], 64, 'A', 1) or {
+	gen_set_value(mut t, [twins], 64, false, 'A', 1) or {
 		assert err.msg().contains('cannot tell them apart'), err.msg()
 		refusals++
 	}
@@ -114,7 +114,7 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 	mut w := project.Sender{
 		message: 'Wide'
 	}
-	gen_set_value(mut w, [wide65], 64, 'W', -1) or {
+	gen_set_value(mut w, [wide65], 64, false, 'W', -1) or {
 		assert err.msg().contains('65 bits wide'), err.msg()
 		refusals++
 	}
@@ -181,8 +181,8 @@ fn test_an_unreachable_branch_and_a_bad_dlc() {
 	mut s := project.Sender{
 		message: 'M'
 	}
-	gen_set_value(mut s, [db], 64, 'Shown', 1)!
-	gen_set_value(mut s, [db], 64, 'Hidden', 1) or {
+	gen_set_value(mut s, [db], 64, false, 'Shown', 1)!
+	gen_set_value(mut s, [db], 64, false, 'Hidden', 1) or {
 		assert err.msg().contains('cannot hold'), err.msg()
 		return
 	}
@@ -193,4 +193,21 @@ fn test_a_negative_dlc_builds_an_empty_frame() {
 	db := candb.parse_dbc('BO_ 257 Bad: -1 Tester\n SG_ A : 0|8@1+ (1,0) [0|255] "" SUT\n')!
 	f := sender_message_frame(project.Sender{ message: 'Bad' }, [db], 0, 0) or { panic('none') }
 	assert f.data.len == 0
+}
+
+// A J1939 message going out classic is sent whole as its BAM, whatever a frame on the wire
+// carries; going out CAN-FD it is one frame of at most 64 bytes.
+fn test_a_j1939_message_going_out_classic_is_held_whole() {
+	db := candb.parse_dbc('BO_ 2566852385 Dm: 100 Body\n SG_ Head : 0|8@1+ (1,0) [0|255] "" X\n SG_ Far : 640|8@1+ (1,0) [0|255] "" X\n\nBA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_DEF_DEF_ "VFrameFormat" "J1939PG";\n')!
+	assert (db.message_named('Dm') or { panic('no Dm') }).j1939
+	mut s := project.Sender{
+		message: 'Dm'
+	}
+	gen_set_value(mut s, [db], 64, false, 'Far', 1)!
+	gen_set_value(mut s, [db], 8, false, 'Far', 1)!
+	gen_set_value(mut s, [db], 64, true, 'Far', 1) or {
+		assert err.msg().contains('sends 64 bytes'), err.msg()
+		return
+	}
+	assert false, 'a CAN-FD frame carries 64 bytes'
 }

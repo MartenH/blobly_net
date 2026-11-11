@@ -743,6 +743,7 @@ def _declare(lib):
         "bb_encode_payload": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbPayload)], c_int),
         "bb_e2e_stamp_payload": ([c_int, c_int, P(BbPayload)], c_int),
         "bb_message_send": ([c_int, c_int, c_int, P(BbPayload)], c_int),
+        "bb_message_cancel": ([c_int], c_int),
         # background senders (cyclic.py) and the keep-alive (uds.py)
         "bb_cyclic_start": ([c_int, P(BbFrame), c_int], c_int),
         "bb_cyclic_start_message": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), c_int, c_int, c_int],

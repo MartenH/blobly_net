@@ -440,15 +440,18 @@ fn (mut r Run) gen(i int) !&Gen {
 // on a wire SocketCAN clamps takes 8 bytes, any other frame 64 (a vendor backend refuses what its
 // wire cannot carry, a software bus carries it).
 fn payload_cap(iface string, row string) int {
-	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
-	return if transport.clamps_to_classic(iface) && !fd { 8 } else { 64 }
+	return if transport.clamps_to_classic(iface) && !row_fd(iface, row) { 8 } else { 64 }
+}
+
+// row_fd is whether a frame row `row` sends on `iface` goes out CAN-FD.
+fn row_fd(iface string, row string) bool {
+	return transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
 }
 
 // data_cap is the most a raw frame row `row` sends on `iface` carries: 64 bytes where the row or
 // the wire is CAN-FD, else 8 (a classic frame past 8 bytes is refused or clamped by every bus).
 fn data_cap(iface string, row string) int {
-	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
-	return if fd { 64 } else { 8 }
+	return if row_fd(iface, row) { 64 } else { 8 }
 }
 
 // sendable is g's refusal when it has nothing to send on.
@@ -648,7 +651,8 @@ pub fn (mut r Run) gen_value(i int, signal string, value f64) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, value)!
+	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), row_fd(g.open, g.row), signal,
+		value)!
 	g.edits++
 }
 
@@ -659,7 +663,8 @@ pub fn (mut r Run) gen_source(i int, signal string, w project.GenCfg) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, w)!
+	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), row_fd(g.open, g.row), signal,
+		w)!
 	g.edits++
 }
 

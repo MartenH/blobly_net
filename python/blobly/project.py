@@ -6,6 +6,7 @@ import math
 import numbers
 import os
 import sys
+import threading
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeAlias, T
 
 from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
-from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
+from .events import SLICE_MS, EventLoop, _finite, _on_thread, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
 from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
 from .faults import Faults
@@ -1154,8 +1155,9 @@ class Message:
         run's encoding on the next run's wire.
         A J1939 message (`j1939`) longer than 8 bytes going out classic is sent as the transport
         protocol's broadcast, a TP.CM BAM and its TP.DT packets 50 ms apart from the message's
-        source address, and the call returns once the last is sent (50 ms a packet); the Frame
-        returned is the message's."""
+        source address, and the call returns once the last is sent (50 ms a packet), after any
+        other BAM this process is sending from that address on the wire; Ctrl-C ends it between
+        packets, the rest unsent. The Frame returned is the message's."""
         lib = _lib.lib()
         with _lib.state_lock:
             p = self._encoded(signals)  # its format the declared one (bb_encode_payload)
@@ -1167,7 +1169,12 @@ class Message:
             h = self.channel._handle()  # first: a channel that will not open uses no counter
             row, m = self.channel._index, self._index
             _lib.check(lib.bb_e2e_stamp_payload(row, m, ctypes.byref(p)))
-        _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p)))
+        if self.j1939 and p.len > 8 and threading.current_thread() is threading.main_thread():
+            # a BAM takes up to 12.75 s: on a thread of its own, so Ctrl-C cancels it (events._on_thread)
+            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p))), "blobly-send",
+                       lambda: lib.bb_message_cancel(h))
+        else:
+            _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p)))
         # the Frame returned says what was stated, or declared
         fd = p.format not in (0, _lib.FORMATS["classic"])
         brs = p.format == _lib.FORMATS["fd_brs"]
