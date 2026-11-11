@@ -1,5 +1,5 @@
-// Background cyclic senders (bb.h's "Background cyclic senders" block): blobly/cyclic, each one of
-// the run's loops (headless.Run.start_cyclic) on a bus handle of its own.
+// Background cyclic senders (bb.h's "Background cyclic senders" block): blobly/cyclic, each sent
+// by the run's wire to its row (headless.Run.start_cyclic), beside the generators on that wire.
 module main
 
 import blobly.cyclic
@@ -30,7 +30,7 @@ fn cyclic_retire(run u64) {
 	}
 }
 
-// cyclic_start opens a bus of its own on CAN row `row` of the started run and starts `spec` on it.
+// cyclic_start starts `spec` on CAN row `row` of the started run, sent as that row.
 fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 	bb_mu.lock()
 	mut r := bb_gen_run
@@ -52,9 +52,15 @@ fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 	}
 	spec.check() or { return fail(bb_err, '${ch.name}: ${err.msg()}') }
 	iface := ch.iface_with_bitrate()
-	opened := transport.open(iface) or { return fail(bb_err, '${iface}: ${err.msg()}') }
-	bus := transport.row_framed(opened, iface, ch.name) // the row's format (#384)
-	s := r.start_cyclic(bus, spec) or { return fail(bb_err_state, '${ch.name}: ${err.msg()}') }
+	name := ch.name
+	// sent as the row, in the row's format (#384)
+	s := r.start_cyclic(cyclic.Target{
+		iface: iface
+		row:   name
+		open:  fn [iface, name] () !transport.Bus {
+			return transport.row_framed(transport.open(iface)!, iface, name)
+		}
+	}, spec) or { return fail(bb_err_state, '${ch.name}: ${err.msg()}') }
 	bb_mu.lock()
 	c := bb_cyclic_next
 	bb_cyclic_next++

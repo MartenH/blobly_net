@@ -1,13 +1,15 @@
 // cyclic.v — a frame sent on a period in the background, while the script that started it does
 // something else (blocks in a UDS request, waits in an expect).
 //
-// A sender OWNS ITS BUS: a handle opened for it alone, used by its own thread alone, which sends
-// and never reads — so on a shared-hub wire it is no subscriber, and no script handle is ever
-// touched from a second thread (canlib forbids two threads on a Kvaser handle; SocketCAN's and
-// Vector's ladder state is written by recv). Listen-only and CAN-FD framing are the bus's own, per
-// send (transport.SilentBus); a DBC message's declared E2E is stamped here, per frame, its counter
-// the sender's own from 0. The script's handle on the channel hears these frames as it hears any
-// other handle's.
+// A sender is an Entry of a Wire (wire.v): the wire's loop sends it on a handle that sends and
+// never reads — so on a shared-hub wire it is no subscriber, and no script handle is ever touched
+// from a second thread (canlib forbids two threads on a Kvaser handle; SocketCAN's and Vector's
+// ladder state is written by recv). Started alone (`start`), it has a wire of its own on the bus
+// it is given; in a run, the run's wire to its channel, which serves the run's generators too.
+// Listen-only and CAN-FD framing are the bus's own, per send (transport.SilentBus); the row a
+// frame is sent as is the sender's (transport.row_framed over the wire's handle); a DBC message's
+// declared E2E is stamped here, per frame, its counter the sender's own from 0. The script's
+// handle on the channel hears these frames as it hears any other handle's.
 module cyclic
 
 import sync
@@ -20,7 +22,8 @@ import blobly.transport
 // max_period_ms is the longest period a sender may be given: an hour, as a generator's cycle.
 pub const max_period_ms = sim.gen_cycle_max_ms
 
-// stop_bound_ms is how long a stop waits for a sender's loop to end: a send in a driver's budget.
+// stop_bound_ms is how long a stop waits for a sender's wire to let it go: a send in a driver's
+// budget.
 pub const stop_bound_ms = 2000
 
 // stopped_note is what a change to a stopped sender is refused with.
@@ -122,7 +125,7 @@ fn raw_frame(s Spec, data []u8) !transport.CanFrame {
 	return f
 }
 
-// Life ties a sender to whatever owns it: `running` false ends it as a stop does (a run's stop),
+// Life ties a sender started alone to whatever owns it: `running` false ends it as a stop does,
 // and `ended` is called once when its loop is out.
 pub struct Life {
 pub:
@@ -143,90 +146,128 @@ pub:
 
 @[heap]
 pub struct Sender {
+	iface string // the wire it is sent on, and the row it is sent as ('' none)
+	row   string
 mut:
 	mu      sync.Mutex
 	spec    Spec
-	bus     transport.Bus
-	life    Life
-	stamper sim.E2eStamper // the loop's alone
+	wire    &Wire = unsafe { nil }
+	stamper sim.E2eStamper     // the loop's alone
 	frame   transport.CanFrame // what the spec sends now, encoded when it changes
-	asked   bool           // stop was asked
-	out     bool           // the loop runs
+	asked   bool               // stop was asked
+	out     bool               // its wire still serves it
 	sent    u64
 	failed  u64
 	error   string
-	wake    chan bool = chan bool{cap: 1}
+	// the loop's alone: the grid slot last sent in and when that send returned (ms on the
+	// monotonic clock), whether nothing was sent yet, and the wire's handle as its row
+	first  bool = true
+	slot   u64
+	done   u64
+	framed ?transport.Bus
+}
+
+// new_sender is a sender of `spec` on `iface`, sent as row `row`, on no wire yet.
+pub fn new_sender(spec Spec, iface string, row string) !&Sender {
+	spec.check()!
+	mut s := &Sender{
+		iface: iface
+		row:   row
+		spec:  Spec{
+			...spec
+			data:   spec.data.clone()
+			values: spec.values.clone()
+		}
+		out:   true
+	}
+	s.frame = encoded(s.spec)!
+	return s
+}
+
+// join puts s on wire `w`, which sends it from its next pass.
+pub fn (mut s Sender) join(mut w Wire) ! {
+	s.mu.lock()
+	s.wire = w
+	s.mu.unlock()
+	w.add(s)!
 }
 
 // start sends `spec` on `bus`, which the sender owns from here (closed when its loop ends, and on
 // a refusal): its first frame at once, then one per period on that grid. A stall never bursts
 // catch-up frames: the slots it covered are skipped (sim.next_due).
 pub fn start(bus transport.Bus, spec Spec, life Life) !&Sender {
-	spec.check() or {
+	mut s := new_sender(spec, '', '') or {
 		mut b := bus
 		b.close()
 		return err
 	}
-	mut s := &Sender{
-		spec: Spec{
-			...spec
-			data:   spec.data.clone()
-			values: spec.values.clone()
-		}
-		bus:  bus
+	mut w := &Wire{
+		solo: true
 		life: life
-		out:  true
 	}
-	s.frame = encoded(s.spec) or {
-		mut b := bus
-		b.close()
-		return err
-	}
-	spawn s.run()
+	s.join(mut w)!
+	spawn fn [mut w, bus] () {
+		w.run(fn [bus] (_ string) !transport.Bus {
+			return bus
+		}) or {}
+	}()
 	return s
 }
 
-fn (mut s Sender) run() {
+fn (mut s Sender) leaving() bool {
+	s.mu.lock()
 	defer {
-		s.bus.close()
-		s.mu.lock()
-		s.out = false
 		s.mu.unlock()
-		if s.life.ended != unsafe { nil } {
-			s.life.ended()
-		}
 	}
-	mut first := true
-	mut slot := u64(0) // the grid slot last sent in, ms on the monotonic clock
-	mut done := u64(0) // when that send returned
-	for {
-		s.mu.lock()
-		asked := s.asked
-		period := u64(s.spec.period_ms)
-		s.mu.unlock()
-		if asked || (s.life.running != unsafe { nil } && !s.life.running()) {
-			return
-		}
-		now := time.sys_mono_now() / 1_000_000
-		// due by the period as it is now, so a changed one applies from the next frame
-		if first || now >= sim.next_due(slot, period, done) {
-			slot = if first { now } else { sim.next_due(slot, period, done) }
-			first = false
-			s.send_once()
-			done = time.sys_mono_now() / 1_000_000
-		}
-		after := time.sys_mono_now() / 1_000_000
-		due := sim.next_due(slot, period, done)
-		wait := sim.wait_until(due, after, u64(poll_ms))
-		select {
-			_ := <-s.wake {}
-			i64(wait) * time.millisecond {}
-		}
+	return s.asked
+}
+
+fn (mut s Sender) due(now u64) ?u64 {
+	s.mu.lock()
+	period := u64(s.spec.period_ms)
+	s.mu.unlock()
+	// due by the period as it is now, so a changed one applies from the next frame
+	return if s.first { now } else { sim.next_due(s.slot, period, s.done) }
+}
+
+fn (mut s Sender) serve(mut bus transport.Bus, now u64) string {
+	due := s.due(now) or { return '' }
+	if now < due {
+		return ''
+	}
+	s.slot = if s.first { now } else { due }
+	s.first = false
+	mut b := s.framed or {
+		f := transport.row_framed(bus, s.iface, s.row)
+		s.framed = f
+		f
+	}
+	s.send_once(mut b)
+	s.done = time.sys_mono_now() / 1_000_000
+	return ''
+}
+
+fn (mut s Sender) let_go(failure string) {
+	s.mu.lock()
+	s.out = false
+	if failure != '' {
+		s.error = failure
+	}
+	s.mu.unlock()
+}
+
+// poke wakes its wire: its period changed or it was asked to stop.
+fn (mut s Sender) poke() {
+	s.mu.lock()
+	mut w := s.wire
+	s.mu.unlock()
+	if !isnil(w) {
+		w.poke()
 	}
 }
 
 // send_once puts the frame on the bus as the spec has it now, counting what became of it.
-fn (mut s Sender) send_once() {
+fn (mut s Sender) send_once(mut bus transport.Bus) {
 	s.mu.lock()
 	sp := s.spec
 	mut frame := transport.CanFrame{
@@ -241,7 +282,7 @@ fn (mut s Sender) send_once() {
 			return
 		}
 	}
-	s.bus.send(frame) or {
+	bus.send(frame) or {
 		s.note_failure(err.msg())
 		return
 	}
@@ -303,7 +344,7 @@ pub fn (mut s Sender) set_period(ms int) ! {
 		period_ms: ms
 	}
 	s.mu.unlock()
-	s.wake.try_push(true)
+	s.poke()
 }
 
 // set_data replaces a raw sender's payload from its next frame.
@@ -366,7 +407,7 @@ pub fn (mut s Sender) info() Info {
 	}
 }
 
-// is_out is whether its loop has ended (its bus closed).
+// is_out is whether its wire has let it go.
 pub fn (mut s Sender) is_out() bool {
 	s.mu.lock()
 	defer {
@@ -375,22 +416,23 @@ pub fn (mut s Sender) is_out() bool {
 	return !s.out
 }
 
-// ask_stop asks the loop to end, without waiting.
+// ask_stop asks its wire to let it go, without waiting.
 pub fn (mut s Sender) ask_stop() {
 	s.mu.lock()
 	s.asked = true
 	s.mu.unlock()
-	s.wake.try_push(true)
+	s.poke()
 }
 
-// stop ends the sender: true once its loop is out (its bus closed), false when it is still inside
-// a send after stop_bound_ms — it ends when that send returns, and sends nothing more.
+// stop ends the sender: true once its wire has let it go (started alone: its bus closed), false
+// when the wire is still inside a send after stop_bound_ms — it lets the sender go when that send
+// returns, and sends nothing more of it.
 pub fn (mut s Sender) stop() bool {
 	s.ask_stop()
 	return s.wait_out(time.sys_mono_now() + u64(stop_bound_ms) * 1_000_000)
 }
 
-// wait_out waits until the loop is out or `until` (the monotonic clock, ns) has passed.
+// wait_out waits until its wire let it go or `until` (the monotonic clock, ns) has passed.
 pub fn (mut s Sender) wait_out(until u64) bool {
 	for {
 		s.mu.lock()
@@ -422,16 +464,28 @@ pub fn stop_all(mut senders []&Sender) int {
 	return left
 }
 
-// Host is who a script's sender belongs to: a run, whose stop ends it (headless.Run), or nobody
-// (Free) — the script itself then stops it, at the latest when it closes.
-pub interface Host {
-mut:
-	start_cyclic(bus transport.Bus, spec Spec) !&Sender
+// Target is where a script's sender goes: the address it is sent on (with its bitrate) and the
+// row it is sent as ('' none: transport.row_framed), and how a sender with a bus of its own opens
+// it, framed as that row.
+pub struct Target {
+pub:
+	iface string
+	row   string
+	open  fn () !transport.Bus @[required]
 }
 
-// Free starts senders bound to no run.
+// Host is who a script's sender belongs to: a run, whose wire to the target sends it and whose
+// stop ends it (headless.Run), or nobody (Free) — the script itself then stops it, at the latest
+// when it closes.
+pub interface Host {
+mut:
+	start_cyclic(to Target, spec Spec) !&Sender
+}
+
+// Free starts senders bound to no run, each on a bus of its own.
 pub struct Free {}
 
-pub fn (mut f Free) start_cyclic(bus transport.Bus, spec Spec) !&Sender {
-	return start(bus, spec, Life{})
+pub fn (mut f Free) start_cyclic(to Target, spec Spec) !&Sender {
+	spec.check()!
+	return start(to.open()!, spec, Life{})
 }

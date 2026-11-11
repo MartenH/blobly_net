@@ -1,6 +1,6 @@
 // Background sends and the UDS keep-alive from Lua: bus.send_cyclic / bus.send_message_cyclic
-// (blobly/cyclic, each sender on a bus of its own, so no script handle is used from a second
-// thread) and diag:keep_alive (uds.KeepAlive, under the connection's `mu`, which every exchange of
+// (blobly/cyclic: sent by the run's wire to the channel, else on a bus of the sender's own, so no
+// script handle is used from a second thread) and diag:keep_alive (uds.KeepAlive, under the connection's `mu`, which every exchange of
 // its client holds).
 module script
 
@@ -21,7 +21,7 @@ fn (mut env Env) register_cyclic() {
 	env.st.register('__uds_keep_alive_status', l_uds_keep_alive_status)
 }
 
-// start_sender opens a bus of the sender's own on CAN channel `name` and starts `spec` on it.
+// start_sender starts `spec` on CAN channel `name`, through the script's host (cyclic.Host).
 fn (mut env Env) start_sender(name string, spec cyclic.Spec) !int {
 	ci := env.find_chan(name)!
 	ch := env.chans[ci]
@@ -29,8 +29,16 @@ fn (mut env Env) start_sender(name string, spec cyclic.Spec) !int {
 		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted on it')
 	}
 	spec.check() or { return error('${name}: ${err.msg()}') }
-	bus := env.row_bus(ch.iface, name)!
-	s := env.cyclic_host.start_cyclic(bus, spec) or { return error('${name}: ${err.msg()}') }
+	iface := ch.iface
+	row := env.row_of(name)
+	opener := env.opener
+	s := env.cyclic_host.start_cyclic(cyclic.Target{
+		iface: iface
+		row:   row
+		open:  fn [opener, iface, name, row] () !transport.Bus {
+			return transport.row_framed(opener(iface, name)!, iface, row)
+		}
+	}, spec) or { return error('${name}: ${err.msg()}') }
 	env.senders << s
 	return env.senders.len - 1
 }

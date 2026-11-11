@@ -28,6 +28,10 @@ channels:
         cycle_ms: 50
       - name: Lost
         message: NoSuchMessage
+      - name: Far
+        id: "0x102"
+        data: "01"
+        bus: inproc:HGENFAR
 '
 
 fn gen_run() !(&Run, transport.Bus) {
@@ -72,7 +76,7 @@ fn test_a_script_fires_edits_and_cycles_the_runs_generators() {
 		r.stop()
 	}
 	gs := r.generators()
-	assert gs.map(it.name) == ['Ping', 'Raw', 'Lost']
+	assert gs.map(it.name) == ['Ping', 'Raw', 'Lost', 'Far']
 	assert gs[0].id == 0x101 && gs[0].message == 'Request' && !gs[0].running
 	assert gs[1].running && gs[1].cycle_ms == 50 && gs[1].target == 'inproc:HGEN'
 	assert gs[2].note.contains('not in the channel databases')
@@ -239,10 +243,12 @@ fn test_a_fire_given_up_is_not_sent_later() {
 	assert a.at == 50 && a.why == ''
 }
 
-// a fire held up by its bus's open (a driver that stalls) ends when the run stops, and its frame
+// a fire held up by its wire's open (a driver that stalls) ends when the run stops, and its frame
 // is never sent once the open returns; a start after an open failed is refused, not left running
 fn test_a_stop_ends_a_fire_its_open_holds_up() {
-	mut r, mut bus := gen_run()!
+	mut r, mut own := gen_run()!
+	own.close()
+	mut bus := transport.open('inproc:HGENFAR')!
 	defer {
 		bus.close()
 	}
@@ -251,7 +257,7 @@ fn test_a_stop_ends_a_fire_its_open_holds_up() {
 		_ := <-release
 		return transport.open(iface)
 	}
-	ping := sim.gen_find(r.generators(), 'Ping')!
+	far := sim.gen_find(r.generators(), 'Far')!
 	stopped := chan bool{cap: 1}
 	spawn fn [mut r, stopped] () {
 		time.sleep(100 * time.millisecond)
@@ -260,7 +266,7 @@ fn test_a_stop_ends_a_fire_its_open_holds_up() {
 	}()
 	t0 := time.ticks()
 	mut why := ''
-	r.gen_fire(ping, 0) or {
+	r.gen_fire(far, 0) or {
 		assert kind_of(err) == .stopped, err.msg()
 		why = err.msg()
 	}
@@ -268,7 +274,7 @@ fn test_a_stop_ends_a_fire_its_open_holds_up() {
 	assert time.ticks() - t0 < 1000, 'the fire outlived the stop'
 	release <- true
 	_ := <-stopped
-	assert next_of(mut bus, 0x101, 200) == none, 'a fire the stop ended went out'
+	assert next_of(mut bus, 0x102, 200) == none, 'a fire the stop ended went out'
 }
 
 fn test_a_start_after_a_failed_open_is_refused() {
@@ -280,12 +286,12 @@ fn test_a_start_after_a_failed_open_is_refused() {
 	r.gen_opener = fn (iface string) !transport.Bus {
 		return error('no such device')
 	}
-	ping := sim.gen_find(r.generators(), 'Ping')!
+	far := sim.gen_find(r.generators(), 'Far')!
 	mut why := []string{}
-	r.gen_fire(ping, 0) or { why << err.msg() }
-	r.gen_start(ping, 50) or { why << err.msg() }
+	r.gen_fire(far, 0) or { why << err.msg() }
+	r.gen_start(far, 50) or { why << err.msg() }
 	assert why.len == 2 && why[0].contains('no such device') && why[1].contains('cannot send'), why.str()
-	assert !r.generators()[ping].running
+	assert !r.generators()[far].running
 }
 
 // what a fire's caller is told, in order: a stop that overtook it (whatever became of the frame),
@@ -312,7 +318,9 @@ fn test_a_fire_outcome_is_decided_in_one_order() {
 
 // fires that timed out while the open held the loop up hold no place in its queue
 fn test_fires_given_up_on_free_their_place() {
-	mut r, mut bus := gen_run()!
+	mut r, mut own := gen_run()!
+	own.close()
+	mut bus := transport.open('inproc:HGENFAR')!
 	defer {
 		bus.close()
 		r.stop()
@@ -322,10 +330,10 @@ fn test_fires_given_up_on_free_their_place() {
 		_ := <-release
 		return transport.open(iface)
 	}
-	ping := sim.gen_find(r.generators(), 'Ping')!
+	far := sim.gen_find(r.generators(), 'Far')!
 	mut timeouts := 0
 	for _ in 0 .. fires_waiting + 1 {
-		r.gen_fire(ping, time.sys_mono_now() + 20 * 1_000_000) or {
+		r.gen_fire(far, time.sys_mono_now() + 20 * 1_000_000) or {
 			assert kind_of(err) == .timeout && err.msg().contains('nothing was sent'), err.msg()
 			timeouts++
 		}
@@ -335,10 +343,10 @@ fn test_fires_given_up_on_free_their_place() {
 		time.sleep(50 * time.millisecond)
 		release <- true
 	}()
-	r.gen_fire(ping, 0)!
-	f := next_of(mut bus, 0x101, 500) or { panic('the fire did not go out') }
+	r.gen_fire(far, 0)!
+	f := next_of(mut bus, 0x102, 500) or { panic('the fire did not go out') }
 	assert f.data[0] == 1
-	assert next_of(mut bus, 0x101, 100) == none, 'a fire given up on went out'
+	assert next_of(mut bus, 0x102, 100) == none, 'a fire given up on went out'
 }
 
 // a cyclic frame the wire refuses is said once and kept as the generator's note

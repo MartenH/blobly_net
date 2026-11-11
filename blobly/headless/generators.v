@@ -3,16 +3,18 @@ module headless
 import time
 import sync
 import blobly.candb
+import blobly.cyclic
 import blobly.project
 import blobly.sim
 import blobly.transport
 
-// generators.v — the run's generators (`senders:`), each sent by a loop of its own that holds its
-// bus: its cycle while it runs, and a fire whenever one is asked for, so one thread uses the
-// handle. A cyclic generator's loop starts with the run; any other's at its first fire or start.
-// The control a script has over them is sim.GenControl, which Run answers here.
+// generators.v — the run's generators (`senders:`), each an entry of the run's wire to its target
+// (cyclic.Wire): one loop and one send-only handle per wire send every generator and background
+// sender on it, each on its own cycle while it runs and a generator on every fire asked for. A
+// cyclic generator joins its wire with the run; any other at its first fire or start. The control
+// a script has over them is sim.GenControl, which Run answers here.
 
-// run_stopped is what a fire still queued when its loop ends is answered with.
+// run_stopped is what a fire still queued when its wire stops is answered with.
 const run_stopped = 'the run stopped'
 
 @[heap]
@@ -21,7 +23,7 @@ mut:
 	mu      sync.Mutex
 	s       project.Sender // as edited
 	channel string         // the channel it is written under
-	open    string         // the interface its loop opens; '' when it has nothing to send on
+	open    string         // the interface its wire opens; '' when it has nothing to send on
 	row     string         // the row it sends as (transport.row_framed): the one owning its target, '' none
 	note    string         // why it cannot send, '' when it can
 	dbs     []candb.Database
@@ -40,11 +42,24 @@ mut:
 	// many of them the last frame the bus took was built after
 	edits      i64
 	sent_edits i64
-	spawned bool // its loop was started
-	ended   bool // its loop is out: a fire is not queued for it
-	// the fires waiting for the loop, oldest first, and its wake-up when one is queued
-	queue []&Fire
-	wake  chan bool = chan bool{cap: 1}
+	spawned bool // it joined its wire
+	ended   bool // its wire let it go: a fire is not queued for it
+	// the fires waiting for the wire's loop, oldest first
+	queue  []&Fire
+	wire   &cyclic.Wire = unsafe { nil }
+	ctl    &Ctl
+	run_t0 u64
+	// the wire's loop's alone: whether it was cyclic at the last pass, whether its cycle sends at
+	// once (started, or started again), why the cycle's last send failed (said once while it
+	// repeats), the note to go back to when it sends again, the grid slot the cycle last sent in
+	// and when that send returned, and the wire's handle as its row
+	was       bool
+	fresh     bool = true
+	failed    string
+	base_note string
+	slot      u64
+	done      u64
+	framed    ?transport.Bus
 }
 
 // fires_waiting is how many fires may wait for one generator's loop at once.
@@ -142,6 +157,8 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		channel: ch.name
 		id:      s.id
 		ext:     s.ext
+		ctl:     r.ctl
+		run_t0:  r.run_t0
 	}
 	r.gens << g
 	// what it is, from its own channel's databases, even where it can send nowhere; what it sends
@@ -190,8 +207,9 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 	}
 }
 
-// spawn_gen starts g's loop unless it runs or the run is stopping; false when it is stopping.
-fn (mut r Run) spawn_gen(mut g Gen, run_t0 u64) bool {
+// spawn_gen puts g on its wire, starting the wire's loop unless it runs, unless g is on it or the
+// run is stopping; false when it is stopping.
+fn (mut r Run) spawn_gen(mut g Gen) bool {
 	r.mu.lock()
 	defer {
 		r.mu.unlock()
@@ -202,106 +220,145 @@ fn (mut r Run) spawn_gen(mut g Gen, run_t0 u64) bool {
 	g.mu.lock()
 	first := !g.spawned
 	g.spawned = true
+	if first {
+		g.base_note = g.note
+	}
 	g.mu.unlock()
 	if first {
-		r.counted()
-		spawn r.gen_loop(mut g, run_t0)
+		mut w := r.wire_for(g.open)
+		g.mu.lock()
+		g.wire = w
+		g.mu.unlock()
+		w.add(g) or { g.let_go(err.msg()) }
 	}
 	return true
 }
 
-// gen_loop sends g's frame on its cycle while it runs and on every fire, until the run stops —
-// the headless counterpart of the GUI's gen_loop, the frame built by sim.sender_message_frame.
-// The send index counts DELIVERED frames only, as the GUI's does, so a counter source never skips
-// a value a refused send did not put on the wire.
-fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
+// wire_for is the run's wire to `iface`, its loop started if it is new; the caller holds r.mu and
+// has checked the run is not stopping.
+fn (mut r Run) wire_for(iface string) &cyclic.Wire {
+	key := transport.destination_key(iface)
+	if w := r.wires[key] {
+		return w
+	}
+	mut w := cyclic.new_wire(iface, fn [r] (s string) {
+		mut rr := unsafe { r }
+		rr.say(s)
+	})
+	r.wires[key] = w
+	r.counted()
+	spawn r.wire_loop(mut w)
+	return w
+}
+
+// wire_loop runs wire w until the run's stop: one of the run's loops, counted out on every way.
+fn (mut r Run) wire_loop(mut w cyclic.Wire) {
 	defer {
 		r.done()
 	}
-	opened := r.gen_opener(g.open) or {
-		why := 'cannot open ${g.open}: ${err}'
-		// one step: a start or a fire sees the loop running or gone, never between
-		g.mu.lock()
-		g.note = why
-		g.cyclic = false
-		g.ended = true
-		g.mu.unlock()
-		r.say('generator "${g.s.name}": ${why}')
-		g.end(why)
+	d := w.run(r.gen_opener) or {
+		r.say('${err}: its generators and background senders send nothing')
 		return
 	}
-	mut bus := transport.row_framed(opened, g.open, g.row)
-	mut was := false
-	mut fresh := true // the cycle sends at once: started, or started again
+	// after the close: see sim_loop
+	r.report_diag('${w.iface} (generators and background senders)', d)
+}
+
+// leaving is false: a generator stays on its wire until the run stops.
+fn (mut g Gen) leaving() bool {
+	return false
+}
+
+// due is when g sends next: at once for a fire waiting or a cycle (re)started, else on its grid
+// by the cycle as it is now, so a shorter one applies at once; on its grid from the time the send
+// returned, so a slow write is not followed by a catch-up frame. The send index counts DELIVERED
+// frames only, as the GUI's does, so a counter source never skips a value a refused send did not
+// put on the wire.
+fn (mut g Gen) due(now u64) ?u64 {
 	g.mu.lock()
-	base_note := g.note
+	cyc := g.cyclic
+	period := u64(g.s.cycle_ms)
+	if g.restart {
+		g.restart = false
+		g.fresh = true
+	}
+	fire := g.queue.len > 0
 	g.mu.unlock()
-	mut failed := '' // why the cycle's last send failed, said once while it repeats
-	mut slot := u64(0) // the grid slot the cycle last sent in
-	mut done := u64(0) // when that send returned
-	for r.ctl.running {
-		g.mu.lock()
-		cyc := g.cyclic
-		period := u64(g.s.cycle_ms)
-		if g.restart {
-			g.restart = false
-			fresh = true
-		}
-		g.mu.unlock()
-		if cyc && !was {
-			fresh = true
-		}
-		was = cyc
-		// the handle is never read: on a shared-hub wire it is then no subscriber, and has no
-		// cursor to fall behind the ring and book as the wire's loss
-		now := time.sys_mono_now() / 1_000_000
-		// due by the cycle as it is now, so a shorter one applies at once; on its grid, from the
-		// time the send returned, so a slow write is not followed by a catch-up frame
-		if cyc && (fresh || now >= sim.next_due(slot, period, done)) {
-			slot = if fresh { now } else { sim.next_due(slot, period, done) }
-			fresh = false
-			why := g.send(mut bus, run_t0)
-			done = time.sys_mono_now() / 1_000_000
-			if why != failed {
-				failed = why
-				g.mu.lock()
-				g.note = if why != '' { why } else { base_note }
-				g.mu.unlock()
-				if why != '' {
-					r.say('generator "${g.s.name}": ${why}')
-				}
+	if cyc && !g.was {
+		g.fresh = true
+	}
+	g.was = cyc
+	if fire || (cyc && g.fresh) {
+		return now
+	}
+	if !cyc {
+		return none
+	}
+	return sim.next_due(g.slot, period, g.done)
+}
+
+// serve sends g's cyclic frame if it is due, then one fire: however far behind the cycle is, a
+// fire is served, and however full the queue is kept, the cycle is; one taken after a stop began
+// is not sent. What it says is a cyclic send's failure, once while it repeats.
+fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
+	mut b := g.framed or {
+		f := transport.row_framed(bus, g.open, g.row)
+		g.framed = f
+		f
+	}
+	g.mu.lock()
+	cyc := g.cyclic
+	period := u64(g.s.cycle_ms)
+	g.mu.unlock()
+	mut said := ''
+	if cyc && (g.fresh || now >= sim.next_due(g.slot, period, g.done)) {
+		g.slot = if g.fresh { now } else { sim.next_due(g.slot, period, g.done) }
+		g.fresh = false
+		why := g.send(mut b)
+		g.done = time.sys_mono_now() / 1_000_000
+		if why != g.failed {
+			g.failed = why
+			g.mu.lock()
+			g.note = if why != '' { why } else { g.base_note }
+			g.mu.unlock()
+			if why != '' {
+				said = 'generator "${g.s.name}": ${why}'
 			}
-		}
-		// one fire per pass, between cyclic frames: however far behind the cycle is, a fire is
-		// served, and however full the queue is kept, the cycle is; one taken after a stop began
-		// is not sent
-		if mut fire := g.next_fire() {
-			if fire.take(time.sys_mono_now()) {
-				fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
-				// a slot the fire's write covered is skipped too
-				done = time.sys_mono_now() / 1_000_000
-			}
-			continue
-		}
-		after := time.sys_mono_now() / 1_000_000
-		mut wait := u64(20)
-		if cyc {
-			due := sim.next_due(slot, period, done)
-			wait = sim.wait_until(due, after, wait)
-		}
-		// woken early by a fire queued, a start or a cycle changed
-		select {
-			_ := <-g.wake {}
-			i64(wait) * time.millisecond {}
 		}
 	}
-	bus.close()
-	g.end(run_stopped)
-	r.report_diag('${g.open} (generator ${g.s.name})', bus.diagnostics())
+	if mut fire := g.next_fire() {
+		if fire.take(time.sys_mono_now()) {
+			fire.reply <- answered(if g.ctl.running { g.send(mut b) } else { run_stopped })
+			// a slot the fire's write covered is skipped too
+			g.done = time.sys_mono_now() / 1_000_000
+		}
+	}
+	return said
+}
+
+// let_go is g's wire letting it go: `failure` its note (the wire could not open), every fire still
+// queued answered with it, or with run_stopped when the run stopped.
+fn (mut g Gen) let_go(failure string) {
+	if failure != '' {
+		g.mu.lock()
+		g.note = failure
+		g.mu.unlock()
+	}
+	g.end(if failure != '' { failure } else { run_stopped })
+}
+
+// poke wakes g's wire: a fire queued, a start or a cycle changed.
+fn (mut g Gen) poke() {
+	g.mu.lock()
+	mut w := g.wire
+	g.mu.unlock()
+	if !isnil(w) {
+		w.poke()
+	}
 }
 
 // send puts g's frame on the bus once: '' when the bus took it, else why not.
-fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
+fn (mut g Gen) send(mut bus transport.Bus) string {
 	g.mu.lock()
 	s := project.Sender{
 		...g.s
@@ -311,7 +368,7 @@ fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
 	n := int(g.sent)
 	edits := g.edits
 	g.mu.unlock()
-	el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
+	el := f64(time.sys_mono_now() - g.run_t0) / 1_000_000_000.0
 	frame := if s.message != '' {
 		sim.sender_message_frame(s, g.dbs, n, el) or { return err.msg() }
 	} else {
@@ -325,7 +382,7 @@ fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
 	return ''
 }
 
-// end marks g's loop out and answers every fire still queued with `why`.
+// end marks g let go and answers every fire still queued with `why`.
 fn (mut g Gen) end(why string) {
 	g.mu.lock()
 	g.ended = true
@@ -443,7 +500,7 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 	due := if until == 0 || until > latest { latest } else { until }
 	mut g := r.gen(i)!
 	g.sendable()!
-	if !r.spawn_gen(mut g, r.run_t0) {
+	if !r.spawn_gen(mut g) {
 		return sim.gen_error(.stopped, 'the run is stopped: its generators send nothing')
 	}
 	mut f := &Fire{
@@ -470,7 +527,7 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 	}
 	g.queue << f
 	g.mu.unlock()
-	g.wake.try_push(true)
+	g.poke()
 	// in slices, so a stop is seen while the loop is held up (an open stalled in its driver)
 	for {
 		now := time.sys_mono_now()
@@ -545,8 +602,8 @@ pub fn (mut r Run) gen_start(i int, cycle_ms int) ! {
 	g.cyclic = true
 	g.restart = true
 	g.mu.unlock()
-	g.wake.try_push(true)
-	if !r.spawn_gen(mut g, r.run_t0) {
+	g.poke()
+	if !r.spawn_gen(mut g) {
 		g.mu.lock()
 		g.cyclic = false
 		g.mu.unlock()
@@ -569,7 +626,7 @@ pub fn (mut r Run) gen_cycle(i int, ms int) ! {
 	g.mu.lock()
 	g.s.cycle_ms = ms
 	g.mu.unlock()
-	g.wake.try_push(true)
+	g.poke()
 }
 
 // gen_value sends `signal` of generator g at the static `value` from its next frame.

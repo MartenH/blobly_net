@@ -323,3 +323,56 @@ fn test_a_message_sender_sends_its_declared_or_stated_format() {
 	}
 	assert false, 'a classic 12-byte message sender started'
 }
+
+// senders on one wire go out on their own periods through its one handle; one stopped is let go
+// while the other goes on, and the wire's stop lets the rest go
+fn test_senders_share_a_wire_and_leave_it_alone() {
+	mut rx := transport.open('inproc:CYC8')!
+	defer {
+		rx.close()
+	}
+	mut w := new_wire('inproc:CYC8', fn (_ string) {})
+	mut a := new_sender(Spec{
+		id:        0x1
+		period_ms: 10
+	}, 'inproc:CYC8', '')!
+	mut b := new_sender(Spec{
+		id:        0x2
+		period_ms: 30
+	}, 'inproc:CYC8', '')!
+	a.join(mut w)!
+	b.join(mut w)!
+	ended := chan transport.BusDiagnostics{cap: 1}
+	spawn fn [mut w, ended] () {
+		ended <- w.run(transport.open) or { panic(err) }
+	}()
+	w.wait_opened()!
+	mut na, mut nb := 0, 0
+	until := time.ticks() + 300
+	for time.ticks() < until {
+		f := rx.recv(10) or { continue }
+		if f.id == 0x1 {
+			na++
+		} else if f.id == 0x2 {
+			nb++
+		}
+	}
+	assert na >= 20 && na <= 32, '${na} frames at 10 ms'
+	assert nb >= 7 && nb <= 12, '${nb} frames at 30 ms'
+	assert a.stop()
+	for {
+		rx.recv(0) or { break }
+	}
+	assert frames_within(mut rx, 0x1, 60).len == 0, 'a stopped sender went on'
+	assert b.info().running
+	w.ask_stop()
+	_ := <-ended
+	assert !b.info().running && b.is_out()
+	// a stopped wire takes nothing more
+	mut c := new_sender(Spec{
+		period_ms: 10
+	}, 'inproc:CYC8', '')!
+	if _ := c.join(mut w) {
+		assert false, 'a stopped wire took a sender'
+	}
+}

@@ -1026,11 +1026,12 @@ Lua's `gen.*` ([scripting.md](scripting.md#generators)) and Python's `net.genera
 ([scripting_python.md](scripting_python.md#generators)) fire one, start and stop its cycle, change
 the cycle, and put a signal at a value or on a value source — what the Generators panel lets a
 person do. Every generator of the project is there, whatever its `trigger`: a `cyclic` one runs
-as the run starts, and any of them can be fired or started. Each has a loop of its own that holds
-its bus, so its fires and its cycle go out one at a time and its send count (what a `counter`
-source counts) is the frames the bus took. An edit lasts for the run; the next start brings the
+as the run starts, and any of them can be fired or started. One loop and one send-only handle per
+target wire send every generator on it, and a script's background senders on that wire too, each
+on its own cycle; a generator's fires and its cycle go out one at a time and its send count (what
+a `counter` source counts) is the frames the bus took. An edit lasts for the run; the next start brings the
 generators up as the project writes them. The rules are `sim.gen_*` (`blobly/sim/gencontrol.v`)
-and the loops `blobly/headless/generators.v`. In the GUI a script has no `gen.*` (it refuses):
+and the wire loop `blobly/cyclic/wire.v` serving `blobly/headless/generators.v`. In the GUI a script has no `gen.*` (it refuses):
 there the generators are the panel's.
 
 ## Replay — playing a recording onto a bus

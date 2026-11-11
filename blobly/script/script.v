@@ -387,8 +387,12 @@ fn (mut env Env) bus_for(name string) !&transport.MeteredBus {
 // #384), so on a wire two rows dispute it sends in its row's format; a bus.open_iface address is
 // no row.
 fn (mut env Env) row_bus(iface string, name string) !transport.Bus {
-	row := if name in env.by_address { '' } else { name }
-	return transport.row_framed(env.opener(iface, name)!, iface, row)
+	return transport.row_framed(env.opener(iface, name)!, iface, env.row_of(name))
+}
+
+// row_of is the row channel `name` sends as: itself, or none for a bus.open_iface address.
+fn (env &Env) row_of(name string) string {
+	return if name in env.by_address { '' } else { name }
 }
 
 // register_all binds every host primitive the prelude relies on.

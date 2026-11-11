@@ -14,7 +14,17 @@ channels:
     interface: inproc:HCYC
 '
 
-fn test_a_background_sender_is_one_of_the_runs_loops() {
+// target is `iface` as a sender's target of no row
+fn target(iface string) cyclic.Target {
+	return cyclic.Target{
+		iface: iface
+		open:  fn [iface] () !transport.Bus {
+			return transport.open(iface)
+		}
+	}
+}
+
+fn test_a_background_sender_is_sent_by_the_runs_wire() {
 	dir := os.join_path(os.vtmp_dir(), 'headless_cyc_${os.getpid()}')
 	os.mkdir_all(dir)!
 	path := os.join_path(dir, 'cyc.blobnet')
@@ -24,7 +34,7 @@ fn test_a_background_sender_is_one_of_the_runs_loops() {
 	defer {
 		rx.close()
 	}
-	mut s := r.start_cyclic(transport.open('inproc:HCYC')!, cyclic.Spec{
+	mut s := r.start_cyclic(target('inproc:HCYC'), cyclic.Spec{
 		id:        0x77
 		data:      [u8(1)]
 		period_ms: 10
@@ -44,8 +54,8 @@ fn test_a_background_sender_is_one_of_the_runs_loops() {
 	assert time.ticks() - t0 < 1000
 	assert !s.info().running
 	assert released()
-	// a stopped run starts nothing, and closes the bus it was handed
-	r.start_cyclic(transport.open('inproc:HCYC')!, cyclic.Spec{
+	// a stopped run starts nothing
+	r.start_cyclic(target('inproc:HCYC'), cyclic.Spec{
 		period_ms: 10
 	}) or {
 		assert err.msg().contains('stopped')
