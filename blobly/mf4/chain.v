@@ -11,7 +11,7 @@
 module mf4
 
 import encoding.binary
-import compress.zlib
+import blobly.inflate
 
 // ChainBlock is one block of a chain: where its bytes are and how many.
 struct ChainBlock {
@@ -624,7 +624,7 @@ fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
 	org_len := int(org_len64)
 	data_len := int(data_len64)
 	comp := exact_at(mut src, d + 24, data_len)!
-	raw := zlib.decompress(comp)!
+	raw := inflate.zlib(comp, org_len)!
 	if raw.len != org_len {
 		return error('DZ length mismatch: got ${raw.len}, want ${org_len}')
 	}

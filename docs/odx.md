@@ -42,7 +42,7 @@ included. A layer reached on two ways passes on what either way passes on.
   DID's name is its one value parameter's `SHORT-NAME`, else the service's.
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
   DTC records then carry that name as their `fault`.
-- **Files** — a `.pdx` is a ZIP (stored or deflated entries; ZIP64 and encryption are refused), of
+- **Files** — a `.pdx` is a ZIP (stored or deflated entries, a deflated one refused as soon as it inflates past the size the archive states for it; ZIP64 and encryption are refused), of
   which every `.odx` / `.odx-*` entry is read. An ID is its document's: a reference resolves in
   its own document, or in the one its `DOCREF` names (by its container's `SHORT-NAME`).
 

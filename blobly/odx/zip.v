@@ -1,12 +1,13 @@
 module odx
 
-import compress.deflate
+import blobly.inflate
 import encoding.binary
 import hash.crc32
 
 // zip.v — the entries of a ZIP archive, which is what a PDX (ISO 22901-1's packaged ODX) is: the
-// central directory read from the end of the file, each entry stored or deflated, its CRC-32 and
-// size checked. ZIP64, encryption and any other compression method are refused by name.
+// central directory read from the end of the file, each entry stored or deflated (and inflated no
+// further than its stated size), its CRC-32 and size checked. ZIP64, encryption and any other
+// compression method are refused by name.
 
 // ZipEntry is one file of an archive: its name as the archive spells it, and its bytes.
 pub struct ZipEntry {
@@ -76,7 +77,7 @@ pub fn read_zip(data []u8) ![]ZipEntry {
 		body := match method {
 			0 { raw.clone() }
 			8 {
-				deflate.decompress_raw_with_consumed(raw) or { return error('${name}: ${err}') }.decoded
+				inflate.raw(raw, int(plain_size)) or { return error('${name}: ${err}') }
 			}
 			else { return error('${name}: compression method ${method}, which is not read here') }
 		}

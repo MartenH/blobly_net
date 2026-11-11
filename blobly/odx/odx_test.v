@@ -162,6 +162,21 @@ fn test_a_broken_zip_is_refused() {
 	assert false, 'a corrupted entry was read'
 }
 
+fn test_a_zip_entry_is_inflated_no_further_than_its_stated_size() {
+	mut z := zip_of({
+		'a.odx': '<ODX/>'.bytes()
+		'b.odx': []u8{len: 4 << 20}
+	})
+	// the deflated entry's directory record says 10 bytes; its stream inflates to 4 MB
+	cd := int(binary.little_endian_u32_at(z, z.len - 22 + 16))
+	binary.little_endian_put_u32_at(mut z, 10, cd + 46 + 5 + 24)
+	read_zip(z) or {
+		assert err.msg().contains('b.odx: inflates past the 10 bytes')
+		return
+	}
+	assert false, 'an entry was inflated past its stated size'
+}
+
 // layer is a diagnostic layer `tag` with an 8-bit 0x22 DID per entry of `dids` (service Read_<n>),
 // its DTC-DOP `dtcs` and its PARENT-REFS `parents`, every ID prefixed with `id`.
 fn layer(tag string, id string, name string, dids []int, dtcs string, parents string) string {

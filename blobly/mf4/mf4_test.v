@@ -1775,6 +1775,23 @@ fn test_a_broken_block_is_an_error_not_a_clean_end() {
 	assert s.err.contains('DZ') || s.err.contains('zlib') || s.err != ''
 }
 
+fn test_a_dz_block_is_inflated_no_further_than_its_original_length() {
+	p, ids, ts := three()
+	mut img := build_dz_file(p, ids, ts, 0)
+	// the header's original length one byte short of what the stream inflates to
+	dz := find_block(img, '##DZ')
+	org := binary.little_endian_u64_at(img, dz + 24 + 8)
+	binary.little_endian_put_u64_at(mut img, org - 1, dz + 24 + 8)
+	msg := if _ := parse_log(img) { '' } else { err.msg() }
+	assert msg.contains('inflates past the ${org - 1} bytes')
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream inflated a DZ block past its original length'
+	}
+}
+
 fn test_a_group_whose_time_runs_backwards_is_counted() {
 	p, ids, _ := three()
 	img := build_mlsd_multibus(p, ids, [u32(0), 0, 0], [0.030, 0.010, 0.020])
