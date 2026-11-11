@@ -65,6 +65,27 @@ fn lane_take(key string, owner u64, now u64, hold_ns u64) bool {
 	return true
 }
 
+// lane_keep refreshes `owner`'s claim of `key` until `hold_ns` from `now`, for a transfer in
+// progress: false once the claim is lost — another owner took it, or it lapsed. '' is always kept.
+fn lane_keep(key string, owner u64, now u64, hold_ns u64) bool {
+	if key == '' {
+		return true
+	}
+	mut kept := false
+	lock tp_lanes {
+		if l := tp_lanes.by[key] {
+			if l.owner == owner && now < l.until {
+				tp_lanes.by[key] = Lane{
+					owner: owner
+					until: now + hold_ns
+				}
+				kept = true
+			}
+		}
+	}
+	return kept
+}
+
 // lane_free ends `owner`'s claim of `key`: anyone else may start `gap_ns` after `now`.
 fn lane_free(key string, owner u64, now u64, gap_ns u64) {
 	if key == '' {

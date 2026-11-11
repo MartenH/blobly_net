@@ -247,10 +247,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			a.mu.unlock()
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
 			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
-			engine = sim.Engine{
-				tp:   engine.tp
-				said: engine.said
-			}
+			engine = engine.carried()
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
@@ -396,44 +393,29 @@ struct GenTpXfer {
 	n     int
 }
 
-// TpDue collects the BAM frames due in one pass, from inside a closure.
-@[heap]
-struct TpDue {
-mut:
-	frames []transport.CanFrame
-	tags   []int
-}
-
 // send_gen_tp sends the generators' BAM frames due by `now_ms`, taken under app.mu and sent
-// outside it: a frame its tap refuses ends its transfer, and a transfer whose last frame went out
-// counts its generator's send (gen_send_n), as a one-frame fire counts a delivered frame.
+// outside it, each reported back to the pacer once its write returned, so a transfer's lane stays
+// claimed until its last frame is out: a frame its tap refuses ends its transfer, and a transfer
+// whose last frame went out counts its generator's send (gen_send_n), as a one-frame fire counts a
+// delivered frame.
 fn (mut app App) send_gen_tp(now_ms f64) {
-	mut due := &TpDue{}
 	app.mu.lock()
-	app.gen_tp.pump(now_ms, fn [mut due] (f transport.CanFrame, tag int) bool {
-		due.frames << f
-		due.tags << tag
-		return true
-	})
-	mut last := []bool{}
-	mut xs := []GenTpXfer{}
-	for tag in due.tags {
-		last << !app.gen_tp.has(tag)
-		xs << app.gen_tp_xfers[tag] or { GenTpXfer{} }
+	dues := app.gen_tp.take(now_ms)
+	mut xs := []GenTpXfer{cap: dues.len}
+	for d in dues {
+		xs << app.gen_tp_xfers[d.tag] or { GenTpXfer{} }
 	}
 	app.mu.unlock()
-	for k, f in due.frames {
-		tag := due.tags[k]
+	for k, d in dues {
 		x := xs[k]
-		sent := app.tx_on_chan(x.row, x.chan, x.iface, f)
-		if sent && !last[k] {
-			continue
-		}
+		sent := app.tx_on_chan(x.row, x.chan, x.iface, d.frame)
 		app.mu.lock()
-		app.gen_tp.abandon(tag)
-		app.gen_tp_xfers.delete(tag)
-		if sent && app.gen_state_epoch == x.epoch {
-			app.gen_send_n[u64(tag)] = x.n + 1
+		whole := app.gen_tp.settle(d, sent)
+		if !app.gen_tp.has(d.tag) {
+			app.gen_tp_xfers.delete(d.tag)
+		}
+		if whole && app.gen_state_epoch == x.epoch {
+			app.gen_send_n[u64(d.tag)] = x.n + 1
 		}
 		app.mu.unlock()
 	}

@@ -248,3 +248,64 @@ fn test_senders_of_one_source_address_on_a_wire_take_turns() {
 	assert lane_take(lane_key(wire, 0x22), lane_owner(), time.sys_mono_now(), hold_ns())
 	assert lane_key(wire, 0x21) != lane_key('inproc:bam_lanes2', 0x21)
 }
+
+// a transfer's lane stays claimed until its last frame is reported sent, not when it is handed out
+fn test_the_lane_is_held_until_the_last_frame_is_settled() {
+	wire := 'inproc:bam_settle'
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 9)) or { panic(err) }
+	mut p := Pacer{}
+	p.add(wire, a, 1)
+	first := p.take(0)
+	assert first.len == 1 && !first[0].last
+	assert !p.settle(first[0], true)
+	mid := p.take(50)
+	assert mid.len == 1 && !mid[0].last
+	assert !p.settle(mid[0], true)
+	last := p.take(100)
+	assert last.len == 1 && last[0].last
+	assert p.has(1), 'in flight until reported'
+	other := lane_owner()
+	key := lane_key(wire, 0x21)
+	assert !lane_take(key, other, time.sys_mono_now(), hold_ns()), 'held while the last frame is out'
+	assert p.take(500).len == 0, 'nothing more of the lane while its frame is unreported'
+	assert p.settle(last[0], true)
+	assert !p.has(1)
+	assert lane_take(key, other, time.sys_mono_now() + u64(bam_gap_ms) * u64(time.millisecond),
+		hold_ns())
+}
+
+// a transfer whose source address another sender took after a stall is dropped, never resumed
+// without its announcement
+fn test_a_transfer_whose_lane_was_lost_is_dropped() {
+	wire := 'inproc:bam_lost'
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
+	mut p := Pacer{}
+	p.add(wire, a, 1)
+	d := p.take(0)
+	assert d.len == 1
+	p.settle(d[0], true)
+	// another sender claimed it during the stall, and its claim has since lapsed
+	key := lane_key(wire, 0x21)
+	thief := lane_owner()
+	lock tp_lanes {
+		tp_lanes.by[key] = Lane{
+			owner: thief
+			until: time.sys_mono_now() - 1
+		}
+	}
+	assert p.take(1000).len == 0
+	assert p.pending() == 0
+	// so is one whose own claim lapsed
+	mut q := Pacer{}
+	q.add(wire, a, 2)
+	e := q.take(0)
+	q.settle(e[0], true)
+	lock tp_lanes {
+		tp_lanes.by[key] = Lane{
+			owner: q.owner
+			until: time.sys_mono_now() - 1
+		}
+	}
+	assert q.take(1000).len == 0
+	assert q.pending() == 0
+}

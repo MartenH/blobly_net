@@ -106,7 +106,7 @@ pub fn send_message(mut bus transport.Bus, f transport.CanFrame, declared bool, 
 // send_paced sends `frames` on `bus`, the first once `lane` is free of any other sender's
 // transfer (lanes.v; '' none) and each next `gap_ms` after the one before, waiting in slices that
 // ask `stop` (nil: never stopped): an error for a refused send, a stop, or a lane lost to a stall
-// past lane_hold_ms, the rest unsent. A blocking send, for a path that owns its bus and its thread.
+// past lane_hold_ms (lane_keep), the rest unsent. A blocking send, for a path that owns its bus and its thread.
 pub fn send_paced(mut bus transport.Bus, frames []transport.CanFrame, gap_ms int, lane string, stop fn () bool) ! {
 	me := lane_owner()
 	gap := u64(gap_ms) * u64(time.millisecond)
@@ -126,11 +126,14 @@ pub fn send_paced(mut bus transport.Bus, frames []transport.CanFrame, gap_ms int
 				time.sleep(if left < 20 * time.millisecond { left } else { 20 * time.millisecond })
 				continue
 			}
+			if k > 0 {
+				if lane_keep(lane, me, now, hold_ns()) {
+					break
+				}
+				return error('transport frame ${k + 1} of ${frames.len}: the source address was lost after a stall')
+			}
 			if lane_take(lane, me, now, hold_ns()) {
 				break
-			}
-			if k > 0 {
-				return error('transport frame ${k + 1} of ${frames.len}: another transfer took the source address after a stall')
 			}
 			waited = true
 			time.sleep(5 * time.millisecond)
@@ -144,14 +147,17 @@ pub fn send_paced(mut bus transport.Bus, frames []transport.CanFrame, gap_ms int
 // simulation's, a generator's), a transfer at a time per LANE — a sender's source address on its
 // wire, claimed process-wide (lanes.v), since J1939-21 lets a node have one broadcast in progress
 // — the next starting `gap_ms` after the last frame of the one before. A frame later than its
-// time is followed by the next `gap_ms` after it was sent, never sooner.
+// time is followed by the next `gap_ms` after it was sent, never sooner. A frame is handed out
+// (take) and reported back once sent (settle); the lane stays claimed until the transfer's last
+// frame is reported, and a transfer whose claim was lost in between is dropped.
 pub struct Pacer {
 pub mut:
 	gap_ms f64 = bam_gap_ms
 mut:
-	owner u64 // its claims' identity (lanes.v), taken at its first claim
-	queue []Transfer
-	ready map[string]f64 // a lane's earliest next send
+	owner   u64 // its claims' identity (lanes.v), taken at its first claim
+	queue   []Transfer
+	ready   map[string]f64 // a lane's earliest next send
+	next_id u64
 }
 
 struct Transfer {
@@ -159,9 +165,20 @@ struct Transfer {
 	key  string // the process-wide lane, '' none
 	pgn  u32
 mut:
+	id     u64
 	tag    int
 	frames []transport.CanFrame
 	next   int
+	flying bool // a frame handed out and not yet reported
+}
+
+// Due is a frame a pacer hands out (take), to be reported back once its send returned (settle).
+pub struct Due {
+pub:
+	frame transport.CanFrame
+	tag   int  // its transfer's, as given to add
+	last  bool // its transfer's last frame
+	id    u64  // its transfer
 }
 
 // add queues a transfer's `frames` on its source address's lane of `wire` ('' a lane of this
@@ -182,10 +199,12 @@ pub fn (mut p Pacer) add(wire string, frames []transport.CanFrame, tag int) {
 			return
 		}
 	}
+	p.next_id++
 	p.queue << Transfer{
 		lane:   lane
 		key:    key
 		pgn:    group
+		id:     p.next_id
 		tag:    tag
 		frames: frames
 	}
@@ -199,39 +218,80 @@ fn group_of(f transport.CanFrame) u32 {
 	return pgn(f.id)
 }
 
-// pump hands `send` each lane's next frame that is due by `now_ms`, with its transfer's tag — a
-// transfer's first only once its lane is free of other senders' transfers; a frame `send` refuses
-// ends its transfer, the rest unsent.
-pub fn (mut p Pacer) pump(now_ms f64, send fn (f transport.CanFrame, tag int) bool) {
+// take hands out each lane's next frame that is due by `now_ms` — a transfer's first only once its
+// lane is free of other senders' transfers, none while the lane's last frame is unreported — and
+// drops a transfer in progress whose claim was lost (another sender took its source address after
+// a stall, or the claim lapsed past lane_hold_ms), the rest of it unsent.
+pub fn (mut p Pacer) take(now_ms f64) []Due {
 	if p.owner == 0 {
 		p.owner = lane_owner()
 	}
-	gap := u64(p.gap_ms * f64(time.millisecond))
+	mut out := []Due{}
 	mut served := map[string]bool{}
 	mut i := 0
 	for i < p.queue.len {
 		lane := p.queue[i].lane
-		if served[lane] || now_ms < (p.ready[lane] or { now_ms }) {
+		if served[lane] || p.queue[i].flying || now_ms < (p.ready[lane] or { now_ms }) {
 			served[lane] = true
 			i++
 			continue
 		}
 		served[lane] = true
 		mut t := &p.queue[i]
-		if !lane_take(t.key, p.owner, time.sys_mono_now(), hold_ns()) {
+		now := time.sys_mono_now()
+		if t.next > 0 {
+			if !lane_keep(t.key, p.owner, now, hold_ns()) {
+				p.queue.delete(i)
+				continue
+			}
+		} else if !lane_take(t.key, p.owner, now, hold_ns()) {
 			i++
 			continue
 		}
-		ok := send(t.frames[t.next], t.tag)
-		t.next++
-		p.ready[lane] = now_ms + p.gap_ms
-		if !ok || t.next >= t.frames.len {
-			lane_free(t.key, p.owner, time.sys_mono_now(), gap)
-			p.queue.delete(i)
-			continue
+		out << Due{
+			frame: t.frames[t.next]
+			tag:   t.tag
+			last:  t.next + 1 >= t.frames.len
+			id:    t.id
 		}
+		t.next++
+		t.flying = true
+		p.ready[lane] = now_ms + p.gap_ms
 		i++
 	}
+	return out
+}
+
+// settle reports whether frame `d` was sent (`ok`): a refused frame ends its transfer, the rest
+// unsent, and so does its last frame sent — releasing its lane either way. True when this
+// completed the transfer, every frame sent; false otherwise, and for a transfer abandoned or
+// dropped meanwhile.
+pub fn (mut p Pacer) settle(d Due, ok bool) bool {
+	for i, mut t in p.queue {
+		if t.id != d.id {
+			continue
+		}
+		t.flying = false
+		if ok && !d.last {
+			return false
+		}
+		lane_free(t.key, p.owner, time.sys_mono_now(), u64(p.gap_ms * f64(time.millisecond)))
+		p.queue.delete(i)
+		return ok
+	}
+	return false
+}
+
+// pump hands `send` each frame take gives out, with its transfer's tag, and settles it by what
+// `send` answers (true: sent): the tags of the transfers it completed.
+pub fn (mut p Pacer) pump(now_ms f64, send fn (f transport.CanFrame, tag int) bool) []int {
+	mut done := []int{}
+	for d in p.take(now_ms) {
+		if p.settle(d, send(d.frame, d.tag)) {
+			done << d.tag
+		}
+	}
+	return done
 }
 
 // abandon drops every transfer of `tag`, the rest of their frames unsent.

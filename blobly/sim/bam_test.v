@@ -107,3 +107,52 @@ fn test_a_message_to_one_node_is_said_once_and_not_sent() {
 	assert notes.len == 1 && notes[0].contains('PropA_Cfg') && notes[0].contains('RTS/CTS')
 	assert e.take_notes().len == 0
 }
+
+fn body_engine() Engine {
+	return Engine{
+		ecus: [SimEcu{
+			name:     'Body'
+			messages: [SimMessage{
+				msg:       body_status()
+				period_ms: 1000
+			}]
+		}]
+	}
+}
+
+@[heap]
+struct Refuse {
+mut:
+	after int // frames taken before every next one is refused
+	seen  int
+}
+
+// A BAM's message is last sent once every frame of it is on the wire, not when it is queued; one
+// that a frame of is refused is not sent at all.
+fn test_a_bam_is_the_last_sent_only_once_it_is_whole() {
+	mut e := body_engine()
+	e.step(0, fn (f transport.CanFrame) bool {
+		return true
+	})
+	assert e.ecus[0].messages[0].last_n == -1, 'only the announcement is out'
+	for t := 5; t <= 150; t += 5 {
+		e.step(f64(t), fn (f transport.CanFrame) bool {
+			return true
+		})
+	}
+	assert e.ecus[0].messages[0].last_n == 0 && e.ecus[0].messages[0].last_t == 0
+	assert e.tp_sent.len == 0
+	mut r := &Refuse{
+		after: 2
+	}
+	mut refused := body_engine()
+	for t := 0; t <= 400; t += 5 {
+		refused.step(f64(t), fn [mut r] (f transport.CanFrame) bool {
+			r.seen++
+			return r.seen <= r.after
+		})
+	}
+	assert r.seen == 3, 'the refused frame ends the transfer'
+	assert refused.ecus[0].messages[0].last_n == -1
+	assert refused.tp_sent.len == 0
+}

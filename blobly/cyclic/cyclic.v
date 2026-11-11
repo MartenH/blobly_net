@@ -170,6 +170,9 @@ mut:
 	slot   u64
 	done   u64
 	framed ?transport.Bus
+	// a BAM in progress ends at a stop: asked through this, built once (stop_fn), since V never
+	// frees a closure
+	stopper fn () bool = unsafe { nil }
 }
 
 // new_sender is a sender of `spec` on `iface`, sent as row `row`, on no wire yet.
@@ -271,7 +274,8 @@ fn (mut s Sender) poke() {
 	}
 }
 
-// send_once puts the frame on the bus as the spec has it now, counting what became of it.
+// send_once puts the frame on the bus as the spec has it now — a J1939 message past eight bytes on
+// a classic row as its BAM, paced, a stop asked between its frames — counting what became of it.
 fn (mut s Sender) send_once(mut bus transport.Bus) {
 	s.mu.lock()
 	sp := s.spec
@@ -287,18 +291,24 @@ fn (mut s Sender) send_once(mut bus transport.Bus) {
 			return
 		}
 	}
-	// a J1939 message past eight bytes on a classic row is a BAM, paced, ended by a stop
-	stop := fn [s] () bool {
-		mut me := unsafe { s }
-		return me.stopping()
-	}
-	j1939.send_message(mut bus, frame, sp.by_message && sp.message.j1939, stop) or {
+	j1939.send_message(mut bus, frame, sp.by_message && sp.message.j1939, s.stop_fn()) or {
 		s.note_failure(err.msg())
 		return
 	}
 	s.mu.lock()
 	s.sent++
 	s.mu.unlock()
+}
+
+// stop_fn is the sender's stop as a closure (stopping), built on first use and kept.
+fn (mut s Sender) stop_fn() fn () bool {
+	if isnil(s.stopper) {
+		s.stopper = fn [s] () bool {
+			mut me := unsafe { s }
+			return me.stopping()
+		}
+	}
+	return s.stopper
 }
 
 // stopping is whether the loop is to end: a stop asked, or its owner's end.
