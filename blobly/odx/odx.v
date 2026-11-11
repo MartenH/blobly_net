@@ -539,10 +539,15 @@ fn shapes(parts []Part) []Part {
 }
 
 // const_at is the CODED-CONST parameter's value at `at_byte` of `bits` width, none when there is none.
+// A parameter with no BYTE-POSITION is after the one before it.
 fn const_at(params []flatxml.Node, at_byte int, bits int, mut r Resolve, sn string) ?u64 {
+	mut next := 0 // where a parameter with no BYTE-POSITION goes; -1 after one of no fixed size
 	for p in params {
-		pos := int_of(p.child('BYTE-POSITION').text()) or { -1 }
-		if xsi_type(p) != 'CODED-CONST' || pos != at_byte {
+		posv := p.child('BYTE-POSITION')
+		pos := if posv.ok() { int(int_of(posv.text()) or { -1 }) } else { next }
+		end := const_end(p)
+		next = if pos >= 0 && end >= 0 { pos + end } else { -1 }
+		if xsi_type(p) != 'CODED-CONST' || pos < 0 || pos != at_byte {
 			continue
 		}
 		width := int_of(p.child('DIAG-CODED-TYPE').child('BIT-LENGTH').text()) or { -1 }
@@ -623,13 +628,13 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &
 		}
 		if pos < base {
 			// the service id and the DID, before the value; one of no fixed size ends at `base`
-			end := db.const_end(p)
+			end := const_end(p)
 			next = if end >= 0 { pos + end } else { base }
 			continue
 		}
 		if typ != 'VALUE' {
 			lay.why << '${pname}: a ${typ} parameter inside the value'
-			end := db.const_end(p)
+			end := const_end(p)
 			next = if end >= 0 { pos + end } else { -1 }
 			lay.extend(at + pos - base, end)
 			continue
@@ -716,7 +721,7 @@ fn (mut lay Layout) extend(start int, size int) {
 }
 
 // const_end is the size in bytes of a non-VALUE parameter by its coded type; -1 when not fixed.
-fn (db &Db) const_end(p flatxml.Node) int {
+fn const_end(p flatxml.Node) int {
 	if bl := int_of(p.child('DIAG-CODED-TYPE').child('BIT-LENGTH').text()) {
 		if bl > 0 && bl % 8 == 0 {
 			return int(bl / 8)

@@ -428,3 +428,18 @@ fn test_a_write_naming_its_value_otherwise_still_writes() {
 	d := did_of(db.variant('Base')!, 5)
 	assert d.readable && d.writable && d.parts.map(it.name) == ['CurrentValue']
 }
+
+fn test_a_request_did_of_implicit_position_follows_the_service_id() {
+	unplaced := '<BYTE-POSITION>1</BYTE-POSITION>'
+	comms := service_xml('Read_5', 'qr', 'rr')
+	reqs := '<REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID', 1, 5, 16).replace(unplaced, '') + '</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('Narrow', 'u8') +
+		'</PARAMS></POS-RESPONSE>'
+	db := load_docs('reqimplicit', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.readable && d.size == 1 && d.parts.map(it.name) == ['Narrow']
+}
