@@ -107,17 +107,12 @@ pub fn load(path string) !Db {
 		data := os.read_bytes(path) or { return error('cannot read ${path}: ${err}') }
 		files << path
 		if path.to_lower().ends_with('.pdx') {
-			entries := read_zip(data) or { return error('${path}: ${err}') }
-			mut skipped := 0
-			for e in entries {
-				if is_odx_name(e.name) {
-					db.add_doc(e.data, '${path}#${e.name}')!
-				} else {
-					skipped++
-				}
+			zip := read_zip(data, is_odx_name) or { return error('${path}: ${err}') }
+			for e in zip.entries {
+				db.add_doc(e.data, '${path}#${e.name}')!
 			}
-			if skipped > 0 {
-				notes << '${path}: ${skipped} file(s) of the PDX are not ODX (its index, attachments); not read'
+			if zip.skipped.len > 0 {
+				notes << '${path}: ${zip.skipped.len} file(s) of the PDX are not ODX (its index, attachments); not read'
 			}
 		} else {
 			db.add_doc(data, path)!
