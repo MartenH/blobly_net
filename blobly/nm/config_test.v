@@ -324,13 +324,24 @@ fn test_a_row_cycle_applies_where_the_system_bus_states_none() {
 	assert configure(&empty, [r], []) == none
 }
 
-fn test_without_a_cycle_nothing_announces_and_the_members_are_named() {
+fn test_a_system_bus_stating_no_cycle_announces_on_the_blobly_emb_default() {
 	sys := system_with_nm()
 	c := configure(&sys, [row('body')], []) or { panic('no configuration') }
-	anns, notes := announcements(c, [node('sysnode'), node('domain'), node('stranger')])
+	assert c.cycle_ms == default_cycle_ms
+	anns, notes := announcements(c, [node('sysnode'), node('domain')])
+	assert notes == []
+	assert anns.len == 2 && anns.all(it.cycle_ms == 100)
+}
+
+fn test_without_a_cycle_nothing_announces_and_the_members_are_named() {
+	empty := sysview.System{}
+	c := configure(&empty, [row('Body')], [arxml_db()]) or { panic('no configuration') }
+	assert c.cycle_ms == 0
+	anns, notes := announcements(c, [node_nm('ECU_A', -1, 0x21), node_nm('ECU_B', 0x60F, 0x22),
+		node('stranger')])
 	assert anns.len == 0
 	assert notes.len == 1
-	assert notes[0].starts_with('sysnode, domain: on the NM cluster'), notes[0]
+	assert notes[0].starts_with('ECU_A, ECU_B: on the NM cluster'), notes[0]
 }
 
 fn test_an_own_entry_fills_what_the_arxml_does_not_state() {

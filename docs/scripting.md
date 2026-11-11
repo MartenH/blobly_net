@@ -827,7 +827,7 @@ simulated nodes, which announce in the run ([nm.md](nm.md#simulated-nodes-announ
 | `nm.state(channel)` | `"awake"`, `"releasing"` or `"asleep"` |
 | `nm.expect_state(channel, state [, timeout_ms [, kept_awake_by]])` | the reading, the channel read until it is in `state` (and kept awake by exactly the names in `kept_awake_by`, in any order) within `timeout_ms` (default 1000), asked after every read so a state reached by silence is seen; an error saying what the reading was otherwise |
 | `nm.expect_asleep(channel [, timeout_ms])` | `nm.expect_state(channel, "asleep", timeout_ms)` |
-| `nm.release(channel)` | how many: the nodes simulated on the channel that announce NM stop announcing; an error where none announces |
+| `nm.release(channel)` | how many: the nodes simulated on the channel that announce NM stop announcing; an error where none announces, or while the run is stopped |
 | `nm.request(channel)` | how many: they announce again, at once (a run starts with every node requesting) |
 
 A reading is `{ state, kept_awake_by, woken_by, woken_active, woken_ms, repeat_requested_by,

@@ -580,6 +580,14 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 
 // stop ends the run: every loop told, and waited for — BOUNDED, because a loop stuck in a
 // stalled CANsub write cannot re-check the flag until the write returns, and the transport
+// started: no stop has begun, so the run's loops are sending.
+pub fn (mut r Run) started() bool {
+	r.mu.lock()
+	s := !r.stopping
+	r.mu.unlock()
+	return s
+}
+
 // confines a stalled write to its sender on purpose: the run must not inherit its timeout (codex
 // round 6 on #231). Loops still running when the bound expires are left to the exit; what they
 // would have booked is not reported. Returns once the wires have said their piece, so what a

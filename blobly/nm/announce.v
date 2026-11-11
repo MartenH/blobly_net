@@ -93,7 +93,7 @@ pub fn announcements(cfg ?Config, nodes []project.NodeCfg) ([]Announce, []string
 		}
 	}
 	if uncycled.len > 0 {
-		notes << '${uncycled.join(', ')}: on the NM cluster (${c.origin}) with no cycle: give the system bus msg_cycle_ms, or the row nm: cycle_ms, for the simulated nodes to announce'
+		notes << '${uncycled.join(', ')}: on the NM cluster (${c.origin}) with no cycle: give the row nm: cycle_ms for the simulated nodes to announce'
 	}
 	return out, notes
 }

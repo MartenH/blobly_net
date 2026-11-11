@@ -39,6 +39,17 @@ pub fn (mut e Engine) attach_announcements(anns []nm.Announce) {
 	}
 }
 
+// announces: the ECU announces NM on this frame, so the announcement is what goes out on it and
+// the database's own cyclic message of that id does not, released or not.
+fn (ecu SimEcu) announces(id u32, ext bool) bool {
+	for t in ecu.nm_tx {
+		if t.ann.id == id && t.ann.ext == ext {
+			return true
+		}
+	}
+	return false
+}
+
 // step_nm sends every announcement due by now_ms. A released one sends nothing and is due again
 // the moment the network is requested, as CanNm transmits at once on a request.
 fn (mut e Engine) step_nm(now_ms f64, send fn (f transport.CanFrame) bool) {

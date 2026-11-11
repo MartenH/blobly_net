@@ -24,6 +24,9 @@ fn l_nm_request(l lua.State) i32 {
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	request := l.arg_bool(2)
 	what := if request { 'nm.request' } else { 'nm.release' }
+	if !env.run_started() {
+		return l.fail('${what}: the run is stopped — nothing simulated is sending, and Start requests the network for every node again')
+	}
 	n := env.chans[ci].fault_target().nm_request(request) or {
 		return l.fail('${what}: ${err.msg()}')
 	}

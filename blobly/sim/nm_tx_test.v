@@ -1,5 +1,6 @@
 module sim
 
+import blobly.candb
 import blobly.nm
 import blobly.project
 import blobly.transport
@@ -109,5 +110,48 @@ fn test_a_script_releases_the_row_announcing_nodes_and_is_refused_where_none_doe
 		assert false
 	} else {
 		assert err.msg().contains('DoIP'), err.msg()
+	}
+}
+
+fn test_the_dbc_message_on_the_announced_id_is_not_sent_beside_the_announcement() {
+	clear_nm_requests()
+	defer {
+		clear_nm_requests()
+	}
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'Body'
+			messages: [SimMessage{
+				msg:       candb.Message{
+					name: 'NM_Body'
+					id:   0x511
+					dlc:  8
+				}
+				period_ms: 100
+			}, SimMessage{
+				msg:       candb.Message{
+					name: 'Status'
+					id:   0x300
+					dlc:  8
+				}
+				period_ms: 100
+			}]
+		}]
+	}
+	e.attach_announcements([nm.Announce{
+		node:     'Body'
+		id:       0x511
+		nid:      0x11
+		cycle_ms: 200
+	}])
+	first := nm_frames_at(mut e, 0)
+	assert first.map(it.id) == [u32(0x300), 0x511]
+	assert first[1].data[0] == 0x11
+	assert nm_frames_at(mut e, 100).map(it.id) == [u32(0x300)]
+	// released, the id falls silent: the database's message does not keep it awake
+	nm_set_request('inproc:NMTX', 'Body', false)
+	apply_nm_requests('inproc:NMTX', mut e)
+	for t in [200.0, 300, 400] {
+		assert nm_frames_at(mut e, t).map(it.id) == [u32(0x300)]
 	}
 }

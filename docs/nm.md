@@ -126,9 +126,11 @@ shortest it reads), zeros elsewhere; an ARXML NM-PDU sits at its byte, as long a
   An id above 0x7FF is a 29-bit frame; `ext: true` says so below it. An id that is not one of the
   cluster's NM frames announces nothing, since nothing would read it.
 - **The cycle** is the system model's bus `msg_cycle_ms` (blobly_emb's key, `nm = { peers = [lo,
-  hi], timeout_ms = 300, msg_cycle_ms = 100 }`), else a row's `nm:` `cycle_ms`. A row may state the
-  cycle alone, `nm: { cycle_ms: 200 }`, for a cluster a system model or an ARXML gives. With no
-  cycle stated, nothing announces: the run says which members would have.
+  hi], timeout_ms = 300, msg_cycle_ms = 100 }`), else a row's `nm:` `cycle_ms`, else for a system
+  model's cluster blobly_emb's default, 100 ms (the cycle a node generated from that model takes).
+  A row may state the cycle alone, `nm: { cycle_ms: 200 }`, for a cluster a system model or an
+  ARXML gives. On an ARXML's cluster or a row's own range with no cycle stated, nothing announces:
+  the run says which members would have.
 
 At Start the Log (headless: stdout) names each node announcing, its id, NID and cycle, and says why
 a node meant to announce does not. Both keys need schema v13: an older build refuses a range-less
@@ -147,7 +149,8 @@ with blobly.Project("projects/nm-demo/nm-sim.blobnet") as net:
 ```
 
 Lua's `nm.release(channel)` / `nm.request(channel)` and the C ABI's `bb_nm_request(row, request)`
-are the same. `projects/nm-demo/nm-sim.blobnet` is the demo: sysnode and domain announce every
+are the same; each is refused while the run is stopped, since the next Start requests the network
+for every node again. `projects/nm-demo/nm-sim.blobnet` is the demo: sysnode and domain announce every
 100 ms on the ids the system.toml gives them.
 
 ## From a script

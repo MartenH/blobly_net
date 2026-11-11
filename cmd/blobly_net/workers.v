@@ -1688,6 +1688,13 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		mut ap := unsafe { a }
 		return ap.run_holds_wires()
 	}
+	env.run_started = fn [a] () bool {
+		mut ap := unsafe { a }
+		ap.mu.lock()
+		r := ap.running
+		ap.mu.unlock()
+		return r
+	}
 	// the run's LIN buses, by name; a script started while stopped reaches addresses only
 	env.lin_rows = a.lin_rows_fn()
 	env.sys = ss.sys

@@ -239,6 +239,9 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	env.run_active = fn () bool {
 		return !headless.released()
 	}
+	env.run_started = fn [mut hrun] () bool {
+		return hrun.started()
+	}
 	env.sys = hrun.sys
 	run_lins := hrun.lin_rows()
 	env.lin_rows = fn [run_lins] () []&lin.Row {

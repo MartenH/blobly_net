@@ -2,8 +2,8 @@
 #
 # The cluster is read from system.toml beside this file (the channel is named after its bus,
 # `body`): sysnode and domain are simulated, and each announces its NM PDU — NID and a control
-# bit vector of 0x00 — on the id the system model gives it (0x511, 0x513) every 100 ms, the cycle
-# the row's `nm:` states. zone_a is declared and not simulated: missing.
+# bit vector of 0x00 — on the id the system model gives it (0x511, 0x513) every 100 ms, the
+# cycle blobly_emb gives a cluster whose msg_cycle_ms is not stated. zone_a is declared and not simulated: missing.
 #
 #   BLOBLY_PROJECT=projects/nm-demo/nm-sim.blobnet ./scripts/run_gui.sh
 #   → ▶ Start, then View ▸ Network Management
@@ -12,7 +12,7 @@
 # watch the cluster sleep, and request it again.
 project:
   name: nm-sim
-  version: 13
+  version: 12
 
 channels:
   - name: body
@@ -22,7 +22,6 @@ channels:
     enabled: true
     databases:
       - nm-demo.dbc
-    nm: { cycle_ms: 100 }
     simulate:
       - sysnode
       - domain

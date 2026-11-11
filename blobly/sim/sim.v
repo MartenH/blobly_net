@@ -342,13 +342,18 @@ mut:
 }
 
 // step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
-// `send`, which says whether the transport took it: only a frame taken is the message's LAST SENT
-// (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so a frame refused — a
-// listen-only wire, a bus that is down — or dropped by a fault leaves it as it was.
+// `send`, which says whether the transport took it (a message on the id its node announces NM on
+// is that announcement's, nm_tx.v, and is not sent besides it): only a frame taken is the message's
+// LAST SENT (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so
+// a frame refused — a listen-only wire, a bus that is down — or dropped by a fault leaves it as it
+// was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
+			if e.ecus[i].announces(m.msg.id, m.msg.ext) {
+				continue
+			}
 			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev.hold_ms {
 				m.emit(now_ms, send)
 				m.next_ms += f64(m.period_ms)

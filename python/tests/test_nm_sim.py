@@ -1,6 +1,6 @@
 """Simulated nodes announcing NM, from Python: projects/nm-demo/nm-sim simulates sysnode and domain,
-which announce on the ids the system.toml beside it gives them at the row's 100 ms cycle, until
-Channel.nm().release() silences them."""
+which announce on the ids the system.toml beside it gives them on the 100 ms cycle blobly_emb
+defaults to, until Channel.nm().release() silences them."""
 import os
 
 import pytest

@@ -193,6 +193,12 @@ pub mut:
 	run_active fn () bool = fn () bool {
 		return false
 	}
+	// Whether the project's run is started, so its simulated nodes are sending: cmd/script's
+	// headless run, or the GUI's measurement. nm.release / nm.request are refused otherwise, since
+	// the next Start requests the network for every node again.
+	run_started fn () bool = fn () bool {
+		return false
+	}
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
 	// How a replay's buses are opened (replay.start): they REPRODUCE a recording, framed as it was

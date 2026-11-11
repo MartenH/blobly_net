@@ -1,6 +1,6 @@
 -- @project ../projects/nm-demo/nm-sim.blobnet
 -- Simulated nodes announcing NM: sysnode and domain announce on the ids the system.toml gives
--- them, at the row's cycle, while the run is up; nm.release silences them, nm.request brings
+-- them, on the 100 ms cycle blobly_emb defaults to, while the run is up; nm.release silences them, nm.request brings
 -- them back.
 
 local function names(list) return table.concat(list, ",") end
