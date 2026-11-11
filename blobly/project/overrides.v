@@ -89,9 +89,10 @@ fn lin_address_rate(address string) int {
 // override_interfaces attaches each named row to its override's interface, before anything is
 // checked or opened. Refused whole, changing nothing, for a name no row has (naming the rows),
 // a name two rows share, a name given twice, or an interface iface_override_refusal refuses.
-// A generator follows the rows it transmitted to: one whose `bus:` named a moved row by its old
-// interface, or named a wire (shared by several rows, or not a row's spelling of it) that every
-// CAN row on it left, is rewritten to name where they went.
+// A generator follows the rows that left their wire (an override to the wire a row is already on
+// moves nothing): one whose `bus:` named a moved row by its old interface, or named a wire
+// (shared by several rows, or not a row's spelling of it) that every CAN row on it left, is
+// rewritten to name where they went.
 pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 	if overrides.len == 0 {
 		return
@@ -122,13 +123,16 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 			return error('interface override: ${why}')
 		}
 		adapter, address := decompose_iface(o.iface)
+		was_wire := conflict_wire_key(chs[i])
 		if chs[i].kind() == .lin && chs[i].bitrate == 0 {
 			chs[i].bitrate = lin_address_rate(chs[i].address)
 		}
 		chs[i].adapter = adapter
 		chs[i].address = address
 		chs[i].iface = compose_iface(adapter, address)
-		moved[i] = true
+		if conflict_wire_key(chs[i]) != was_wire {
+			moved[i] = true
+		}
 	}
 	for ci, own in p.channels {
 		for si, s in own.senders {

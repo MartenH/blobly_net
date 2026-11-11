@@ -210,6 +210,14 @@ fn test_a_generator_stays_on_a_wire_a_row_still_has() {
 	assert r.chan == 'A_mon'
 }
 
+fn test_an_override_to_the_wire_a_row_is_on_moves_nothing() {
+	mut p := parse(wires_yaml) or { panic(err) }
+	p.override_interfaces([IfaceOverride{'A_mon', 'pcan:PCAN_USBBUS1'}, IfaceOverride{'A', 'inproc:A'}])!
+	shared := sender_of(p, 'A', 'shared')
+	assert shared.bus == 'pcan:PCAN_USBBUS1'
+	assert resolve_sender_bus(shared.bus, row(p, 'A'), p.channels).chan == 'A_mon'
+}
+
 fn test_a_wire_whose_rows_went_two_ways_is_refused() {
 	mut p := parse(wires_yaml) or { panic(err) }
 	p.override_interfaces([IfaceOverride{'A', 'inproc:A'}, IfaceOverride{'A_mon', 'inproc:M'}]) or {
