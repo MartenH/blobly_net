@@ -400,11 +400,12 @@ def wait_on(channels: Sequence[Any], timeout_ms: float, rr: int, now: Callable[[
                 f = None
             if f is not None:
                 return (channels[i], f), i + 1
-        if now() >= deadline:
+        rest = deadline - now()  # one reading for the test and the length
+        if rest <= 0:
             return None, rr
         if spent:
             continue  # records still queued behind a look's bound: look again at once
-        sleep_ms(min(WAIT_SLICE_MS, deadline - now()))  # never a slice past the deadline
+        sleep_ms(min(WAIT_SLICE_MS, rest))  # never a slice past the deadline
         if now() >= deadline:  # what came in the last slice stays for the next reader
             return None, rr
 
