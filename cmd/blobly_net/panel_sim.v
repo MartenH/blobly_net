@@ -91,6 +91,7 @@ fn draw_sim(mut app App) {
 				// Fault injection, per message. Only messages the DBC says this node sends,
 				// because a fault on a frame it never transmits does nothing and reads as a
 				// broken feature rather than a misconfiguration.
+				nprot := sim.protections(sc.db, node)
 				for m in sc.db.messages_from(node.name) {
 					cur := sim.injected_fault(sc.iface, node.name, m.name)
 					lbl := match cur.kind {
@@ -104,9 +105,9 @@ fn draw_sim(mut app App) {
 					// Only offer what can take effect on THIS message. bad_crc without a
 					// configured checksum changes no bits, and out_of_range needs a signal with
 					// an illegal value — offering either would show a fault the bus never sees.
-					// what THIS node stamps on it — its protect: entry or its DBC declaration, the
-					// one answer the simulation itself stamps by
-					mprot := sim.protection_for(node, m) or { sim.E2e{} }
+					// what THIS node stamps on it — the protection the simulation attaches to its
+					// messages of this name
+					mprot := nprot[m.name] or { sim.E2e{} }
 					has_crc := mprot.crc != '' && sim.past_payload(m, mprot.crc) == none
 					has_ctr := mprot.counter != '' && sim.past_payload(m, mprot.counter) == none
 					mut oor_sig := ''

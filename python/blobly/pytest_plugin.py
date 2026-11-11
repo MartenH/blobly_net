@@ -245,6 +245,7 @@ def project(_blobly_run: _Run, request: pytest.FixtureRequest) -> Iterator[Proje
     if net.started:
         net._stop_senders()
         net.clear_faults()
+        net.clear_signals()
 
 
 @pytest.fixture

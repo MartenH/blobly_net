@@ -232,8 +232,11 @@ pub fn live_value(iface string, chan_name string, node string, signal string) ?u
 	return live_table.vals[live_key(iface, chan_name, node, signal)] or { return none }
 }
 
-// publish_live records, for the signals a described server wants, the value each generator gave
-// the last frame due_frames sent of its message.
+// publish_live records, for the signals a described server wants, the value the last frame
+// due_frames sent of its message carried: a value set on the signal (setsignal.v), else its
+// generator's, else raw 0 — every signal of the message, so one let go of goes back to what the
+// frame carries. A signal that frame did not carry (a multiplexed one off its page) keeps the
+// value the last frame carrying it published.
 pub fn publish_live(iface string, chan_name string, e &Engine) {
 	live_table.mu.rlock()
 	empty := live_table.want.len == 0
@@ -246,21 +249,34 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			if m.last_n < 0 {
 				continue // a response, or none handed out yet: no frame carries a generator's value
 			}
-			for s in m.signals {
-				k := live_key(iface, chan_name, ecu.name, s.name)
+			mut names := m.msg.signals.map(it.name)
+			for g in m.signals {
+				if g.name !in names {
+					names << g.name
+				}
+			}
+			for v in m.last_set {
+				if v.signal !in names {
+					names << v.signal
+				}
+			}
+			carried := m.msg.carried(m.last_data)
+			for name in names {
+				if !carried_last(m.msg, carried, name) {
+					continue // not in the last frame: its live value stays what the last one carrying it said
+				}
+				k := live_key(iface, chan_name, ecu.name, name)
 				live_table.mu.rlock()
-				wanted := k in live_table.want || any_key(ecu.name, s.name) in live_table.want
+				wanted := k in live_table.want || any_key(ecu.name, name) in live_table.want
 				live_table.mu.runlock()
 				if !wanted {
 					continue
 				}
-				phys := s.gen.value(m.last_t, m.last_n)
-				mut v := live_rounded(phys)
-				for sig in m.msg.signals {
-					if sig.name == s.name {
-						v = live_encoded(sig, phys)
-						break
-					}
+				sig := m.msg.signal_named(name)
+				v := if s := sig {
+					live_encoded(s, last_sent_value(m, name, sig))
+				} else {
+					live_rounded(last_sent_value(m, name, none))
 				}
 				live_table.mu.lock()
 				live_table.vals[k] = v
@@ -270,8 +286,37 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 	}
 }
 
-// live_encoded is a generator's value as `sig` encodes it, as an exact integer: by its raw bits at
-// factor 1 and offset 0 (the whole 64-bit range), else its physical value rounded.
+// carried_last is whether the last frame sent of `msg` carried `name`, by `carried`
+// (msg.carried of that payload): a multiplexed signal only on its page, every signal only where
+// the payload holds it. A name that is not a signal of the message (a generator's) is carried.
+fn carried_last(msg candb.Message, carried []bool, name string) bool {
+	for i, sig in msg.signals {
+		if sig.name == name {
+			return carried[i]
+		}
+	}
+	return true
+}
+
+// last_sent_value is the physical value of `name` in the last frame sent of `m`: the value set on
+// it, else its generator's, else what raw 0 decodes to in `sig` (the payload starts at zero).
+fn last_sent_value(m SimMessage, name string, sig ?candb.Signal) f64 {
+	for v in m.last_set {
+		if v.signal == name {
+			return v.value
+		}
+	}
+	for s in m.signals {
+		if s.name == name {
+			return s.gen.value(m.last_t, m.last_n)
+		}
+	}
+	if s := sig {
+		return s.phys_from_raw(0)
+	}
+	return 0
+}
+
 fn live_encoded(sig candb.Signal, phys f64) uds.LiveValue {
 	raw := sig.raw_from_phys(phys) // clamped to the signal's width
 	if sig.factor != 1 || sig.offset != 0 {

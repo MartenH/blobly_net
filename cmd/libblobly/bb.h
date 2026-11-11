@@ -855,7 +855,8 @@ int bb_doip_listener(int row, int port, int ip6, int *use_port, int *use_ip6);
 int bb_doip_discover(const char *host, int port, int timeout_ms, bb_doip_announcement *out);
 int bb_doip_listen(int port, int window_ms, int ip6, bb_doip_announcement *out, int cap);
 
-/* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
+/* Faults, signal values and E2E: the rules the Lua prelude's sim.* and e2e.* ask
+ * (cmd/libblobly/sim.v).
  *
  * bb_sim_fault arms a fault on a simulated node's message on row `row` of the run (from bb_start
  * until bb_stop, BB_ERR_STATE otherwise; any thread). `kind` is "drop", "bad_crc",
@@ -869,6 +870,20 @@ int bb_doip_listen(int port, int window_ms, int ip6, bb_doip_announcement *out, 
 int bb_sim_fault(int row, const char *node, const char *message, const char *kind, int ms,
                  const char *signal);
 int bb_sim_clear_faults(void);
+/* bb_sim_set holds `signal` of a simulated node's `message` on row `row` of the run at the physical
+ * `value` from its next frame, until changed or cleared (from bb_start until bb_stop, BB_ERR_STATE
+ * otherwise; any thread). It goes over the node's own source for that signal and under its E2E
+ * protection, so the checksum covers it; the other signals, the cycle and the alive counter stay
+ * as they are. Refused with BB_ERR, nothing set: a DoIP or SOME/IP row, a node not simulated on
+ * the row, a message `node` does not send, a signal the message does not have, the E2E counter or
+ * checksum (protection overwrites it), a signal past the payload, a value that is not finite or
+ * past what the signal's width holds (past its declared range is not refused). bb_sim_clear lets
+ * go of `signal` (NULL or "": every signal of the message), refused as bb_sim_set refuses a node,
+ * message or signal; bb_sim_clear_signals lets go of every one. The values are the process's, and
+ * a bb_start clears them; bb_sim_clear_faults leaves them. */
+int bb_sim_set(int row, const char *node, const char *message, const char *signal, double value);
+int bb_sim_clear(int row, const char *node, const char *message, const char *signal);
+int bb_sim_clear_signals(void);
 
 /* AUTOSAR E2E Profile 1 for a frame of n bytes the host built, computed as the simulation stamps
  * it: CRC-8 poly 0x1D, start 0, no final XOR, over the Data ID bytes `mode` names (NULL or "" is

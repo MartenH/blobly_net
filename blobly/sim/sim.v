@@ -95,6 +95,7 @@ pub mut:
 	signals   []SimSignal
 	e2e       E2e   // alive counter + checksum, stamped after the generators (see e2e.v)
 	fault     Fault // deliberate misbehaviour (see fault.v)
+	set       []SetValue // signals a script holds at a value, over the generators (see setsignal.v)
 	send_n    int   // times sent so far (drives signal generators)
 	// The E2E alive counter's own index, separate from send_n. freeze_counter must stall the
 	// PROTECTION counter without also stalling every `counter` generator in the message — a
@@ -114,6 +115,8 @@ pub mut:
 	next_ms  f64  // next due time
 	last_t   f64  // when due_frames last handed a frame of it out (s): what its generators read
 	last_n   int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
+	last_set  []SetValue // the values set when that frame was built
+	last_data []u8 // that frame's payload: which signals it carried (candb.Message.carried)
 	ev       ChangeState // sending on a change (the send type event or mixed, Message.on_change)
 }
 
@@ -197,6 +200,8 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 			}
 		}
 	}
+	// values set from a script, over the generators and under protection, so the checksum covers them
+	apply_set(m.msg, m.set, mut data)
 	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid
 	// checksum and the receiver reaches its range handling instead of rejecting a CRC error.
 	m.fault.apply_pre(m.msg, mut data)
@@ -337,7 +342,7 @@ mut:
 
 // step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
 // `send`, which says whether the transport took it: only a frame taken is the message's LAST SENT
-// (`last_t`/`last_n`, what a described server's live DID reads), so a frame refused — a
+// (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so a frame refused — a
 // listen-only wire, a bus that is down — or dropped by a fault leaves it as it was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
@@ -361,6 +366,8 @@ fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
 	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
 		m.last_t = now_ms / 1000.0
 		m.last_n = m.send_n
+		m.last_set = m.set
+		m.last_data = f.data
 	}
 	m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
 	// The PROTECTION counter is what freezes. A dropped frame still advances it, so
@@ -531,8 +538,8 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext {
 					continue
 				}
-				if !m.e2e.active() && !m.fault.active() {
-					continue // nothing to stamp and nothing to break
+				if !m.e2e.active() && !m.fault.active() && m.set.len == 0 {
+					continue // nothing to stamp, set or break
 				}
 				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST
 				// cloned, and the two need not be the same length: a shorter request leaves the
@@ -546,13 +553,14 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				// silently skips out-of-bounds bits — so the response went out unchanged while
 				// the fault reported itself armed. An unfaulted, unprotected rule stays the
 				// plain echo of the request it is documented to be.
-				needs_layout := m.e2e.active() || m.fault.active()
+				needs_layout := m.e2e.active() || m.fault.active() || m.set.len > 0
 				mut buf := []u8{len: if needs_layout { m.msg.dlc } else { data.len }}
 				for k in 0 .. buf.len {
 					if k < data.len {
 						buf[k] = data[k]
 					}
 				}
+				apply_set(m.msg, m.set, mut buf)
 				m.fault.apply_pre(m.msg, mut buf)
 				if m.e2e.active() {
 					m.e2e.apply(m.msg, mut buf, m.e2e_value())

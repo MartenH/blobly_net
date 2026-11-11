@@ -45,13 +45,20 @@ pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
 	return declared_e2e(m)
 }
 
-pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
+// protections is what `cfg`'s node stamps on each message it sends, by name — the map the
+// engine attaches to every message of that name, so the last protected message of a name decides.
+pub fn protections(db candb.Database, cfg project.NodeCfg) map[string]E2e {
 	mut prot := map[string]E2e{}
 	for m in db.messages_from(cfg.name) {
 		if e := protection_for(cfg, m) {
 			prot[m.name] = e
 		}
 	}
+	return prot
+}
+
+pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
+	prot := protections(db, cfg)
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
 	// built-in model — which for 'SUT' is the hand-tuned reference with its own generators and
 	// request/response rule. Protection is orthogonal to behaviour and is layered on top;

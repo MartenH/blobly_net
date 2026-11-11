@@ -693,6 +693,39 @@ DID too large for one ISO-TP transfer is served here and reported there.
 > actually up: if the port is taken it stays `idle` and the Log says why, rather than showing
 > green beside an entity that is not ours. See [doip.md](doip.md).
 
+## Setting a signal
+
+A bench script usually wants the rest bus as the database describes it with one signal changed:
+a pedal pressed, a door opened. A value set on one signal of a simulated node's message is kept
+until changed or cleared; every other signal, the cycle and the alive counter go on as the project
+makes them.
+
+```lua
+sim.set("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal", 80)   -- from the next frame
+sim.clear("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal")     -- back to the project's source
+```
+
+From Python the same calls are `net.set_signal(...)`, `net.clear_signal(...)` and
+`net.clear_signals()`, and a refusal is `blobly.SignalRefused`
+([scripting_python.md](scripting_python.md#a-signal-of-a-simulated-message)); from C,
+`bb_sim_set`, `bb_sim_clear` and `bb_sim_clear_signals` (`bb.h`).
+
+The value is written **over the node's own source** for that signal and **before protection**, so
+the checksum covers it and a receiver reads a valid frame carrying it. A multiplexed signal is
+written only in the frames its multiplexor selects; set the multiplexor too to choose the page.
+The values live in one process-wide table keyed by channel, node and message, like the faults,
+so a script reaches the GUI's simulation and the headless runner's alike. A start clears them,
+in the GUI and headless alike (and the GUI clears them with the faults when a project is loaded
+or its text replaced). A described ECU's live DID on that signal reads the value set once a
+frame carrying it has gone out.
+
+A value that could not reach the wire is **refused**, and nothing is set: a node not simulated
+on that channel, a message it does not send, a signal the message does not have, the E2E counter
+or checksum (protection overwrites it), a signal past the message's payload, and a value past
+what the signal's width holds (the encoder would clamp it to another value) — in every message
+of that name the node sends, since the value goes into each. A value past the
+signal's declared range is not refused: a test sends one on purpose.
+
 ## Fault injection
 
 A rest-bus that only sends correct traffic answers one question: does the ECU work when

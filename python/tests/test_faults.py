@@ -8,7 +8,7 @@ import time
 import pytest
 
 import blobly
-from blobly import FaultKind, FaultRefused, e2e
+from blobly import FaultKind, FaultRefused, SignalRefused, e2e
 from conftest import SIM_DEMO, write
 
 pytestmark = pytest.mark.usefixtures("engine")
@@ -186,12 +186,70 @@ class TestOnSimDemo:
             net.fault("NOPE", "SUT", "Powertrain", "drop")
 
 
+class TestSignalValues:
+    """A signal of a simulated message held at a value from Python: the rest of the message as the
+    project makes it, the value until cleared."""
+
+    @pytest.fixture
+    def net(self, sim_demo):
+        yield sim_demo
+        sim_demo.clear_signals()
+
+    @pytest.fixture
+    def can1(self, net):
+        return net.channels.CAN1
+
+    def test_a_set_signal_is_held_and_the_rest_goes_on_until_cleared(self, net, can1):
+        powertrain = can1.messages.Powertrain
+        net.set_signal(can1, "SUT", powertrain, powertrain.signals.Gear, 9)
+        speeds = set()
+
+        def held(f):
+            d = can1.decode(f)
+            speeds.add(d["EngineSpeed"])
+            return d["Gear"] == 9
+        assert settles(can1, POWERTRAIN, held, n=10), "Gear not held at 9"
+        assert len(speeds) > 1, "EngineSpeed stopped moving while Gear was set"
+        net.clear_signal("CAN1", "SUT", "Powertrain", "Gear")
+        assert settles(can1, POWERTRAIN, lambda f: 1 <= can1.decode(f)["Gear"] <= 6), \
+            "Gear did not go back to its source"
+
+    def test_clear_faults_leaves_a_value_and_clear_signals_lets_it_go(self, net, can1):
+        net.set_signal(can1, "SUT", "Powertrain", "CruiseOn", 1)
+        net.clear_faults()
+        assert settles(can1, POWERTRAIN, lambda f: can1.decode(f)["CruiseOn"] == 1, n=20)
+        net.clear_signals()
+        assert settles(can1, POWERTRAIN, lambda f: can1.decode(f)["CruiseOn"] == 0, n=1)
+
+    def test_a_value_that_cannot_reach_the_wire_is_refused_and_says_why(self, net, can1):
+        cases = [
+            (("CAN1", "NoSuchEcu", "Powertrain", "Gear", 1), '"NoSuchEcu" is not simulated on CAN1'),
+            (("CAN1", "SUT", "NotAMessage", "Gear", 1), '"SUT" does not send "NotAMessage" on CAN1'),
+            (("CAN1", "SUT", "Powertrain", "NotASignal", 1), '"Powertrain" has no signal "NotASignal"'),
+            (("CAN1", "SUT", "Powertrain", "Gear", 16), 'past what the 4-bit unsigned "Gear" holds'),
+            (("DoIP1", "SUT", "Powertrain", "Gear", 1), "is a DoIP channel"),
+        ]
+        for args, want in cases:
+            with pytest.raises(SignalRefused, match=re.escape(want)) as e:
+                net.set_signal(*args)
+            assert e.value.code == -1, args
+        with pytest.raises(SignalRefused, match="has no signal"):
+            net.clear_signal(can1, "SUT", "Powertrain", "NotASignal")
+        for value in ("4", True, None):
+            with pytest.raises(TypeError):
+                net.set_signal(can1, "SUT", "Powertrain", "Gear", value)
+        assert issubclass(SignalRefused, blobly.Refused)
+
+
 class TestNotStarted:
     def test_a_fault_needs_a_started_project(self):
         net = blobly.Project(SIM_DEMO).load()
         with pytest.raises(blobly.BloblyError) as e:
             net.fault("CAN1", "SUT", "Powertrain", "drop")
         assert not isinstance(e.value, FaultRefused)
+        assert e.value.code == -3
+        with pytest.raises(blobly.BloblyError) as e:
+            net.set_signal("CAN1", "SUT", "Powertrain", "Gear", 1)
         assert e.value.code == -3
 
 
@@ -254,6 +312,16 @@ class TestOnProtectedTraffic:
         assert settles(ch, BRAKE_STATUS, frozen), "the counter still advances"
         net.clear_fault(ch, "Chassis", "BrakeStatus")
         assert self.counters_advance(ch), "the counter does not advance after the clear"
+
+    def test_a_set_signal_goes_out_under_a_valid_crc(self, net, ch):
+        net.set_signal(ch, "Chassis", "BrakeStatus", "Pad", 0xA5)
+        try:
+            assert settles(ch, BRAKE_STATUS, lambda f: f.data[2] == 0xA5 and verifies(f)), \
+                "the value set did not go out under a CRC that verifies"
+            with pytest.raises(SignalRefused, match="stamped by its E2E protection"):
+                net.set_signal(ch, "Chassis", "BrakeStatus", "BrakeCrc", 1)
+        finally:
+            net.clear_signals()
 
     def test_a_timed_fault_on_protected_traffic_ends_by_itself(self, net, ch):
         net.fault(ch, "Chassis", "BrakeStatus", "bad_crc", ms=300)

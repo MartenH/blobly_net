@@ -655,6 +655,33 @@ fn test_a_refused_send_publishes_nothing() {
 	clear_live()
 }
 
+// a value set on the signal is what the live DID reads once a frame carries it; a refused frame
+// leaves the value the last sent one carried
+fn test_a_live_did_reads_the_value_set_on_its_signal() {
+	sys := dx_load('liveset')
+	mut s := zone_a(sys)
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
+	mut e := one_signal_engine('zone_a', 'SteeringAngle', 300, Fault{})
+	e.step(0, fn (f transport.CanFrame) bool {
+		return true
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
+	e.ecus[0].messages[0].set = [SetValue{'SteeringAngle', 400}]
+	e.step(50, fn (f transport.CanFrame) bool {
+		return false
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
+	e.step(100, fn (f transport.CanFrame) bool {
+		return true
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x90]
+	clear_live()
+}
+
 // a described server judges a VIN write itself: its gates first, then the declared size
 fn test_a_described_vin_write_takes_the_servers_size_check() {
 	mut host := DoipHost{
@@ -827,5 +854,103 @@ fn test_a_published_live_value_keeps_a_u64_past_i64_and_rounds_a_fraction() {
 	assert h(mut s, [u8(0x22), 0x01, 0x03]) == [u8(0x62), 0x01, 0x03, 63]
 	assert h(mut s, [u8(0x22), 0x01, 0x04]) == [u8(0x62), 0x01, 0x04, 0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFB]
+	clear_live()
+}
+
+// a signal no generator drives reads the value set on it, and once that is let go of, what the
+// frame carries again: raw 0, here -40 through the offset
+fn test_a_live_did_follows_a_signal_without_a_generator_back_to_raw_zero() {
+	mut s := uds.server_from(uds.ServerSpec{
+		dids: [live_did(0x0102, 'Temp', uds.FieldSpec{ width: 2, signed: true })]
+	})
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'bare')
+	mut m := live_msg(0x141, candb.Signal{
+		name:   'Temp'
+		length: 8
+		factor: 1
+		offset: -40
+	}, 0)
+	m.signals = []
+	m.set = [SetValue{'Temp', 25}]
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'bare'
+			messages: [m]
+		}]
+	}
+	assert e.due_frames(0).len == 1
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0, 25]
+	e.ecus[0].messages[0].set = []
+	assert e.due_frames(50).len == 1
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0xFF, 0xD8]
+	clear_live()
+}
+
+// a multiplexed signal's live DID reads what the last frame carrying its page said: a value set on
+// it, or its generator's, does not reach the DID while another page goes out
+fn test_a_live_did_on_a_multiplexed_signal_waits_for_its_page() {
+	mut s := uds.server_from(uds.ServerSpec{
+		dids: [live_did(0x0201, 'Page1', uds.FieldSpec{ width: 1 }),
+			live_did(0x0202, 'Page2', uds.FieldSpec{ width: 1 })]
+	})
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'mux')
+	page := fn (name string, v int) candb.Signal {
+		return candb.Signal{
+			name:              name
+			start_bit:         8
+			length:            8
+			byte_order:        .little_endian
+			factor:            1
+			is_multiplexed:    true
+			multiplexor_value: v
+		}
+	}
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'mux'
+			messages: [SimMessage{
+				msg:       candb.Message{
+					name:    'Mux'
+					id:      0x200
+					dlc:     2
+					signals: [candb.Signal{
+						name:           'Mode'
+						length:         8
+						byte_order:     .little_endian
+						factor:         1
+						is_multiplexor: true
+					}, page('Page1', 1), page('Page2', 2)]
+				}
+				period_ms: 50
+				signals:   [SimSignal{
+					name: 'Page1'
+					gen:  gen_const(3)
+				}]
+				set:       [SetValue{'Mode', 2}, SetValue{'Page2', 5}]
+			}]
+		}]
+	}
+	assert e.due_frames(0).map(it.data) == [[u8(2), 5]]
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x02, 0x02]) == [u8(0x62), 0x02, 0x02, 5]
+	assert h(mut s, [u8(0x22), 0x02, 0x01]) == [u8(0x62), 0x02, 0x01, 0], 'page 1 not sent yet'
+	e.ecus[0].messages[0].set = [SetValue{'Mode', 1}, SetValue{'Page2', 9}]
+	assert e.due_frames(50).map(it.data) == [[u8(1), 3]]
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x02, 0x02]) == [u8(0x62), 0x02, 0x02, 5], 'page 2 not carried'
+	assert h(mut s, [u8(0x22), 0x02, 0x01]) == [u8(0x62), 0x02, 0x01, 3]
+	e.ecus[0].messages[0].set = [SetValue{'Mode', 2}, SetValue{'Page2', 9}]
+	e.ecus[0].messages[0].signals = [SimSignal{
+		name: 'Page1'
+		gen:  gen_const(4)
+	}]
+	assert e.due_frames(100).map(it.data) == [[u8(2), 9]]
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x02, 0x02]) == [u8(0x62), 0x02, 0x02, 9]
+	assert h(mut s, [u8(0x22), 0x02, 0x01]) == [u8(0x62), 0x02, 0x01, 3], 'page 1 not carried'
 	clear_live()
 }

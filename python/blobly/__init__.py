@@ -15,7 +15,7 @@ from .doip import DoipAnnouncement, doip_listen
 from .flash import BootReport, BootSim, FlashReport
 from .someip import SomeipHeard, SomeipMessage
 from .events import EventLoop
-from .faults import FaultKind, FaultRefused
+from .faults import FaultKind, FaultRefused, SignalRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
 from .uds import (Dtc, Exchange, Extended, FunctionalReply, Snapshot, SnapshotId, SnapshotRecord, UdsClient,
                   reference_key)
@@ -69,7 +69,7 @@ __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventL
            "Refused", "Signal", "Signals", "Snapshot", "SnapshotId", "SnapshotRecord", "Timeout", "UdsClient",
            "UndecodableAnswer", "init", "now_ms", "reference_key", "version", "wait_released"]
 # fault injection and E2E Profile 1 (faults.py, e2e.py)
-__all__ += ["FaultKind", "FaultRefused", "e2e"]
+__all__ += ["FaultKind", "FaultRefused", "SignalRefused", "e2e"]
 # DoIP (doip.py; UDS over DoIP is UdsClient)
 __all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"]
 # SOME/IP (someip.py) and flashing (flash.py)

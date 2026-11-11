@@ -245,6 +245,18 @@ end
 function sim.clear_fault(channel, node, message)
   __sim_fault(channel, node, message, "clear", 0, "")
 end
+-- A signal of a simulated node message held at a value from its next frame, until changed or
+-- cleared; the other signals, the cycle and the alive counter stay, and the checksum covers it.
+--   sim.set("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal", 80)
+--   sim.clear("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal")  -- nil signal: all of the message
+--   sim.clear_signals()                                            -- every value set
+function sim.set(channel, node, message, signal, value)
+  __sim_set(channel, node, message, signal, value)
+end
+function sim.clear(channel, node, message, signal)
+  __sim_clear(channel, node, message, signal or "")
+end
+function sim.clear_signals() __sim_clear_signals() end
 
 -- Generators: the run of the project (its `senders:`), each named by its name or "channel/name",
 -- or by its position in gen.list() (a number).

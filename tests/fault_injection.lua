@@ -108,3 +108,42 @@ test("a fault that cannot take effect is refused, not silently armed", function(
   local ok3 = pcall(function() sim.fault("CAN1", "SUT", "Powertrain", "bad_crc") end)
   check.truthy(not ok3, "bad_crc without a configured checksum must fail loudly")
 end)
+
+test("sim.set holds one signal at a value, and sim.clear gives it back to its source", function()
+  -- Gear steps 1..6 every second on its own; held at 9 it stays there, and the sine beside it goes on
+  sim.set("CAN1", "SUT", "Powertrain", "Gear", 9)
+  sleep_ms(100)
+  drain("CAN1")
+  local speeds = {}
+  for _ = 1, 5 do
+    local f = wait_for("CAN1", 0x100, 2000)
+    check.truthy(f ~= nil, "no Powertrain frame while a signal is set")
+    local d = decode("CAN1", f.id, f.data)
+    check.equal(d.Gear, 9)
+    speeds[d.EngineSpeed] = true
+    sleep_ms(120)
+  end
+  local n = 0
+  for _ in pairs(speeds) do n = n + 1 end
+  check.truthy(n > 1, "EngineSpeed stopped moving while Gear was set")
+  sim.clear("CAN1", "SUT", "Powertrain", "Gear")
+  sleep_ms(100)
+  drain("CAN1")
+  local f = wait_for("CAN1", 0x100, 2000)
+  local g = decode("CAN1", f.id, f.data).Gear
+  check.truthy(g >= 1 and g <= 6, "Gear did not go back to its source: " .. tostring(g))
+end)
+
+test("sim.set refuses what could not reach the wire", function()
+  local function refused(what, ...)
+    local ok, err = pcall(sim.set, ...)
+    check.truthy(not ok and tostring(err):find(what, 1, true), tostring(err))
+  end
+  refused("is not simulated", "CAN1", "NoSuchEcu", "Powertrain", "Gear", 1)
+  refused("does not send", "CAN1", "SUT", "NotAMessage", "Gear", 1)
+  refused("has no signal", "CAN1", "SUT", "Powertrain", "NotASignal", 1)
+  refused("holds", "CAN1", "SUT", "Powertrain", "Gear", 16)
+  refused("the value is a number", "CAN1", "SUT", "Powertrain", "Gear", "4")
+  local ok, err = pcall(sim.clear, "CAN1", "SUT", "Powertrain", "NotASignal")
+  check.truthy(not ok and tostring(err):find("has no signal", 1, true), tostring(err))
+end)

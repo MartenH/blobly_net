@@ -1,6 +1,6 @@
-// Fault injection on the run's simulated ECUs and AUTOSAR E2E Profile 1 for frames a host builds
-// (bb.h's "Faults and E2E" block): sim.FaultTarget.arm, sim.p01_frame_crc and sim.p01_protect, the
-// rules Lua's sim.fault and e2e.* ask.
+// Fault injection and signal values on the run's simulated ECUs, and AUTOSAR E2E Profile 1 for
+// frames a host builds (bb.h's "Faults and E2E" block): sim.FaultTarget.arm / set_signal /
+// clear_signal, sim.p01_frame_crc and sim.p01_protect, the rules Lua's sim.* and e2e.* ask.
 module main
 
 import blobly.headless
@@ -50,7 +50,56 @@ pub fn bb_sim_fault(row i32, node &char, message &char, kind &char, ms i32, sign
 
 @[export: 'bb_sim_clear_faults']
 pub fn bb_sim_clear_faults() i32 {
-	sim.clear_all()
+	sim.clear_faults()
+	return ok()
+}
+
+// sim_row is row `row` of the run as sim.FaultTarget judges it; the caller holds bb_mu.
+fn sim_row(row i32) !sim.FaultTarget {
+	if !bb_dbs_live {
+		return error_with_code('not started: a signal is set on the run, from bb_start until bb_stop',
+			int(bb_err_state))
+	}
+	if row < 0 || int(row) >= bb_fault_rows.len {
+		return error('no channel ${row}')
+	}
+	return bb_fault_rows[int(row)]
+}
+
+@[export: 'bb_sim_set']
+pub fn bb_sim_set(row i32, node &char, message &char, signal &char, value f64) i32 {
+	if isnil(node) || isnil(message) || isnil(signal) {
+		return fail(bb_err, 'sim_set: no node, message or signal')
+	}
+	// held through the set, as a fault's arm: a stop retires the rows under bb_mu
+	bb_mu.lock()
+	defer {
+		bb_mu.unlock()
+	}
+	t := sim_row(row) or { return failed_with(err) }
+	t.set_signal(vstr(node), vstr(message), vstr(signal), value) or {
+		return fail(bb_err, err.msg())
+	}
+	return ok()
+}
+
+@[export: 'bb_sim_clear']
+pub fn bb_sim_clear(row i32, node &char, message &char, signal &char) i32 {
+	if isnil(node) || isnil(message) {
+		return fail(bb_err, 'sim_clear: no node or message')
+	}
+	bb_mu.lock()
+	defer {
+		bb_mu.unlock()
+	}
+	t := sim_row(row) or { return failed_with(err) }
+	t.clear_signal(vstr(node), vstr(message), vstr(signal)) or { return fail(bb_err, err.msg()) }
+	return ok()
+}
+
+@[export: 'bb_sim_clear_signals']
+pub fn bb_sim_clear_signals() i32 {
+	sim.clear_signal_values()
 	return ok()
 }
 

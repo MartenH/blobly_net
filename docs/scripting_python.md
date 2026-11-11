@@ -1070,6 +1070,43 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     net.clear_faults()
 ```
 
+### A signal of a simulated message
+
+A bench usually wants the rest bus as the database describes it with one signal changed: a pedal
+pressed, a door opened. `net.set_signal` holds that one signal at a value, and every other signal,
+the cycle and the alive counter go on as the project makes them. It is Lua's `sim.set`, judged by
+the same rule in the engine.
+
+- `net.set_signal(channel, node, message, signal, value)` holds `signal` (a `Signal` or its name)
+  of the simulated `node`'s `message` at the physical `value` from its next frame, until it is
+  changed or cleared. It goes over the node's own source for that signal and under its E2E
+  protection, so the checksum covers it. Keyed by the message's name, as a fault is.
+- `net.clear_signal(channel, node, message, signal=None)` lets go of it (`None`: every signal of
+  the message), which goes out from the project's source again; `net.clear_signals()` lets go of
+  every one. A start clears them too; `clear_faults()` leaves them.
+- **A value that could not reach the wire is refused**, with `blobly.SignalRefused` saying why: a
+  DoIP or SOME/IP channel, a node not simulated on that channel, a message the node does not send,
+  a signal the message does not have, the E2E counter or checksum (protection overwrites it), a
+  signal past the payload, a value past what the signal's width holds. A value past the signal's
+  declared range is not refused: a test sends one on purpose. A value that is not a number is a
+  `TypeError`; the project must be started (`BloblyError`, code -3, otherwise).
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    net.set_signal(can1, "SUT", "Powertrain", "Gear", 4)   # from the next frame
+    f = can1.expect(0x100, 1000)
+    f = can1.expect(0x100, 1000)                           # one sent after the set
+    print(can1.decode(f)["Gear"])                          # 4.0
+    try:
+        net.set_signal(can1, "SUT", "Powertrain", "Gear", 16)
+    except blobly.SignalRefused as e:
+        print(e)            # Gear on "Powertrain": 16.0 is past what the 4-bit unsigned "Gear" holds (0.0 .. 15.0)
+    net.clear_signal(can1, "SUT", "Powertrain", "Gear")    # back to its stepmod source
+```
+
 ### E2E on what a script reads and sends
 
 Every frame a channel reads (`recv`, `expect`, a handler) carries **`f.e2e`**, its E2E verdict, a
@@ -1938,6 +1975,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 |---|---|
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
+| `blobly.SignalRefused` | A `Refused` (code -1): the engine refused a signal value that could not reach the wire, and set nothing (see [A signal of a simulated message](#a-signal-of-a-simulated-message)). |
 | `blobly.GeneratorRefused` | A `Refused` (code -1): the engine refused a generator call that could not take effect (see [Generators](#generators)). |
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered, a raw ISO-TP send whose receiver sent no Flow Control. A `BloblyError`, code -5. |
 | `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
@@ -2238,6 +2276,9 @@ break in either, raises `ValueError`, and the engine refuses the rest at `load()
 | `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
+| `net.set_signal(channel, node, message, signal, value)` | Holds one signal of a simulated node's message at a physical value from its next frame, until changed or cleared, while the project is started. `SignalRefused` where it could not reach the wire. |
+| `net.clear_signal(channel, node, message, signal=None)` | Lets go of that signal's value (`None`: every signal of the message). |
+| `net.clear_signals()` | Lets go of every value set; `clear_faults()` leaves them. |
 | `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
 | `net.nodes` | The nodes of the run's system model, a `Nodes` ([Nodes and their DIDs](#nodes-and-their-dids)); empty without a system.toml. `BloblyError` (code -3) when not started. |
 | `net.system` | The system.toml the run read, or `None` when none describes the project. `BloblyError` (code -3) when not started. |
@@ -2654,6 +2695,16 @@ A received frame's E2E verdict (`f.e2e`), a `str` enum: each member equals its s
 
 `blobly.FaultRefused`, a `Refused`: the engine refused a fault that could not take effect,
 and armed nothing.
+
+| member | what |
+|---|---|
+| `str(e)` | Why, in the engine's words. |
+| `e.code` | -1. |
+
+### `SignalRefused`
+
+`blobly.SignalRefused`, a `Refused`: the engine refused a signal value that could not reach the
+wire, and set nothing.
 
 | member | what |
 |---|---|
