@@ -75,9 +75,11 @@ test("a wait of 0 reads one frame", function()
 end)
 
 test("a PDU of the node id alone is a node with no bits", function()
+  local peer = bus.open_iface("inproc:NM")
+  -- a frame heard, then a silence past the timeout: the next frame is what woke the bus
+  bus.send(peer, 0x513, string.char(0x13, 0x00))
   nm.expect_asleep("body", 2000)
   local malformed = nm.reading("body").malformed
-  local peer = bus.open_iface("inproc:NM")
   bus.send(peer, 0x513, string.char(0x13))
   local w = nm.expect_state("body", "awake", 1000, { "domain" })
   check.equal(w.woken_by, "domain")
