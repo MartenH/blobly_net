@@ -759,8 +759,8 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   build), so the checksum covers it. Refused by ONE rule (`FaultTarget.set_signal` /
   `clear_signal`): a node not simulated there, a message it does not send, a signal it does not
   have, the E2E counter or CRC, a signal past the payload, a value the width cannot hold
-  (`encodable_refusal`; past the declared range is allowed). `clear_all` (a start, a project load)
-  clears both tables; `clear_faults` the faults only.
+  (`encodable_refusal`; past the declared range is allowed). `clear_all` (a headless start, a project load)
+  clears both tables, the GUI's Start the values; `clear_faults` the faults only.
 - **Dialogs do not dock** (`vgui.begin_dialog`, #306; a popup modal is pinned to the main viewport
   too, `vgui_begin_popup_modal`, or it opened as an OS window of its own that no screenshot saw; the rule is that function's doc comment,
   the callers are the list): a window opened for a moment's task carries a Close (or Cancel) and

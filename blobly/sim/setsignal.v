@@ -28,10 +28,11 @@ mut:
 	values map[string][]SetValue
 }
 
-// put holds `signal` of the message under `key` at `value`, replacing a value set before.
+// put holds `signal` of the message under `key` at `value`, replacing a value set before. Into a
+// new array: an engine's message holds the old one (apply_to) and reads it without the lock.
 fn (mut t ValueTable) put(key string, signal string, value f64) {
 	t.mu.lock()
-	mut vs := t.values[key] or { []SetValue{} }
+	mut vs := (t.values[key] or { []SetValue{} }).clone()
 	mut i := 0
 	for i < vs.len && vs[i].signal != signal {
 		i++

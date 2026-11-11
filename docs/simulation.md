@@ -715,7 +715,8 @@ the checksum covers it and a receiver reads a valid frame carrying it. A multipl
 written only in the frames its multiplexor selects; set the multiplexor too to choose the page.
 The values live in one process-wide table keyed by channel, node and message, like the faults,
 so a script reaches the GUI's simulation and the headless runner's alike. A start clears them,
-as it clears faults (and the GUI clears both when a project is loaded or its text replaced).
+in the GUI and headless alike (and the GUI clears them with the faults when a project is loaded
+or its text replaced).
 
 A value that could not reach the wire is **refused**, and nothing is set: a node not simulated
 on that channel, a message it does not send, a signal the message does not have, the E2E counter

@@ -125,6 +125,26 @@ fn test_set_values_are_kept_replaced_and_cleared() {
 	assert signal_values('inproc:SET', 'ECU', 'Plain').len == 0
 }
 
+// a set replaces the table's array, never the one an engine was stamped with, which the
+// simulation reads without the table's lock until its next pass
+fn test_a_set_leaves_a_stamped_engine_as_it_was() {
+	clear_all()
+	t := set_target()
+	mut e := set_engine()
+	t.set_signal('ECU', 'Protected', 'Speed', 9) or { panic(err) }
+	apply_injected('inproc:SET', mut e)
+	t.set_signal('ECU', 'Protected', 'Speed', 4) or { panic(err) }
+	mut held := []SetValue{}
+	for m in e.ecus[0].messages {
+		if m.msg.name == 'Protected' {
+			held = m.set.clone()
+		}
+	}
+	assert held == [SetValue{'Speed', 9}]
+	assert signal_values('inproc:SET', 'ECU', 'Protected') == [SetValue{'Speed', 4}]
+	clear_all()
+}
+
 // a value that could not reach the wire is refused, and nothing is stored
 fn test_a_set_that_cannot_take_effect_is_refused() {
 	clear_all()

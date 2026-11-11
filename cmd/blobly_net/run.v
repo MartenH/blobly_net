@@ -1178,6 +1178,8 @@ fn (mut app App) start() {
 	spawn open_taps_for_run(app, plan, start_gen)
 	// the signal values the simulated servers' live DIDs read, which this run publishes afresh
 	sim.clear_live()
+	// and the values a script held signals at, which a run starts without, as a headless one does
+	sim.clear_signal_values()
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
