@@ -189,17 +189,26 @@ pub fn (m SimMessage) sends() bool {
 }
 
 // change_raws is the raw value each generator that moves with time (Gen.follows_time) gives its
-// signal at time t (s), a value set on the signal standing in for it: what a change is a change of.
+// signal at time t (s), a value set on the signal standing in for it where the payload takes that
+// value (payload_of): what a change is a change of.
 fn (m SimMessage) change_raws(t f64) []u64 {
 	mut out := []u64{cap: m.signals.len}
+	mut taken := []bool{}
+	if m.set.len > 0 {
+		taken = set_taken(m.msg, m.payload(t, m.set))
+	}
 	for s in m.signals {
 		if !s.gen.follows_time() {
 			continue
 		}
 		mut raw := u64(0)
-		for sig in m.msg.signals {
+		for i, sig in m.msg.signals {
 			if sig.name == s.name {
-				raw = sig.raw_from_phys(set_value_of(m.set, s.name) or { s.gen.value(t, 0) })
+				mut v := s.gen.value(t, 0)
+				if taken.len > 0 && taken[i] {
+					v = set_value_of(m.set, s.name) or { v }
+				}
+				raw = sig.raw_from_phys(v)
 				break
 			}
 		}
@@ -571,9 +580,10 @@ pub const change_gap_ms = 10
 // change), or by a value a script sets or lets go of (setsignal.v): 1 + its repetitions times, the
 // repetitions a fast cycle apart, no send of it (a cyclic one of a mixed message included) closer
 // than the delay to the one before, change_gap_ms apart where the file states neither, none before
-// its start delay. The values when first looked at are where it starts, not a change.
+// its start delay (a change during it sent when it ends). The values when first looked at are
+// where it starts, not a change.
 fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, ecu string, send fn (f transport.CanFrame) bool) {
-	if !m.msg.on_change() || now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
+	if !m.msg.on_change() {
 		return
 	}
 	t := now_ms / 1000.0
@@ -586,7 +596,8 @@ fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, ecu string, send fn 
 		m.ev.left = 1 + m.msg.repetitions
 	}
 	m.ev.set = m.set
-	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
+	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms
+		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
 	}
 	m.emit(now_ms, mut e, ecu, send)
@@ -635,7 +646,7 @@ pub fn (e &Engine) next_due_ms() ?f64 {
 				}
 			}
 			if m.ev.left > 0 {
-				due := math.max(m.ev.next_ms, m.ev.hold_ms)
+				due := math.max(math.max(m.ev.next_ms, m.ev.hold_ms), f64(m.msg.start_delay_ms))
 				if !any || due < next {
 					next = due
 					any = true

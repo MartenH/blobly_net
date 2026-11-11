@@ -354,3 +354,57 @@ BA_ "GenSigStartValue" SG_ 260 Page 1;
 	// Sub sits on page 2, which the frame does not carry; Extra on page 1 is a change
 	assert sent == ['150.0 [1, 9]']
 }
+
+fn test_a_value_set_over_a_generator_on_an_unselected_page_is_no_change() {
+	db := candb.parse_dbc('BU_: Body
+BO_ 260 Paged: 2 Body
+ SG_ Page M : 0|4@1+ (1,0) [0|15] "" X
+ SG_ Sub m2M : 4|4@1+ (1,0) [0|15] "" X
+BA_DEF_ BO_ "GenMsgSendType" ENUM "cyclic","spontaneous","cyclicAndSpontaneous","NoMsgSendType";
+BA_DEF_DEF_ "GenMsgSendType" "spontaneous";
+BA_ "GenSigStartValue" SG_ 260 Page 1;
+')!
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'Body', {
+			'Sub': gen_stepmod(0.2, 100, 0)
+		}, [])]
+	}
+	iface := 'test:set-page-gen'
+	mut sent := []string{}
+	for t in grid(195, 5) {
+		if t == 50 {
+			set_value(iface, 'Body', 'Paged', 'Sub', 7)
+		}
+		if t == 150 {
+			clear_value(iface, 'Body', 'Paged', 'Sub')
+		}
+		apply_injected(iface, mut e)
+		for f in e.due_frames(t) {
+			sent << '${t} ${f.data}'
+		}
+	}
+	clear_value(iface, 'Body', 'Paged', '')
+	// Sub sits on page 2, which the frame does not carry: neither the set nor the clear moves it
+	assert sent == []
+}
+
+fn test_a_value_set_during_the_start_delay_is_sent_when_it_ends() {
+	db := candb.parse_dbc(send_type_dbc.replace('BA_ "GenMsgSendType" BO_ 258 3;', 'BA_ "GenMsgSendType" BO_ 258 3;\nBA_ "GenMsgStartDelayTime" BO_ 257 1000;'))!
+	mut e := Engine{
+		ecus: [ecu_from_dbc(db, 'Body')]
+	}
+	sent := sends_with_sets(mut e, grid(1100, 5), 257, {
+		200: 7.0
+	})
+	assert sent.map(it[0]) == ['1000.0', '1030.0', '1060.0']
+	assert sent.map(it[1]) == ['[7]', '[7]', '[7]']
+	// nothing goes out until the start delay ends, so the loop does not spin on the owed send
+	mut w := Engine{
+		ecus: [ecu_from_dbc(db, 'Body')]
+	}
+	sends_with_sets(mut w, grid(300, 5), 257, {
+		200: 7.0
+	})
+	assert w.next_due_ms()? <= 1000.0
+	assert w.recv_wait_ms(300) == loop_wait_ms
+}
