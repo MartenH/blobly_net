@@ -271,6 +271,66 @@ fn test_encode_is_the_inverse_of_texts() {
 	}
 }
 
+// The round trip for a scaled field: every raw value a scale reads writes back as itself — a
+// factor whose decimal has no binary form (0.1, 1/3) included, signed fields too — and every label
+// as the raw value it names.
+fn test_encode_is_the_inverse_of_texts_through_a_scaling() {
+	scaled := fn (typ string, sc Scaling) DidDesc {
+		f := Field{'v', typ}
+		return DidDesc{
+			kind:    .fields
+			size:    f.width()
+			fields:  [f]
+			scaling: {
+				'v': sc
+			}
+		}
+	}
+	layouts := [
+		scaled('u16', Scaling{
+			segments: [Linear{
+				v0: -40
+				v1: 0.1
+			}]
+		}),
+		scaled('i16', Scaling{
+			segments: [Linear{
+				v0: 7
+				v1: 1
+				d:  3
+			}]
+		}),
+		scaled('u8', Scaling{
+			segments: [Linear{0, 99, 0, 1, 10}, Linear{100, 255, 1e6, -0.25, 1}]
+		}),
+		scaled('u8', Scaling{
+			labels: [TextEntry{0, 0, 'Off', 0}, TextEntry{1, 3, 'On', 1}]
+		}),
+	]
+	for x in layouts {
+		w := x.fields[0].width()
+		n := 1 << (8 * w)
+		// a 16-bit field sampled, its last value included
+		mut raws := []int{}
+		for r := 0; r < n; r += if w > 1 { 37 } else { 1 } {
+			raws << r
+		}
+		raws << n - 1
+		for raw in raws {
+			mut b := []u8{len: w}
+			for i in 0 .. w {
+				b[w - 1 - i] = u8(raw >> (8 * i))
+			}
+			ts := x.texts(b)!
+			if x.scaling['v'].labels.len > 0 && raw in [2, 3] {
+				assert x.encode(ts)! == [u8(1)], 'a label writes the value it names'
+				continue
+			}
+			assert x.encode(ts)! == b, '${raw} -> ${ts}'
+		}
+	}
+}
+
 // The rendering reads through the codec too: a NUL-padded text shows without its padding.
 fn test_decode_did_renders_through_the_codec() {
 	d := EcuDesc{

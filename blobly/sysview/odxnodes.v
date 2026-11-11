@@ -9,7 +9,9 @@ import blobly.uds
 // entry: a node, its ODX source and variant, its request and response ids), added to the system
 // model beside system.toml's, so a tester names them, their DIDs and their DTCs as it names a
 // blobly_emb node's. The DIDs are the variant's 0x22/0x2E data identifiers laid out for the DID
-// codec, the faults its DTCs; what the codec cannot hold is read as bytes and said.
+// codec (a scaled field read as a physical number or a label) and gated by the sessions and level
+// their services' preconditions ask for, the faults its DTCs; what the codec cannot hold is read as
+// bytes and said.
 
 // with_odx_nodes is the model with a node added for every `diagnostics:` entry of the project's CAN
 // rows (`proj_dir` resolves their ODX sources), and what reading them had to say. A node named on
@@ -99,6 +101,9 @@ pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (Sy
 				for nt in node.desc.errs {
 					notes << '${label}: ${nt}'
 				}
+				for nt in node.desc.warns {
+					notes << '${label}: ${nt}'
+				}
 			}
 			out.nodes << node
 		}
@@ -117,8 +122,8 @@ fn (nodes []SysNode) index_of_name(name string) ?int {
 }
 
 // odx_desc is a variant as a node's description: its DTCs as faults, its DIDs laid out for the
-// codec (`errs` says each it reads as bytes instead). Its gates are not read from the ODX: a DID
-// it writes has a write gate that asks nothing, and the ECU's refusal says what it needs.
+// codec (`errs` says each it reads as bytes instead) with the gates their services ask for
+// (`warns` says one that cannot be met).
 fn odx_desc(v odx.Variant) EcuDesc {
 	mut d := EcuDesc{
 		server: true
@@ -134,9 +139,39 @@ fn odx_desc(v odx.Variant) EcuDesc {
 		if why != '' {
 			d.errs << 'DID 0x${x.id:04X} (${x.name}): ${why}; read as bytes'
 		}
+		for key, g in {
+			'read':  did.read_gate
+			'write': did.write_gate
+		} {
+			if w := g.contradiction() {
+				d.warns << 'DID 0x${x.id:04X} (${x.name}): ${key} ${w}'
+			}
+		}
 		d.dids << did
 	}
 	return d
+}
+
+// odx_gate is a service's preconditions as a gate: its sessions by name, as an ecu.toml writes them.
+fn odx_gate(g odx.Gate, declared bool) Gate {
+	return Gate{
+		declared: declared
+		sessions: g.sessions.map(uds.session_name(it))
+		level:    g.level
+	}
+}
+
+// odx_scaling is a part's compu method for the codec, none for an IDENTICAL one.
+fn odx_scaling(c odx.Compu) ?Scaling {
+	if c.segments.len == 0 && c.labels.len == 0 {
+		return none
+	}
+	return Scaling{
+		segments: c.segments.map(Linear{it.lo, it.hi, it.v0, it.v1, it.d})
+		labels:   c.labels.map(TextEntry{it.lo, it.hi, it.text, it.write})
+		fallback: c.fallback
+		unit:     c.unit
+	}
 }
 
 // odx_did is one DID for the codec: integer parts as fields, one text part as a text, else bytes —
@@ -144,6 +179,7 @@ fn odx_desc(v odx.Variant) EcuDesc {
 fn odx_did(x odx.Did) (DidDesc, string) {
 	mut kind := DidKind.data
 	mut fields := []Field{}
+	mut scaling := map[string]Scaling{}
 	mut why := ''
 	if x.parts.len == 1 && x.parts[0].kind == .text {
 		kind = .text
@@ -160,24 +196,31 @@ fn odx_did(x odx.Did) (DidDesc, string) {
 				break
 			}
 			fields << f
+			if sc := odx_scaling(q.compu) {
+				scaling[q.name] = sc
+			}
 		}
 		if why == '' {
 			kind = .fields
 		} else {
 			fields = []
+			scaling = map[string]Scaling{}
 		}
 	} else if x.parts.len > 1 {
 		why = 'its parts mix ${x.parts.map(it.kind.str()).join(', ')}, which the codec does not lay out together'
 	}
+	read_gate := odx_gate(x.read_gate, x.read_gate.declared)
+	write_gate := odx_gate(x.write_gate, x.writable)
 	return DidDesc{
 		id:         x.id
 		kind:       kind
 		name:       if x.name != '' { x.name } else { uds.standard_did_name(x.id) }
 		size:       x.size
 		fields:     fields
-		write:      if x.writable { 'open (its ODX gate is not read)' } else { '' }
-		write_gate: Gate{
-			declared: x.writable
-		}
+		scaling:    scaling
+		read:       if read_gate.declared { read_gate.words() } else { '' }
+		write:      if write_gate.declared { write_gate.words() } else { '' }
+		read_gate:  read_gate
+		write_gate: write_gate
 	}, why
 }

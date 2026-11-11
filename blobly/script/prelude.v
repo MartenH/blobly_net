@@ -691,10 +691,16 @@ local function part_text(did, part, v)
     if math.type(v) == "integer" then return string.format("%d", v) end
     error(where .. " is " .. (part.kind == "int" and "an integer" or "true or false") .. ", not " .. tostring(v), 3)
   end
-  if type(v) ~= "string" then
-    error(where .. " is a " .. (part.kind == "text" and "string" or "byte string") .. ", not " .. tostring(v), 3)
+  if part.kind == "number" then
+    if math.type(v) == "integer" then return string.format("%d", v) end
+    if math.type(v) == "float" then return string.format("%.17g", v) end
+    error(where .. " is a number, not " .. tostring(v), 3)
   end
-  if part.kind == "text" then return v end
+  if part.kind == "label" and math.type(v) == "integer" then return string.format("%d", v) end
+  if type(v) ~= "string" then
+    error(where .. " is a " .. ((part.kind == "text" or part.kind == "label") and "string" or "byte string") .. ", not " .. tostring(v), 3)
+  end
+  if part.kind == "text" or part.kind == "label" then return v end
   return tohex(v)
 end
 
@@ -704,11 +710,13 @@ end
 --   d.node                the name of the node
 --   d:dids()              its DIDs (those of its description, then the ISO identification DIDs it
 --                         does not declare): {id, name, kind, size (nil: not known), by_label,
---                         parts = {{label, kind ("int", "bool", "text", "bytes"), hint}},
+--                         parts = {{label, kind ("int", "bool", "text", "bytes", "number",
+--                         "label"), hint}},
 --                         read, write = {sessions, level} or nil (write nil: not writable)}
 --   d:did(did)            one of them: did is its name, or its identifier
 --   d:read(did)           0x22 decoded by its layout: the value of its one part (an integer, a
---                         boolean, a string, bytes), or a table by part label (by_label)
+--                         boolean, a physical number, a label, a string, bytes), or a table by
+--                         part label (by_label)
 --   d:write(did, value)   0x2E encoded by its layout, value as read answers it; raises, nothing
 --                         sent, when the layout refuses it, the DID has no write gate, or this
 --                         connection has not established the session and level the gate needs

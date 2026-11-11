@@ -6,10 +6,13 @@ import encoding.hex
 // didcodec.v — a DID's value to the texts a tester edits and back, by the description's layout:
 // ONE codec, so what the Diagnostics panel shows of a value and what it writes are the same
 // reading. `texts` decodes a value into one text per editable part, `encode` is its inverse, and
-// `encode(texts(b)) == b` for every value of the declared size (didcodec_test.v).
+// `encode(texts(b)) == b` for every value of the declared size (didcodec_test.v) — but a label
+// naming a range of raw values, which writes the one it names, and a text table's default label,
+// which names none.
 //
 // The parts: a laid-out DID (a live signal, a parameter, a parameter status) has one per field,
-// each an integer in decimal (a signed one may be negative) or `0x` hex, a `bool` as true/false;
+// each an integer in decimal (a signed one may be negative) or `0x` hex, a `bool` as true/false,
+// or — for a field the description scales (`scaling`, scaling.v) — a physical number or a label;
 // a text DID has one, the text; fixed bytes and a DID the description cannot lay out have one,
 // the bytes in hex.
 
@@ -21,13 +24,15 @@ pub:
 	hint  string // what it accepts: `u16 0..360`, `18 characters`, `hex bytes`
 }
 
-// PartKind is what a part's text holds: an integer in decimal, `true`/`false`, a text, or bytes in
-// hex.
+// PartKind is what a part's text holds: an integer in decimal, `true`/`false`, a text, bytes in
+// hex, a physical number in decimal, or a label of a text table.
 pub enum PartKind {
 	integer
 	boolean
 	text
 	bytes
+	number
+	label
 }
 
 // laid_out: the value is its fields, back to back.
@@ -40,11 +45,7 @@ fn (x DidDesc) laid_out() bool {
 // parts are the value's editable parts, in order.
 pub fn (x DidDesc) parts() []Part {
 	if x.laid_out() {
-		return x.fields.map(Part{
-			label: it.name
-			kind:  if it.typ == 'bool' { PartKind.boolean } else { PartKind.integer }
-			hint:  field_hint(it, x.limit(it), it.name in x.ranges)
-		})
+		return x.fields.map(x.field_part(it))
 	}
 	if x.is_text() {
 		return [Part{
@@ -73,7 +74,7 @@ pub fn (x DidDesc) texts(data []u8) ![]string {
 		mut at := 0
 		for f in x.fields {
 			w := f.width()
-			out << field_value(f, data[at..at + w])
+			out << x.field_text(f, data[at..at + w])!
 			at += w
 		}
 		return out
@@ -101,7 +102,11 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 	mut out := []u8{}
 	if x.laid_out() {
 		for i, f in x.fields {
-			out << field_bytes(f, texts[i], x.limit(f), f.name in x.ranges) or {
+			mut t := texts[i]
+			if sc := x.scaling[f.name] {
+				t = '${sc.raw(t, x.limit(f)) or { return error('${f.name}: ${err.msg()}') }}'
+			}
+			out << field_bytes(f, t, x.limit(f), f.name in x.ranges) or {
 				return error('${f.name}: ${err.msg()}')
 			}
 		}
@@ -125,6 +130,31 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 		return error('${out.len} byte(s), the description says ${x.size}')
 	}
 	return out
+}
+
+// field_part is one field's part: its scaling's number or label, else an integer or a bool.
+fn (x DidDesc) field_part(f Field) Part {
+	if sc := x.scaling[f.name] {
+		return Part{
+			label: f.name
+			kind:  sc.kind()
+			hint:  sc.hint(x.limit(f))
+		}
+	}
+	return Part{
+		label: f.name
+		kind:  if f.typ == 'bool' { PartKind.boolean } else { PartKind.integer }
+		hint:  field_hint(f, x.limit(f), f.name in x.ranges)
+	}
+}
+
+// field_text is one field's text from its bytes: through its scaling where it has one (refused for
+// a raw value no segment holds).
+fn (x DidDesc) field_text(f Field, b []u8) !string {
+	raw := field_value(f, b)
+	sc := x.scaling[f.name] or { return raw }
+	v := strconv.parse_int(raw, 10, 64) or { return error('${f.name}: ${raw} is past what a scale reads') }
+	return sc.text(v, x.limit(f)) or { error('${f.name}: ${err.msg()}') }
 }
 
 // limit is what a field may hold: its type's range, narrowed by the description's where it

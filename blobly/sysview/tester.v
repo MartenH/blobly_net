@@ -462,7 +462,12 @@ pub fn (x DidDesc) read_part(data []u8, p int) !string {
 			resp: data.clone()
 		}
 	}
-	return field_value(x.fields[p], data[at..at + w])
+	return x.field_text(x.fields[p], data[at..at + w]) or {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${err.msg()}'
+			resp: data.clone()
+		}
+	}
 }
 
 // readable refuses a value that is not what the description says: not its declared size, or a text

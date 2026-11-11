@@ -98,7 +98,7 @@ fn did_arg(l lua.State, node sysview.SysNode, i int) !sysview.DidDesc {
 }
 
 // push_did pushes one DID as a table: id, name, kind, size (nil when not known), parts (each with
-// label, kind — "int", "bool", "text", "bytes" — and hint), and read / write, each its gate's
+// label, kind — "int", "bool", "text", "bytes", "number", "label" — and hint), and read / write, each its gate's
 // {sessions, level} or nil where none is declared (write: not writable).
 fn push_did(l lua.State, x sysview.DidDesc) {
 	l.new_table()
@@ -142,6 +142,8 @@ fn part_kind(k sysview.PartKind) string {
 		.boolean { 'bool' }
 		.text { 'text' }
 		.bytes { 'bytes' }
+		.number { 'number' }
+		.label { 'label' }
 	}
 }
 
@@ -175,7 +177,7 @@ fn l_node_faults(l lua.State) i32 {
 }
 
 // l_node_read (handle, node, did, by_id): 0x22 decoded by the layout — one field's value (an integer, a
-// boolean), a text, bytes, or a table by label for several fields and for a parameter status
+// boolean, a physical number, a label), a text, bytes, or a table by label for several fields and for a parameter status
 // (whose fields are its parameters).
 fn l_node_read(l lua.State) i32 {
 	mut env := env_of(l)
@@ -204,7 +206,7 @@ fn l_node_read(l lua.State) i32 {
 }
 
 // push_part pushes one part's text as the Lua value it is: an integer (lua_int's; the caller
-// refuses one past it), a boolean, a string, or bytes.
+// refuses one past it), a boolean, a float, a string, or bytes.
 fn push_part(l lua.State, p sysview.Part, text string) {
 	match p.kind {
 		.integer {
@@ -213,7 +215,10 @@ fn push_part(l lua.State, p sysview.Part, text string) {
 		.boolean {
 			l.push_bool(text == 'true')
 		}
-		.text {
+		.number {
+			l.push_num(strconv.atof64(text) or { 0 })
+		}
+		.text, .label {
 			l.push_str(text)
 		}
 		.bytes {

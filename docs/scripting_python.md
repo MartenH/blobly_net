@@ -1613,10 +1613,13 @@ the DID to learn it.
 them, and the base or ECU variant to read) and the ids it is reached at
 ([odx.md](odx.md), [projects/odx-demo.blobnet](../projects/odx-demo.blobnet)). Such a node is in
 `net.nodes` beside system.toml's, with or without one: its DIDs are the variant's 0x22 / 0x2E data
-identifiers (`kind` `"fields"`, `"text"` or `"data"`; a value the ODX scales or maps is `"data"`,
-read as its bytes), its faults the variant's DTCs, and `read`, `write` and `fault` work as above.
-Its gates are not read from the ODX yet: a DID with a 0x2E service has a write gate that asks for
-nothing, and the ECU's own refusal says what it needs.
+identifiers (`kind` `"fields"`, `"text"` or `"data"`), its faults the variant's DTCs, and `read`,
+`write` and `fault` work as above. A value the ODX scales linearly (`LINEAR`, `SCALE-LINEAR`) is a
+`"number"` part, read as a float in its unit and written as a number; one it maps by a `TEXTTABLE`
+is a `"label"` part, read and written as its labels. Its read and write gates are its services'
+state-chart preconditions — the sessions their 0x10 transitions name and the level a 0x27 sendKey
+unlocks — so `write` raises `WriteGated` until `session()` and `security_access()` have
+established them; a value or gate the ODX states in a way not read is said at start.
 
 ### Raw ISO-TP
 
@@ -2827,7 +2830,7 @@ number"]`, by position, `node.dids.keys()`). A DID of no name is reached by posi
 | `Did.by_label` | `read` answers `{label: value}`: several parts, or a parameter status. |
 | `Did.read_gate`, `Did.write_gate` | A `Gate`, or `None` where none is declared: read in any session; not writable. |
 | `Did.index` | Its position in the node's listing. |
-| `DidPart.label`, `DidPart.kind`, `DidPart.hint` | A field's name (else `"text"` or `"bytes"`), `"int"`, `"bool"`, `"text"` or `"bytes"`, and what it accepts as the engine says it (`"u16 0..360"`). |
+| `DidPart.label`, `DidPart.kind`, `DidPart.hint` | A field's name (else `"text"` or `"bytes"`), `"int"`, `"bool"`, `"text"`, `"bytes"`, `"number"` (a value the description scales: read as a float, written as a number rounded to the nearest raw value) or `"label"` (a text-table label: a str, written as a label or an integer raw value), and what it accepts as the engine says it (`"u16 0..360"`, `"number -40..6513.5 °C"`, `"one of Off, On, Auto"`). |
 | `Gate.sessions`, `Gate.level` | The sessions it is served in by their ecu.toml names (none: any), and the security level it needs (0: none). `str(gate)` is `"extended, level 1"`. |
 | `dids.keys()` | The names, in order, each once. |
 

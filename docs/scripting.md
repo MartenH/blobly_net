@@ -417,9 +417,9 @@ enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge
 | Method | What | Returns |
 |---|---|---|
 | `d.node` | the node's name | string |
-| `d:dids()` | its DIDs: those its ecu.toml declares, then the ISO identification DIDs it does not | array of `{id, name, kind, size, by_label, parts = { {label, kind, hint} }, read, write}` — `kind` `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"`, an ODX node's `"fields"`, `"text"` or `"data"`, or `"unknown"` (no layout: bytes); `size` nil when not known; a part's `kind` `"int"`, `"bool"`, `"text"` or `"bytes"` and its `hint` what it accepts (`"u16 0..360"`); `read` / `write` the gate `{sessions, level}`, nil where none is declared (`write` nil: not writable) |
+| `d:dids()` | its DIDs: those its ecu.toml declares, then the ISO identification DIDs it does not | array of `{id, name, kind, size, by_label, parts = { {label, kind, hint} }, read, write}` — `kind` `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"`, an ODX node's `"fields"`, `"text"` or `"data"`, or `"unknown"` (no layout: bytes); `size` nil when not known; a part's `kind` `"int"`, `"bool"`, `"text"`, `"bytes"`, `"number"` (a value the description scales: a float) or `"label"` (a text-table label: a string) and its `hint` what it accepts (`"u16 0..360"`, `"number -40..6513.5 °C"`, `"one of Off, On, Auto"`); `read` / `write` the gate `{sessions, level}`, nil where none is declared (`write` nil: not writable) |
 | `d:did(did)` | one DID: `did` its name (a string: `"SteerLimit"`, ISO's `"ECU serial number"`) or its identifier (a number: `0x0110`) | as `dids` |
-| `d:read(did)` | `0x22`, decoded by the layout | its one part's value (an integer, a boolean, a string for a text, bytes), or a table by part label when `by_label` (several fields, or a parameter status, whose parts are its parameters) |
+| `d:read(did)` | `0x22`, decoded by the layout | its one part's value (an integer, a boolean, a float for a scaled value, a string for a text or a label, bytes), or a table by part label when `by_label` (several fields, or a parameter status, whose parts are its parameters) |
 | `d:write(did, value)` | `0x2E`, encoded by the layout; `value` as `read` returns it | — |
 | `d:dtcs()`, `d:supported_dtcs()`, `d:snapshot_ids()`, `d:snapshot(...)`, `d:extended(...)` | as on `uds.open`, each record also carrying `fault`, the name of its `[[fault]]` (nil for a DTC the description does not declare) | |
 
@@ -437,9 +437,10 @@ DID to learn it. `tests/diag_nodes.lua` runs all of it against the described zon
 **A node an ODX file describes** is a node too: a CAN row's `diagnostics:` entry names it, its ODX
 source and variant and its ids ([odx.md](odx.md)), with or without a system.toml. Its DIDs are the
 variant's 0x22 / 0x2E data identifiers (`kind` `"fields"`, `"text"` or `"data"`, the last read as
-bytes, which is also what a value the ODX scales or maps is), its faults the variant's DTCs; its
-gates are not read from the ODX yet, so a DID with a 0x2E service is written without one and the
-ECU's refusal says what it needs. `tests/odx_nodes.lua` runs it against `projects/odx-demo.blobnet`.
+bytes), its faults the variant's DTCs. A value the ODX scales linearly is a `"number"` part (a float
+in its unit, written as a number), one it maps by a text table a `"label"` part (its labels); its
+read and write gates are its services' state-chart preconditions, so `d:write` raises until
+`d:session()` and `d:security_access()` have established what the gate asks for. `tests/odx_nodes.lua` runs it against `projects/odx-demo.blobnet`.
 
 ### Raw ISO-TP
 

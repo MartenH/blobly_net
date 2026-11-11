@@ -78,6 +78,8 @@ pub:
 	write_gate Gate
 	// a parameter's per-field range (`range = { deg = { min, max } }`), by field name
 	ranges map[string]Range
+	// a field's raw value read and written as a physical number or a label, by field name
+	scaling map[string]Scaling
 }
 
 // Gate is a `read`/`write` table: the sessions the service is served in (none listed = any) and
@@ -89,6 +91,18 @@ pub:
 	declared bool
 	sessions []string // `default`, `programming`, `extended`, as the ecu.toml writes them
 	level    int
+}
+
+// words is the gate as the description reads (`extended, level 1`), `open` for one asking nothing.
+pub fn (g Gate) words() string {
+	mut parts := []string{}
+	if g.sessions.len > 0 {
+		parts << g.sessions.join('/')
+	}
+	if g.level != 0 {
+		parts << 'level ${g.level}'
+	}
+	return if parts.len == 0 { 'open' } else { parts.join(', ') }
 }
 
 // Range is an inclusive range a field's value must lie in.
