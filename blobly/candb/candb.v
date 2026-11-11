@@ -35,6 +35,19 @@ pub mut:
 	is_multiplexor    bool // 'M' — selects which multiplexed signals are present
 	is_multiplexed    bool // 'm<N>' — present only when the switch == multiplexor_value
 	multiplexor_value int  // the N in 'm<N>'
+	// the raw value a node sends before anything sets the signal (DBC GenSigStartValue, else its
+	// BA_DEF_DEF_), as the field's bits — two's complement for a signed signal; has_start false
+	// where the file states none (0 is a start value)
+	start_raw u64
+	has_start bool
+}
+
+// start is the signal's start value in physical units, none where the file states none.
+pub fn (s Signal) start() ?f64 {
+	if !s.has_start {
+		return none
+	}
+	return s.phys_from_raw(s.start_raw)
 }
 
 // label returns the VAL_ table name for the signal's current raw value in
@@ -84,6 +97,89 @@ pub fn (m Message) template() []u8 {
 	return []u8{len: m.payload_len()}
 }
 
+// initial is the payload a node sends before anything sets a signal: template with every signal
+// the file gives a start value (Signal.start_raw) at it, the multiplexor switch at `switch_raw`
+// when given (a caller about to set it), else at its own start value, and only the multiplexed
+// signals that switch selects filled.
+pub fn (m Message) initial(switch_raw ?u64) []u8 {
+	mut data := m.template()
+	sw := m.multiplexor_index()
+	if sw >= 0 {
+		if v := switch_raw {
+			m.signals[sw].set_raw(mut data, v)
+		} else if m.signals[sw].has_start {
+			m.signals[sw].set_raw(mut data, m.signals[sw].start_raw)
+		}
+	}
+	carried := m.carried(data)
+	for i, s in m.signals {
+		if i != sw && s.has_start && carried[i] {
+			s.set_raw(mut data, s.start_raw)
+		}
+	}
+	return data
+}
+
+// cyclic_period is the period a node sends the message on: its cycle (GenMsgCycleTime), unless
+// its send type says it is not sent cyclically (event-only, or not sent at all); 0 for none.
+pub fn (m Message) cyclic_period() int {
+	if m.cycle_ms <= 0 || m.send_type in [.event, .not_sent] {
+		return 0
+	}
+	return m.cycle_ms
+}
+
+// on_change is whether the message is also sent when a signal of it changes (GenMsgSendType
+// event or mixed).
+pub fn (m Message) on_change() bool {
+	return m.send_type in [.event, .mixed]
+}
+
+// SendType is a message's GenMsgSendType as this model reads it.
+pub enum SendType {
+	unstated // the file gives none
+	cyclic   // on its cycle (cyclic, cyclicIfActive, …)
+	event    // when a signal changes (spontaneous, OnChange, OnWrite, …)
+	mixed    // on its cycle and when a signal changes (cyclicAndSpontaneous, …)
+	not_sent // NoMsgSendType: the node does not send it
+	other    // a choice this reader does not recognise: read as unstated
+}
+
+// send_type_of reads a GenMsgSendType choice, as the file spells it, into a SendType.
+pub fn send_type_of(choice string) SendType {
+	c := choice.to_lower()
+	if c == '' {
+		return .unstated
+	}
+	if c in ['nomsgsendtype', 'none', 'nosendtype'] {
+		return .not_sent
+	}
+	cyc := c.contains('cyclic') || c.contains('periodic') || c.contains('ifactive')
+	ev := c.contains('spontan') || c.contains('event') || c.contains('onchange')
+		|| c.contains('onwrite')
+	return if cyc && ev {
+		.mixed
+	} else if cyc {
+		.cyclic
+	} else if ev {
+		.event
+	} else {
+		.other
+	}
+}
+
+// name is the word a script reads for it: '' for unstated.
+pub fn (t SendType) name() string {
+	return match t {
+		.unstated { '' }
+		.cyclic { 'cyclic' }
+		.event { 'event' }
+		.mixed { 'mixed' }
+		.not_sent { 'none' }
+		.other { 'other' }
+	}
+}
+
 pub struct Message {
 pub mut:
 	name     string
@@ -95,7 +191,14 @@ pub mut:
 	// send the same message; `sender` names only the first. Anything asking "does node X send
 	// this?" must consult both — see senders(). Empty for the overwhelming majority of messages.
 	tx_nodes []string
-	cycle_ms int    // GenMsgCycleTime attribute if present (0 = not cyclic / unknown)
+	cycle_ms int    // GenMsgCycleTime attribute if present, else its BA_DEF_DEF_ (0 = not cyclic / unknown)
+	// GenMsgSendType: the choice as the file spells it ('' where it states none) and its reading
+	send_type_name string
+	send_type      SendType
+	cycle_fast_ms  int // GenMsgCycleTimeFast: the period of a message's repetitions (0: none stated)
+	repetitions    int // GenMsgNrOfRepetition: how many times a change is sent again after the first
+	delay_ms       int // GenMsgDelayTime: the least time between two sends of the message
+	start_delay_ms int // GenMsgStartDelayTime: the time from the node's start to its first send
 	// DECLARED J1939, from `BA_ "VFrameFormat" … J1939PG`. False means "the file did not say
 	// so", never "this is not J1939" — most J1939 DBCs carry no such attribute at all.
 	//

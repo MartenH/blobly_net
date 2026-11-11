@@ -79,6 +79,13 @@ BO_ 516 Words: 8 A
  SG_ Big : 0|64@1+ (1,0) [0|0] "" B
 
 VAL_ 516 Big 9007199254740992 "two to the 53" 9007199254740993 "and one" ;
+BA_DEF_ BO_ "GenMsgSendType" ENUM "cyclic","spontaneous";
+BA_ "GenMsgCycleTime" BO_ 513 50;
+BA_ "GenMsgSendType" BO_ 514 1;
+BA_ "GenMsgDelayTime" BO_ 514 20;
+BA_ "GenMsgNrOfRepetition" BO_ 514 2;
+BA_ "GenSigStartValue" SG_ 2147484160 Level -3;
+BA_ "GenSigStartValue" SG_ 513 One 7;
 """
 
 MUX = """project:
@@ -708,6 +715,19 @@ class TestDatabases:
             with pytest.raises(blobly.BloblyError):
                 m.messages.Twice  # two messages of one name: by position
             assert [x.id for x in m.messages if x.name == "Twice"] == [0x201, 0x202]
+
+    def test_send_attributes_and_start_values(self, mux):
+        with blobly.Project(mux) as net:
+            m = net.channels.M
+            one, two = [x for x in m.messages if x.name == "Twice"]
+            assert (one.cycle_ms, one.send_type, one.delay_ms) == (50, None, 0)
+            assert (two.cycle_ms, two.send_type, two.delay_ms, two.repetitions) == (0, "event", 20, 2)
+            level = m.messages.Wide.signals.Level
+            assert (level.start_raw, level.start) == (0xFD, -3.0)
+            assert (one.signals.One.start_raw, one.signals.One.start) == (7, 7.0)
+            assert m.messages.Words.signals.Big.start_raw is None
+            assert m.messages.Words.signals.Big.start is None
+            assert one.encode().data[0] == 0, "encode starts every signal at raw 0"
 
     def test_awkward_definitions(self, mux):
         with blobly.Project(mux) as net:

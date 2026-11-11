@@ -2069,9 +2069,9 @@ fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off 
 			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity, and no compu method, unit or constraint is applied to it'
 		}
 		if iv := child(isig, 'INIT-VALUE') {
-			// what the ECU transmits before the first write. The model has no place for it (a
-			// DBC's GenSigStartValue is not read either), so the simulated ECUs start every
-			// unconfigured signal at raw 0 — a nonzero declaration is a payload that differs
+			// what the ECU transmits before the first write. This reader does not carry it into
+			// the model (Signal.start_raw, where a DBC's GenSigStartValue goes), so the simulated
+			// ECUs start such a signal at raw 0 — a nonzero declaration is a payload that differs
 			// from the file, and is said. Judged by the DIRECT form: a deep search for a VALUE
 			// would read a TEXT-VALUE's label as 0 and an ARRAY's first element as the whole.
 			// Zero is what the frame does anyway. After the width guard, so nothing is said

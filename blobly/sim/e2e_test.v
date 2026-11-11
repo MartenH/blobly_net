@@ -570,7 +570,8 @@ fn test_validate_cfg_covers_generators_and_protection() {
 		nodes:    ['SUT']
 		messages: [candb.Message{
 			...protected_msg()
-			sender: 'SUT'
+			sender:   'SUT'
+			cycle_ms: 100
 		}]
 	}
 	cfg := project.NodeCfg{

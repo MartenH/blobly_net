@@ -1,6 +1,7 @@
 // dbc_write — the canonical DBC serializer: the write half the editor phase
 // needs (docs/dbc_editor.md). Emits exactly the record subset the parser
-// reads (BU_/BO_/SG_/CM_ SG_/VAL_/BA_ GenMsgCycleTime) plus the standard
+// reads (BU_/BO_/SG_/CM_ SG_/VAL_/BA_: GenMsgCycleTime, the send attributes and
+// GenSigStartValue of dbc_send.v, VFrameFormat, E2E) plus the standard
 // preamble other tools expect, in CANONICAL deterministic order — messages by
 // id, signals by start_bit then name, value tables by raw value — so a saved
 // file is stable under reload and a git diff shows real changes only.
@@ -283,6 +284,15 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	if cycle.values.len > 0 {
 		attrs << cycle
 	}
+	// the other send attributes (dbc_send.v), from the model, so a Save keeps what the parser read
+	if a := send_type_attr(msgs) {
+		attrs << a
+	}
+	for name in send_int_attrs {
+		if a := send_int_attr(msgs, name) {
+			attrs << a
+		}
+	}
 	// VFrameFormat, from the model — so a DBC-editor Save keeps a J1939 declaration (which the
 	// `verify:` self-sent notice depends on, codex on #289) and a message's stated frame format.
 	//
@@ -395,16 +405,27 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		}
 	}
 	attrs << x.attrs
+	// a signal's start value: [definition, default, values…]
+	starts := start_value_lines(msgs) or { []string{} }
 	for a in attrs {
 		b << 'BA_DEF_ BO_ "${a.name}" ${a.typ};'
 	}
+	if starts.len > 0 {
+		b << starts[0]
+	}
 	for a in attrs {
 		b << 'BA_DEF_DEF_ "${a.name}" ${a.default};'
+	}
+	if starts.len > 0 {
+		b << starts[1]
 	}
 	for a in attrs {
 		for v in a.values {
 			b << 'BA_ "${a.name}" BO_ ${raw_id(v.id, v.ext)} ${v.value};'
 		}
+	}
+	if starts.len > 2 {
+		b << starts[2..]
 	}
 
 	// value tables, keys ascending

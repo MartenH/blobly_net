@@ -94,9 +94,15 @@ pub mut:
 	id      u32
 	ext     u8
 	j1939   u8
-	format  u8
-	dlc     i32
-	signals i32
+	format         u8
+	dlc            i32
+	signals        i32
+	cycle_ms       i32
+	cycle_fast_ms  i32
+	repetitions    i32
+	delay_ms       i32
+	start_delay_ms i32
+	send_type      u8
 }
 
 pub struct C.bb_signal {
@@ -113,6 +119,9 @@ pub mut:
 	offset      f64
 	minimum     f64
 	maximum     f64
+	start_raw   u64
+	start       f64
+	has_start   u8
 }
 
 // bb.h's interface and Vector rows (ifaces.v)
@@ -1196,8 +1205,26 @@ pub fn bb_message_info(row i32, m i32, out &C.bb_message) i32 {
 		out.format = format_code(project.declared_format(msg))
 		out.dlc = i32(msg.payload_len())
 		out.signals = i32(msg.signals.len)
+		out.cycle_ms = i32(msg.cycle_ms)
+		out.cycle_fast_ms = i32(msg.cycle_fast_ms)
+		out.repetitions = i32(msg.repetitions)
+		out.delay_ms = i32(msg.delay_ms)
+		out.start_delay_ms = i32(msg.start_delay_ms)
+		out.send_type = send_type_code(msg.send_type)
 	}
 	return ok()
+}
+
+// send_type_code is bb.h's enum bb_send_type for a message's send type, by variant.
+fn send_type_code(t candb.SendType) u8 {
+	return u8(match t {
+		.unstated { C.BB_SEND_UNSTATED }
+		.cyclic { C.BB_SEND_CYCLIC }
+		.event { C.BB_SEND_EVENT }
+		.mixed { C.BB_SEND_MIXED }
+		.not_sent { C.BB_SEND_NONE }
+		.other { C.BB_SEND_OTHER }
+	})
 }
 
 @[export: 'bb_message_name']
@@ -1225,6 +1252,9 @@ pub fn bb_signal_info(row i32, m i32, s i32, out &C.bb_signal) i32 {
 		out.offset = sig.offset
 		out.minimum = sig.minimum
 		out.maximum = sig.maximum
+		out.start_raw = sig.start_raw
+		out.start = sig.start() or { 0 }
+		out.has_start = u8(sig.has_start)
 	}
 	return ok()
 }

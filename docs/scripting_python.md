@@ -601,7 +601,11 @@ It exists while the project is started, and raises `BloblyError` (code -3) other
 like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `keys()`, `dir()`.
 
 - A **`Message`** has `name`, `id`, `ext`, `dlc`, `j1939` (whether the database declares it
-  J1939), `channel` and `signals`. It belongs to the run that listed it. After a stop and a start
+  J1939), `channel` and `signals`, and what the database says about when a node sends it:
+  `cycle_ms` (`GenMsgCycleTime`, else its `BA_DEF_DEF_`), `send_type` (`GenMsgSendType` read as
+  `"cyclic"`, `"event"`, `"mixed"`, `"none"` or `"other"`; `None` where the file states none),
+  `cycle_fast_ms`, `repetitions`, `delay_ms` and `start_delay_ms` (0 where the file states none),
+  so `msg.send_cyclic(msg.cycle_ms)` repeats the file's period. It belongs to the run that listed it. After a stop and a start
   it goes on working while the database still has it at its position under its name and id;
   otherwise it raises `BloblyError`.
 - A **`Signal`** has `name`, `start_bit` (as the DBC numbers it), `length`, `byte_order`
@@ -610,9 +614,12 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   `mux_value`. Its value table comes twice: `labels` as `{physical value: text}`, keyed like the
   values `decode()` returns, and `raw_labels` as `{raw key: text}`, keyed as the database keys
   it (two's complement for a signed signal). `raw_labels` has every entry; in `labels`, two keys
-  a double cannot tell apart (past 2^53) are one entry.
+  a double cannot tell apart (past 2^53) are one entry. `start_raw` and `start` are its start
+  value (`GenSigStartValue`, else its `BA_DEF_DEF_`) as the raw bits and physical, `None` where the
+  database states none: what a simulated node or a generator sends for a signal nothing sets.
 - `msg.encode(**signals)` returns the `Frame` the message sends with the named signals at these
-  physical values and every other at raw 0. A name the message does not have raises
+  physical values and every other at raw 0, not at its start value; to send the start values,
+  name them: `msg.encode(**{s.name: s.start for s in msg.signals if s.start is not None})`. A name the message does not have raises
   `BloblyError`, and a value that is not a number raises `TypeError`. The DBC's range is not
   applied, only the signal's width (a value past it is clamped to the nearer end), so a test can
   send an out-of-range value on purpose. `fd`/`brs` are left unset. Its E2E is not stamped.
@@ -2407,6 +2414,9 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.dlc` | The payload length `encode` gives it. |
 | `msg.j1939` | Whether the database declares it J1939. |
 | `msg.format` | The frame format its database states (`VFrameFormat`, `CANFD_BRS`; an ARXML frame's behaviour): `"classic"`, `"fd"`, `"fd_brs"`, or `None` where it states none. `send` and `send_cyclic` send it in that format unless they state another. |
+| `msg.cycle_ms` | Its `GenMsgCycleTime` (else the file's default), 0 when none. |
+| `msg.send_type` | Its `GenMsgSendType`: `"cyclic"`, `"event"`, `"mixed"`, `"none"`, `"other"`, or `None` where unstated. |
+| `msg.cycle_fast_ms`, `msg.repetitions`, `msg.delay_ms`, `msg.start_delay_ms` | `GenMsgCycleTimeFast`, `GenMsgNrOfRepetition`, `GenMsgDelayTime`, `GenMsgStartDelayTime`; 0 when none. |
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
 | `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
@@ -2444,6 +2454,7 @@ A signal of a message (`msg.signals.EngineSpeed`). physical = raw × `factor` + 
 | `sig.multiplexed`, `sig.mux_value` | Whether it is present only for one multiplexor value, and which. |
 | `sig.labels` | The value table as `{physical value: text}`. |
 | `sig.raw_labels` | The value table as `{raw key: text}`, every entry. |
+| `sig.start_raw`, `sig.start` | Its `GenSigStartValue` as raw bits and physical; `None` where the database states none. |
 
 ### `UdsClient`, `NodeClient`
 

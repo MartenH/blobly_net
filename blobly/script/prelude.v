@@ -1153,10 +1153,11 @@ end
 
 -- ============================ the DBC catalog ============================
 -- dbc.messages(channel): every message of the channel`s databases, in their order, each
--- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,
+-- { name, id, ext, dlc, j1939, cycle_ms, send_type (nil where unstated), cycle_fast_ms,
+-- repetitions, delay_ms, start_delay_ms, signals = { ... } }; a signal is { name, start_bit, length,
 -- byte_order = "little"|"big", signed, factor, offset, minimum, maximum, unit, multiplexor,
 -- multiplexed, mux_value (multiplexed only), labels = { [physical] = text },
--- raw_labels = { [raw] = text } }.
+-- raw_labels = { [raw] = text }, start_raw and start (nil where unstated) }.
 -- dbc.message(channel, name_or_id [, ext]): one message, an id of that kind (ext defaults
 -- false) exactly as the database defines it; nil for none.
 -- dbc.signal(channel, message, name [, ext]): one signal of a message (a name or an id); nil for none.

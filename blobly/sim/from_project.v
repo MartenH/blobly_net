@@ -109,7 +109,37 @@ pub fn validate_cfg(db candb.Database, cfg project.NodeCfg) []string {
 	}
 	warns << validate_protection(db, cfg)
 	warns << validate_uds([cfg])
+	unsent := unsent_note(from_project(db, cfg))
+	if unsent != '' {
+		warns << unsent
+	}
 	return warns
+}
+
+// unsent_note says how many of an ECU's messages it never sends, '' for none: no cycle
+// (Message.cyclic_period), no response rule answering with it, and no generator to change it
+// where its send type sends it on a change.
+pub fn unsent_note(ecu SimEcu) string {
+	mut names := []string{}
+	mut on_change := false
+	for m in ecu.messages {
+		if m.period_ms > 0 || ecu.rules.any(it.resp_id == m.msg.id && it.resp_ext == m.msg.ext) {
+			continue
+		}
+		if m.msg.on_change() {
+			if m.signals.len > 0 {
+				continue
+			}
+			on_change = true
+		}
+		names << m.msg.name
+	}
+	if names.len == 0 {
+		return ''
+	}
+	shown := if names.len > 5 { names[..5].join(', ') + ', …' } else { names.join(', ') }
+	hint := if on_change { '; an event message is sent when a generator changes one of its signals' } else { '' }
+	return '${names.len} of its ${ecu.messages.len} messages are never sent, with no cycle to send them on (${shown})${hint}'
 }
 
 // validate_protection reports every `protect:` entry that will NOT take effect.

@@ -114,10 +114,17 @@ of the mode — the ECUs configured on a channel transmit whenever the measureme
 ```
 
 Each named node transmits every **cyclic** message the DBC says it sends, at the DBC's cycle
-time, with signals held constant. Messages with no `GenMsgCycleTime` (or zero) are event-driven
-and are **not** transmitted — nothing decides when they should fire. Send those from the
-Generators panel, or drive them from a script; if a rest-bus test needs event traffic, that is
-where it comes from. The panel describes these as `(frames derived from the DBC)` rather than
+time (`GenMsgCycleTime`, else the file's `BA_DEF_DEF_` for it), from its `GenMsgStartDelayTime`,
+with signals held at their start values. A message whose `GenMsgSendType` is event-only
+(`spontaneous`, `OnChange`, …) or `NoMsgSendType` is not sent on its cycle. An **event** or
+**mixed** message (`cyclicAndSpontaneous`, …) is sent when a generator changes the raw value of one
+of its signals: `1 + GenMsgNrOfRepetition` times, the repetitions `GenMsgCycleTimeFast` apart and
+no two closer than `GenMsgDelayTime` (a mixed one keeps its cycle as well); the values at the start
+are not a change, and a `counter` generator, which moves with each send, does not trigger one. A
+message with no cycle and nothing to change it is **not** transmitted, and the node's line in the
+Simulation panel (and the headless runner's output) says how many such messages it has. Send
+those from the Generators panel, or drive them from a script; if a rest-bus test needs event
+traffic without a generator, that is where it comes from. The panel describes these as `(frames derived from the DBC)` rather than
 `0 sig / 0 resp`, which would read as "this ECU sends nothing".
 
 **One exception: a node called `SUT`.** That name is special-cased to a hand-tuned reference
@@ -149,10 +156,12 @@ bench.
 | `counter` | `start + step·n` per send, wrapping at `modulo` (without one the RAW value holds at the end of the signal's width — raw 0 for a falling unsigned counter; the physical value it stops at depends on factor and offset, e.g. -40 with offset -40) | `start`, `step`, `modulo` |
 | `stepmod` | a staircase: `base + (⌊t/period⌋ mod count)` | `period`, `count`, `base` |
 
-Signals with no generator keep their payload bits at **raw zero**, which is not the same as
+Signals with no generator go out at their **start value** (`GenSigStartValue`, else the file's
+default for it), and where the DBC states none at **raw zero**, which is not the same as
 physical zero: a signal with an offset decodes as that offset, so a temperature declared with
 offset -40 reads as -40 °C rather than 0. Give it a `const` generator if you want a particular
-physical value.
+physical value. A `senders:` generator starts from the same payload: a signal it does not list
+goes out at its start value.
 
 A generator naming a signal the node does not send is reported rather than silently ignored.
 

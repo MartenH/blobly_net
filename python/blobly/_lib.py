@@ -167,7 +167,14 @@ class BbFrame(ctypes.Structure):
 class BbMessage(ctypes.Structure):
     """bb_message, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
-                ("format", ctypes.c_uint8), ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
+                ("format", ctypes.c_uint8), ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32),
+                ("cycle_ms", ctypes.c_int32), ("cycle_fast_ms", ctypes.c_int32),
+                ("repetitions", ctypes.c_int32), ("delay_ms", ctypes.c_int32),
+                ("start_delay_ms", ctypes.c_int32), ("send_type", ctypes.c_uint8)]
+
+
+# enum bb_send_type by code; BB_SEND_UNSTATED (0) is None
+SEND_TYPES = {1: "cyclic", 2: "event", 3: "mixed", 4: "none", 5: "other"}
 
 
 class BbSignal(ctypes.Structure):
@@ -177,7 +184,9 @@ class BbSignal(ctypes.Structure):
                 ("multiplexor", ctypes.c_uint8), ("multiplexed", ctypes.c_uint8),
                 ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32),
                 ("factor", ctypes.c_double), ("offset", ctypes.c_double),
-                ("minimum", ctypes.c_double), ("maximum", ctypes.c_double)]
+                ("minimum", ctypes.c_double), ("maximum", ctypes.c_double),
+                ("start_raw", ctypes.c_uint64), ("start", ctypes.c_double),
+                ("has_start", ctypes.c_uint8)]
 
 
 class BbUdsTarget(ctypes.Structure):

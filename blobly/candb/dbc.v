@@ -26,6 +26,9 @@ pub mut:
 	// it ('' name for a DBC): so a check compares a row with the parse that was LOADED, never a
 	// later one of the same path (#439)
 	arxml ArxmlBus
+	// what the DBC reader read and refused (a send attribute or start value that is not one), one
+	// line each; said by open_database
+	read_notes []string
 }
 
 // ArxmlBus is what an ARXML cluster states about the bus that carries it.
@@ -415,6 +418,8 @@ mut:
 	is_multiplexor    bool
 	is_multiplexed    bool
 	multiplexor_value int
+	start_raw         u64
+	has_start         bool
 }
 
 struct MsgBuilder {
@@ -426,6 +431,13 @@ mut:
 	sender   string
 	tx_nodes []string // additional transmitters from BO_TX_BU_
 	cycle_ms int
+	// whether a GenMsgCycleTime record named the message: a BA_DEF_DEF_ fills only the rest
+	cycle_stated   bool
+	send_type_name string
+	cycle_fast_ms  int
+	repetitions    int
+	delay_ms       int
+	start_delay_ms int
 	// the raw value fields of the message's own `BA_ "VFrameFormat"` and `BA_ "CANFD_BRS"`
 	// records ('' none): a file may default to J1939PG and override single frames back to
 	// StandardCAN, and "stated, and not J1939" must beat the default rather than reading like
@@ -460,6 +472,7 @@ pub fn parse_dbc(text string) !Database {
 	mut cur := -1 // index of the message SG_ lines attach to
 	mut nodes := []string{}
 	mut e2e_defaults := []string{}
+	mut send := SendAttrs{} // the send attributes and start values, resolved after the loop
 
 	for raw_line in text.split_into_lines() {
 		line := raw_line.trim_space()
@@ -486,6 +499,8 @@ pub fn parse_dbc(text string) !Database {
 		} else if line.starts_with('BU_:') {
 			// BU_: NodeA NodeB …  — the declared ECU nodes
 			nodes = line[4..].fields()
+		} else if send.take(line) {
+			// read below, once every message, signal and enum is known
 		} else if attr.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
 		} else if attr.starts_with('BA_ "E2E') {
@@ -542,6 +557,8 @@ pub fn parse_dbc(text string) !Database {
 		}
 	}
 
+	read_notes := send.resolve(mut msgs, by_id)
+
 	// emit immutable model
 	mut out := []Message{cap: msgs.len}
 	for mb in msgs {
@@ -564,6 +581,8 @@ pub fn parse_dbc(text string) !Database {
 				is_multiplexor:    sb.is_multiplexor
 				is_multiplexed:    sb.is_multiplexed
 				multiplexor_value: sb.multiplexor_value
+				start_raw:         sb.start_raw
+				has_start:         sb.has_start
 			}
 		}
 		out << Message{
@@ -574,6 +593,12 @@ pub fn parse_dbc(text string) !Database {
 			sender:   mb.sender
 			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
+			send_type_name: mb.send_type_name
+			send_type:      send_type_of(mb.send_type_name)
+			cycle_fast_ms:  mb.cycle_fast_ms
+			repetitions:    mb.repetitions
+			delay_ms:       mb.delay_ms
+			start_delay_ms: mb.start_delay_ms
 			// the per-message record wins; the file-wide default fills the rest
 			j1939:   enum_choice(first_set(mb.fmt_value, fmt_default), fmt_choices) == 'J1939PG'
 			format:  frame_format_of(first_set(mb.fmt_value, fmt_default), fmt_choices, first_set(mb.brs_value,
@@ -583,8 +608,9 @@ pub fn parse_dbc(text string) !Database {
 		}
 	}
 	return Database{
-		messages: out
-		nodes:    nodes
+		messages:   out
+		nodes:      nodes
+		read_notes: read_notes
 	}
 }
 
@@ -704,6 +730,7 @@ fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
 	if idx := by_id[id] {
 		msgs[idx].cycle_ms = f[4].int()
+		msgs[idx].cycle_stated = true
 	}
 }
 

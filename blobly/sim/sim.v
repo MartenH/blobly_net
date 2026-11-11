@@ -107,6 +107,13 @@ pub mut:
 	next_ms   f64 // next due time
 	last_t    f64 // when due_frames last handed a frame of it out (s): what its generators read
 	last_n    int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
+	// sending on a change (the message's send type event or mixed, Message.on_change): the raw
+	// values its generators gave when last looked at, how many sends a change still owes, the
+	// earliest the next of them may go, and when any frame of it last went out (ms)
+	ev_raws    []u64
+	ev_seen    bool
+	ev_left    int
+	ev_next_ms f64
 }
 
 // e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
@@ -130,9 +137,35 @@ pub fn (mut m SimMessage) advance_e2e() {
 	m.e2e_n = v + 1
 }
 
-// build encodes the message's signals at time t into a CAN frame.
+// gen_raws is the raw value each generator gives its signal at time t (s) for send index n.
+fn (m SimMessage) gen_raws(t f64, n int) []u64 {
+	mut out := []u64{cap: m.signals.len}
+	for s in m.signals {
+		mut raw := u64(0)
+		for sig in m.msg.signals {
+			if sig.name == s.name {
+				raw = sig.raw_from_phys(s.gen.value(t, n))
+				break
+			}
+		}
+		out << raw
+	}
+	return out
+}
+
+// build encodes the message's signals at time t into a CAN frame, over the payload the node starts
+// from (candb.Message.initial: a signal no generator drives at its start value, else raw 0).
 pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
-	mut data := []u8{len: m.msg.dlc}
+	mut switch_raw := ?u64(none)
+	sw := m.msg.multiplexor_index()
+	if sw >= 0 {
+		for s in m.signals {
+			if s.name == m.msg.signals[sw].name {
+				switch_raw = m.msg.signals[sw].raw_from_phys(s.gen.value(t, m.send_n))
+			}
+		}
+	}
+	mut data := m.msg.initial(switch_raw)
 	for s in m.signals {
 		for sig in m.msg.signals {
 			if sig.name == s.name {
@@ -254,27 +287,61 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
-			if m.period_ms <= 0 {
-				continue
-			}
-			if now_ms + 1e-6 >= m.next_ms {
-				mut f := m.build(now_ms / 1000.0)
-				if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
-					m.last_t = now_ms / 1000.0
-					m.last_n = m.send_n
-				}
-				m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
-				// The PROTECTION counter is what freezes. A dropped frame still advances it, so
-				// recovery shows a gap rather than a stall — the difference a receiver uses to
-				// tell a lost frame from a stuck sender.
-				m.advance_e2e()
+			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms {
+				m.emit(now_ms, send)
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
 				}
 			}
+			m.step_change(now_ms, send)
 		}
 	}
+}
+
+// emit builds the message's frame at now_ms and hands it to `send`.
+fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
+	mut f := m.build(now_ms / 1000.0)
+	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
+		m.last_t = now_ms / 1000.0
+		m.last_n = m.send_n
+	}
+	m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
+	// The PROTECTION counter is what freezes. A dropped frame still advances it, so
+	// recovery shows a gap rather than a stall — the difference a receiver uses to
+	// tell a lost frame from a stuck sender.
+	m.advance_e2e()
+}
+
+// step_change sends a message whose send type is event or mixed when a generator changes the raw
+// value of one of its signals: 1 + its repetitions times, the first once the delay since its last
+// change send allows, the rest a fast cycle apart (no closer than the delay), none before its start
+// delay. The values when first looked at are where it starts, not a change.
+fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) bool) {
+	if !m.msg.on_change() || m.signals.len == 0 || now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
+		return
+	}
+	raws := m.gen_raws(now_ms / 1000.0, m.send_n)
+	if !m.ev_seen {
+		m.ev_seen = true
+		m.ev_raws = raws
+	} else if raws != m.ev_raws {
+		m.ev_raws = raws
+		m.ev_left = 1 + m.msg.repetitions
+	}
+	if m.ev_left <= 0 || now_ms + 1e-6 < m.ev_next_ms {
+		return
+	}
+	m.emit(now_ms, send)
+	m.ev_left--
+	gap := if m.ev_left > 0 && m.msg.cycle_fast_ms > m.msg.delay_ms {
+		m.msg.cycle_fast_ms
+	} else {
+		m.msg.delay_ms
+	}
+	m.ev_next_ms = now_ms + f64(gap)
+	// a generator that follows the send index (a counter) moves with the send: not a change
+	m.ev_raws = m.gen_raws(now_ms / 1000.0, m.send_n)
 }
 
 // loop_wait_ms is the longest a simulation loop's receive waits when nothing is due sooner: how
@@ -287,7 +354,8 @@ pub fn since_ms(t0_ns u64) f64 {
 	return f64(time.sys_mono_now() - t0_ns) / 1e6
 }
 
-// next_due_ms is when the engine's next cyclic message is due on its clock, or none.
+// next_due_ms is when the engine's next cyclic message, or a change send's next repetition, is
+// due on its clock, or none.
 pub fn (e &Engine) next_due_ms() ?f64 {
 	mut next := 0.0
 	mut any := false
@@ -295,6 +363,10 @@ pub fn (e &Engine) next_due_ms() ?f64 {
 		for m in ecu.messages {
 			if m.period_ms > 0 && (!any || m.next_ms < next) {
 				next = m.next_ms
+				any = true
+			}
+			if m.ev_left > 0 && (!any || m.ev_next_ms < next) {
+				next = m.ev_next_ms
 				any = true
 			}
 		}
