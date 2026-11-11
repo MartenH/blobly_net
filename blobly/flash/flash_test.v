@@ -202,3 +202,30 @@ fn test_the_simulated_bootloader_holds_the_session_to_its_order() {
 	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)] && rep.resets == 1
 	assert rep.checks == 1 && !rep.verified
 }
+
+// the routine helper against the simulated bootloader's erase (FF00) and check (FF01): the
+// result byte after the echo, and a refusal its NRC
+fn test_the_routine_helper_runs_the_bootloaders_erase_and_check() {
+	mut sim := start_boot_sim(isotp.open_software('inproc:BOOTSIM_ROUTINE', boot_tx, tester_tx, false)!)
+	mut ch := isotp.open_software('inproc:BOOTSIM_ROUTINE', tester_tx, boot_tx, false)!
+	defer {
+		ch.close()
+	}
+	mut c := uds.new_client(ch)
+	c.diagnostic_session(0x02)!
+	if _ := c.routine(0xFF00, [u8(0x08), 0x02, 0, 0, 0, 0, 0, 2], uds.routine_start) {
+		assert false, 'an erase before 0x29'
+	} else {
+		assert err is uds.NegativeResponse && (err as uds.NegativeResponse).nrc == 0x33, err.msg()
+	}
+	authenticate(mut c, tester_seed('')!, mut Notes{})!
+	assert c.routine(0xFF00, [u8(0x08), 0x02, 0, 0, 0, 0, 0, 2], uds.routine_start)! == [u8(0x00)]
+	assert c.routine(0xFF01, [], uds.routine_start)! == [u8(0x01)], 'a blank slot fails the check'
+	if _ := c.routine(0xFF01, [], uds.routine_results) {
+		assert false, 'a control the boot does not serve'
+	} else {
+		assert err is uds.NegativeResponse && (err as uds.NegativeResponse).nrc == 0x31, err.msg()
+	}
+	rep := sim.stop()
+	assert rep.erases == 1 && rep.checks == 1 && !rep.verified
+}

@@ -502,6 +502,30 @@ local function connection(h, channel)
   end
   -- 0x14 ClearDiagnosticInformation: one DTC or a group (default 0xFFFFFF, all)
   function self:clear_dtcs(group) if group == nil then group = 0xFFFFFF end __uds_clear_dtc(self.handle, group) end
+  -- 0x31 RoutineControl: control 1 start (default), 2 stop, 3 results, with an option record
+  -- (default none); returns the routine info and status record after the echoed routine
+  function self:routine(rid, option, control)
+    if control == nil then control = 0x01 end
+    return __uds_routine(self.handle, rid, option or "", control)
+  end
+  -- 0x2F InputOutputControlByIdentifier: parameter 0 return control, 1 reset to default,
+  -- 2 freeze, 3 short-term adjustment, then the control state and enable mask (default none);
+  -- returns the state after the echoed parameter
+  function self:io_control(did, parameter, state, mask)
+    return __uds_io_control(self.handle, did, parameter, state or "", mask or "")
+  end
+  -- 0x23 ReadMemoryByAddress / 0x3D WriteMemoryByAddress: the address and the size as wide as
+  -- address_bytes (default 4) and size_bytes (default 2) say
+  function self:read_memory(address, size, address_bytes, size_bytes)
+    if address_bytes == nil then address_bytes = 4 end
+    if size_bytes == nil then size_bytes = 2 end
+    return __uds_read_memory(self.handle, address, size, address_bytes, size_bytes)
+  end
+  function self:write_memory(address, data, address_bytes, size_bytes)
+    if address_bytes == nil then address_bytes = 4 end
+    if size_bytes == nil then size_bytes = 2 end
+    __uds_write_memory(self.handle, address, data, address_bytes, size_bytes)
+  end
   -- a request with suppress-positive-response set: a refusal raises; returns whether a positive
   -- answer came anyway
   function self:raw_suppressed(req) return __uds_raw_suppressed(self.handle, req) end

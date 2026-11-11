@@ -292,6 +292,10 @@ The returned object has:
 | `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
 | `diag:dtc_setting(on)` | `0x85` ControlDTCSetting (`true` on, `false` off) | — |
 | `diag:clear_dtcs([group])` | `0x14` ClearDiagnosticInformation (one DTC, or a group; defaults `0xFFFFFF`, all) | — |
+| `diag:routine(rid [, option [, control]])` | `0x31` RoutineControl: `control` `1` start (the default), `2` stop, `3` results, on routine `rid` with its option record (default none) | the answer after the echoed control and routine: its info and status record (bytes) |
+| `diag:io_control(did, parameter [, state [, mask]])` | `0x2F` InputOutputControlByIdentifier: `parameter` `0` return control to the ECU, `1` reset to default, `2` freeze current state, `3` short-term adjustment, then the control state and enable mask (default none) | the answer after the echoed DID and parameter (bytes) |
+| `diag:read_memory(address, size [, address_bytes [, size_bytes]])` | `0x23` ReadMemoryByAddress, the address and size as wide as `address_bytes` (default `4`) and `size_bytes` (default `2`) say, `1`..`8` each. The address is its 64 bits as Lua holds them, so a hex literal above `0x7FFFFFFFFFFFFFFF` is the address it spells | exactly the `size` bytes read |
+| `diag:write_memory(address, data [, address_bytes [, size_bytes]])` | `0x3D` WriteMemoryByAddress, widths as `read_memory`'s | — |
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
 | `diag:close()` | let the connection go: the handle refuses from then on, and the next `uds.open` on the channel opens a new one (a DoIP entity serves one connection at a time) | — |
 | `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |

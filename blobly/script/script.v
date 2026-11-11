@@ -417,6 +417,10 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_comm_control', l_uds_comm_control)
 	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
 	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
+	env.st.register('__uds_routine', l_uds_routine)
+	env.st.register('__uds_io_control', l_uds_io_control)
+	env.st.register('__uds_read_memory', l_uds_read_memory)
+	env.st.register('__uds_write_memory', l_uds_write_memory)
 	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
 	env.st.register('__uds_functional', l_uds_functional)
 	env.st.register('__e2e_p01_crc', l_e2e_p01_crc)
@@ -1008,6 +1012,62 @@ fn l_uds_clear_dtc(l lua.State) i32 {
 		return l.fail('diag:clear_dtcs: ${err}')
 	}
 	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+// l_uds_routine(h, rid, option, control): 0x31, the status record
+fn l_uds_routine(l lua.State) i32 {
+	mut env := env_of(l)
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:routine: ${err}') }
+	rid := u16(id_arg(l, 2, 'the routine identifier', 0, 0xFFFF) or {
+		return l.fail('diag:routine: ${err}')
+	})
+	control := byte_arg(l, 4, 'the control') or { return l.fail('diag:routine: ${err}') }
+	status := c.cli.routine(rid, l.arg_bytes(3), control) or { return l.fail(err.msg()) }
+	l.push_bytes(status)
+	return 1
+}
+
+// l_uds_io_control(h, did, parameter, state, mask): 0x2F, the state after the echoed parameter
+fn l_uds_io_control(l lua.State) i32 {
+	mut env := env_of(l)
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:io_control: ${err}') }
+	did := did_id_arg(l, 2) or { return l.fail('diag:io_control: ${err}') }
+	parameter := byte_arg(l, 3, 'the parameter') or { return l.fail('diag:io_control: ${err}') }
+	state := c.cli.io_control(did, parameter, l.arg_bytes(4), l.arg_bytes(5)) or {
+		return l.fail(err.msg())
+	}
+	l.push_bytes(state)
+	return 1
+}
+
+// memory_arg is argument i as a memory address: its 64 bits as Lua holds them, so a hex literal
+// past 0x7FFFFFFFFFFFFFFF (negative in Lua) is the address it spells
+fn memory_arg(l lua.State, i int) !u64 {
+	return u64(id_arg(l, i, 'the address', min_i64, max_i64)!)
+}
+
+// l_uds_read_memory(h, address, size, address_bytes, size_bytes): 0x23, the bytes read
+fn l_uds_read_memory(l lua.State) i32 {
+	mut env := env_of(l)
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:read_memory: ${err}') }
+	address := memory_arg(l, 2) or { return l.fail('diag:read_memory: ${err}') }
+	size := int_arg(l, 3, 'the size', 0, max_i64) or { return l.fail('diag:read_memory: ${err}') }
+	ab := int_arg(l, 4, 'address_bytes', 0, 0xFF) or { return l.fail('diag:read_memory: ${err}') }
+	sb := int_arg(l, 5, 'size_bytes', 0, 0xFF) or { return l.fail('diag:read_memory: ${err}') }
+	data := c.cli.read_memory(address, u64(size), int(ab), int(sb)) or { return l.fail(err.msg()) }
+	l.push_bytes(data)
+	return 1
+}
+
+// l_uds_write_memory(h, address, data, address_bytes, size_bytes): 0x3D
+fn l_uds_write_memory(l lua.State) i32 {
+	mut env := env_of(l)
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:write_memory: ${err}') }
+	address := memory_arg(l, 2) or { return l.fail('diag:write_memory: ${err}') }
+	ab := int_arg(l, 4, 'address_bytes', 0, 0xFF) or { return l.fail('diag:write_memory: ${err}') }
+	sb := int_arg(l, 5, 'size_bytes', 0, 0xFF) or { return l.fail('diag:write_memory: ${err}') }
+	c.cli.write_memory(address, l.arg_bytes(3), int(ab), int(sb)) or { return l.fail(err.msg()) }
 	return 0
 }
 

@@ -1233,7 +1233,7 @@ message and its code:
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). On DoIP: a negative acknowledgement, or a connection that could not be opened; `blobly.ConnectionLost`, its subclass, is the connection gone ([DoIP](#11-doip)). |
 | `blobly.RoutingDenied` | DoIP only, when the client opens: the entity denied the routing activation ([DoIP](#11-doip)). |
 | `blobly.WriteGated` | A `NodeClient.write` the DID's write gate does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
-| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
+| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group, a routine control or I/O control parameter ISO does not define, an address or size its width cannot hold), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
 went out, the answer, the NRC, whether it went out whole, and its timing.
@@ -2299,6 +2299,10 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
 | `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |
 | `diag.clear_dtcs(group=0xFFFFFF)` | 0x14 ClearDiagnosticInformation: one DTC or a 24-bit group (the default is all). |
+| `diag.routine(rid, option=b"", control=0x01)` | 0x31 RoutineControl: `control` 1 start, 2 stop, 3 results on routine `rid` with its option record. Returns the answer after the echoed control and identifier: the routine's info and status record. |
+| `diag.io_control(did, parameter, state=b"", mask=b"")` | 0x2F InputOutputControlByIdentifier: `parameter` 0 return control to the ECU, 1 reset to default, 2 freeze current state, 3 short-term adjustment, then the control state and enable mask. Returns the answer after the echoed DID and parameter (`UndecodableAnswer` when the parameter is not echoed). |
+| `diag.read_memory(address, size, *, address_bytes=4, size_bytes=2)` | 0x23 ReadMemoryByAddress: `size` bytes at `address`, the two as wide as `address_bytes` and `size_bytes` say (1..8 each). Returns exactly the bytes read (`UndecodableAnswer` for any other count). |
+| `diag.write_memory(address, data, *, address_bytes=4, size_bytes=2)` | 0x3D WriteMemoryByAddress: `data` at `address`, widths as `read_memory`'s. |
 | `diag.dtcs(mask=0xFF)` | 0x19 02: the DTCs with any of `mask`'s status bits, each a `Dtc`. |
 | `diag.supported_dtcs()` | 0x19 0A: every DTC the ECU supports, each with its whole status. |
 | `diag.dtc_count(mask=0xFF)` | 0x19 01: how many DTCs have any of `mask`'s status bits. |
