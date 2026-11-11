@@ -440,7 +440,8 @@ typedef struct bb_record_report {
 	int64_t missed;  /* frames this process sent that never came back to the recorder (not written) */
 	int64_t dropped; /* frames the recorder's own handles lost before it read them (Bus.diagnostics) */
 } bb_record_report;
-/* The system model: a node of the run's system.toml (bb_node_info). Its name is bb_node_name's. */
+/* The system model: a node of the run's system.toml, or one a row names by ODX (bb_node_info). Its
+ * name is bb_node_name's. */
 typedef struct bb_node {
 	int32_t dids;           /* the DIDs it lists, bb_did_*'s d 0 .. dids - 1: its description's own,
 	                           then the ISO identification DIDs it does not declare */
@@ -1183,7 +1184,8 @@ int bb_uds_check_wait(int which, int ms);
 int bb_uds_retarget(int u, const int64_t *address);
 /* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
  * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read
- * them — the description its simulated diagnostic servers answer by — from bb_start until bb_stop
+ * them — the description its simulated diagnostic servers answer by —, then the nodes a CAN row
+ * names by ODX (its `diagnostics:`, docs/odx.md), from bb_start until bb_stop
  * (BB_ERR_STATE otherwise). A tester reaches a node by its name, the model supplying the row and the
  * ids, and reads and writes its DIDs by name, through the node's layout. Every call here but
  * bb_uds_write_described only reads, and may come from any (attached) thread. Strings go into the

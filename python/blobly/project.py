@@ -1309,9 +1309,10 @@ class Project(EventLoop[Channel | str], Faults, Replays):
     @property
     def nodes(self) -> "Nodes":
         """The nodes of the run's system model (blobly.Nodes): `net.nodes.zone_a.uds()` is a
-        NodeClient on zone_a, its DIDs `net.nodes.zone_a.dids`. Empty when no system.toml
-        describes the project (system is None). BloblyError (code -3) when the project is not
-        started."""
+        NodeClient on zone_a, its DIDs `net.nodes.zone_a.dids`: the system.toml's nodes, then those
+        the rows name by ODX (a CAN row's `diagnostics:`), so a project with no system.toml (system
+        is None) still has the latter. Empty when neither describes a node. BloblyError (code -3)
+        when the project is not started."""
         with _lib.state_lock:
             if not self.started:
                 raise BloblyError("the project is not started: its system model is the run's", _lib.BB_ERR_STATE)

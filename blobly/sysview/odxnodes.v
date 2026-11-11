@@ -13,7 +13,8 @@ import blobly.uds
 // with_odx_nodes is the model with a node added for every `diagnostics:` entry of the project's CAN
 // rows (`proj_dir` resolves their ODX sources), and what reading them had to say. A node named on
 // several rows with one description is one node on each; a name the model already has for another
-// node is refused, since a tester could not tell which is meant. A source that cannot be read
+// node is refused, since a tester could not tell which is meant — an enabled row's entry read
+// before a disabled row's. A source that cannot be read
 // still adds its node, its problem as `ecu_err`, so a tester is told why it has no names.
 pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (System, []string) {
 	mut out := System{
@@ -24,7 +25,10 @@ pub fn (sys System) with_odx_nodes(proj_dir string, chans []project.Channel) (Sy
 	mut notes := []string{}
 	mut dbs := map[string]odx.Db{}
 	mut bad := map[string]string{}
-	for ch in chans {
+	// enabled rows first, so a disabled row cannot take a name an enabled row describes otherwise
+	mut ordered := chans.filter(it.enabled)
+	ordered << chans.filter(!it.enabled)
+	for ch in ordered {
 		if ch.kind() != .can {
 			continue
 		}

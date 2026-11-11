@@ -82,3 +82,21 @@ fn test_the_model_it_extends_is_left_as_it_was() {
 	assert with.nodes.len == sys.nodes.len + 1 && sys.nodes.len == 1
 	assert with.node_named('zone_a') or { -1 } == 0
 }
+
+fn test_an_enabled_row_describes_a_node_before_a_disabled_one() {
+	rows := [
+		project.Channel{
+			name:        'CAN1'
+			enabled:     false
+			diagnostics: [body('BodyController_Base')]
+		},
+		project.Channel{
+			name:        'CAN2'
+			diagnostics: [body('BodyController_V2')]
+		},
+	]
+	sys, notes := System{}.with_odx_nodes(os.join_path(@VMODROOT, 'dbc'), rows)
+	assert sys.nodes.len == 1 && sys.nodes[0].buses == ['CAN2']
+	assert sys.nodes[0].odx == 'odx_demo.odx-d#BodyController_V2'
+	assert notes.any(it.starts_with('CAN1: diagnostics Body: a node of that name is already described'))
+}

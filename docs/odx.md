@@ -20,13 +20,16 @@ channels:
 
 `odx:` is relative to the project, like a database. Every key is required, and the ids are CAN ids
 (29-bit past 0x7FF). A project with `diagnostics:` is schema v13. The same node may be named on
-several rows (one node, reached on each); a name another node already has is refused at Start.
+several rows (one node, reached on each); a name another node already has is refused at Start, an
+enabled row's entry read before a disabled row's.
 `projects/odx-demo.blobnet` is a working example, `dbc/odx_demo.odx-d` its hand-made description.
 
 ## What is read
 
 The reader (`blobly/odx`) takes the variant, then its parents (`PARENT-REFS`), nearest first: a
-service a nearer layer names again overrides, a `NOT-INHERITED-DIAG-COMM` is left out.
+service or `DTC-DOP` a nearer layer names again overrides, and a `NOT-INHERITED-DIAG-COMM` or
+`NOT-INHERITED-DOP` is left out of everything that parent passes on — what it inherited itself
+included. A layer reached on two ways passes on what either way passes on.
 
 - **DIDs** — every `DIAG-SERVICE` whose request is `0x22` or `0x2E` with one 16-bit DID at byte 1.
   The value is laid out from the read service's positive response (else the write service's
@@ -37,7 +40,8 @@ service a nearer layer names again overrides, a `NOT-INHERITED-DIAG-COMM` is lef
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
   DTC records then carry that name as their `fault`.
 - **Files** — a `.pdx` is a ZIP (stored or deflated entries; ZIP64 and encryption are refused), of
-  which every `.odx` / `.odx-*` entry is read; IDs are resolved across all of them.
+  which every `.odx` / `.odx-*` entry is read. An ID is its document's: a reference resolves in
+  its own document, or in the one its `DOCREF` names (by its container's `SHORT-NAME`).
 
 ## What is not read, and how it is said
 
@@ -48,7 +52,8 @@ headless runner's stderr, the Script panel in the GUI):
   a bit mask, low byte first, a float, a parameter of no fixed length, a gap — is kept as **bytes**
   of its size (`kind` `data`; of no fixed size when that is not known), with the reason;
 - every other service (by its service id), every `SINGLE-ECU-JOB`, and every layer or data
-  dictionary element it does not use (`STATE-CHARTS`, `TABLES`, `COMPARAM-REFS`, ...) is counted:
+  dictionary element it does not use (`STATE-CHARTS`, `TABLES`, `COMPARAM-REFS`, a `PARENT-REF`'s
+  `NOT-INHERITED-VARIABLES`, ...) is counted:
   `not read: 1 x DIAG-SERVICE 0x11, 1 x STATE-CHARTS`;
 - a value that is not a number where one belongs (a `BYTE-POSITION`, a `TROUBLE-CODE`) is named
   with its text, and that DID's layout or that DTC is not read;

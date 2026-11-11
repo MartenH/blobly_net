@@ -72,7 +72,11 @@ pub:
 	notes []string // what reading the documents had to say
 mut:
 	docs   []&flatxml.Doc
-	ids    map[string]flatxml.Node // every element with an ID, by it
+	// every element with an ID, by its document's path and the ID ('<path>\n<id>'): an ID is
+	// unique within its document only
+	ids map[string]flatxml.Node
+	// each document's path by its container's SHORT-NAME, which a reference's DOCREF names
+	doc_names map[string]string
 	layers map[string]flatxml.Node // every base and ECU variant, by SHORT-NAME
 }
 
@@ -141,11 +145,23 @@ fn (mut db Db) add_doc(data []u8, where string) ! {
 	db.docs << doc
 }
 
-// index finds every element with an ID and every variant layer, saying an ID or variant name given
-// twice (the first is kept).
+// index finds every element with an ID, every document's container name and every variant layer,
+// saying an ID given twice in one document, or a container or variant name given twice (the first is
+// kept).
 fn (mut db Db) index() []string {
 	mut notes := []string{}
 	for doc in db.docs {
+		for c in doc.root_node().children() {
+			cn := short_name(c)
+			if cn == '' {
+				continue
+			}
+			if cn in db.doc_names {
+				notes << '${doc.path}: a document named "${cn}" is read already; a DOCREF to it names the first'
+			} else {
+				db.doc_names[cn] = doc.path
+			}
+		}
 		for i in 0 .. doc.len() {
 			if !doc.is_element(u32(i)) {
 				continue
@@ -153,10 +169,11 @@ fn (mut db Db) index() []string {
 			n := doc.node(u32(i))
 			id := n.attr('ID')
 			if id != '' {
-				if id in db.ids {
+				key := '${doc.path}\n${id}'
+				if key in db.ids {
 					notes << '${doc.path}: ID "${id}" is given twice; the first is read'
 				} else {
-					db.ids[id] = n
+					db.ids[key] = n
 				}
 			}
 			if n.name() in variant_layers {
@@ -192,18 +209,24 @@ fn short_name(n flatxml.Node) string {
 	return n.child('SHORT-NAME').text().trim_space()
 }
 
-// ref is the element an `ID-REF` attribute of `n` names.
+// ref is the element an `ID-REF` attribute of `n` names: in the document its DOCREF names, else in
+// `n`'s own.
 fn (db &Db) ref(n flatxml.Node) ?flatxml.Node {
 	if !n.ok() {
 		return none
 	}
-	return db.ids[n.attr('ID-REF')] or { none }
+	docref := n.attr('DOCREF')
+	path := if docref != '' { db.doc_names[docref] or { return none } } else { n.doc.path }
+	return db.ids['${path}\n${n.attr('ID-REF')}'] or { none }
 }
 
 // Resolve is one variant's resolution in progress: its layers, nearest first, and what it found.
 struct Resolve {
 mut:
-	chain   []flatxml.Node
+	chain []flatxml.Node
+	// per layer of the chain, the services and the DOPs it does not pass on to the variant
+	comms   []map[string]bool
+	dops    []map[string]bool
 	notes   []string
 	ignored map[string]int // element kinds not read, counted
 }
@@ -214,12 +237,12 @@ pub fn (db &Db) variant(name string) !Variant {
 		return error('no variant "${name}" in ${db.path}; there are: ${db.variants().join(', ')}')
 	}
 	mut r := Resolve{}
-	db.walk_layers(top, mut r, 0)
+	db.walk_layers(top, map[string]bool{}, map[string]bool{}, mut r, 0)
 	// the services, nearest layer first: a SHORT-NAME seen is overridden further up
 	mut seen := map[string]bool{}
 	mut found := map[u16]Did{}
 	for li, layer in r.chain {
-		ex := r.excluded_at(li, db)
+		ex := r.comms[li]
 		for c in layer.child('DIAG-COMMS').children() {
 			mut svc := c
 			if c.name() == 'DIAG-COMM-REF' {
@@ -249,6 +272,13 @@ pub fn (db &Db) variant(name string) !Variant {
 				r.ignored['DIAG-DATA-DICTIONARY-SPEC/${c.name()}']++
 			}
 		}
+		for p in layer.child('PARENT-REFS').children_named('PARENT-REF') {
+			for c in p.children() {
+				if c.name() !in read_parent_ref_children {
+					r.ignored['PARENT-REF/${c.name()}']++
+				}
+			}
+		}
 	}
 	mut dids := found.values()
 	dids.sort(a.id < b.id)
@@ -262,7 +292,7 @@ pub fn (db &Db) variant(name string) !Variant {
 		name:  name
 		layer: top.name()
 		dids:  dids
-		dtcs:  db.dtcs(r.chain, mut notes)
+		dtcs:  db.dtcs(r, mut notes)
 		notes: notes
 	}
 }
@@ -272,42 +302,79 @@ const read_layer_children = ['SHORT-NAME', 'LONG-NAME', 'DESC', 'ADMIN-DATA', 'C
 	'SDGS', 'DIAG-DATA-DICTIONARY-SPEC', 'DIAG-COMMS', 'REQUESTS', 'POS-RESPONSES', 'NEG-RESPONSES',
 	'GLOBAL-NEG-RESPONSES', 'PARENT-REFS']
 
+// what of a PARENT-REF the reader applies
+const read_parent_ref_children = ['NOT-INHERITED-DIAG-COMMS', 'NOT-INHERITED-DOPS']
+
 // the data dictionary sections the reader uses (UNIT-SPEC describes and changes no byte)
 const read_dds_children = ['DATA-OBJECT-PROPS', 'STRUCTURES', 'DTC-DOPS', 'UNIT-SPEC', 'ADMIN-DATA',
 	'SDGS']
 
-// walk_layers appends `layer` and then its parents (PARENT-REFS), depth first, each once.
-fn (db &Db) walk_layers(layer flatxml.Node, mut r Resolve, depth int) {
-	if depth > 16 || r.chain.any(it.i == layer.i && it.doc == layer.doc) {
+// walk_layers appends `layer` and then its parents (PARENT-REFS), depth first, each once, with the
+// services and DOPs it does not pass on: those a PARENT-REF on the way to it leaves out, and for a
+// layer reached on several ways only those every way leaves out (it is walked again when one more
+// way narrows them).
+fn (db &Db) walk_layers(layer flatxml.Node, comms map[string]bool, dops map[string]bool, mut r Resolve, depth int) {
+	if depth > 16 {
 		return
 	}
-	r.chain << layer
+	mut k := -1
+	for i, c in r.chain {
+		if c.i == layer.i && c.doc == layer.doc {
+			k = i
+			break
+		}
+	}
+	mut here_comms := comms.clone()
+	mut here_dops := dops.clone()
+	if k < 0 {
+		r.chain << layer
+		r.comms << comms.clone()
+		r.dops << dops.clone()
+	} else {
+		here_comms = common(r.comms[k], comms)
+		here_dops = common(r.dops[k], dops)
+		if here_comms.len == r.comms[k].len && here_dops.len == r.dops[k].len {
+			return
+		}
+		r.comms[k] = here_comms.clone()
+		r.dops[k] = here_dops.clone()
+	}
 	for p in layer.child('PARENT-REFS').children_named('PARENT-REF') {
 		parent := db.ref(p) or {
-			r.notes << '${short_name(layer)}: PARENT-REF "${p.attr('ID-REF')}" names nothing; its services are not inherited'
+			if k < 0 {
+				r.notes << '${short_name(layer)}: PARENT-REF "${p.attr('ID-REF')}" names nothing; its services are not inherited'
+			}
 			continue
 		}
-		db.walk_layers(parent, mut r, depth + 1)
+		mut pc := here_comms.clone()
+		for ni in p.child('NOT-INHERITED-DIAG-COMMS').children_named('NOT-INHERITED-DIAG-COMM') {
+			pc[snref_of(ni)] = true
+		}
+		mut pd := here_dops.clone()
+		for ni in p.child('NOT-INHERITED-DOPS').children_named('NOT-INHERITED-DOP') {
+			pd[snref_of(ni)] = true
+		}
+		db.walk_layers(parent, pc, pd, mut r, depth + 1)
 	}
 }
 
-// excluded_at is the services the chain's layer `li` does not pass on: every NOT-INHERITED-DIAG-COMM
-// of a PARENT-REF naming it from a layer nearer the variant.
-fn (r &Resolve) excluded_at(li int, db &Db) map[string]bool {
+// common is the names in both `a` and `b`.
+fn common(a map[string]bool, b map[string]bool) map[string]bool {
 	mut out := map[string]bool{}
-	target := r.chain[li]
-	for k in 0 .. li {
-		for p in r.chain[k].child('PARENT-REFS').children_named('PARENT-REF') {
-			parent := db.ref(p) or { continue }
-			if parent.i != target.i || parent.doc != target.doc {
-				continue
-			}
-			for ni in p.child('NOT-INHERITED-DIAG-COMMS').children_named('NOT-INHERITED-DIAG-COMM') {
-				out[ni.child('DIAG-COMM-SNREF').attr('SHORT-NAME')] = true
-			}
+	for name, _ in a {
+		if name in b {
+			out[name] = true
 		}
 	}
 	return out
+}
+
+// snref_of is the SHORT-NAME a NOT-INHERITED entry's reference (DIAG-COMM-SNREF, DOP-BASE-SNREF) names.
+fn snref_of(n flatxml.Node) string {
+	for c in n.children() {
+		return c.attr('SHORT-NAME')
+	}
+	return ''
 }
 
 // service reads one DIAG-SERVICE: a 0x22 or 0x2E of one DID is a DID read or written, any other
@@ -342,7 +409,7 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
 		values = params.clone()
 	}
 	mut lay := Layout{}
-	db.lay_out(values, 3, 0, mut lay, r.chain, 0)
+	db.lay_out(values, 3, 0, mut lay, r, 0)
 	lay.finish()
 	vname := lay.name(sn)
 	if lay.why.len > 0 {
@@ -440,7 +507,7 @@ mut:
 
 // lay_out reads `params` from byte `base` of their message (3 for a DID's response or write
 // request, 0 inside a structure), each part placed at `at` plus its position.
-fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, chain []flatxml.Node, depth int) {
+fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &Resolve, depth int) {
 	if depth > max_struct_depth {
 		lay.why << 'structures nested past ${max_struct_depth}'
 		lay.sized = false
@@ -481,7 +548,7 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, cha
 		if base > 0 {
 			lay.values << pname
 		}
-		dop := db.dop_of(p, chain) or {
+		dop := db.dop_of(p, r) or {
 			lay.why << '${pname}: ${err.msg()}'
 			lay.sized = false
 			next = -1
@@ -495,7 +562,7 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, cha
 			}
 			'STRUCTURE' {
 				mut inner := Layout{}
-				db.lay_out(kids(dop.child('PARAMS'), 'PARAM'), 0, start, mut inner, chain, depth + 1)
+				db.lay_out(kids(dop.child('PARAMS'), 'PARAM'), 0, start, mut inner, r, depth + 1)
 				inner.finish_from(start)
 				size = if inner.sized { inner.size } else { -1 }
 				bsv := dop.child('BYTE-SIZE')
@@ -606,8 +673,9 @@ fn (mut lay Layout) coded(pname string, dop flatxml.Node, start int) int {
 	return size
 }
 
-// dop_of is the DOP a VALUE parameter names, by DOP-REF or by DOP-SNREF in the variant's layers.
-fn (db &Db) dop_of(p flatxml.Node, chain []flatxml.Node) !flatxml.Node {
+// dop_of is the DOP a VALUE parameter names, by DOP-REF or by DOP-SNREF in the variant's layers
+// (one a layer does not pass on left out).
+fn (db &Db) dop_of(p flatxml.Node, res &Resolve) !flatxml.Node {
 	r := p.child('DOP-REF')
 	if r.ok() {
 		return db.ref(r) or { error('DOP-REF "${r.attr('ID-REF')}" names nothing') }
@@ -615,7 +683,10 @@ fn (db &Db) dop_of(p flatxml.Node, chain []flatxml.Node) !flatxml.Node {
 	s := p.child('DOP-SNREF')
 	if s.ok() {
 		want := s.attr('SHORT-NAME')
-		for layer in chain {
+		for li, layer in res.chain {
+			if want in res.dops[li] {
+				continue
+			}
 			for section in layer.child('DIAG-DATA-DICTIONARY-SPEC').children() {
 				for d in section.children() {
 					if short_name(d) == want {
@@ -665,12 +736,20 @@ fn (lay &Layout) name(service string) string {
 	return if lay.values.len == 1 { lay.values[0] } else { service }
 }
 
-// dtcs are the DTCs of the variant's DTC-DOPs, nearest layer first; a code given twice is read once.
-fn (db &Db) dtcs(chain []flatxml.Node, mut notes []string) []Dtc {
+// dtcs are the DTCs of the variant's DTC-DOPs, nearest layer first: a DTC-DOP is overridden by a
+// nearer one of its SHORT-NAME and left out where a layer does not pass it on, and a code given
+// twice is read once.
+fn (db &Db) dtcs(r &Resolve, mut notes []string) []Dtc {
 	mut out := []Dtc{}
 	mut seen := map[u32]bool{}
-	for layer in chain {
+	mut seen_dops := map[string]bool{}
+	for li, layer in r.chain {
 		for dop in layer.child('DIAG-DATA-DICTIONARY-SPEC').child('DTC-DOPS').children_named('DTC-DOP') {
+			dn := short_name(dop)
+			if dn in seen_dops || dn in r.dops[li] {
+				continue
+			}
+			seen_dops[dn] = true
 			for c in dop.child('DTCS').children() {
 				mut d := c
 				if c.name() == 'DTC-REF' {

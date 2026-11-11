@@ -698,6 +698,8 @@ fn (mut app App) set_adapter(i int, a string) {
 		// Save persisted and that came back the day the row was converted to CAN again (codex).
 		app.proj.channels[i].j1939 = false
 		app.proj.channels[i].nm = none // a CAN cluster, like J1939
+		// nodes reached over ISO-TP at CAN ids, which only a CAN row carries
+		app.proj.channels[i].diagnostics = []
 	}
 	// SILENT BY DEFAULT when a bus BECOMES one of the adapters that starts silent, for the same
 	// reason a discovered channel does: hardware that may already be wired to a running vehicle,

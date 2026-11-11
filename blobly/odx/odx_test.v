@@ -161,3 +161,97 @@ fn test_a_broken_zip_is_refused() {
 	read_zip(bad) or { return }
 	assert false, 'a corrupted entry was read'
 }
+
+// layer is a diagnostic layer `tag` with an 8-bit 0x22 DID per entry of `dids` (service Read_<n>),
+// its DTC-DOP `dtcs` and its PARENT-REFS `parents`, every ID prefixed with `id`.
+fn layer(tag string, id string, name string, dids []int, dtcs string, parents string) string {
+	mut comms := ''
+	mut reqs := ''
+	mut resps := ''
+	sid := '<PARAM xsi:type="CODED-CONST"><SHORT-NAME>SID</SHORT-NAME><BYTE-POSITION>0</BYTE-POSITION><CODED-VALUE>SIDV</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></PARAM>'
+	for n in dids {
+		comms += '<DIAG-SERVICE ID="${id}_s${n}"><SHORT-NAME>Read_${n}</SHORT-NAME><REQUEST-REF ID-REF="${id}_q${n}"/><POS-RESPONSE-REFS><POS-RESPONSE-REF ID-REF="${id}_r${n}"/></POS-RESPONSE-REFS></DIAG-SERVICE>'
+		reqs += '<REQUEST ID="${id}_q${n}"><SHORT-NAME>Q${n}</SHORT-NAME><PARAMS>${sid.replace('SIDV',
+			'34')}<PARAM xsi:type="CODED-CONST"><SHORT-NAME>DID</SHORT-NAME><BYTE-POSITION>1</BYTE-POSITION><CODED-VALUE>${n}</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>16</BIT-LENGTH></DIAG-CODED-TYPE></PARAM></PARAMS></REQUEST>'
+		resps += '<POS-RESPONSE ID="${id}_r${n}"><SHORT-NAME>R${n}</SHORT-NAME><PARAMS>${sid.replace('SIDV',
+			'98')}<PARAM xsi:type="VALUE"><SHORT-NAME>V${n}</SHORT-NAME><BYTE-POSITION>3</BYTE-POSITION><DOP-REF ID-REF="${id}_dop"/></PARAM></PARAMS></POS-RESPONSE>'
+	}
+	return '<${tag} ID="${id}"><SHORT-NAME>${name}</SHORT-NAME><DIAG-DATA-DICTIONARY-SPEC><DATA-OBJECT-PROPS><DATA-OBJECT-PROP ID="${id}_dop"><SHORT-NAME>U8</SHORT-NAME><COMPU-METHOD><CATEGORY>IDENTICAL</CATEGORY></COMPU-METHOD><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></DATA-OBJECT-PROP></DATA-OBJECT-PROPS>${dtcs}</DIAG-DATA-DICTIONARY-SPEC><DIAG-COMMS>${comms}</DIAG-COMMS><REQUESTS>${reqs}</REQUESTS><POS-RESPONSES>${resps}</POS-RESPONSES><PARENT-REFS>${parents}</PARENT-REFS></${tag}>'
+}
+
+// parent is a PARENT-REF to `id`, leaving out the services and DOPs named, with `extra` inside it.
+fn parent_ref(id string, docref string, comms []string, dops []string, extra string) string {
+	dr := if docref == '' { '' } else { ' DOCREF="${docref}"' }
+	nc := comms.map('<NOT-INHERITED-DIAG-COMM><DIAG-COMM-SNREF SHORT-NAME="${it}"/></NOT-INHERITED-DIAG-COMM>').join('')
+	nd := dops.map('<NOT-INHERITED-DOP><DOP-BASE-SNREF SHORT-NAME="${it}"/></NOT-INHERITED-DOP>').join('')
+	return '<PARENT-REF ID-REF="${id}"${dr}><NOT-INHERITED-DIAG-COMMS>${nc}</NOT-INHERITED-DIAG-COMMS><NOT-INHERITED-DOPS>${nd}</NOT-INHERITED-DOPS>${extra}</PARENT-REF>'
+}
+
+fn dtc_dop(name string, codes []int) string {
+	ds := codes.map('<DTC ID="${name}_${it}"><SHORT-NAME>D${it}</SHORT-NAME><TROUBLE-CODE>${it}</TROUBLE-CODE></DTC>').join('')
+	return '<DTC-DOPS><DTC-DOP ID="${name}"><SHORT-NAME>${name}</SHORT-NAME><DTCS>${ds}</DTCS></DTC-DOP></DTC-DOPS>'
+}
+
+fn odx_doc(container string, layers string) string {
+	return '<ODX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><DIAG-LAYER-CONTAINER ID="${container}"><SHORT-NAME>${container}</SHORT-NAME>${layers}</DIAG-LAYER-CONTAINER></ODX>'
+}
+
+// load_docs reads `docs` (file name -> text) as a folder of ODX files.
+fn load_docs(tag string, docs map[string]string) !Db {
+	dir := os.join_path(os.temp_dir(), 'odx_${tag}_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	for name, text in docs {
+		os.write_file(os.join_path(dir, name), text)!
+	}
+	return load(dir)
+}
+
+fn test_a_service_left_out_is_left_out_of_what_its_parent_inherited() {
+	p := layer('PROTOCOL', 'P', 'Proto', [1], '', '')
+	bv := layer('BASE-VARIANT', 'BV', 'Base', [2], '', parent_ref('P', '', [], [], ''))
+	bv2 := layer('BASE-VARIANT', 'BV2', 'Base2', [4], '', parent_ref('P', '', [], [], ''))
+	ev := layer('ECU-VARIANT', 'EV', 'Ecu', [3], '', parent_ref('BV', '', ['Read_1'], [],
+		'<NOT-INHERITED-VARIABLES/>'))
+	// reached on a second way that does not leave it out, the service is inherited
+	ev2 := layer('ECU-VARIANT', 'EV2', 'Ecu2', [], '', parent_ref('BV', '', ['Read_1'], [], '') +
+		parent_ref('BV2', '', [], [], ''))
+	db := load_docs('excl', {
+		'a.odx-d': odx_doc('DLC', p + bv + bv2 + ev + ev2)
+	})!
+	v := db.variant('Ecu')!
+	assert v.dids.map(it.id) == [u16(2), 3]
+	assert v.notes.any(it.contains('1 x PARENT-REF/NOT-INHERITED-VARIABLES'))
+	assert db.variant('Ecu2')!.dids.map(it.id) == [u16(1), 2, 4]
+}
+
+fn test_a_dtc_dop_is_overridden_and_left_out_by_name() {
+	bv := layer('BASE-VARIANT', 'BV', 'Base', [], dtc_dop('Faults', [0x10101, 0x20202]), '')
+	ev := layer('ECU-VARIANT', 'EV', 'Ecu', [], dtc_dop('Own', [0x30303]), parent_ref('BV',
+		'', [], ['Faults'], ''))
+	ev2 := layer('ECU-VARIANT', 'EV2', 'Ecu2', [], dtc_dop('Faults', [0x30303]), parent_ref('BV',
+		'', [], [], ''))
+	db := load_docs('dtc', {
+		'a.odx-d': odx_doc('DLC', bv + ev + ev2)
+	})!
+	assert db.variant('Base')!.dtcs.map(it.code) == [u32(0x10101), 0x20202]
+	assert db.variant('Ecu')!.dtcs.map(it.code) == [u32(0x30303)]
+	assert db.variant('Ecu2')!.dtcs.map(it.code) == [u32(0x30303)]
+}
+
+fn test_an_id_is_its_documents_and_a_docref_names_another() {
+	// both documents number their IDs alike; a reference stays in its own document unless DOCREF
+	a := odx_doc('DLC_A', layer('BASE-VARIANT', 'BV', 'A_Base', [0x10], '', ''))
+	b := odx_doc('DLC_B', layer('BASE-VARIANT', 'BV', 'B_Base', [0x20], '', '') +
+		layer('ECU-VARIANT', 'EV', 'B_Ecu', [], '', parent_ref('BV', '', [], [], '')) +
+		layer('ECU-VARIANT', 'EV2', 'B_Ecu2', [], '', parent_ref('BV', 'DLC_A', [], [], '')))
+	db := load_docs('docref', {
+		'a.odx-d': a
+		'b.odx-d': b
+	})!
+	assert !db.notes.any(it.contains('given twice'))
+	assert db.variant('B_Ecu')!.dids.map(it.id) == [u16(0x20)]
+	assert db.variant('B_Ecu2')!.dids.map(it.id) == [u16(0x10)]
+}
