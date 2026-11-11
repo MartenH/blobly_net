@@ -124,6 +124,51 @@ class TestLatest:
         assert set(looks) == {0}, "nothing waited for: only what is queued"
         assert f.t_ms == clock[0]
 
+    def test_a_remote_frame_does_not_replace_the_data(self):
+        fake = FakeLib([blobly.Frame(0x123, b"\x07"), blobly.Frame(0x123, rtr=True)])
+        bus = fake_bus()
+        with mock.patch.object(project._lib, "lib", lambda: fake):
+            bus.look()
+            bus.look()
+            assert bus.latest(0x123) == blobly.Frame(0x123, b"\x07")
+
+    def test_a_frame_read_while_another_thread_closes_is_forgotten_with_the_handle(self):
+        bus = fake_bus()
+        # the close finishes while the receive is inside the library, which still hands it a frame
+        fake = FakeLib([blobly.Frame(0x300, b"\x01")], during_recv=bus.close)
+        with mock.patch.object(project._lib, "lib", lambda: fake):
+            assert bus._receive(20, 1)[0] == blobly.Frame(0x300, b"\x01")
+        assert bus._latest == {}
+
+
+class FakeLib:
+    """bb_bus_recv handing out `frames` one per call (then nothing); `during_recv` called inside
+    the first receive, before its frame is returned."""
+
+    def __init__(self, frames, during_recv=None):
+        self.frames, self.during_recv = list(frames), during_recv
+
+    def bb_bus_recv(self, h, ms, ref):
+        if self.during_recv is not None:
+            hook, self.during_recv = self.during_recv, None
+            hook()
+        if not self.frames:
+            return project._lib.BB_NONE
+        fr, f = self.frames.pop(0), ref._obj
+        f.id, f.ext, f.rtr, f.len = fr.id, int(fr.ext), int(fr.rtr), fr.length
+        f.data[:len(fr.data)] = fr.data
+        return 0
+
+    def bb_bus_close(self, h):
+        return 0
+
+
+def fake_bus():
+    """A Bus whose library is FakeLib: no library behind it."""
+    bus = object.__new__(blobly.Bus)
+    bus.name, bus._h, bus._latest = "fake", 1, {}
+    return bus
+
 
 class TestWait:
     def test_every_open_channel_is_read_and_handlers_run(self, two_rows):

@@ -273,11 +273,14 @@ class Bus:
         """(frame or None, spent) from the channel's handle, or from `h`, one it had."""
         f = _lib.BbFrame()
         lib = _lib.lib()
-        rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
+        h = self._handle() if h is None else h
+        table = self._latest  # this handle's: a close replaces it only once the handle is gone
+        rc = _lib.check(lib.bb_bus_recv(h, ms, ctypes.byref(f)))
         if rc in (_lib.BB_NONE, _lib.BB_SPENT):
             return None, rc == _lib.BB_SPENT
         frame = frame_of(f, received=True)
-        self._latest[(frame.id, frame.ext)] = frame  # every read path comes through here
+        if not frame.rtr:  # every read path comes through here; a remote frame carries no data
+            table[(frame.id, frame.ext)] = frame
         return frame, False
 
     def latest(self, id: "int | Message", *, ext: bool | None = None) -> Frame | None:
@@ -285,7 +288,8 @@ class Bus:
         What is queued is read first (at most CATCH_UP_MS of reading), so the answer is as of
         the call: asking consumes those frames, as a recv would. `id` and `ext` as expect's
         (None: the newer of either kind); on a Channel `id` may be a Message of it. Its t_ms
-        says how old it is. The frames of a closed handle are forgotten with it."""
+        says how old it is. A remote frame (rtr) is not kept: it asks for the data and carries
+        none. The frames of a closed handle are forgotten with it."""
         with _lib.state_lock:
             want = self._frame_key("latest", id, ext)
         self._catch_up()
@@ -401,10 +405,12 @@ class Bus:
         twice is nothing."""
         lib = _lib.lib()
         with _lib.state_lock:
-            self._latest = {}
-            if self._h is not None:
-                h, self._h = self._h, None
-                _lib.check(lib.bb_bus_close(h))
+            h, self._h = self._h, None
+            try:
+                if h is not None:
+                    _lib.check(lib.bb_bus_close(h))
+            finally:  # after the close: a receive still inside it keeps its frame in the old table
+                self._latest = {}
 
     def __enter__(self) -> Self:
         return self
@@ -786,10 +792,12 @@ class Channel(Bus):
         lib = _lib.lib()
         with _lib.state_lock:
             self._let_go_clients()
-            self._latest = {}
-            if self._h is not None:
-                h, self._h = self._h, None
-                _lib.check(lib.bb_bus_close(h))
+            h, self._h = self._h, None
+            try:
+                if h is not None:
+                    _lib.check(lib.bb_bus_close(h))
+            finally:  # after the close: a receive still inside it keeps its frame in the old table
+                self._latest = {}
 
     def _let_go_clients(self) -> None:
         """Lets the connections of its UDS clients and ISO-TP channels go, the handle kept; their

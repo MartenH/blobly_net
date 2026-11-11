@@ -537,8 +537,9 @@ with blobly.Project("projects/lin-demo.blobnet") as net:
   `expect_signal`, `run()`, `net.wait()`), so a frame consumed on the way is still the latest.
   It reads what is queued first, so its answer is as of the call — and those frames are consumed,
   as a `recv` would consume them. `id` and `ext` are `expect`'s (`None`: the newer of either
-  kind); on a channel `id` may be a `Message`. The frame's `t_ms` says how old it is. The
-  frames are forgotten when the handle closes (`close()`, a stop). See
+  kind); on a channel `id` may be a `Message`. The frame's `t_ms` says how old it is. A remote
+  frame (`rtr`) is not kept, since it carries no data. The frames are forgotten when the handle
+  closes (`close()`, a stop). See
   [The value now](#the-value-now).
 
 ```python
