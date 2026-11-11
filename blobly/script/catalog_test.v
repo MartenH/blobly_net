@@ -220,3 +220,30 @@ fn test_decode_reports_raw_values_and_labels_for_what_a_frame_carries() {
 	assert env.total() == 6
 	assert env.passed() == 6, '${env.results}'
 }
+
+// a signal wider than 64 bits carries no number: decode leaves it out and send_message refuses it
+fn test_a_wide_signal_is_left_out_of_decode_and_refused_by_send_message() {
+	mut env := new_env([ChanInfo{
+		name:  'CAN1'
+		iface: 'inproc:UTWIDE'
+		db:    candb.parse_dbc('BO_ 1280 ConfigData: 24 A\n SG_ Mode : 0|8@1+ (1,0) [0|255] "" A\n SG_ Key : 8|128@1+ (1,0) [0|0] "" A\n') or {
+			panic(err)
+		}
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source('
+		test("decode leaves it out", function()
+			local d = decode("CAN1", 0x500, string.rep(string.char(1), 24), false, "raw")
+			check.equal(d.Mode, 1)
+			check.equal(d.Key, nil)
+		end)
+		test("send_message refuses it", function()
+			local ok, why = pcall(function() bus.send_message("CAN1", "ConfigData", { Key = 1 }) end)
+			check.equal(ok, false)
+			check.truthy(tostring(why):find("Key is 128 bits wide: a value is encoded into 1 .. 64", 1, true))
+		end)
+	')!
+	assert env.total() == 2
+	assert env.passed() == 2, '${env.results}'
+}

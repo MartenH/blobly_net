@@ -556,6 +556,10 @@ fn (mut app App) set_sender_message(i int, msg string) {
 					continue
 				}
 				for sig in m.signals {
+					// a signal with no number is not offered: a generator could not send one
+					if !sig.is_scalar() {
+						continue
+					}
 					// carry the WHOLE matching signal across, not just its number: the value
 					// source (wave) is part of what the user configured, and copying only
 					// `value` silently dropped a waveform when the message was switched and

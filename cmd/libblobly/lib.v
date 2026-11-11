@@ -1318,6 +1318,10 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 		sig := msg.signal_named(name) or {
 			return fail(bb_err, 'unknown signal "${name}" in ${msg.name}')
 		}
+		why := sig.scalar_refusal()
+		if why != '' {
+			return fail(bb_err, why)
+		}
 		sig.encode(mut data, unsafe { values[i] })
 	}
 	unsafe {

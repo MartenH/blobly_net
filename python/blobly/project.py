@@ -691,8 +691,9 @@ class Channel(Bus):
         """{signal: physical value} for what `frame` says in this row's databases — the message
         of its id and kind (else, for an extended frame, one of its J1939 PGN), each signal it
         carries (a multiplexed signal its switch does not select is left out, and so is one whose
-        bits a short payload does not all hold, where a Lua script's decode() reads them as 0);
-        None for a frame of no message, or a remote frame."""
+        bits a short payload does not all hold, where a Lua script's decode() reads them as 0, and
+        one wider than 64 bits, which carries no number); None for a frame of no message, or a
+        remote frame."""
         got = self._decode(frame)
         if got is None:
             return None
@@ -1040,7 +1041,8 @@ class Message:
     def encode(self, /, **signals: float) -> Frame:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
-        have is refused; a value past what the signal's width holds is clamped to the nearer end.
+        have is refused, and so is a signal wider than 64 bits, which carries no number; a value
+        past what the signal's width holds is clamped to the nearer end.
         fd/brs are left unset, so channel.send takes its channel's declared format. Its E2E is not stamped:
         send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
         return frame_of(self._encoded(signals))

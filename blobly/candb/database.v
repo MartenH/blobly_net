@@ -58,8 +58,9 @@ pub fn canonical_database_ref(ref string) string {
 
 // Loaded is a database plus what the reader had to say about it: for an ARXML the honesty
 // report (dangling references, ignored element kinds, partial reads), one line each, prefixed
-// with the file; for a DBC the send attributes and start values it refused (`read_notes`) and the
-// #271 E2E values it refused (`e2e_notes`). Every front end prints these — a note only the export
+// with the file; for a DBC the send attributes and start values it refused (`read_notes`), the
+// #271 E2E values it refused (`e2e_notes`) and the signals wider than
+// the scalar model (`scalar_notes`). Every front end prints these — a note only the export
 // tool prints is a note nobody on the bench sees.
 pub struct Loaded {
 pub:
@@ -93,6 +94,7 @@ pub fn open_database(ref string) !Loaded {
 	base := os.base(ref)
 	mut notes := db.read_notes.clone()
 	notes << db.e2e_notes()
+	notes << db.scalar_notes()
 	return Loaded{
 		db:    db
 		notes: notes.map('${base}: ${it}')

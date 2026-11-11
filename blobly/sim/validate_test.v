@@ -45,3 +45,20 @@ fn test_validate_node_accepts_a_bo_only_transmitter() {
 	w := validate_node(db, 'Ghost', [])
 	assert w.len == 1 && w[0].contains('sends no message')
 }
+
+// a node generator naming a signal with no number is said, and the built ECU takes no generator
+// for it
+fn test_a_wide_generator_signal_is_said_and_not_applied() {
+	db := candb.parse_dbc('BO_ 1280 ConfigData: 24 SUT
+ SG_ Mode : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Key : 8|128@1+ (1,0) [0|0] "" Vector__XXX
+')!
+	assert validate_node(db, 'SUT', ['Mode', 'Key']) == [
+		'SUT: Key is 128 bits wide: a value is encoded into 1 .. 64 — its generator is not applied',
+	]
+	ecu := build_configured_ecu(db, 'SUT', {
+		'Mode': gen_const(2)
+		'Key':  gen_const(1)
+	}, [])
+	assert ecu.messages[0].signals.map(it.name) == ['Mode']
+}

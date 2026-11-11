@@ -144,6 +144,24 @@ fn test_a_spec_no_sender_could_send_is_refused() {
 	}
 }
 
+fn test_a_value_for_a_signal_with_no_number_is_refused() {
+	db := candb.parse_dbc('BO_ 1280 ConfigData: 24 A\n SG_ Mode : 0|8@1+ (1,0) [0|255] "" A\n SG_ Key : 8|128@1+ (1,0) [0|0] "" A\n')!
+	m := db.message_named('ConfigData') or { panic('no ConfigData') }
+	sp := Spec{
+		by_message: true
+		message:    m
+		values:     {
+			'Key': 1.0
+		}
+		period_ms:  10
+	}
+	sp.check() or {
+		assert err.msg() == 'Key is 128 bits wide: a value is encoded into 1 .. 64'
+		return
+	}
+	assert false, 'a value for Key was taken'
+}
+
 fn test_its_owner_ending_ends_it_and_is_told() {
 	mut o := &Owner{
 		running: true

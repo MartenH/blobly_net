@@ -74,6 +74,30 @@ pub fn sender_raw_frame(s project.Sender, id u32, ext bool, data []u8) !transpor
 	})!
 }
 
+// sender_signal_refusals says each signal the generator lists that carries no number in the first
+// database defining its message (candb.Signal.scalar_refusal), one line each: said at Start, and
+// never encoded by sender_message_frame.
+pub fn sender_signal_refusals(s project.Sender, dbs []candb.Database) []string {
+	if s.message == '' {
+		return []
+	}
+	for db in dbs {
+		m := db.message_named(s.message) or { continue }
+		mut out := []string{}
+		mut said := map[string]bool{}
+		for ss in s.signals {
+			sig := m.signal_named(ss.name) or { continue }
+			why := sig.scalar_refusal()
+			if why != '' && ss.name !in said {
+				said[ss.name] = true
+				out << 'generator "${s.name}": ${why} — not sent'
+			}
+		}
+		return out
+	}
+	return []
+}
+
 // next_due is when a frame on a `period` grid is next due, the last one sent in grid slot `slot`
 // and its write returned at `done` (all in one clock's units): the first slot after `done`, so a
 // write that outlasted a period skips the slots it covered rather than being followed by frames

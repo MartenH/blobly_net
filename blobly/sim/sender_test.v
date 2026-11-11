@@ -130,3 +130,35 @@ fn test_next_due_keeps_the_grid_and_skips_what_a_slow_write_covered() {
 	}
 	assert sent == [u64(0), 10, 50, 60, 70]
 }
+
+// a generator listing a signal with no number: said once, and the frame carries none of it
+fn test_a_wide_signal_a_generator_lists_is_refused_and_not_sent() {
+	db := candb.parse_dbc('BO_ 1280 ConfigData: 24 T
+ SG_ Mode : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Key : 8|128@1+ (1,0) [0|0] "" Vector__XXX
+') or { panic(err) }
+	s := project.Sender{
+		name:    'cfg'
+		message: 'ConfigData'
+		signals: [
+			project.SenderSig{
+				name:  'Mode'
+				value: 2
+			},
+			project.SenderSig{
+				name:  'Key'
+				value: 1
+			},
+			project.SenderSig{
+				name:  'Key'
+				value: 3
+			},
+		]
+	}
+	assert sender_signal_refusals(s, [db]) == [
+		'generator "cfg": Key is 128 bits wide: a value is encoded into 1 .. 64 — not sent',
+	]
+	f := sender_message_frame(s, [db], 0, 0) or { panic('no frame') }
+	assert f.data[0] == 2
+	assert f.data[1..].all(it == 0)
+}

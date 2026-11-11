@@ -2016,7 +2016,7 @@ fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off 
 		// would be a negative shift. Reported and left out, before its name is claimed (rounds
 		// 33, 40); wider than 64 has its own line below
 		length := int(r.int_of(isig, 'LENGTH', isig_path) or { continue })
-		if length > 64 {
+		if length > scalar_bits {
 			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
 			// a wider signal would lose its top bits in silence. Reported and left out — BEFORE
 			// its name is claimed, or a supported signal of the same name behind it is renamed

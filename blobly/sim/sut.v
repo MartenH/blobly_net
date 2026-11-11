@@ -90,6 +90,10 @@ pub fn build_protected_ecu(db candb.Database, node string, gens map[string]Gen, 
 	mut ecu := ecu_from_dbc(db, node)
 	for i, m in ecu.messages {
 		for sig in m.msg.signals {
+			// a signal with no number takes no generator: validate_node says so
+			if !sig.is_scalar() {
+				continue
+			}
 			if g := gens[sig.name] {
 				ecu.messages[i].signals << SimSignal{
 					name: sig.name
