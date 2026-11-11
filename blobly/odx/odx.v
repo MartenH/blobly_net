@@ -138,7 +138,8 @@ fn is_odx_name(name string) bool {
 }
 
 fn (mut db Db) add_doc(data []u8, where string) ! {
-	doc := flatxml.parse_bytes(data, where) or { return error('${where}: ${err}') }
+	mut doc := flatxml.parse_bytes(data, where) or { return error('${where}: ${err}') }
+	doc.resolve_namespaces() or { return error('${where}: ${err}') }
 	if doc.root_node().name() != 'ODX' {
 		return error('${where}: the root element is <${doc.root_node().name()}>, not <ODX>')
 	}
@@ -203,6 +204,24 @@ fn kids(n flatxml.Node, name string) []flatxml.Node {
 		out << c
 	}
 	return out
+}
+
+const xsi_uri = 'http://www.w3.org/2001/XMLSchema-instance'
+
+// xsi_type is an element's XML Schema instance type, by namespace and local name whatever prefix
+// spells it; '' for none.
+fn xsi_type(n flatxml.Node) string {
+	if !n.ok() {
+		return ''
+	}
+	ns := n.doc.ns_id(xsi_uri) or { return '' }
+	lo, hi := n.doc.attr_range(n.i)
+	for a := lo; a < hi; a++ {
+		if n.doc.attr_ns_of(a) == ns && n.doc.attr_local_name(a) == 'type' {
+			return n.doc.attr_value(a)
+		}
+	}
+	return ''
 }
 
 fn short_name(n flatxml.Node) string {
@@ -515,7 +534,7 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did, mut 
 fn const_at(params []flatxml.Node, at_byte int, bits int, mut r Resolve, sn string) ?u64 {
 	for p in params {
 		pos := int_of(p.child('BYTE-POSITION').text()) or { -1 }
-		if p.attr('xsi:type') != 'CODED-CONST' || pos != at_byte {
+		if xsi_type(p) != 'CODED-CONST' || pos != at_byte {
 			continue
 		}
 		width := int_of(p.child('DIAG-CODED-TYPE').child('BIT-LENGTH').text()) or { -1 }
@@ -576,12 +595,12 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &
 		lay.sized = false
 		return
 	}
-	mut next := base // where a parameter with no BYTE-POSITION goes: after the one before it
+	mut next := 0 // where a parameter with no BYTE-POSITION goes: after the one before it
 	for p in params {
-		typ := p.attr('xsi:type')
+		typ := xsi_type(p)
 		pname := short_name(p)
 		posv := p.child('BYTE-POSITION')
-		mut pos := next
+		mut pos := if typ == 'VALUE' && next >= 0 && next < base { base } else { next }
 		if posv.ok() {
 			pos = int(int_of(posv.text()) or { -1 })
 			if pos < 0 {
@@ -595,7 +614,10 @@ fn (db &Db) lay_out(params []flatxml.Node, base int, at int, mut lay Layout, r &
 			return
 		}
 		if pos < base {
-			continue // the service id and the DID, before the value
+			// the service id and the DID, before the value; one of no fixed size ends at `base`
+			end := db.const_end(p)
+			next = if end >= 0 { pos + end } else { base }
+			continue
 		}
 		if typ != 'VALUE' {
 			lay.why << '${pname}: a ${typ} parameter inside the value'
@@ -702,8 +724,8 @@ fn (db &Db) const_end(p flatxml.Node) int {
 // when not fixed); a coding this reader does not hold is said, the part's bytes still counted.
 fn (mut lay Layout) coded(pname string, dop flatxml.Node, start int) int {
 	dct := dop.child('DIAG-CODED-TYPE')
-	if dct.attr('xsi:type') != 'STANDARD-LENGTH-TYPE' {
-		lay.why << '${pname}: a ${dct.attr('xsi:type')} (no fixed length)'
+	if xsi_type(dct) != 'STANDARD-LENGTH-TYPE' {
+		lay.why << '${pname}: a ${xsi_type(dct)} (no fixed length)'
 		return -1
 	}
 	bits := int(int_of(dct.child('BIT-LENGTH').text()) or {
@@ -726,7 +748,7 @@ fn (mut lay Layout) coded(pname string, dop flatxml.Node, start int) int {
 		lay.why << '${pname}: a BIT-MASK'
 		ok = false
 	}
-	if dct.attr('IS-HIGHLOW-BYTE-ORDER') == 'false' && base in ['A_UINT32', 'A_INT32'] {
+	if !dct.attr_bool('IS-HIGHLOW-BYTE-ORDER', true) && base in ['A_UINT32', 'A_INT32'] {
 		lay.why << '${pname}: low byte first'
 		ok = false
 	}

@@ -366,3 +366,49 @@ fn test_a_value_at_a_bit_position_spans_the_bytes_it_reaches() {
 	assert d.size == 2 && d.parts.len == 0
 	assert v.notes.any(it.contains('BIT-POSITION') && it.contains('2 bytes'))
 }
+
+// read_5 is a base variant with a 0x22 service of DID 5 whose response parameters are `resp`.
+fn read_5(resp string) string {
+	comms := service_xml('Read_5', 'qr', 'rr')
+	reqs := '<REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID', 1, 5, 16) + '</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>${resp}</PARAMS></POS-RESPONSE>'
+	return raw_layer('Base', comms, reqs, resps)
+}
+
+fn test_a_value_after_a_header_of_implicit_positions_starts_after_it() {
+	unplaced := '<BYTE-POSITION>1</BYTE-POSITION>'
+	resp := coded_param('SID', 0, 0x62, 8) + coded_param('DID', 1, 5, 16).replace(unplaced, '') +
+		value_param('Narrow', 'u8').replace('<BYTE-POSITION>3</BYTE-POSITION>', '')
+	db := load_docs('implicit', {
+		'a.odx-d': odx_doc('DLC', read_5(resp))
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.size == 1 && d.parts.map(it.name) == ['Narrow']
+}
+
+fn test_a_low_byte_first_integer_spelled_0_is_bytes() {
+	resp := coded_param('SID', 0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('Wide',
+		'u16')
+	layer := read_5(resp).replace_once('BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>16',
+		'BASE-DATA-TYPE="A_UINT32" IS-HIGHLOW-BYTE-ORDER="0"><BIT-LENGTH>16')
+	db := load_docs('lowhigh', {
+		'a.odx-d': odx_doc('DLC', layer)
+	})!
+	v := db.variant('Base')!
+	d := did_of(v, 5)
+	assert d.size == 2 && d.parts.len == 0
+	assert v.notes.any(it.contains('low byte first'))
+}
+
+fn test_the_instance_type_is_read_under_any_prefix() {
+	resp := coded_param('SID', 0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('Narrow',
+		'u8')
+	doc := odx_doc('DLC', read_5(resp)).replace('xmlns:xsi=', 'xmlns:schema=').replace('xsi:type=',
+		'schema:type=')
+	db := load_docs('prefix', {
+		'a.odx-d': doc
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.size == 1 && d.parts.map(it.name) == ['Narrow']
+}
