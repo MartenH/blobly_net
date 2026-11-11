@@ -230,6 +230,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			// switched off, seconds late, and a queue allowed to fill drops frames for everyone
 			// sharing the wire. Read and discard. recv's own 5 ms timeout paces an idle bus, so
 			// the drain ends on the first empty read and the sleep only bounds the retry rate.
+			engine.end_connections(fn [mut bus] (f transport.CanFrame) bool {
+				bus.send(f) or { return false }
+				return true
+			})
 			for _ in 0 .. 1024 {
 				bus.recv(5) or { break }
 			}
@@ -246,7 +250,8 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			}
 			a.mu.unlock()
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
-			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
+			// a transfer in progress goes on (a BAM, a connection sent or answered), so a rebuild
+			// does not cut it short on the wire
 			engine = engine.carried()
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
@@ -264,6 +269,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			notify_gen(app, gen, '${sc.pch.name}: simulation: ${note}')
 		}
 	}
+	engine.end_connections(fn [mut bus] (f transport.CanFrame) bool {
+		bus.send(f) or { return false }
+		return true
+	})
 	bus.close()
 }
 

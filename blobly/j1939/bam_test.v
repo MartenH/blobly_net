@@ -61,7 +61,7 @@ fn test_a_pdu1_group_is_broadcast_only_to_the_global_address() {
 	frames := bam_frames(long_msg(compose(6, 0xEF00, addr_global, 0x10), 12)) or { panic(err) }
 	done, _ := rejoined(frames, bam_gap_ms)
 	assert done.len == 1 && done[0].pgn == 0xEF00
-	// to one node it is RTS/CTS, which is not sent
+	// to one node it is an RTS/CTS connection, not a BAM
 	if _ := bam_frames(long_msg(compose(6, 0xEF00, 0x05, 0x10), 12)) {
 		assert false
 	} else {

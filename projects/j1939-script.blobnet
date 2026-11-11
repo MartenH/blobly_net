@@ -17,6 +17,12 @@
 #
 #   Alias, AliasPeer, AliasOff (disabled, j1939: true)
 #
+# and a fourth where the engine answers: the simulated Engine (it sends EEC1 from SA 0x00)
+# answers an RTS/CTS connection aimed at 0x00, so a script sending PropA_Cfg (0x21 to 0x00) by
+# name gets its CTS and acknowledgement:
+#
+#   Conn (simulates Engine), ConnPeer
+#
 #   ./scripts/runtests.sh tests/j1939.lua
 #   python3 python/examples/j1939_listen.py
 project:
@@ -61,3 +67,15 @@ channels:
     bitrate: 250000
     enabled: false
     j1939: true
+  - name: Conn
+    type: can
+    interface: inproc:J1939C
+    bitrate: 250000
+    databases:
+      - ../dbc/j1939_demo.dbc
+    simulation:
+      - name: Engine
+  - name: ConnPeer
+    type: can
+    interface: inproc:J1939C
+    bitrate: 250000

@@ -1,7 +1,8 @@
 // A message of a row's databases encoded, stamped and sent whole (#619): a bb_payload carries a
 // message of any length its database gives it up to a J1939 transport-protocol message, and
 // bb_message_send puts it on the wire as one frame or, for a J1939 message past eight bytes going
-// out classic, as its BAM (j1939.send_message, the rule every send path asks).
+// out classic, as its BAM or to one node its RTS/CTS connection (j1939.send_message_within, the
+// rule every send path asks).
 module main
 
 import sync.stdatomic
@@ -72,11 +73,15 @@ pub fn bb_e2e_stamp_payload(row i32, m i32, p &C.bb_payload) i32 {
 }
 
 // bb_message_send sends message m of row `row` (its declaration read from the run's databases) as
-// payload p on handle h, the format p states: one frame, or its BAM paced 50 ms apart.
+// payload p on handle h, the format p states: one frame, its BAM paced 50 ms apart, or its RTS/CTS
+// connection, each answer waited for timeout_ms (0: T3).
 @[export: 'bb_message_send']
-pub fn bb_message_send(h i32, row i32, m i32, p &C.bb_payload) i32 {
+pub fn bb_message_send(h i32, row i32, m i32, p &C.bb_payload, timeout_ms i32) i32 {
 	if isnil(p) {
 		return fail(bb_err, 'send: no payload')
+	}
+	if timeout_ms < 0 || timeout_ms > 3_600_000 {
+		return fail(bb_err, 'send: timeout_ms is 0 .. 3600000, not ${timeout_ms}')
 	}
 	data := payload_data(p) or { return fail(bb_err, 'send: ${err.msg()}') }
 	ff := format_of(int(p.format)) or { return fail(bb_err, 'send: ${err.msg()}') }
@@ -94,10 +99,13 @@ pub fn bb_message_send(h i32, row i32, m i32, p &C.bb_payload) i32 {
 	stdatomic.store_i64(&hd.cancel, 0)
 	// as the row it is attached to, framed for that row and the wire in one policy read (framing.v)
 	mut bus := transport.Bus(hd.bus)
-	j1939.send_message(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939,
-		hd.send_stop) or {
+	j1939.send_message_within(mut bus, transport.CanFrame{ ...frame, row: hd.row }, msg.j1939,
+		int(timeout_ms), hd.send_stop) or {
 		if stdatomic.load_i64(&hd.cancel) != 0 {
 			return fail(bb_err_cancelled, 'send: cancelled: ${err.msg()}')
+		}
+		if err is j1939.ConnError && err.end == .timeout {
+			return fail(bb_err_timeout, 'send: ${err.msg()}')
 		}
 		return fail(bb_err, 'send: ${err.msg()}')
 	}

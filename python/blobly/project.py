@@ -534,6 +534,8 @@ class Channel(Bus):
                     # wire a can row also names, which declares nothing)
                     _lib.check(lib.bb_framing_attach(h, self._index))
                     _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
+                    if self._j1939 is not None:  # and answering where it was told to
+                        self._j1939._answering(h)
                     # and its NM reading from its first frame: a stated range, else the wire's own
                     # (none is no reading: NM is a reader beside the channel, never a refusal of it)
                     if self._nm is not None and self._nm.explicit is not None:
@@ -753,19 +755,22 @@ class Channel(Bus):
                 out.append((s, v))
             return msg, out
 
-    def j1939(self) -> J1939Listener:
+    def j1939(self, *, address: int | None = None) -> J1939Listener:
         """This channel's J1939 reading (J1939Listener): multi-packet messages rejoined from the
         transport protocol (BAM, RTS/CTS) and decoded by PGN, their faults, and the address
         directory, from the frames this channel's handle reads. Nothing decides a bus IS J1939, so
         a row reads it from its handle's first frame where its wire says so — a row on it ticked
         `j1939:`, or with a database declaring J1939 (VFrameFormat J1939PG) — and any other CAN row
         from this call on.
-        It sends nothing: no CTS, no acknowledgement, no address claim."""
+        It claims no address. With `address` (0x00..0xFD) it answers RTS/CTS connections aimed at
+        that address as the node holding it (J1939Listener.answer), as the channel is read."""
         with _lib.state_lock:
             if self._j1939 is None:
                 self._j1939 = J1939Listener(self)
             if self._h is not None:  # the handle already open listens from now on
                 self._j1939._handle()
+        if address is not None:
+            self._j1939.answer(address)
         return self._j1939
 
     def nm(self, lo: int | None = None, hi: int | None = None, *, ext: bool = False,
@@ -1139,7 +1144,8 @@ class Message:
                 ctypes.memmove(p.data, f.data, p.len)
         return p
 
-    def send(self, /, *, format: FrameFormat | None = None, **signals: float | bytes) -> Frame:
+    def send(self, /, *, format: FrameFormat | None = None, timeout_ms: int | None = None,
+             **signals: float | bytes) -> Frame:
         """Encodes this message (encode), stamps the E2E its database declares — the counter its
         next of this run's sends by name on the channel, from 0, then the CRC, over what the
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
@@ -1157,7 +1163,17 @@ class Message:
         protocol's broadcast, a TP.CM BAM and its TP.DT packets 50 ms apart from the message's
         source address, and the call returns once the last is sent (50 ms a packet), after any
         other BAM this process is sending from that address on the wire; Ctrl-C ends it between
-        packets, the rest unsent. The Frame returned is the message's."""
+        packets, the rest unsent. One to a single node (a PDU1 group whose destination is not
+        0xFF) is an RTS/CTS connection: the RTS, the packets each CTS clears, and the call returns
+        once the node has acknowledged the message — each of its answers (a CTS, the
+        acknowledgement) waited for `timeout_ms` (None: J1939-21's T3, 1250 ms; a hold waits 1050 ms
+        for the next CTS), blobly.Timeout when one does not come (the connection aborted), Refused
+        when the node aborts it; Ctrl-C aborts it. The Frame returned is the message's."""
+        if timeout_ms is not None and (isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int)):
+            raise TypeError(f"{self.name}.send: timeout_ms is an integer number of milliseconds, not {timeout_ms!r}")
+        if timeout_ms is not None and not 1 <= timeout_ms <= 3_600_000:
+            raise ValueError(f"{self.name}.send: timeout_ms is 1 .. 3600000, not {timeout_ms}")
+        tmo = timeout_ms or 0
         lib = _lib.lib()
         with _lib.state_lock:
             p = self._encoded(signals)  # its format the declared one (bb_encode_payload)
@@ -1170,11 +1186,12 @@ class Message:
             row, m = self.channel._index, self._index
             _lib.check(lib.bb_e2e_stamp_payload(row, m, ctypes.byref(p)))
         if self.j1939 and p.len > 8 and threading.current_thread() is threading.main_thread():
-            # a BAM takes up to 12.75 s: on a thread of its own, so Ctrl-C cancels it (events._on_thread)
-            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p))), "blobly-send",
+            # a BAM takes up to 12.75 s, a connection its answers: on a thread of its own, so
+            # Ctrl-C cancels it (events._on_thread)
+            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p), tmo)), "blobly-send",
                        lambda: lib.bb_message_cancel(h))
         else:
-            _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p)))
+            _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p), tmo))
         # the Frame returned says what was stated, or declared
         fd = p.format not in (0, _lib.FORMATS["classic"])
         brs = p.format == _lib.FORMATS["fd_brs"]

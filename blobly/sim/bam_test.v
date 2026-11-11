@@ -88,25 +88,87 @@ fn test_on_an_fd_row_the_message_is_one_frame() {
 	assert frames.len == 1 && frames[0].data.len == 20
 }
 
-// A long J1939 message to one node, which only RTS/CTS carries, is not sent, and is said once.
-fn test_a_message_to_one_node_is_said_once_and_not_sent() {
+fn j1939_node(name string, message string, period int) SimEcu {
 	db := candb.load_dbc_file(j1939_dbc) or { panic(err) }
-	msg := db.message_named('PropA_Cfg') or { panic('no PropA_Cfg') }
-	assert msg.j1939 && msg.dlc > 8
-	mut e := Engine{
-		ecus: [SimEcu{
-			name:     'Body'
-			messages: [SimMessage{
-				msg:       msg
-				period_ms: 100
-			}]
+	return SimEcu{
+		name:     name
+		messages: [SimMessage{
+			msg:       db.message_named(message) or { panic('no ${message}') }
+			period_ms: period
 		}]
 	}
-	frames, _ := steps(mut e, 400)
-	assert frames.len == 0
-	notes := e.take_notes()
-	assert notes.len == 1 && notes[0].contains('PropA_Cfg') && notes[0].contains('RTS/CTS')
-	assert e.take_notes().len == 0
+}
+
+// between runs engines `a` and `b` on one wire every 5 ms up to `until_ms`, each frame one sends
+// read by the other (its answers in turn by the first) and by a listener: what it rejoined.
+fn between(mut a Engine, mut b Engine, until_ms int) []j1939.Assembled {
+	mut lis := j1939.Reassembler{}
+	mut done := []j1939.Assembled{}
+	for t := 0; t <= until_ms; t += 5 {
+		mut q := a.due_frames(f64(t)).map(Wired{it, true})
+		q << b.due_frames(f64(t)).map(Wired{it, false})
+		for q.len > 0 {
+			w := q[0]
+			q.delete(0)
+			done << lis.feed(w.f, f64(t)).done
+			answers := if w.from_a { b.on_frame(w.f) } else { a.on_frame(w.f) }
+			q << answers.map(Wired{it, !w.from_a})
+		}
+	}
+	return done
+}
+
+struct Wired {
+	f      transport.CanFrame
+	from_a bool
+}
+
+// A simulated node's long J1939 message to one node goes as an RTS/CTS connection, which a
+// simulated node sending from that address answers: one message, nothing said.
+fn test_a_simulated_message_to_one_node_is_a_connection_another_node_answers() {
+	mut body := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000)]
+	}
+	// Engine sends EEC1 from 0x00 (on no cycle), so it answers for 0x00
+	mut engine := Engine{
+		ecus: [j1939_node('Engine', 'EEC1', 0)]
+	}
+	done := between(mut body, mut engine, 400)
+	assert done.len == 1 && !done[0].bam && done[0].pgn == 0xEF00
+	assert done[0].sa == 0x21 && done[0].da == 0x00 && done[0].data.len == 16
+	assert body.conns.len == 0 && engine.answers.open() == 0
+	assert body.take_notes().len == 0
+}
+
+// With nobody at the destination the connection times out, aborted, said once however often the
+// message comes round.
+fn test_an_unanswered_connection_is_aborted_and_said_once() {
+	mut body := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 2000)]
+	}
+	mut nobody := Engine{}
+	between(mut body, mut nobody, 6000)
+	notes := body.take_notes()
+	assert notes.len == 1 && notes[0].contains('PropA_Cfg') && notes[0].contains('no CTS'), notes.str()
+	assert body.take_notes().len == 0
+}
+
+// Two of the engine's own nodes: the connection goes a hop a step, every frame on the wire in
+// order — RTS, CTS, three packets, the acknowledgement.
+fn test_a_connection_between_two_of_its_own_nodes() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000), j1939_node('Engine', 'EEC1', 0)]
+	}
+	frames, at := steps(mut e, 400)
+	assert frames.map(it.data[0]) == [j1939.cm_rts, j1939.cm_cts, 1, 2, 3, j1939.cm_eom_ack]
+	assert at == [0.0, 5, 10, 10, 10, 15]
+	mut r := j1939.Reassembler{}
+	mut done := []j1939.Assembled{}
+	for f in frames {
+		done << r.feed(f, 0).done
+	}
+	assert done.len == 1 && done[0].da == 0x00 && done[0].data.len == 16
+	assert e.conns.len == 0 && e.take_notes().len == 0
 }
 
 fn body_engine() Engine {
@@ -189,4 +251,117 @@ fn test_a_slow_write_moves_the_next_frame() {
 struct SentAt {
 mut:
 	at []int
+}
+
+// Between two of its own nodes, a packet the transport refuses is not read as sent: the
+// connection is not acknowledged: the responder's packets stop, it aborts, and that is said.
+fn test_a_refused_packet_between_its_own_nodes_times_out() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 2000), j1939_node('Engine', 'EEC1', 0)]
+	}
+	mut out := &FrameBox{}
+	for t := 0; t <= 2000; t += 5 {
+		e.step(f64(t), fn [mut out] (f transport.CanFrame) bool {
+			if j1939.pgn(f.id) == j1939.pgn_tp_dt && f.data[0] == 2 {
+				return false
+			}
+			out.frames << f
+			return true
+		})
+	}
+	assert !out.frames.any(it.data[0] == j1939.cm_eom_ack)
+	notes := e.take_notes()
+	assert notes.len == 1 && notes[0].contains('timeout'), notes.str()
+}
+
+// A simulation rebuilt mid-connection carries it on, the frames its own nodes have yet to read
+// included.
+fn test_a_rebuild_carries_a_connection_between_its_own_nodes_on() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000), j1939_node('Engine', 'EEC1', 0)]
+	}
+	mut frames := e.due_frames(0)
+	assert frames.len == 1 && frames[0].data[0] == j1939.cm_rts
+	ecus := e.ecus
+	e = e.carried()
+	e.ecus = ecus
+	for t := 5; t <= 100; t += 5 {
+		frames << e.due_frames(f64(t))
+	}
+	assert frames.map(it.data[0]) == [j1939.cm_rts, j1939.cm_cts, 1, 2, 3, j1939.cm_eom_ack]
+	assert e.take_notes().len == 0
+}
+
+// An abort declaring no role, from a node with a connection open each way with the engine on one
+// group, ends the one that node originates: the engine's own goes on.
+fn test_an_abort_with_no_role_ends_one_connection() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 1000)]
+	}
+	rts := e.due_frames(0)
+	assert rts.len == 1 && e.conns.len == 1
+	cm := fn (data []u8) transport.CanFrame {
+		return transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_cm, 0x21, 0x00)
+			extended: true
+			data:     data
+		}
+	}
+	e.on_frame(cm([j1939.cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00]))
+	assert e.answers.open() == 1
+	e.on_frame(cm([j1939.cm_abort, 250, 0xFF, 0xFF, 0xFF, 0x00, 0xEF, 0x00]))
+	assert e.answers.open() == 0 && e.conns.len == 1
+}
+
+// The packets a CTS clears go out at the next step, and the wait for the acknowledgement runs
+// from their last write: a slow window is not timed out.
+fn test_a_slow_window_waits_from_its_last_write() {
+	mut e := Engine{
+		ecus: [j1939_node('Body', 'PropA_Cfg', 5000)]
+	}
+	e.due_frames(0)
+	cts := transport.CanFrame{
+		id:       j1939.compose(7, j1939.pgn_tp_cm, 0x21, 0x00)
+		extended: true
+		data:     [j1939.cm_cts, 3, 1, 0xFF, 0xFF, 0x00, 0xEF, 0x00]
+	}
+	assert e.on_frame(cts).len == 0
+	mut out := &FrameBox{}
+	e.step(5, fn [mut out] (f transport.CanFrame) bool {
+		time.sleep(20 * time.millisecond)
+		out.frames << f
+		return true
+	})
+	assert out.frames.map(it.data[0]) == [u8(1), 2, 3]
+	assert e.due_frames(f64(5 + j1939.conn_t3_ms + 10)).len == 0
+	assert e.conns.len == 1 && e.take_notes().len == 0
+}
+
+// A loop ending with connections open aborts what the engine sends and answers, and lets the
+// lane go for the next sender.
+fn test_ending_the_connections_aborts_them_and_frees_the_lane() {
+	wire := 'inproc:sim_conn_end'
+	mut body := Engine{
+		iface: wire
+		ecus:  [j1939_node('Body', 'PropA_Cfg', 1000)]
+	}
+	mut engine := Engine{
+		ecus: [j1939_node('Engine', 'EEC1', 0)]
+	}
+	rts := body.due_frames(0)
+	assert rts.len == 1 && rts[0].data[0] == j1939.cm_rts
+	engine.on_frame(rts[0])
+	assert engine.answers.open() == 1
+	mut out := &FrameBox{}
+	collect := fn [mut out] (f transport.CanFrame) bool {
+		out.frames << f
+		return true
+	}
+	body.end_connections(collect)
+	engine.end_connections(collect)
+	assert out.frames.map(it.data[..3]) == [[j1939.cm_abort, u8(250), 0xFC], [j1939.cm_abort, u8(250), 0xFD]]
+	assert body.conns.len == 0 && engine.answers.open() == 0
+	next := j1939.connection_for(transport.CanFrame{ ...rts[0], id: j1939.compose(6, 0xEF00, 0x00,
+		0x21), data: []u8{len: 16} }, wire, 0)!
+	assert next.take_lane(time.sys_mono_now())
 }

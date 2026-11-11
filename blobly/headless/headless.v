@@ -712,6 +712,10 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_nam
 			r.say('${chan_name}: simulation: ${note}')
 		}
 	}
+	engine.end_connections(fn [mut bus] (f transport.CanFrame) bool {
+		bus.send(f) or { return false }
+		return true
+	})
 	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
 	// handle still answers with the wire's totals (codex round 12 on #231).
 	bus.close()

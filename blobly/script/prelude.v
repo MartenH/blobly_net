@@ -949,11 +949,17 @@ end
 -- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
 -- opts.format as bus.send, else the format its database states, else the format of the channel
 -- row. A J1939 message past 8 bytes going out classic is sent as a BAM (TP.CM, then TP.DT 50 ms
--- apart), returning after the last
+-- apart), returning after the last; to one node (a PDU1 group not to 0xFF) as an RTS/CTS
+-- connection, returning once the node has acknowledged it, each of its answers waited for
+-- opts.timeout_ms (default 1250, J1939-21 T3)
 function bus.send_message(channel, name, sigs, opts)
   if opts ~= nil and type(opts) ~= "table" then error("bus.send_message: opts is a table", 2) end
   if opts ~= nil and opts.format ~= nil and type(opts.format) ~= "string" then
     error("bus.send_message: format must be a string (classic, fd or fd_brs)", 2)
+  end
+  local tmo = opts and opts.timeout_ms
+  if tmo ~= nil and (math.type(tmo) ~= "integer" or tmo < 1 or tmo > 3600000) then
+    error("bus.send_message: timeout_ms is an integer 1 .. 3600000, not " .. tostring(tmo), 2)
   end
   local id, ext, data, declared = __msg_template(channel, name)
   for k, v in pairs(sigs or {}) do
@@ -962,7 +968,7 @@ function bus.send_message(channel, name, sigs, opts)
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
   local format = opts and opts.format
   if format == nil then format = declared end
-  __bus_send_message(channel, name, data, format)
+  __bus_send_message(channel, name, data, format, tmo or 0)
   return { id = id, ext = ext, data = data }
 end
 -- ============================ background senders ============================
@@ -1077,9 +1083,12 @@ end
 -- the waits below): multi-packet messages rejoined from the transport protocol (BAM, RTS/CTS)
 -- and decoded through the channel`s database by PGN, their faults, and the address directory.
 -- A channel reads it from its first frame where its wire says J1939 (a row on it ticked j1939:,
--- a database declaring it), any other CAN channel from its first j1939 call. Nothing is sent: no CTS, no
--- acknowledgement, no address claim.
+-- a database declaring it), any other CAN channel from its first j1939 call. No address claim is
+-- sent; with j1939.answer, an RTS aimed at the address is answered (CTS, acknowledgement).
 --   j1939.listen(ch)                          read ch as J1939 from now on
+--   j1939.answer(ch, address)                 answer RTS/CTS connections aimed at address
+--                                             (0x00..0xFD) as the node holding it, as ch is
+--                                             read; nil answers none
 --   j1939.messages(ch [, timeout_ms])         -> { msg, ... }: every completed message waiting;
 --                                             none waiting, ch is read until one completes or
 --                                             timeout_ms (default 0: one look) has passed
@@ -1113,6 +1122,10 @@ local function jint(fname, what, v, top)
   end
 end
 function j1939.listen(channel) __j1939_listen(channel) end
+function j1939.answer(channel, address)
+  if address ~= nil then jint("j1939.answer", "an address", address, 0xFD) end
+  __j1939_answer(channel, address or -1)
+end
 function j1939.messages(channel, timeout_ms)
   local got = __j1939_wait(channel, jms("j1939.messages", timeout_ms, 0), -1, -1)
   return got

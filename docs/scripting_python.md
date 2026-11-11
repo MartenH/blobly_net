@@ -669,8 +669,14 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   address, 50 ms apart, the last padded with 0xFF ([j1939.md](j1939.md#sending-a-message-longer-than-8-bytes))
   — and the call returns once the last packet is out, 50 ms a packet (Ctrl-C ends it between
   packets, the rest unsent); `format="classic"` sends it so
-  on an FD row too. `msg.encode()` gives such a message whole, up to 1785 bytes; `msg.send_cyclic`
-  sends one BAM a period.
+  on an FD row too. One to a single node — a PDU1 group whose destination is not 0xFF, such as
+  `PropA_Cfg` from 0x21 to 0x00 — is an RTS/CTS connection
+  ([j1939.md](j1939.md#a-connection-to-one-node-rtscts)): the RTS, the packets each CTS clears, and
+  the call returns once the node has acknowledged the message. `msg.send(timeout_ms=3000, ...)`
+  waits that long for each of the node's answers (a CTS, the acknowledgement; J1939-21's T3,
+  1250 ms, by default) and raises `blobly.Timeout` when one does not come, the connection aborted;
+  an abort from the node raises `Refused` with its reason. `msg.encode()` gives such a message
+  whole, up to 1785 bytes; `msg.send_cyclic` sends one BAM, or opens one connection, a period.
 - `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`
   whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
   `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
@@ -799,10 +805,13 @@ complete, and the address directory. It reads the frames the channel's own handl
 channel sends is never in it. Nothing decides a bus is J1939, so a row reads it from its first
 frame where its wire says so — a row of the project on it (a disabled one too) ticked `j1939:`, or with a database declaring J1939
 (`VFrameFormat` `J1939PG`, [j1939.md](j1939.md)): the GUI's per-wire reading — and any other CAN
-row from the call on. It sends nothing: no
-CTS, no acknowledgement, no address claim; on a bench where the script is a node, it sends those
-frames itself. A long message of the row's database needs no hand-built frames: `msg.send` sends it
-as a BAM (above), as the frames below are built by hand.
+row from the call on. It claims no address. **`ch.j1939(address=0x00)`** (or
+`listener.answer(0x00)`) makes it answer RTS/CTS connections aimed at that address as the node
+holding it — a CTS per window, the end-of-message acknowledgement once the last packet is in, an
+abort when the packets stop — while the channel is read, the message arriving as any other;
+`listener.answer(None)` stops, and `listener.answering` is the address (`None` for none). A long
+message of the row's database needs no hand-built frames: `msg.send` sends it as a BAM or a
+connection (above), as the frames below are built by hand.
 
 ```python
 import blobly
@@ -849,6 +858,26 @@ with blobly.Project("projects/j1939-script.blobnet") as net:
   32 global functions, `None` for any other), `vehicle_system`, `vehicle_system_instance`,
   `industry_group`, `arbitrary_address_capable`. Nodes claim at power-up, and nothing here sends
   a Request for Address Claimed.
+- **`listener.answer(address)`** answers the RTS/CTS connections aimed at `address` (0x00..0xFD)
+  as the channel is read: from a thread reading it, while another sends.
+
+```python
+import threading
+import blobly
+
+with blobly.Project("projects/j1939-script.blobnet") as net:
+    j, other = net.channels.J1939, net.channels.Other
+    listener = other.j1939(address=0x00)            # Other is the node at 0x00
+    other.look()
+    got = []
+    reader = threading.Thread(target=lambda: got.append(listener.expect_pgn(0xEF00, 3000)))
+    reader.start()
+    j.messages.PropA_Cfg.send(Mode=2, Setpoint=100.0, timeout_ms=3000)   # 0x21 to 0x00: RTS/CTS
+    reader.join()
+    print(got[0].bam, got[0].da, len(got[0].data))  # False 0 16
+    listener.answer(None)
+```
+
 - A listener keeps 1024 messages and 1024 faults untaken; past that the oldest go, and
   `listener.dropped` counts them. A stop and a start of the project, or `ch.close()`, begin a new
   reading.
@@ -2477,7 +2506,7 @@ after `start()`.
 | `ch.decode(frame)` | `{signal: physical value}` (a byte signal's `bytes`), or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None, padding=0, block_size=0, stmin_ms=0, tx_dl=8, format=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive; `padding`, `block_size`, `stmin_ms`, `tx_dl` and `format` are its ISO-TP channel's on a CAN row ([Raw ISO-TP](#raw-iso-tp)), refused on a DoIP row. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
-| `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
+| `ch.j1939(*, address=None)` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)); with `address`, answering RTS/CTS connections aimed at it. |
 | `ch.nm(lo=None, hi=None, *, ext=False, timeout_ms=300)` | The row's `NmListener`: who reports in on its NM cluster and who keeps it awake, by its wire's configuration or the range given ([Network management](#network-management)). |
 | `ch.isotp(tx, rx, *, padding=0, block_size=0, stmin_ms=0, tx_dl=8, format=None)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top, its frames padded with `padding` (None: unpadded), the Flow Control it answers with `block_size` / `stmin_ms`, its frames up to `tx_dl` bytes long (above 8 CAN-FD) and in `format` (None: the row's) ([Raw ISO-TP](#raw-iso-tp)). |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
@@ -2496,6 +2525,8 @@ after `start()`.
 | `listener.faults()` | The `J1939Fault`s since the last call. Reads nothing. |
 | `listener.addresses(window_ms=0)` | The directory by address, a `J1939Address` each, after reading the channel for `window_ms`. |
 | `listener.dropped` | Messages and faults dropped untaken, the queues (1024 each) being full. |
+| `listener.answer(address)` | Answers RTS/CTS connections aimed at `address` (0x00..0xFD) as the channel is read; `None` answers none. |
+| `listener.answering` | The address it answers for, `None` for none. |
 
 ### `NmListener`
 
@@ -2601,7 +2632,7 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
 | `msg.encode(**signals)` | The `Frame` with these signals at these physical values (a byte signal's `bytes`), every other at raw 0; its E2E not stamped. |
-| `msg.send(*, format=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s; `None` sends it in `msg.format`, else the channel's. |
+| `msg.send(*, format=None, timeout_ms=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s; `None` sends it in `msg.format`, else the channel's. A long J1939 message goes as a BAM, or to one node as an RTS/CTS connection whose answers are each waited for `timeout_ms` (T3, 1250 ms, by default; `Timeout` when one does not come). |
 | `msg.send_cyclic(period_ms, /, *, e2e=True, format=None, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`, in `format` as `send` takes it: a `CyclicSender`. |
 
 ### `CyclicSender`, `CyclicStatus`

@@ -1541,9 +1541,11 @@ fn l_bus_send(l lua.State) i32 {
 	return 0
 }
 
-// __bus_send_message(channel, message, data, format): message's encoded `data` sent as bus.send
-// sends a frame — or, a J1939 message past eight bytes going out classic, as its BAM
-// (j1939.send_message), the call returning once its last frame is out, or at the run's deadline.
+// __bus_send_message(channel, message, data, format, timeout_ms): message's encoded `data` sent as
+// bus.send sends a frame — or, a J1939 message past eight bytes going out classic, as its BAM or
+// to one node its RTS/CTS connection, each answer waited for timeout_ms (0: T3)
+// (j1939.send_message_within), the call returning once its last frame is out or the node has
+// acknowledged it, or at the run's deadline.
 fn l_bus_send_message(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
@@ -1559,7 +1561,11 @@ fn l_bus_send_message(l lua.State) i32 {
 		data:     l.arg_bytes(3)
 	}, msg.j1939) or { return l.fail('${name}: ${err}') }
 	mut b := transport.Bus(bus)
-	j1939.send_message(mut b, frame, msg.j1939, env.at_deadline) or {
+	answer_ms := int(l.arg_int(5))
+	j1939.send_message_within(mut b, frame, msg.j1939, answer_ms, env.at_deadline) or {
+		if err is j1939.ConnError && env.expired() {
+			return timeout_at(l)
+		}
 		return l.fail('send failed on ${name}: ${err}')
 	}
 	return 0

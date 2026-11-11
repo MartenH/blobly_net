@@ -1,6 +1,7 @@
 // J1939 on a row's frames (bb.h's "J1939 on a row's frames" block): a bus handle's received frames
 // fed to a j1939.Listener once bb_j1939_attach binds it to a row, its completed messages decoded
-// through the row's databases by candb.pgn_message_in, the rule the trace decodes them by.
+// through the row's databases by candb.pgn_message_in, the rule the trace decodes them by; and the
+// RTS/CTS connections aimed at the address bb_j1939_answer names answered on the handle.
 module main
 
 import time
@@ -89,6 +90,7 @@ pub fn bb_j1939_attach(h i32, row i32, force i32) i32 {
 fn (mut hd BusHandle) j1939_feed(fr transport.CanFrame) {
 	if !isnil(hd.j1939.l) {
 		hd.j1939.l.feed(fr, f64(time.sys_mono_now()) / 1_000_000.0)
+		hd.j1939_answers()
 	}
 }
 
@@ -96,7 +98,27 @@ fn (mut hd BusHandle) j1939_feed(fr transport.CanFrame) {
 fn (mut hd BusHandle) j1939_idle() {
 	if !isnil(hd.j1939.l) {
 		hd.j1939.l.idle(f64(time.sys_mono_now()) / 1_000_000.0)
+		hd.j1939_answers()
 	}
+}
+
+// j1939_answers sends on the handle what its listener answers a connection aimed at its address
+// with (bb_j1939_answer).
+fn (mut hd BusHandle) j1939_answers() {
+	for f in hd.j1939.l.take_outgoing() {
+		hd.bus.send(f) or {}
+	}
+}
+
+@[export: 'bb_j1939_answer']
+pub fn bb_j1939_answer(h i32, address i32) i32 {
+	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
+	defer {
+		hd.leave()
+	}
+	mut l := hd.listener(h) or { return fail(bb_err_state, err.msg()) }
+	l.answer(int(address)) or { return fail(bb_err, 'j1939_answer: ${err.msg()}') }
+	return ok()
 }
 
 // listener is the handle's listener, refused where bb_j1939_attach bound none.
