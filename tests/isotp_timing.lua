@@ -71,6 +71,26 @@ test("an ISO-TP channel pads with the byte asked for, or sends frames unpadded",
   tp:close()
 end)
 
+test("a long tx_dl needs CAN-FD frames, and a stated format is on every frame", function()
+  -- CAN1 is a classic row: frames past 8 bytes only with an FD format stated
+  local ok, err = pcall(isotp.open, "CAN1", { tx = 0x7E0, rx = 0x7E8, tx_dl = 64 })
+  check.truthy(not ok and tostring(err):find("classic row", 1, true), tostring(err))
+  bus.recv("CAN1", 0)
+  local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, tx_dl = 64, format = "fd" })
+  tp:send(string.rep("\x00", 10))
+  local f = expect("CAN1", 0x7E0, 500)
+  check.truthy(f.fd and not f.brs, "an FD frame")
+  check.equal(tohex(f.data), "00 0A 00 00 00 00 00 00 00 00 00 00")
+  -- the simulated ECU reads the escape length too: service 0x00 is not supported
+  check.equal(tohex(tp:recv(1000)), "7F 00 11")
+  tp:close()
+  tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, format = "classic" })
+  tp:send("\x3E\x00")
+  check.truthy(not expect("CAN1", 0x7E0, 500).fd, "a classic frame")
+  check.equal(tp:recv(1000), "\x7E\x00")
+  tp:close()
+end)
+
 -- the ISO-TP frames on the pair 0x7E0/0x7E8 the script has heard since its last call, in wire
 -- order, each its PCI type (SF, FF, CF or FC) and the Flow Controls as hex
 local function isotp_wire()
@@ -108,7 +128,8 @@ end)
 test("ISO-TP settings out of range are refused before the channel opens", function()
   local bad = { { padding = 256 }, { padding = -1 }, { padding = true }, { block_size = -1 },
     { block_size = 256 },
-    { stmin_ms = 1.5 }, { stmin_ms = 128 }, { stmin_ms = "5" } }
+    { stmin_ms = 1.5 }, { stmin_ms = 128 }, { stmin_ms = "5" },
+    { tx_dl = 9 }, { tx_dl = 128 }, { tx_dl = 64, format = "classic" }, { format = "can" }, { format = 1 } }
   for _, o in ipairs(bad) do
     o.tx, o.rx = 0x7E0, 0x7E8
     local ok = pcall(isotp.open, "CAN1", o)

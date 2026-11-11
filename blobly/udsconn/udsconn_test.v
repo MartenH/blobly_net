@@ -76,6 +76,11 @@ fn test_carrier_of_reads_the_row() {
 		name:  'CAN1'
 		iface: 'inproc:CAN1'
 	}) == Carrier{}
+	assert carrier_of(project.Channel{
+		name:  'FD1'
+		iface: 'inproc:FD1'
+		fd:    true
+	}).fd
 	d := carrier_of(project.Channel{
 		name:        'D'
 		typ:         'doip'
@@ -266,4 +271,29 @@ fn test_isotp_settings_reach_the_channel_and_a_doip_row_refuses_them() {
 		return
 	}
 	assert false, 'settings on a DoIP row resolved'
+}
+
+// a TX_DL above 8 is refused on a classic row unless an FD format is stated, and the row's
+// declaration reaches the channel, which judges later settings by it
+fn test_a_long_tx_dl_needs_a_can_fd_row_or_format() {
+	s := isotp.settings_with(0, 0, 0, 64, .wire)!
+	a := Ask{
+		what:     'uds.open'
+		settings: s
+	}
+	resolve(a, 'CAN1', Carrier{}) or {
+		assert err.msg().contains('uds.open("CAN1"): tx_dl 64 on a classic row')
+		t := resolve(a, 'FD1', Carrier{ fd: true })!
+		assert t.fd
+		mut c := open_isotp(t, 'FD1', 'inproc:UDSCONN-FD', opener)!
+		assert c.row_fd && c.settings.tx_dl == 64
+		c.close()
+		stated := resolve(Ask{
+			what:     'uds.open'
+			settings: isotp.settings_with(0, 0, 0, 64, .fd)!
+		}, 'CAN1', Carrier{})!
+		assert !stated.fd
+		return
+	}
+	assert false, 'tx_dl 64 resolved on a classic row'
 }

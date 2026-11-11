@@ -26,5 +26,6 @@ pub fn open_isotp(t Target, name string, iface string, opener fn (string, string
 		return error('isotp open failed on ${name}: ${err}')
 	}
 	ch.settings = t.settings
+	ch.row_fd = t.fd
 	return ch
 }

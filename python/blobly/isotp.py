@@ -13,13 +13,15 @@ from .events import _sliced
 from .uds import _CAP, _ISOTP_DEFAULT, _close_orphans, _data, _int, _isotp_settings, _orphans
 
 if TYPE_CHECKING:
-    from .project import Channel
+    from .project import Channel, FrameFormat
 
 
 class IsoTp:
     """A raw ISO-TP channel on a CAN channel (Channel.isotp): messages of 1 .. 4095 bytes sent on CAN
-    id `tx` and received on `rx`, 29-bit when `ext` (either id past 0x7FF), in 8-byte frames (sent FD
-    on a row the project declares CAN-FD).
+    id `tx` and received on `rx`, 29-bit when `ext` (either id past 0x7FF), sent in 8-byte frames
+    (FD on a row the project declares CAN-FD) unless `tx_dl` says longer, and received in frames of
+    any length a sender chose: a CAN-FD peer's Single Frame of up to 62 bytes, or its First Frame of
+    up to 64 and Consecutive Frames as long.
     As a sender it honours the receiver's Flow Control; as a receiver it asks for no pacing.
 
     ch.isotp's `padding` is the byte frames are padded to 8 bytes with (0x00), None for frames as
@@ -27,6 +29,11 @@ class IsoTp:
     for 100 .. 900 µs) are the Flow Control it answers a First Frame with as a receiver, 0 and 0
     asking for no pacing; above 0 it sends the next Flow Control after each block. Out of range is
     refused before the channel opens; what was asked holds on every handle it opens.
+    `tx_dl` (8, 12, 16, 20, 24, 32, 48 or 64) is the length of the frames it sends in: above 8 a
+    Single Frame carries up to tx_dl - 2 bytes, a Consecutive Frame tx_dl - 1, and a frame is padded
+    up to the next CAN-FD length; refused on a classic row unless `format` states FD. `format`
+    ("classic", "fd" or "fd_brs"; None the row's declared format) is stated on every frame it sends,
+    a classic one refused with a tx_dl above 8.
 
     send() returns once the message is on the wire; a long one waits for the receiver's Flow Control
     (1000 ms each, N_Bs; 120 s in all) and raises Timeout when none came. recv() returns the next
@@ -47,10 +54,10 @@ class IsoTp:
     ext: bool
 
     def __init__(self, channel: "Channel", tx: int, rx: int, *, padding: int | None = 0, block_size: int = 0,
-                 stmin_ms: float = 0) -> None:
+                 stmin_ms: float = 0, tx_dl: int = 8, format: "FrameFormat | None" = None) -> None:
         self.channel = channel
         self._ask = (_int("tx", tx, 64), _int("rx", rx, 64))
-        self._settings = _isotp_settings(padding, block_size, stmin_ms)  # stated on each handle
+        self._settings = _isotp_settings(padding, block_size, stmin_ms, tx_dl, format)  # stated on each handle
         self.tx, self.rx = self._ask
         self.ext = False
         self._h = None

@@ -25,6 +25,9 @@ pub:
 	port   int
 	tester u16
 	ecu    u16
+	// fd is whether a CAN row declares CAN-FD (on an adapter that carries it): its ISO-TP frames
+	// go out FD unless they state classic, so a TX_DL above 8 is taken there (isotp.Settings)
+	fd bool
 }
 
 // not_can names this carrier's kind where it is not ISO-TP on a CAN bus (DoIP, SOME/IP, LIN),
@@ -40,7 +43,9 @@ pub fn (c Carrier) not_can() ?string {
 pub fn carrier_of(ch project.Channel) Carrier {
 	return match ch.kind() {
 		.can {
-			Carrier{}
+			Carrier{
+				fd: ch.can_carry_fd() && ch.origination_framing().fd
+			}
 		}
 		.lin {
 			Carrier{
@@ -87,7 +92,8 @@ pub:
 }
 
 // Target is what a connection is opened on: a DoIP row's connection, or a CAN row's request and
-// response ids, whether they are 29-bit, and the ISO-TP channel's settings.
+// response ids, whether they are 29-bit, the ISO-TP channel's settings and whether the row
+// declares CAN-FD.
 pub struct Target {
 pub:
 	doip     bool
@@ -95,6 +101,7 @@ pub:
 	rx       u32
 	ext      bool
 	settings isotp.Settings
+	fd       bool
 }
 
 // check_ids refuses an id that is not a CAN identifier. Asked by `resolve` too; a caller may ask
@@ -136,17 +143,21 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 	if tx > 0x1FFF_FFFF || rx > 0x1FFF_FFFF {
 		return error('${a.what}("${name}"): the default ids 0x${a.dtx:X}/0x${a.drx:X} are not CAN identifiers')
 	}
+	if why := a.settings.row_refusal(car.fd) {
+		return error('${a.what}("${name}"): ${why}')
+	}
 	return Target{
 		tx:       tx
 		rx:       rx
 		ext:      tx > 0x7FF || rx > 0x7FF
 		settings: a.settings
+		fd:       car.fd
 	}
 }
 
 // doip_settings_refusal is why ISO-TP settings are refused on DoIP row `name`.
 pub fn doip_settings_refusal(what string, name string) string {
-	return '${what}("${name}"): a DoIP channel carries no ISO-TP frames; drop padding/block_size/stmin_ms'
+	return '${what}("${name}"): a DoIP channel carries no ISO-TP frames; drop padding/block_size/stmin_ms/tx_dl/format'
 }
 
 // Conn is an opened connection: the channel UDS rides and the client over it.

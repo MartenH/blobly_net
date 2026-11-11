@@ -16,7 +16,7 @@ from . import _lib
 from ._lib import BloblyError, ByteData, ConnectionLost, NegativeResponse, Refused
 
 if TYPE_CHECKING:
-    from .project import Channel
+    from .project import Channel, FrameFormat
 
 # how many key_fn callbacks this thread is inside: each runs holding its client's lock
 _callbacks = threading.local()
@@ -264,29 +264,37 @@ def _keep_alive_period(ms: object) -> int | None:
     return ms
 
 
-# an ISO-TP channel's settings when nothing is stated: padded with 0x00, Flow Control 30 00 00
-_ISOTP_DEFAULT = (0, 0, 0.0)
+# an ISO-TP channel's settings when nothing is stated: padded with 0x00, Flow Control 30 00 00,
+# 8-byte frames in the row's declared format
+_ISOTP_DEFAULT = (0, 0, 0.0, 8, 0)
 
 
-def _isotp_settings(padding: object, block_size: object, stmin_ms: object) -> tuple[int, int, float]:
-    """An ISO-TP channel's settings as bb.h takes them (padding -1 for none), refused before anything
-    opens: padding a byte or None (frames as long as their content), block_size, stmin_ms."""
+def _isotp_settings(padding: object, block_size: object, stmin_ms: object, tx_dl: object = 8,
+                    format: object = None) -> tuple[int, int, float, int, int]:
+    """An ISO-TP channel's settings as bb.h takes them (padding -1 for none, format an enum
+    bb_format), refused before anything opens: padding a byte or None (frames as long as their
+    content), block_size, stmin_ms, tx_dl (8 .. 64) and format ("classic", "fd", "fd_brs" or None
+    for the row's declared one)."""
     if padding is not None and (isinstance(padding, bool) or not isinstance(padding, int)):
         raise TypeError(f"padding must be a byte or None, not {padding!r}")
     if isinstance(padding, int) and not 0 <= padding <= 0xFF:
         raise ValueError(f"padding {padding}: give a byte 0 .. 255, or None for frames as long as their content")
     if isinstance(stmin_ms, bool) or not isinstance(stmin_ms, (int, float)):
         raise TypeError(f"stmin_ms must be a number, not {stmin_ms!r}")
-    settings = (-1 if padding is None else padding, _int("block_size", block_size), float(stmin_ms))
+    code = 0 if format is None else _lib.FORMATS.get(format) if isinstance(format, str) else None
+    if code is None:
+        raise ValueError(f'format is "classic", "fd", "fd_brs" or None, not {format!r}')
+    settings = (-1 if padding is None else padding, _int("block_size", block_size), float(stmin_ms),
+                _int("tx_dl", tx_dl), code)
     _lib.check(_lib.lib().bb_isotp_check_settings(*settings))
     return settings
 
 
-def _no_isotp_on(channel: "Channel", settings: tuple[int, int, float]) -> None:
+def _no_isotp_on(channel: "Channel", settings: tuple[int, int, float, int, int]) -> None:
     """Refuses ISO-TP settings on a channel that carries no ISO-TP frames, before it opens."""
     if settings != _ISOTP_DEFAULT and channel.kind != "can":
         raise Refused(f'{channel.name}: a {channel.kind} channel carries no ISO-TP frames; drop '
-                      "padding/block_size/stmin_ms", _lib.BB_ERR)
+                      "padding/block_size/stmin_ms/tx_dl/format", _lib.BB_ERR)
 
 
 def _nrc_name(nrc: int) -> str:
@@ -314,7 +322,8 @@ class UdsClient:
     read as they stand, set from the next request on (ch.uds takes them as keywords too). What a
     script set holds on every connection the client opens; one opened after a stop and start begins
     from it again, without what a 0x10 answer adopted. On a CAN channel ch.uds's `padding`,
-    `block_size` and `stmin_ms` are its ISO-TP channel's (IsoTp), held on every connection too.
+    `block_size`, `stmin_ms`, `tx_dl` and `format` are its ISO-TP channel's (IsoTp), held on every
+    connection too.
     On a DoIP channel `retarget` moves the connection to a node behind the gateway its entity is."""
 
     _opener = "bb_uds_open"  # the call that opens its connection, the ids it defaults to
@@ -328,10 +337,11 @@ class UdsClient:
     def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None, *,
                  timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
                  pending_budget_ms: int | None = None, keep_alive_ms: int | None = None,
-                 padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0) -> None:
+                 padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0, tx_dl: int = 8,
+                 format: "FrameFormat | None" = None) -> None:
         self.channel = channel
         # the ISO-TP channel's settings, stated again on each connection the client opens
-        self._isotp = _isotp_settings(padding, block_size, stmin_ms)
+        self._isotp = _isotp_settings(padding, block_size, stmin_ms, tx_dl, format)
         _no_isotp_on(channel, self._isotp)
         self._keep_alive_ms = _keep_alive_period(keep_alive_ms)
         self._keep_alive_used = self._keep_alive_ms is not None  # its failures are said, even once stopped
