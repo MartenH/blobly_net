@@ -453,3 +453,26 @@ fn test_expect_signal_matches_no_value_a_short_frame_lacks() {
 	')!
 	assert env.failed() == 0
 }
+
+// sim.wait_ready asks the run with its timeout (5000 when omitted) and raises with what the run
+// says is not up; with no run to ask it returns at once.
+fn test_sim_wait_ready_raises_what_the_run_says() {
+	mut env := quiet_env()
+	defer { env.close() }
+	env.run_source('test("no run", function() sim.wait_ready(10) end)')!
+	mut asked := &[]int{}
+	env.ready = fn [mut asked] (ms int) string {
+		asked << ms
+		return if ms == 5000 { '' } else { '1 of 2 not up:\n  CAN1: UDS server: cannot open x' }
+	}
+	env.run_source('
+		test("up", function() sim.wait_ready() end)
+		test("not up", function()
+			local ok, e = pcall(sim.wait_ready, 250)
+			check.equal(ok, false)
+			check.truthy(tostring(e):find("CAN1: UDS server: cannot open x", 1, true))
+		end)
+	')!
+	assert env.failed() == 0
+	assert *asked == [5000, 250]
+}

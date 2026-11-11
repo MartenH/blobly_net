@@ -245,6 +245,9 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		return hrun.started()
 	}
 	env.sys = hrun.sys
+	env.ready = fn [mut hrun] (ms int) string {
+		return headless.ready_note(hrun.wait_ready(ms))
+	}
 	run_lins := hrun.lin_rows()
 	env.lin_rows = fn [run_lins] () []&lin.Row {
 		return run_lins

@@ -189,6 +189,13 @@ with an interface, its databases and the ECUs simulated on it.
   entity for a DoIP row that simulates nodes. An entity on a loopback address is moved off the
   project's port onto a free one in 30000..31999, as the headless runner moves it, and `ch.iface`
   says where. A SOME/IP row gets nothing.
+- **`start()` returns before the CAN loops have opened their buses.** `net.wait_ready(5000)`
+  waits for them: each row's simulated nodes, each UDS node, the default UDS server and each
+  cyclic generator (up once the bus took its first frame). It raises `BloblyError` naming every
+  one that failed (an interface that cannot open, a frame the wire refuses), and `Timeout` naming
+  those still opening when the time is up. A generator that opens at its first fire is not
+  waited for. On hardware, call it before the first request: a row that only carries the rest bus
+  has no other way to say its open failed.
 - **One run per process.** A second `start()` while a run is going raises `BloblyError` with code
   -3, whichever project it is for.
 - **`stop()` answers whether the process is free** for the next start: `False` when a loop
@@ -208,6 +215,7 @@ net = blobly.Project("projects/sim-demo.blobnet").load()     # read; nothing run
 for ch in net.channels:
     print(ch.name, ch.kind, ch.iface)                         # the interfaces as the project says
 net.start()                                                   # the simulated ECUs come up
+net.wait_ready(5000)                                          # and have opened their buses
 try:
     print("DoIP1 is served at", net.channels.DoIP1.iface)     # where this run hosts the entity
 finally:
@@ -2433,6 +2441,7 @@ break in either, raises `ValueError`, and the engine refuses the rest at `load()
 |---|---|
 | `net.load()` | Reads the project into the engine, which holds one load at a time, and makes its listen-only rows and CAN-FD framing the ones every send is checked against. Returns `net`. `BloblyError` with code -3 while a stopped run is still releasing (`blobly.wait_released`). A reload keeps each channel still at its position under its name, and names the rows whose handlers it dropped in a `RuntimeWarning`. |
 | `net.start()` | Brings the enabled rows up (simulated ECUs, UDS servers, generators, DoIP entities). Reloads first if the engine holds another load. Returns `net`. |
+| `net.wait_ready(timeout_ms=5000)` | Waits until none of the run's loops that open a bus is still opening (each row's simulated nodes, each UDS node, the default UDS server, each cyclic generator — up once the bus took its first frame; a generator that opens at its first fire is not waited for). Raises `BloblyError` (code -1) naming every loop that failed, a line apiece (`2 of 6 not up:` then `  CAN2: simulated nodes: cannot open ...`); `Timeout` naming those still opening when `timeout_ms` passed (`None` waits for ever); code -3 when not started. Ctrl-C ends the wait within 100 ms. |
 | `net.stop()` | Ends the run. `True` when the process is free for the next start; `False` when a loop outlived the stop's bound (`blobly.wait_released`). Stopping a project that is not started answers whether the process is free. |
 | `with net:` | `start()` on entry, `stop()` on exit; warns (`RuntimeWarning`) when the stop returned `False`. |
 | `net.channels` | The enabled rows, a `Channels`. `BloblyError` before `load()`. |

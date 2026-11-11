@@ -273,6 +273,12 @@ function sim.clear(channel, node, message, signal)
   __sim_clear(channel, node, message, signal or "")
 end
 function sim.clear_signals() __sim_clear_signals() end
+-- sim.wait_ready([timeout_ms]) waits (5000 ms when omitted, -1 for ever) until none of the run
+-- loops that open a bus is still opening: simulated nodes, UDS nodes and servers, cyclic
+-- generators (up once the bus took a frame). Raises naming each one that failed or still opens.
+function sim.wait_ready(timeout_ms)
+  __sim_wait_ready(timeout_ms or 5000)
+end
 
 -- Generators: the run of the project (its `senders:`), each named by its name or "channel/name",
 -- or by its position in gen.list() (a number).

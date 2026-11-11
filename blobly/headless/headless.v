@@ -144,6 +144,8 @@ mut:
 	gen_opener fn (string) !transport.Bus = transport.open
 	// the LIN rows, each held by a counted loop (lin.v)
 	lins []&lin.Row
+	// each loop that opens a bus, where its open stands (ready.v); under mu
+	ready []LoopReady
 pub:
 	path string
 	// the project as the run uses it: the DoIP rows moved onto this process's ports
@@ -469,7 +471,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
 			r.counted()
-			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ci, ch.name, db, nodes, anns)
+			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ci, ch.name, db, nodes, anns,
+				r.opening('${ch.name}: simulated nodes'))
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -523,14 +526,15 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 						o.err(n)
 					}
 					r.counted()
-					spawn r.diag_server_loop(ch.iface_with_bitrate(), ch.name, dflt.server)
+					spawn r.diag_server_loop(ch.iface_with_bitrate(), ch.name, dflt.server,
+						r.opening('${ch.name}: UDS server'))
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
 						r.counted()
 						own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { ch.name }
 						spawn r.uds_node_loop(ch.iface_with_bitrate(), own, u.rx, u.tx, u.ext,
-							u.functional, u.fext, u.server)
+							u.functional, u.fext, u.server, r.opening('${own}: uds node 0x${u.rx:X}'))
 					}
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -580,6 +584,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			}
 		} else {
 			g.cyclic = true
+			g.ready = r.opening('${g.channel}: generator "${g.s.name}"')
 			r.spawn_gen(mut g)
 			o.out('channel ${g.channel}: cyclic generator "${g.s.name}" every ${g.s.cycle_ms} ms on ${g.open}')
 		}
@@ -695,11 +700,16 @@ fn (mut r Run) done() {
 
 // sim_loop runs the channel's simulated ECUs on a dedicated bus handle, sending as the row's own
 // emitter (transport.row_framed).
-fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_name string, db candb.Database, nodes []project.NodeCfg, anns []nm.Announce) {
+fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_name string, db candb.Database, nodes []project.NodeCfg, anns []nm.Announce, ready int) {
 	defer {
 		r.done()
 	}
-	mut bus := transport.row_framed(transport.open(open_iface) or { return }, open_iface, chan_name)
+	opened := transport.open(open_iface) or {
+		r.open_failed(ready, 'cannot open ${open_iface}: ${err}')
+		return
+	}
+	r.loop_is(ready, '')
+	mut bus := transport.row_framed(opened, open_iface, chan_name)
 	mut engine := sim.Engine{}
 	for n in nodes {
 		engine.ecus << r.build_node(db, n)
@@ -723,12 +733,15 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_nam
 }
 
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server) {
+fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, ready int) {
 	defer {
 		r.done()
 	}
 	ctl := r.ctl
-	mut ch := isotp.open_software_as(iface, row, tx, rx, ext) or { return }
+	mut ch := isotp.open_software_as(iface, row, tx, rx, ext) or {
+		r.open_failed(ready, 'cannot open ${iface}: ${err}')
+		return
+	}
 	// a run worker: Stop abandons an answer still being segmented (#347)
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
@@ -748,6 +761,7 @@ fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool,
 			r.say('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
 		}
 	}
+	r.loop_is(ready, '') // up once it hears its functional id too, or knows it cannot
 	mut s := srv
 	for r.ctl.running {
 		s.serve_step(mut link, 50) or { time.sleep(50 * time.millisecond) }
@@ -766,14 +780,18 @@ fn (mut r Run) uds_node_loop(iface string, row string, rx u32, tx u32, ext bool,
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software ISO-TP on the
 // channel's bus, until stopped.
-fn (mut r Run) diag_server_loop(iface string, row string, server uds.Server) {
+fn (mut r Run) diag_server_loop(iface string, row string, server uds.Server, ready int) {
 	defer {
 		r.done()
 	}
 	ctl := r.ctl
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).
-	mut ch := isotp.open_software_as(iface, row, 0x7E8, 0x7E0, false) or { return }
+	mut ch := isotp.open_software_as(iface, row, 0x7E8, 0x7E0, false) or {
+		r.open_failed(ready, 'cannot open ${iface}: ${err}')
+		return
+	}
+	r.loop_is(ready, '')
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
 	}

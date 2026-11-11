@@ -79,6 +79,7 @@ def bind(lib):
     lib.bb_channel_kind.argtypes = [ctypes.c_int]
     lib.bb_channel_health_source.argtypes = [ctypes.c_int]
     lib.bb_wait_released.argtypes = [ctypes.c_int]
+    lib.bb_wait_ready.argtypes = [ctypes.c_int]
     i, buf = ctypes.c_int, ctypes.c_char_p
     lib.bb_message_count.argtypes = [i]
     lib.bb_message_info.argtypes = [i, i, ctypes.POINTER(Message)]
@@ -227,6 +228,7 @@ def main(path, project):
     assert lib.bb_bus_open(doip[1].encode()) == BB_ERR and "is a DoIP endpoint" in err(lib), err(lib)
     print("ok   kinds and health sources; a DoIP row refused by name")
     assert lib.bb_start() == 0, f"start: {err(lib)}"
+    assert lib.bb_wait_ready(5000) == 0, f"every loop up: {err(lib)}"
     moved = lib.bb_channel_iface(doip[0]).decode()
     assert moved != doip[1], f"the run did not move {doip[1]}"
     assert lib.bb_start() == BB_ERR_STATE, "a second start must refuse"

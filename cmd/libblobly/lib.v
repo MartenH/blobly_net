@@ -776,7 +776,6 @@ pub fn bb_start() i32 {
 		}
 		return fail(bb_err, err.msg())
 	}
-	bb_run = r
 	bb_someip_sessions.reset() // a session goes out once per run
 	// as the RUN has them: start moves a hosted DoIP row onto a port this process could bind, and
 	// the address a host dials must be that one (self-review: the smoke printed 13400 while the
@@ -784,6 +783,7 @@ pub fn bb_start() i32 {
 	// is its databases' by construction.
 	name_rows(r.chans.map(it.cfg))
 	bb_mu.lock()
+	bb_run = r // written under bb_mu, which bb_wait_ready reads it under from any thread
 	bb_dbs = r.chans.map(it.db)
 	bb_run_rows = r.chans.map(it.cfg)
 	fault_rows_publish(r.chans)
@@ -804,8 +804,8 @@ pub fn bb_stop() i32 {
 		return fail(bb_err_state, 'not started')
 	}
 	mut r := bb_run
-	bb_run = unsafe { nil }
 	bb_mu.lock()
+	bb_run = unsafe { nil }
 	bb_dbs = []candb.Database{}
 	bb_run_rows = []project.Channel{}
 	fault_rows_retire()
@@ -849,6 +849,29 @@ pub fn bb_wait_released(timeout_ms i32) i32 {
 		})
 	}
 	return ok()
+}
+
+// bb_wait_ready waits at most timeout_ms (< 0: until it happens) for none of the run's loops to be
+// opening its bus: 0 when every one is up, BB_ERR when none is opening and some failed,
+// BB_ERR_TIMEOUT when some are still opening, BB_ERR_STATE when the run stopped; bb_last_error
+// names each loop not up and why.
+@[export: 'bb_wait_ready']
+pub fn bb_wait_ready(timeout_ms i32) i32 {
+	bb_mu.lock()
+	mut r := bb_run
+	bb_mu.unlock()
+	if isnil(r) {
+		return fail(bb_err_state, 'not started')
+	}
+	ls := r.wait_ready(int(timeout_ms))
+	if r.is_stopping() {
+		return fail(bb_err_state, 'the run stopped')
+	}
+	note := headless.ready_note(ls)
+	if note == '' {
+		return ok()
+	}
+	return fail(if ls.any(it.state == .opening) { bb_err_timeout } else { bb_err }, note)
 }
 
 @[export: 'bb_channel_count']

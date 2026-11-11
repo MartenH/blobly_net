@@ -45,6 +45,12 @@ mut:
 	sent_edits i64
 	spawned bool // it joined its wire
 	ended   bool // its wire let it go: a fire is not queued for it
+	// its entry in the run's loops (ready.v; a cyclic one started with the run, else -1), whether
+	// its open was reported there yet (by its first cyclic send, or once its wire is open and it
+	// has nothing to send), and the run it reports to
+	ready int = -1
+	told  bool
+	run   &Run = unsafe { nil }
 	// the fires waiting for the wire's loop, oldest first
 	queue  []&Fire
 	wire   &cyclic.Wire = unsafe { nil }
@@ -215,10 +221,8 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 // run is stopping; false when it is stopping.
 fn (mut r Run) spawn_gen(mut g Gen) bool {
 	r.mu.lock()
-	defer {
-		r.mu.unlock()
-	}
 	if r.stopping {
+		r.mu.unlock()
 		return false
 	}
 	g.mu.lock()
@@ -226,14 +230,21 @@ fn (mut r Run) spawn_gen(mut g Gen) bool {
 	g.spawned = true
 	if first {
 		g.base_note = g.note
+		g.run = r
 	}
 	g.mu.unlock()
+	mut refused := ''
 	if first {
 		mut w := r.wire_for(g.open)
 		g.mu.lock()
 		g.wire = w
 		g.mu.unlock()
-		w.add(g) or { g.let_go(err.msg()) }
+		w.add(g) or { refused = err.msg() }
+	}
+	r.mu.unlock()
+	// let go outside r.mu: it reports to the run's loops, which take it
+	if refused != '' {
+		g.let_go(refused)
 	}
 	return true
 }
@@ -294,6 +305,11 @@ fn (mut g Gen) due(now u64) ?u64 {
 		g.fresh = true
 	}
 	g.was = cyc
+	// stopped before its first frame: its wire is open, with nothing for it to send
+	if !cyc && !g.told {
+		g.told = true
+		g.report('')
+	}
 	if fire || (cyc && g.fresh) {
 		return now
 	}
@@ -322,6 +338,11 @@ fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 		g.fresh = false
 		why := g.send(mut b)
 		g.done = time.sys_mono_now() / 1_000_000
+		// its sends follow it until the bus took a frame; up from then on
+		if !g.told {
+			g.told = why == ''
+			g.report(why)
+		}
 		if why != g.failed {
 			g.failed = why
 			g.mu.lock()
@@ -349,8 +370,16 @@ fn (mut g Gen) let_go(failure string) {
 		g.mu.lock()
 		g.note = failure
 		g.mu.unlock()
+		g.report(failure)
 	}
 	g.end(if failure != '' { failure } else { run_stopped })
+}
+
+// report sets g's entry in the run's loops (ready.v): up when `why` is '', else failed with it.
+fn (mut g Gen) report(why string) {
+	if g.ready >= 0 && !isnil(g.run) {
+		g.run.loop_is(g.ready, why)
+	}
 }
 
 // poke wakes g's wire: a fire queued, a start or a cycle changed.
@@ -595,7 +624,8 @@ fn fire_outcome(name string, a Answer, until u64, stopping bool) ! {
 	}
 }
 
-fn (mut r Run) is_stopping() bool {
+// is_stopping is whether the run's stop has begun.
+pub fn (mut r Run) is_stopping() bool {
 	r.mu.lock()
 	defer {
 		r.mu.unlock()

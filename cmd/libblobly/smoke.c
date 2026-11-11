@@ -156,7 +156,7 @@ static send_fn bb_bus_send_p;
 static recv_fn bb_bus_recv_p;
 static i64_fn bb_now_ns_p;
 static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p,
-	bb_uds_close_p;
+	bb_wait_ready_p, bb_uds_close_p;
 
 /* raw ISO-TP, UDS timing and the DoIP retarget */
 static int (*bb_isotp_open_p)(int, int64_t, int64_t, bb_uds_target *);
@@ -862,7 +862,7 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
 	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_now_ns); SYM(bb_bus_health); SYM(bb_bus_close);
 	SYM(bb_bus_load); SYM(bb_bus_diagnostics); SYM(bb_bus_error_counters);
-	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
+	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released); SYM(bb_wait_ready);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
@@ -897,6 +897,7 @@ int main(int argc, char **argv) {
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
 	printf("libblobly %s\n", bb_version_p());
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL start before load must refuse\n"); return 1; }
+	if (bb_wait_ready_p(0) != BB_ERR_STATE) { fprintf(stderr, "FAIL wait_ready before start must refuse\n"); return 1; }
 	/* an error longer than BB_ERROR_MAX is cut before a whole character: a path of 3000 two-byte
 	 * characters makes one of ~6000 bytes */
 	{
@@ -939,6 +940,7 @@ int main(int argc, char **argv) {
 	if (bb_sim_fault_p(can1, "SUT", "Powertrain", "drop", 0, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a fault before start must refuse\n"); return 1; }
 	if (bb_node_count_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL the system model is the run's: none before start\n"); return 1; }
 	if (bb_start_p() != 0) FAIL("start");
+	if (bb_wait_ready_p(5000) != 0) { fprintf(stderr, "FAIL every loop up: %s\n", bb_last_error_p()); return 1; }
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 	/* the driver's persistent mapping is not rewritten under a started run, on any platform */
 	if (bb_vector_assign_p(1, 57, 0, 0, 1) != BB_ERR_STATE || !strstr(bb_last_error_p(), "not while a run is started")) {

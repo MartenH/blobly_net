@@ -7,6 +7,7 @@ import time
 import blobly.project
 import blobly.transport
 import blobly.isotp
+import blobly.uds
 
 // Lines is what a run said, kept for the assertions. HEAP, and locked: the sinks are called from
 // the run's worker threads (Options says so), and the test reads while they are still starting.
@@ -360,4 +361,197 @@ channels:
 	assert recv_id(mut bus, 0x511, 150) == none, 'a released node falls silent'
 	assert r.chans[0].fault_target().nm_request(true)! == 1
 	assert recv_id(mut bus, 0x511, 500) != none, 'a request announces again'
+}
+
+// Every loop of sim-demo opens, and wait_ready says so: nothing failed, nothing opening.
+fn test_wait_ready_on_a_project_that_opens() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(2000)
+	assert ls.len > 0
+	assert ls.any(it.name == 'CAN1: simulated nodes'), ls.map(it.name).str()
+	assert ready_note(ls) == '', ready_note(ls)
+}
+
+// A row whose interface does not exist: its simulated nodes and its UDS server fail at open and
+// say why; a cyclic generator whose frames the wire refuses fails with the refusal; a manual
+// generator, which opens at its first fire, is not waited for.
+fn test_wait_ready_names_the_loops_that_failed() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_ready_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'ready.blobnet')
+	os.write_file(path, 'project:
+  name: ready
+  version: 8
+channels:
+  - name: Gone
+    type: can
+    interface: nosuchcan631
+    databases:
+      - ${os.join_path(@VMODROOT, 'dbc', 'blobly_net.dbc')}
+    simulation:
+      - name: SUT
+        signals:
+          - { name: EngineSpeed, type: const, value: 1000 }
+  - name: Here
+    type: can
+    interface: inproc:HREADY
+    senders:
+      - name: Long
+        id: "0x321"
+        data: 01 02 03 04 05 06 07 08 09
+        trigger: cyclic
+        cycle_ms: 10
+      - name: Ok
+        id: "0x322"
+        data: 01
+        trigger: cyclic
+        cycle_ms: 10
+      - name: Later
+        id: "0x323"
+        data: 01
+        trigger: manual
+')!
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(2000)
+	assert ls.map(it.name) == ['Gone: simulated nodes', 'Gone: UDS server', 'Here: generator "Long"',
+		'Here: generator "Ok"']
+	assert ls.map(it.state) == [LoopState.failed, .failed, .failed, .up]
+	assert ls[0].why.starts_with('cannot open nosuchcan631'), ls[0].why
+	assert ls[2].why.contains('not a classic CAN frame'), ls[2].why
+	note := ready_note(ls)
+	assert note.starts_with('3 of 4 not up:\n  Gone: simulated nodes: cannot open nosuchcan631'), note
+	// the opens that failed in silence before are said
+	assert lines.said('Gone: simulated nodes: cannot open nosuchcan631')
+	assert lines.said('Gone: UDS server: cannot open nosuchcan631')
+}
+
+// A loop still opening when the wait ends is named as such.
+fn test_ready_note_names_a_loop_still_opening() {
+	ls := [LoopReady{
+		name:  'A: simulated nodes'
+		state: .up
+	}, LoopReady{
+		name: 'B: UDS server'
+	}]
+	assert ready_note(ls) == '1 of 2 not up:\n  B: UDS server: still opening'
+	assert ready_note([]LoopReady{}) == ''
+}
+
+// A stop ends a wait without a bound, though a loop the stop overtook never reports its open.
+fn test_wait_ready_ends_at_a_stop() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	r.stop()
+	r.opening('A: generator "never told"')
+	ls := r.wait_ready(-1)
+	assert ls.any(it.state == .opening)
+}
+
+// A cyclic generator is up once the bus took a frame, and stays up when a later send is refused.
+fn test_a_generator_stays_up_after_its_first_frame() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_latch_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'latch.blobnet')
+	os.write_file(path, 'project:
+  name: latch
+  version: 8
+channels:
+  - name: Here
+    type: can
+    interface: inproc:HLATCH
+    senders:
+      - name: Ok
+        id: "0x322"
+        data: 01
+        trigger: cyclic
+        cycle_ms: 5
+')!
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		transport.set_listen_only('inproc:HLATCH', false)
+		r.stop()
+	}
+	assert ready_note(r.wait_ready(2000)) == ''
+	transport.set_listen_only('inproc:HLATCH', true)
+	for _ in 0 .. 200 {
+		if lines.said('generator "Ok": not sent') {
+			break
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	assert lines.said('generator "Ok": not sent')
+	assert r.loops().map(it.state) == [LoopState.up]
+}
+
+// A UDS node answering a functional id is up once it is on the wire's functional listener: while
+// another joiner's open of that listener is in progress, the node is still opening.
+fn test_a_functional_uds_node_is_up_once_it_listens() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_func_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'func.blobnet')
+	os.write_file(path, 'project:
+  name: func
+  version: 8
+channels:
+  - name: Here
+    type: can
+    interface: inproc:HFUNC
+    simulation:
+      - name: Ecu
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          functional: "0x7DF"
+')!
+	opening := chan bool{}
+	release := chan bool{}
+	held := spawn fn [opening, release] () !&uds.FuncSub {
+		return uds.functional_join('inproc:HFUNC', 0x7DE, false, fn [opening, release] () !transport.Bus {
+			opening <- true
+			_ := <-release
+			return transport.open('inproc:HFUNC')!
+		})!
+	}()
+	_ := <-opening
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(300)
+	assert ls.filter(it.state == .opening).map(it.name) == ['Here: uds node 0x7E0'], ls.str()
+	release <- true
+	mut sub := held.wait()!
+	assert ready_note(r.wait_ready(2000)) == ''
+	sub.leave()
 }

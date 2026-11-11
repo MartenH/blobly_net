@@ -196,6 +196,10 @@ pub mut:
 	// The run's LIN rows lin.open reaches by name (lin.v), asked at each open: cmd/script's headless
 	// run, or the GUI's run while it is on (lin_panel.v).
 	lin_rows ?fn () []&lin.Row
+	// Waits at most its ms (< 0: until it happens) for none of the run's loops to be opening its
+	// bus, answering '' when every one is up, else which are not and why (headless.ready_note):
+	// cmd/script's headless run; none in the GUI, where sim.wait_ready returns at once.
+	ready ?fn (int) string
 	// Whether a run has its wires in this process — cmd/script's headless run, or the GUI's
 	// measurement, started or still letting go of them. vector.assign is refused while it does
 	// (transport.assign_run_refusal).
@@ -410,6 +414,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__sim_set', l_sim_set)
 	env.st.register('__sim_clear', l_sim_clear)
 	env.st.register('__sim_clear_signals', l_sim_clear_signals)
+	env.st.register('__sim_wait_ready', l_sim_wait_ready)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
@@ -560,6 +565,18 @@ fn l_sim_clear(l lua.State) i32 {
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail('sim.clear: ${err.msg()}') }
 	env.chans[ci].fault_target().clear_signal(l.arg_str(2), l.arg_str(3), l.arg_str(4)) or {
 		return l.fail('sim.clear: ${err.msg()}')
+	}
+	return 0
+}
+
+// l_sim_wait_ready is sim.wait_ready: raises naming every loop of the run not up once none is
+// opening or the wait (cut to the run's deadline) has passed.
+fn l_sim_wait_ready(l lua.State) i32 {
+	mut env := env_of(l)
+	wait := env.ready or { return 0 }
+	note := wait(int(env.bounded(ms_up(l, 1))))
+	if note != '' {
+		return l.fail('sim.wait_ready: ${note}')
 	}
 	return 0
 }
