@@ -164,6 +164,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 			if _ := s.session_did(did) {
 				return neg(sid, 0x31) // the active session is read, never written
 			}
+			if !s.io_sized(did, req.len - 3) {
+				return neg(sid, 0x13)
+			}
 			s.dids[did] = req[3..].clone()
 			return [u8(0x6E), req[1], req[2]]
 		}

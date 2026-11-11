@@ -603,7 +603,7 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	}
 	// the declared size is the only record a DID takes (comm/uds, emb#403): a write never
 	// resizes a DID; past comm/uds's cell no record is taken at all
-	if rec.len != d.data.len || rec.len > max_described_did {
+	if rec.len != d.data.len || rec.len > max_described_did || !s.io_sized(id, rec.len) {
 		return neg(0x2E, 0x13)
 	}
 	if d.source == .param {

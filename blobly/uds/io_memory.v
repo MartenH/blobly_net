@@ -59,6 +59,14 @@ pub fn (mut s Server) declare_io(id u16, size int) {
 	}
 }
 
+// io_sized: whether a 0x2E record of `n` bytes may be written to DID `id` — an IO DID takes
+// exactly its declared size, so a 0x2F answer carrying its value stays within what one answer
+// carries; any other DID takes what the server's own rules take.
+fn (s &Server) io_sized(id u16, n int) bool {
+	start := s.io_start[id] or { return true }
+	return n == start.len
+}
+
 // declare_memory adds a range 0x23 and 0x3D reach, `size` zero bytes at `address`.
 pub fn (mut s Server) declare_memory(address u64, size int) {
 	s.memory << MemRange{
@@ -69,7 +77,8 @@ pub fn (mut s Server) declare_memory(address u64, size int) {
 
 // io_control answers 0x2F: 00 returnControlToECU and 01 resetToDefault put the start value back,
 // 02 freezeCurrentState keeps the value, 03 shortTermAdjustment sets it; the answer carries the
-// value as it then stands.
+// value as it then stands — 0x14 responseTooLong, the value unchanged, where that answer would be
+// longer than the carrier takes.
 fn (mut s Server) io_control(req []u8) []u8 {
 	if req.len < 4 {
 		return neg(0x2F, 0x13)
@@ -84,13 +93,18 @@ fn (mut s Server) io_control(req []u8) []u8 {
 	if req.len != want {
 		return neg(0x2F, 0x13)
 	}
-	match iocp {
-		0x00, 0x01 { s.dids[id] = start.clone() }
-		0x03 { s.dids[id] = req[4..].clone() }
-		else {}
+	value := match iocp {
+		0x00, 0x01 { start }
+		0x03 { req[4..] }
+		else { s.dids[id] or { start } }
 	}
+	// never an answer the carrier refuses: the value stays as it was and the tester is told
+	if value.len > io_value_max(s.spec.resp_cap()) {
+		return neg(0x2F, 0x14)
+	}
+	s.dids[id] = value.clone()
 	mut resp := [u8(0x6F), req[1], req[2], iocp]
-	resp << s.dids[id] or { start }
+	resp << value
 	return resp
 }
 
