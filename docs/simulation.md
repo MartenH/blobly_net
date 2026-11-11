@@ -355,7 +355,8 @@ mean nobody was looking — so nothing is marked, rather than a healthy bus bein
 ## Diagnostics: a UDS server per ECU
 
 By default each simulated channel runs **one** diagnostic server on `0x7E0` / `0x7E8` with
-built-in content, so every ECU answers as the same target. Give a node its own and it becomes a
+built-in content (`builtin_uds: false` turns it off, below), so every ECU answers as the same
+target. Give a node its own and it becomes a
 distinguishable one:
 
 ```yaml
@@ -386,7 +387,38 @@ Supported services are `0x10` session control, `0x11` ECU reset, `0x14` clear DT
 `0x19` read DTCs (sub-functions `0x01` count, `0x02` by status mask, `0x0A` all supported,
 `0x03` snapshot ids, `0x04` snapshot by DTC, `0x06` extended data by DTC),
 `0x22`/`0x2E` read/write by identifier, `0x27` security access, `0x3E` tester present, and
-`0x85` DTC setting. Anything else answers `serviceNotSupported`.
+`0x85` DTC setting — plus `0x2F` and `0x23`/`0x3D` where the block declares what they reach
+(below). Anything else answers `serviceNotSupported`.
+
+**DID `0xF186`** (the active diagnostic session) reads the session the server is in — `01` at
+start, `03` after `10 03` — unless `dids:` lists `0xF186`, which then serves that value. Writing
+it is `requestOutOfRange`.
+
+**IO control and memory** are declared in the block:
+
+```yaml
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          io:
+            - { id: "0x1234", size: 1 }             # 2F 12 34 03 <state> -> 6F 12 34 03 <state>
+          memory:
+            - { address: "0x20000000", size: 256 }  # 23 / 3D inside it, zeros at start
+```
+
+An `io:` DID is zeros of its `size` at start and reads back through `0x22` what `0x2F` left it at:
+`03` shortTermAdjustment sets it (the control state must be `size` bytes), `02`
+freezeCurrentState keeps it, and `00` returnControlToECU and `01` resetToDefault put the start
+value back; every positive answer carries the value as it then stands. Entering the default
+session (`10 01`, or S3 running out on a described server) and an ECU reset (`0x11`) put every
+`io:` DID back to its start value too, as ISO 14229-1 has them end input/output control. `0xF190`
+(the VIN, which a DoIP entity announces) is refused as an `io:` DID. `0x23` ReadMemoryByAddress
+and `0x3D` WriteMemoryByAddress take the addressAndLengthFormatIdentifier of ISO 14229-1 (high
+nibble the size's bytes, low nibble the address's, 1..8 each) and must lie inside ONE declared
+range; memory is zeros at start, at most 1 MiB a range. An undeclared IO DID or address, an
+unknown control parameter or a format nibble of 0 answers `requestOutOfRange`; a wrong length
+`0x13`. With no `io:` the server answers `0x2F` with `serviceNotSupported`, and with no `memory:`
+`0x23`/`0x3D` likewise. A project using either key declares `version: 13`.
 
 **`functional:`** gives the ECU a functional id to answer as well, typically `0x7DF` on an 11-bit
 bus, shared by every ECU there. A request arriving on it is one Single Frame, and the answer
@@ -401,6 +433,23 @@ in a script is the tester side of this (`docs/scripting.md`).
 stops running. Otherwise the two would both answer whenever their ids overlapped, and which
 reply the tester saw would depend on scheduling. A channel with no `uds:` anywhere keeps the
 default, unchanged.
+
+**`builtin_uds: false` on a row turns the built-in server off** on its bus — frames without
+diagnostics, for a rest bus whose ECU on the bench answers `0x7E0`/`0x7E8` itself:
+
+```yaml
+  - name: CAN1
+    adapter: pcan
+    address: PCAN_USBBUS1
+    simulate: [BodyECU, ChassisECU]
+    builtin_uds: false     # no built-in 0x7E0/0x7E8 server on this bus
+```
+
+One built-in server is seeded per bus, so the key on any enabled row of that bus counts. Nodes
+with their own `uds:` block still answer; only the fallback goes. The start line says
+`simulating 2 node(s), no UDS server`, and the project declares `version: 13`. A `uds:` block
+that is refused starts no server either — in the GUI and a headless run alike — rather than
+the built-in one standing in for it.
 
 **29-bit addressing is inferred** from the ids: any address above `0x7FF` opens the ISO-TP
 channel in extended format, so normal fixed addressing (`0x18DA10F1` / `0x18DAF110`) works
@@ -520,6 +569,11 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   availability mask `0x7F`; `0x14` puts them back there. The `uds:` block's `dtcs:` set a
   status, so a test can seed a fault (one that failed gets its `freeze` snapshot), and its `dids:`
   replace a value or add a readable DID.
+- **`io:` and `memory:` from the `uds:` block** — `0x2F` and `0x23`/`0x3D` as above, gated by
+  the `[uds] services` table's rows for them like any other service (a stated table without the
+  row is `0x11`); an IO DID reads in every session. A live DID declared under `io:` reads the
+  value `0x2F` holds (`01`..`03`) and its signal again once control is returned. `0xF186` reads the session unless the
+  description or `dids:` declares it.
 
 What it serves differently, each said when it starts: `0x28` is `serviceNotSupported` (nothing
 here gates the simulated traffic); the programming handoff `0x10 02` is `conditionsNotCorrect`
@@ -1075,8 +1129,9 @@ See [scripting.md](scripting.md) for the test API.
 - **Diagnostics are stateless between requests beyond session and security state.** A
   simulated ECU serves the DIDs and DTCs the project — or its description — gives it; it does
   not model routines
-  (`0x31`), memory access (`0x23`/`0x3D`), or transfer (`0x34`-`0x37`), and writing a DID does
-  not affect the signals the ECU transmits.
+  (`0x31`) or transfer (`0x34`-`0x37`); memory (`0x23`/`0x3D`) and IO control (`0x2F`) reach
+  only what its `uds:` block declares, and neither writing a DID nor adjusting an IO DID affects
+  the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
 - **No LIN in a project yet.** CAN, CAN-FD and DoIP; LIN runs in its own modules and `lin_monitor`, and joins projects step by step ([lin.md](lin.md)).

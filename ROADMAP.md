@@ -54,7 +54,9 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x11**
   ECUReset, **0x14** ClearDiagnosticInformation, **0x19** ReadDTCInformation (`01`/`02`/`0A` and
   the records `03`/`04`/`06`), **0x85** ControlDTCSetting, **0x3E** tester present, functional
-  requests, and suppress-positive-response. What is missing:
+  requests, and suppress-positive-response — plus DID **0xF186** from the session, and **0x2F**
+  and **0x23**/**0x3D** on the IO DIDs and memory ranges a node's `uds:` block declares. What is
+  missing:
   - ✅ **Config-driven per node** — a simulated server addressed like a node of the project's
     `system.toml` is built from that node's `ecu.toml` (`uds.server_from`, `sim.describe`): its
     DIDs, gates, services table, 0x27 levels and key, parameters and DTCs, answering as the

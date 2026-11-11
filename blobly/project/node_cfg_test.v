@@ -205,3 +205,136 @@ channels:
 		assert version_for(p) == 7, spelling
 	}
 }
+
+fn test_builtin_uds_io_and_memory_round_trip() {
+	y := 'project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:CAN1
+    builtin_uds: false
+    simulate: [BodyECU]
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          io:
+            - { id: "0x1234", size: 1 }
+          memory:
+            - { address: "0x20000000", size: 256 }
+'
+	p := parse(y) or { panic(err) }
+	assert !p.channels[0].builtin_uds
+	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
+	assert u.io == [IoCfg{
+		id:   0x1234
+		size: 1
+	}]
+	assert u.memory == [MemCfg{
+		address: 0x2000_0000
+		size:    256
+	}]
+	assert u.malformed.len == 0
+	assert version_for(p) == 13
+	again := parse(p.to_yaml()) or { panic(err) }
+	assert !again.channels[0].builtin_uds, 'builtin_uds lost on save'
+	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
+	assert v.io == u.io && v.memory == u.memory, 'io/memory lost on save'
+	assert again.version == 13
+}
+
+fn test_builtin_uds_defaults_on_and_is_not_written() {
+	p := parse(node_yaml) or { panic(err) }
+	assert p.channels[0].builtin_uds
+	assert !p.to_yaml().contains('builtin_uds')
+	assert version_for(p) < 13
+}
+
+fn test_a_malformed_io_id_or_address_is_named() {
+	p := parse('project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          io:
+            - { id: "0x12G4", size: 1 }
+          memory:
+            - { address: "0x2000_0000", size: 4 }
+') or {
+		panic(err)
+	}
+	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
+	assert u.malformed == ['io 0x12G4', 'memory 0x2000_0000']
+}
+
+// An address past 2^64-1 is refused, never saturated to the valid 0xFFFFFFFFFFFFFFFF, and a Save
+// writes it back as written so it stays refused.
+fn test_a_memory_address_past_64_bits_is_malformed() {
+	y := 'project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          memory:
+            - { address: "0x10000000000000000", size: 1 }
+            - { address: "18446744073709551616", size: 1 }
+            - { address: "0xFFFFFFFFFFFFFFFF", size: 1 }
+'
+	p := parse(y) or { panic(err) }
+	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
+	assert u.malformed == ['memory 0x10000000000000000', 'memory 18446744073709551616']
+	assert u.memory[0].address_text == '0x10000000000000000'
+	assert u.memory[2].address == max_u64 && u.memory[2].address_text == ''
+	again := parse(p.to_yaml()) or { panic(err) }
+	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
+	assert v.malformed == u.malformed, 'a refused address must stay refused after a save'
+	assert v.memory == u.memory
+}
+
+fn test_parse_id_exact() {
+	assert parse_id_exact('0x7E0') or { 0 } == 0x7E0
+	assert parse_id_exact('"2016"') or { 0 } == 2016
+	assert parse_id_exact('0xFFFFFFFFFFFFFFFF') or { 0 } == max_u64
+	assert parse_id_exact('0x10000000000000000') == none
+	assert parse_id_exact('0x7G1') == none
+	assert parse_id_exact('0x') == none
+	assert parse_id_exact('12abc') == none
+}
+
+fn test_builtin_uds_off_asks_every_enabled_row_of_the_wire() {
+	a := Channel{
+		name:    'A'
+		adapter: 'virtual'
+		address: 'W'
+		iface:   'inproc:W'
+	}
+	off := Channel{
+		...a
+		name:        'B'
+		builtin_uds: false
+	}
+	other := Channel{
+		...off
+		name:    'C'
+		address: 'X'
+		iface:   'inproc:X'
+	}
+	assert !builtin_uds_off([a], a)
+	assert builtin_uds_off([a, off], a), 'another row of the wire turns it off'
+	assert !builtin_uds_off([a, other], a), 'a row of another wire does not'
+	assert !builtin_uds_off([a, Channel{
+		...off
+		enabled: false
+	}], a), 'a disabled row does not'
+}

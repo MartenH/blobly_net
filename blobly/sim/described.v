@@ -60,8 +60,9 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 	}
 	mut spec, base_notes := n.desc.server_spec(remote)
 	// what one answer may carry: one ISO-TP transfer, or a DoIP diagnostic message
-	max_did := if remote { max_did_bytes_doip } else { max_did_bytes }
-	spec.max_response = max_did + 3
+	cap := if remote { max_response_doip } else { max_response }
+	max_did := uds.did_value_max(cap)
+	spec.max_response = cap
 	mut notes := n.desc.errs.map('${it} (in its ecu.toml)')
 	notes << base_notes
 	mut srv := uds.server_from(spec)
@@ -81,6 +82,7 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 				srv.put_did(u16(d.id), value)
 			}
 		}
+		declare_io_memory(mut srv, c, cap)
 		if c.dtcs.len > 0 && spec.faults.len == 0 {
 			notes << 'it has no fault memory (no [[fault]]), so 0x19 is not served and the `dtcs:` of the project are not'
 		} else {

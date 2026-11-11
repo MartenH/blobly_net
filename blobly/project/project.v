@@ -17,6 +17,7 @@ import os
 import yaml
 import blobly.doip
 import blobly.player
+import strconv
 
 // schema_version is the newest project-file format version this build understands. Bump it when
 // the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
@@ -41,9 +42,24 @@ pub const schema_version = 13
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
 	// v13 — a CAN-FD data phase's own sample point (`data_sample_point`), which an older build
-	// drops on its next structured save, and the data phase samples where the arbitration does.
+	// drops on its next structured save, and the data phase samples where the arbitration does;
+	// a row turning off the built-in UDS server (`builtin_uds: false`), and a simulated ECU's IO
+	// DIDs (`io:`) and memory ranges (`memory:`). An older build drops each on its next
+	// structured save: the built-in server answers again, and 0x2F/0x23/0x3D go unanswered.
 	if p.channels.any(it.data_sample_point != 0) {
 		return 13
+	}
+	for c in p.channels {
+		if c.kind() == .can && !c.builtin_uds {
+			return 13
+		}
+		for n in c.nodes {
+			if u := n.uds {
+				if u.io.len > 0 || u.memory.len > 0 {
+					return 13
+				}
+			}
+		}
 	}
 	// v12 — a LIN bus as a row of `buses:` (`adapter: lin`), which an older build reads as a CAN
 	// channel. (v11's top-level `lin:` list is read into such rows.)
@@ -258,6 +274,27 @@ pub mut:
 	// A functional request id this ECU also answers (0x7DF on an 11-bit bus), 0 = none. The
 	// answers go out on `tx` like any other; see uds.serve_step.
 	functional u64
+	// IO DIDs it controls through 0x2F, and memory ranges 0x23/0x3D read and write (v13)
+	io     []IoCfg
+	memory []MemCfg
+}
+
+// IoCfg is one IO DID a simulated ECU controls (0x2F), zeros of `size` bytes at start. Both wide,
+// like DidCfg.id, so validation sees an out-of-range value instead of a narrowed valid one.
+pub struct IoCfg {
+pub mut:
+	id   u32
+	size u32
+}
+
+// MemCfg is one memory range a simulated ECU reads (0x23) and writes (0x3D), zeros at start.
+pub struct MemCfg {
+pub mut:
+	address u64
+	size    u32
+	// the address as written when it is not a 64-bit number (a stray character, or past 2^64):
+	// the entry is malformed and a Save writes this back, never a number it was not
+	address_text string
 }
 
 // DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
@@ -462,6 +499,9 @@ pub mut:
 	// counter and checksum a bench needs checked.
 	verify   []ProtectCfg
 	simulate []string  // shorthand: ECU node names to simulate with default behaviour
+	// builtin_uds false: no built-in 0x7E0/0x7E8 diagnostic server on this row's wire when no
+	// node of it has a `uds:` block (`builtin_uds: false`, v13; builtin_uds_off is the rule)
+	builtin_uds bool = true
 	nodes    []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders  []Sender  // interactive generators: triggerable custom frames
 	replay   ?Replay
@@ -989,6 +1029,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		mode:         mode_from(c.value('mode').default_to('normal').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
 		j1939:        c.value('j1939').default_to(false).bool()
+		builtin_uds:  c.value('builtin_uds').default_to(true).bool()
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	ch.data_sample_point = c.value('data_sample_point').default_to(f64(0)).f64()
@@ -1424,6 +1465,34 @@ fn parse_node(n yaml.Any) NodeCfg {
 				}
 			}
 		}
+		if xs := u.value_opt('io') {
+			for x in xs.array() {
+				if !hex_id_is_clean(x.value('id').str()) {
+					ucfg.malformed << 'io ${x.value('id').str()}'
+				}
+				ucfg.io << IoCfg{
+					id:   clamp_u32(parse_id_wide(x.value('id').str()))
+					size: clamp_i64_u32(x.value('size').default_to(i64(0)).i64())
+				}
+			}
+		}
+		if ms := u.value_opt('memory') {
+			for m in ms.array() {
+				text := m.value('address').str()
+				address := parse_id_exact(text) or {
+					ucfg.malformed << 'memory ${text}'
+					ucfg.memory << MemCfg{
+						address_text: text
+						size:         clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
+					}
+					continue
+				}
+				ucfg.memory << MemCfg{
+					address: address
+					size:    clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
+				}
+			}
+		}
 		node.uds = ucfg
 	}
 	if ps := n.value_opt('protect') {
@@ -1786,6 +1855,20 @@ pub fn parse_id_wide(s string) u64 {
 		return v
 	}
 	return t.u64()
+}
+
+// parse_id_exact reads an identifier or address that must be all of 64 bits: hex after 0x, else
+// decimal, none for a character that is not a digit or a value past 2^64-1 — where
+// parse_id_wide skips the one and saturates the other, which for a 64-bit field is a valid value.
+pub fn parse_id_exact(s string) ?u64 {
+	t := s.trim_space().trim('"')
+	if !hex_id_is_clean(t) {
+		return none
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return strconv.parse_uint(t[2..], 16, 64) or { return none }
+	}
+	return strconv.parse_uint(t, 10, 64) or { return none }
 }
 
 fn parse_id(s string) u32 {

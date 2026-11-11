@@ -5,6 +5,7 @@ import net
 import sync
 import time
 import blobly.transport
+import blobly.isotp
 
 // Lines is what a run said, kept for the assertions. HEAP, and locked: the sinks are called from
 // the run's worker threads (Options says so), and the test reads while they are still starting.
@@ -237,4 +238,35 @@ fn test_wait_released_waits_for_the_holder() {
 	assert time.ticks() - t0 >= 30
 	release_process(gen)
 	assert released() && wait_released(0)
+}
+
+// `builtin_uds: false` on any enabled row of a wire keeps the built-in 0x7E0/0x7E8 server off it,
+// and the start line says so.
+fn test_builtin_uds_false_starts_no_default_server() {
+	path := os.join_path(os.temp_dir(), 'builtin_uds_${os.getpid()}.blobnet')
+	os.write_file(path, 'project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:BUILTIN613
+    simulate: [BodyECU]
+  - name: CAN1b
+    interface: inproc:BUILTIN613
+    builtin_uds: false
+')!
+	defer {
+		os.rm(path) or {}
+	}
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	assert lines.said('simulating 1 node(s), no UDS server')
+	mut ch := isotp.open_software('inproc:BUILTIN613', 0x7E0, 0x7E8, false)!
+	ch.send([u8(0x22), 0xF1, 0x90])!
+	if resp := ch.recv(300) {
+		assert false, 'answered: ${resp}'
+	}
+	ch.close()
+	r.stop()
 }

@@ -63,6 +63,10 @@ fn be_bytes(v i64, w int) []u8 {
 // description may leave out): a table row for any other is refused, and said.
 const performed_sids = [u8(0x10), 0x11, 0x14, 0x19, 0x22, 0x27, 0x2E, 0x3E, 0x85]
 
+// declared_sids are served only for what the project declares (IO DIDs, memory ranges), under
+// the table's gates.
+const declared_sids = [u8(0x23), 0x2F, 0x3D]
+
 // boot_sw_version_did is the DID a [boot] node answers with its running image's sw_version
 // (blobly_emb loom2v handoff_did): a u32, which the simulation has no image to take it from.
 const boot_sw_version_did = u16(0xF195)
@@ -167,7 +171,9 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		if bad.len > 0 {
 			notes << '[uds] services 0x${r.sid:02X}: session ${bad.join(', ')} is no session; not allowed there'
 		}
-		if r.sid !in performed_sids {
+		if r.sid in declared_sids {
+			notes << '[uds] services 0x${r.sid:02X} is simulated only for the io:/memory: a project node\'s uds: block declares; otherwise refused (serviceNotSupported)'
+		} else if r.sid !in performed_sids {
 			notes << '[uds] services 0x${r.sid:02X} is not simulated; it is refused (serviceNotSupported)'
 		}
 		if r.sub >= 0 && !(r.sid == 0x10 && r.sub == 2) {

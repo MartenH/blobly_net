@@ -466,18 +466,18 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 				// Same hazard as the DoIP branch: falling back to the built-in server when
 				// every CONFIGURED one was rejected makes a broken project look like a working
 				// ECU. Only an absence of `uds:` blocks earns the default.
-				mut declared := 0
-				for p in peers {
-					if _ := p.uds {
-						declared++
-					}
-				}
-				if servers.len == 0 && declared > 0 {
+				decision := sim.diag_servers(servers, peers, proj.channels, ch)
+				if decision == .rejected {
+					declared := peers.filter(it.uds != none).len
 					o.err('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting the default server in their place')
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s), NO UDS server (bad uds config)')
 					continue
 				}
-				if servers.len == 0 {
+				if decision == .off {
+					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s), no UDS server')
+					continue
+				}
+				if decision == .builtin {
 					dflt := sim.describe_default(&desc_sys, ch.name, ch.iface, 0x7E0, 0x7E8)
 					for n in dflt.notes {
 						o.err(n)

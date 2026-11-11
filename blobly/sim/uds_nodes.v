@@ -61,7 +61,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			// else. Opened as standard, SocketCAN masks it to 11 bits and 0x18DAF110 goes out
 			// as 0x110 — a different, probably occupied, address.
 			ext:    cfg.rx > 0x7FF || cfg.tx > 0x7FF
-			server: build_server(cfg, max_did_bytes, max_dtcs)
+			server: build_server(cfg, max_response, max_dtcs)
 		}
 	}
 	// A functional id is SHARED by design (every ECU on a bus answers 0x7DF), so it claims
@@ -78,6 +78,29 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 		}
 	}
 	return out
+}
+
+// DiagServers is which diagnostic servers a wire's simulated nodes start.
+pub enum DiagServers {
+	nodes    // the nodes' own (uds_nodes found some)
+	builtin  // the built-in server on 0x7E0/0x7E8: no node has a `uds:` block
+	off      // none: an enabled row of the wire says `builtin_uds: false`
+	rejected // none: every `uds:` block was refused, and the built-in one does not stand in
+}
+
+// diag_servers decides it for the wire `row` is on, given the servers uds_nodes built from the
+// wire's nodes `peers` and the project's rows. The GUI and the headless runner both ask this.
+pub fn diag_servers(servers []UdsNode, peers []project.NodeCfg, rows []project.Channel, row project.Channel) DiagServers {
+	if servers.len > 0 {
+		return .nodes
+	}
+	if peers.any(it.uds != none) {
+		return .rejected
+	}
+	if project.builtin_uds_off(rows, row) {
+		return .off
+	}
+	return .builtin
 }
 
 // functional_usable: a configured functional id that is a CAN id of the node's own frame format
@@ -97,13 +120,16 @@ fn physical_ids(servers []UdsNode) map[u64]bool {
 	return ids
 }
 
-// build_server turns one node's `uds:` content into a server. Carrier-independent: what an
-// ECU answers does not depend on how it is reached, and having the DoIP path build its own
-// would be the fourth copy of this logic in the file's history.
-fn build_server(cfg project.UdsCfg, max_did int, max_dtc int) uds.Server {
+// build_server turns one node's `uds:` content into a server, whose answers are at most `cap`
+// bytes (max_response, or max_response_doip). Carrier-independent otherwise: what an ECU answers
+// does not depend on how it is reached, and having the DoIP path build its own would be the
+// fourth copy of this logic in the file's history.
+fn build_server(cfg project.UdsCfg, cap int, max_dtc int) uds.Server {
+	max_did := uds.did_value_max(cap)
 	mut srv := uds.Server{
 		session: u8(cfg.session)
 	}
+	srv.spec.max_response = cap
 	for d in cfg.dids {
 		if d.id > 0xFFFF || d.value_len() > max_did {
 			continue // reported by validate_uds
@@ -125,7 +151,37 @@ fn build_server(cfg project.UdsCfg, max_did int, max_dtc int) uds.Server {
 			status: u8(t.status)
 		}
 	}
+	declare_io_memory(mut srv, cfg, cap)
 	return srv
+}
+
+// max_memory_range is the largest memory range a simulated ECU declares: its contents are held
+// in memory, and one 0x23 answer carries at most a carrier's transfer of it anyway.
+pub const max_memory_range = 1 << 20
+
+// io_refused_vin is the VIN DID, which no node declares under `io:`: a DoIP entity announces the
+// VIN it serves, and only a 0x2E write keeps the announcement with it (doip_host.v).
+const io_refused_vin = u32(0xF190)
+
+// declare_io_memory gives a server the block's IO DIDs (0x2F) and memory ranges (0x23/0x3D), the
+// ones validate_content does not refuse, for answers of at most `cap` bytes. Shared by the
+// project's servers and the described ones.
+fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
+	max_io := uds.io_value_max(cap)
+	for x in cfg.io {
+		if x.id > 0xFFFF || x.id == io_refused_vin || x.size == 0 || x.size > u32(max_io)
+			|| u16(x.id) in srv.io_start {
+			continue // reported by validate_content
+		}
+		srv.declare_io(u16(x.id), int(x.size))
+	}
+	for m in cfg.memory {
+		if m.address_text != '' || m.size == 0 || m.size > max_memory_range
+			|| m.address > max_u64 - u64(m.size) + 1 {
+			continue // reported by validate_content
+		}
+		srv.declare_memory(m.address, int(m.size))
+	}
 }
 
 // uds_nodes_doip builds the servers for a DoIP channel. A DoIP node has NO CAN identifiers —
@@ -147,15 +203,18 @@ pub fn uds_nodes_doip(nodes []project.NodeCfg) []UdsNode {
 		out << UdsNode{
 			src:    ni
 			name:   n.name
-			server: build_server(cfg, max_did_bytes_doip, max_dtcs_doip)
+			server: build_server(cfg, max_response_doip, max_dtcs_doip)
 		}
 	}
 	return out
 }
 
 // validate_content reports the problems that belong to what an ECU SERVES, independent of how
-// it is reached. Shared so a DoIP node is checked as thoroughly as a CAN one.
-fn validate_content(name string, cfg project.UdsCfg, max_did int, carrier string) []string {
+// it is reached, for answers of at most `cap` bytes. Shared so a DoIP node is checked as
+// thoroughly as a CAN one.
+fn validate_content(name string, cfg project.UdsCfg, cap int, carrier string) []string {
+	max_did := uds.did_value_max(cap)
+	max_io := uds.io_value_max(cap)
 	mut warns := []string{}
 	for d in cfg.dids {
 		if d.id > 0xFFFF {
@@ -179,6 +238,40 @@ fn validate_content(name string, cfg project.UdsCfg, max_did int, carrier string
 			warns << 'uds on "${name}": DID 0x${d.id:X} is ${d.value_len()} bytes — over the ${max_did}-byte ${carrier} limit'
 		}
 	}
+	mut seen_io := map[u32]bool{}
+	for x in cfg.io {
+		if x.id > 0xFFFF {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is above the 16-bit range — ignored'
+		} else if x.id == io_refused_vin {
+			warns << 'uds on "${name}": IO DID 0xF190 is the VIN, which a DoIP entity announces — not IO-controlled, ignored'
+		} else if x.size == 0 || x.size > u32(max_io) {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} size ${x.size} is not 1..${max_io} bytes — ignored'
+		} else if x.id in seen_io {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is declared more than once — the first is served'
+		} else if x.id in seen_did {
+			warns << 'uds on "${name}": IO DID 0x${x.id:X} is also listed under dids: — 0x22 reads the IO value'
+		}
+		seen_io[x.id] = true
+	}
+	for i, m in cfg.memory {
+		if m.address_text != '' {
+			continue // malformed: reported with the identifiers
+		}
+		if m.size == 0 || m.size > max_memory_range {
+			warns << 'uds on "${name}": memory at 0x${m.address:X} size ${m.size} is not 1..${max_memory_range} bytes — ignored'
+			continue
+		}
+		if m.address > max_u64 - u64(m.size) + 1 {
+			warns << 'uds on "${name}": memory at 0x${m.address:X} size ${m.size} runs past the 64-bit address space — ignored'
+			continue
+		}
+		for o in cfg.memory[..i] {
+			if o.size > 0 && m.address < o.address + u64(o.size) && o.address < m.address + u64(m.size) {
+				warns << 'uds on "${name}": memory at 0x${m.address:X} overlaps the range at 0x${o.address:X} — a request is served from one range only'
+				break
+			}
+		}
+	}
 	return warns
 }
 
@@ -198,7 +291,7 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 		for m in cfg.malformed {
 			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
 		}
-		warns << validate_content(n.name, cfg, max_did_bytes_doip, 'DoIP payload')
+		warns << validate_content(n.name, cfg, max_response_doip, 'DoIP payload')
 		mut usable_dtcs := 0
 		for t in cfg.dtcs {
 			if t.status > 0xFF {
@@ -223,15 +316,22 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 // the error is discarded, so the tester sees only a timeout.
 pub const max_dtcs = (4095 - 3) / 4
 
+// max_response is the longest answer one ISO-TP transfer carries.
+pub const max_response = 4095
+
 // max_did_bytes is the largest DID value that fits one ISO-TP transfer: 4095 bytes minus the
 // three-byte positive-response header (0x62 + the two identifier bytes).
-pub const max_did_bytes = 4092
+pub const max_did_bytes = max_response - uds.did_answer_header
 
 // The DoIP equivalents. A diagnostic message is capped at doip.max_payload_len (64 KiB, which
 // both ends enforce), of which 4 bytes are the source/target address pair and 3 the UDS
 // positive-response header. Applying ISO-TP's 4092 here silently dropped configured data that
 // the selected carrier can carry perfectly well, and reads answered NRC 0x31 for it.
-pub const max_did_bytes_doip = int(doip.max_payload_len) - 4 - 3
+pub const max_did_bytes_doip = max_response_doip - uds.did_answer_header
+
+// max_response_doip is the longest answer one DoIP diagnostic message carries: the payload less
+// the source/target address pair.
+pub const max_response_doip = int(doip.max_payload_len) - 4
 
 // max_dtcs_doip is how many faults one 0x19 sub 0x02 response can carry over DoIP: the header
 // is 3 bytes and each record 4.
@@ -341,7 +441,7 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			// ISO-TP uses one frame format for the pair; a mixed pair cannot be honoured
 			warns << 'uds on "${n.name}": rx 0x${cfg.rx:X} and tx 0x${cfg.tx:X} mix 11-bit and 29-bit addressing'
 		}
-		warns << validate_content(n.name, cfg, max_did_bytes, 'ISO-TP')
+		warns << validate_content(n.name, cfg, max_response, 'ISO-TP')
 		for m in cfg.malformed {
 			// a stripped character yields a different VALID id, so no range check can see it
 			warns << 'uds on "${n.name}": ${m} is not a valid identifier'

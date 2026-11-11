@@ -173,3 +173,31 @@ fn test_doip_node_without_uds_is_skipped() {
 	assert uds_nodes_doip(nodes).len == 0
 	assert validate_uds_doip(nodes).len == 0
 }
+
+// A project-defined DoIP server answers as long as a DoIP message carries: a 0x23 read past
+// ISO-TP's 4095 bytes, and an IO DID up to the 0x2F header less than that.
+fn test_doip_server_answers_at_the_doip_capacity() {
+	io_max := max_response_doip - 4
+	nodes := [
+		doip_node('E', project.UdsCfg{
+			io:     [project.IoCfg{
+				id:   0x1234
+				size: u32(io_max)
+			}, project.IoCfg{
+				id:   0x1235
+				size: u32(io_max + 1)
+			}]
+			memory: [project.MemCfg{
+				address: 0x1000
+				size:    8192
+			}]
+		}),
+	]
+	mut srv := uds_nodes_doip(nodes)[0].server
+	// 0x23, 2-byte size and address: 0x1000, 0x1000 bytes
+	resp := srv.handle([u8(0x23), 0x22, 0x10, 0x00, 0x10, 0x00])
+	assert resp.len == 1 + 0x1000 && resp[0] == 0x63
+	assert srv.io_start.keys() == [u16(0x1234)]
+	assert srv.handle([u8(0x2F), 0x12, 0x34, 0x02]).len == max_response_doip
+	assert validate_uds_doip(nodes).any(it.contains('IO DID 0x1235 size ${io_max + 1} is not 1..${io_max} bytes'))
+}
