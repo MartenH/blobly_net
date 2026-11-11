@@ -73,3 +73,17 @@ test("a wait of 0 reads one frame", function()
   while bus.recv("body", 0) do left = left + 1 end
   check.equal(left, 2, "a wait of 0 is one look")
 end)
+
+test("a PDU of the node id alone is a node with no bits", function()
+  nm.expect_asleep("body", 2000)
+  local malformed = nm.reading("body").malformed
+  local peer = bus.open_iface("inproc:NM")
+  bus.send(peer, 0x513, string.char(0x13))
+  local w = nm.expect_state("body", "awake", 1000, { "domain" })
+  check.equal(w.woken_by, "domain")
+  check.truthy(not w.woken_active, "no CBV says no active wake-up")
+  check.equal(w.malformed, malformed)
+  for _, n in ipairs(w.nodes) do
+    if n.name == "domain" then check.truthy(n.bits == nil and n.keeps_awake, "no bits, and asking") end
+  end
+end)

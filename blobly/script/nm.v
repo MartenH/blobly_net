@@ -303,6 +303,8 @@ fn push_nm_reading(l lua.State, lis &nm.Listener) {
 		l.set_int('count', i64(r.count))
 		if !r.missing {
 			l.set_num('last_heard_ms', at - r.ago_ms)
+		}
+		if !r.missing && r.has_cbv {
 			l.new_table()
 			l.set_int('raw', r.cbv)
 			l.set_bool('repeat_request', r.cbv & nm.cbv_repeat_request != 0)

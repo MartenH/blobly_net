@@ -11,8 +11,16 @@ The frame is AUTOSAR CanNm's default layout, the one blobly_emb's `comm/nm` send
 | 1 | the control bit vector: bit 0 repeat-message request, bit 3 ready to sleep, bit 4 active wake-up, bit 6 PN info |
 | 2–7 | the partial-network request mask, little-endian, read only when PN info is set |
 
-A node announces on its own CAN id in the cluster's NM range (blobly_emb: `base + NID`). A
-frame shorter than 2 bytes, or one saying PN info with no mask byte, is counted as malformed.
+A node announces on its own CAN id in the cluster's NM range (blobly_emb: `base + NID`). An
+empty PDU, or one saying PN info with no mask byte, is counted as malformed.
+
+A 1-byte PDU is the node id alone: a cluster configured with the control bit vector off
+(`CanNmPduCbvPosition` = `CANNM_PDU_OFF`) and no user data. Such a node is read with no bits: it
+counts as asking for the network while it is heard, releases by falling silent, and never says
+active wake-up, so its frame wakes the bus only after a silence. Its bits column stays empty, a
+script's `bits` is nil (Lua) or `None` (Python), and `bb_nm_node.has_cbv` is 0. A cluster with the
+control bit vector off and user data after the node id is not told apart: its byte 1 is read as
+the control bit vector.
 
 Bit 3 is read as blobly_emb uses it: a node that has released the network says so and keeps
 announcing. In AUTOSAR CanNm, bit 3 is the coordinator's sleep-ready bit, and a node releases

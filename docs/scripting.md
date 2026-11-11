@@ -807,7 +807,8 @@ THE CHANNEL'S LATEST READ (`t_ms`), never the wall clock's now, so a channel nob
 while reads as it was then rather than as asleep. `kept_awake_by` lists the declared nodes in
 declaration order, then the others as first heard. A node is `{ name, nid, can_id, ext, missing,
 unknown, live, keeps_awake, count, last_heard_ms, cadence_ms, last_interval_ms, bits = { raw,
-repeat_request, ready_to_sleep, active_wakeup, pn_info }, pn }`, a field it does not have left nil.
+repeat_request, ready_to_sleep, active_wakeup, pn_info }, pn }`, a field it does not have left nil
+(`bits` too, where its latest frame was the node id alone, a 1-byte PDU with no control bit vector).
 
 ```lua
 -- projects/nm-demo: its recording replayed at 4x

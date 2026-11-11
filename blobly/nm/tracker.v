@@ -31,7 +31,8 @@ pub mut:
 	last_iv_ms f64 // the latest interval between two of its frames; 0 before the second
 	iv_sum_ms  f64 // the intervals within the timeout, whose mean is the cadence
 	iv_n       u64
-	cbv        u8 // its latest control bit vector
+	cbv        u8 // its latest control bit vector; 0 when its latest frame carried none
+	has_cbv    bool
 	pn         u64
 	has_pn     bool
 	segs       []Seg
@@ -159,6 +160,7 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 	n.last_ms = t_ms
 	n.count++
 	n.cbv = p.cbv
+	n.has_cbv = p.has_cbv
 	n.pn = p.pn
 	n.has_pn = p.has_pn
 	ph := p.phase()
