@@ -856,3 +856,35 @@ fn test_a_published_live_value_keeps_a_u64_past_i64_and_rounds_a_fraction() {
 		0xFF, 0xFF, 0xFF, 0xFB]
 	clear_live()
 }
+
+// a signal no generator drives reads the value set on it, and once that is let go of, what the
+// frame carries again: raw 0, here -40 through the offset
+fn test_a_live_did_follows_a_signal_without_a_generator_back_to_raw_zero() {
+	mut s := uds.server_from(uds.ServerSpec{
+		dids: [live_did(0x0102, 'Temp', uds.FieldSpec{ width: 2, signed: true })]
+	})
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'bare')
+	mut m := live_msg(0x141, candb.Signal{
+		name:   'Temp'
+		length: 8
+		factor: 1
+		offset: -40
+	}, 0)
+	m.signals = []
+	m.set = [SetValue{'Temp', 25}]
+	mut e := Engine{
+		ecus: [SimEcu{
+			name:     'bare'
+			messages: [m]
+		}]
+	}
+	assert e.due_frames(0).len == 1
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0, 25]
+	e.ecus[0].messages[0].set = []
+	assert e.due_frames(50).len == 1
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0xFF, 0xD8]
+	clear_live()
+}

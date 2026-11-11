@@ -234,7 +234,8 @@ pub fn live_value(iface string, chan_name string, node string, signal string) ?u
 
 // publish_live records, for the signals a described server wants, the value the last frame
 // due_frames sent of its message carried: a value set on the signal (setsignal.v), else its
-// generator's.
+// generator's, else raw 0 — every signal of the message, so one let go of goes back to what the
+// frame carries.
 pub fn publish_live(iface string, chan_name string, e &Engine) {
 	live_table.mu.rlock()
 	empty := live_table.want.len == 0
@@ -247,7 +248,12 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			if m.last_n < 0 {
 				continue // a response, or none handed out yet: no frame carries a generator's value
 			}
-			mut names := m.signals.map(it.name)
+			mut names := m.msg.signals.map(it.name)
+			for g in m.signals {
+				if g.name !in names {
+					names << g.name
+				}
+			}
 			for v in m.last_set {
 				if v.signal !in names {
 					names << v.signal
@@ -261,13 +267,11 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 				if !wanted {
 					continue
 				}
-				phys := last_sent_value(m, name)
-				mut v := live_rounded(phys)
-				for sig in m.msg.signals {
-					if sig.name == name {
-						v = live_encoded(sig, phys)
-						break
-					}
+				sig := m.msg.signal_named(name)
+				v := if s := sig {
+					live_encoded(s, last_sent_value(m, name, sig))
+				} else {
+					live_rounded(last_sent_value(m, name, none))
 				}
 				live_table.mu.lock()
 				live_table.vals[k] = v
@@ -278,8 +282,8 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 }
 
 // last_sent_value is the physical value of `name` in the last frame sent of `m`: the value set on
-// it, else its generator's, else 0 (a signal nothing drives encodes as raw 0).
-fn last_sent_value(m SimMessage, name string) f64 {
+// it, else its generator's, else what raw 0 decodes to in `sig` (the payload starts at zero).
+fn last_sent_value(m SimMessage, name string, sig ?candb.Signal) f64 {
 	for v in m.last_set {
 		if v.signal == name {
 			return v.value
@@ -289,6 +293,9 @@ fn last_sent_value(m SimMessage, name string) f64 {
 		if s.name == name {
 			return s.gen.value(m.last_t, m.last_n)
 		}
+	}
+	if s := sig {
+		return s.phys_from_raw(0)
 	}
 	return 0
 }
