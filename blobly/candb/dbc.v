@@ -513,6 +513,11 @@ pub fn parse_dbc(text string) !Database {
 			if why := apply_e2e_attr(mut msgs, by_id, line) {
 				e2e_unread << why
 			}
+		} else if line.starts_with('BA_REL_ "E2E') {
+			// a relation-scope value: BA_REL_ "<name>" BU_SG_REL_ <node> SG_ <id> <signal> <value>;
+			f := line.fields()
+			place := if f.len > 2 { f[2] } else { 'relation' }
+			e2e_unread << '${f[1]} at ${place} scope is not read (an E2E attribute is read at BO_ and SG_ scope) — not applied, and a Save drops it'
 		} else if line.starts_with('SIG_GROUP_ ') {
 			apply_sig_group(mut msgs, by_id, line)
 		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
@@ -659,7 +664,7 @@ fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) ?string
 	}
 	scope := f[2]
 	if scope != 'BO_' && scope != 'SG_' {
-		place := if scope in ['BU_', 'EV_', 'BU_SG_REL_', 'BU_BO_REL_', 'BU_EV_REL_'] {
+		place := if scope in ['BU_', 'EV_'] {
 			'${scope} scope'
 		} else {
 			'network scope'

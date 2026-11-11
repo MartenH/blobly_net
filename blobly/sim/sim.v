@@ -112,6 +112,9 @@ pub mut:
 	e2e_n    int
 	last_e2e int
 	has_tx   bool // whether last_e2e means anything yet
+	// per window group, the frames a freeze naming that window held it back: the window carries
+	// the shared counter less its lag, so it resumes one step past what it repeated
+	lag map[string]int
 	next_ms  f64  // next due time
 	last_t   f64  // when due_frames last handed a frame of it out (s): what its generators read
 	last_n   int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
@@ -132,22 +135,22 @@ pub mut:
 	hold_ms f64
 }
 
-// e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
-// the stall begins with the very first faulted frame rather than after one more advance.
+// e2e_value is the counter this frame should carry: the last transmitted one while every window is
+// frozen, so the stall begins with the very first faulted frame rather than after one more advance.
 pub fn (m SimMessage) e2e_value() int {
-	if m.fault.kind == .freeze_ctr && m.has_tx {
+	if m.fault.kind == .freeze_ctr && m.fault.group == '' && m.has_tx {
 		return m.last_e2e
 	}
 	return m.e2e_n
 }
 
-// e2e_value_for is the counter window `w` carries in this frame: e2e_value where the freeze holds
-// it (every window, or the one it names), the next value otherwise.
+// e2e_value_for is the counter window `w` carries in this frame: e2e_value less the window's lag,
+// or the value it carried last while a freeze naming it holds it.
 pub fn (m SimMessage) e2e_value_for(w E2e) int {
-	if m.fault.kind == .freeze_ctr && !m.fault.holds(w) {
-		return m.e2e_n
+	if m.fault.kind == .freeze_ctr && m.fault.group != '' && m.fault.holds(w) && m.has_tx {
+		return m.last_e2e - m.lag[w.group]
 	}
-	return m.e2e_value()
+	return m.e2e_value() - m.lag[w.group]
 }
 
 // stamp_e2e stamps every window's counter and checksum onto `data`.
@@ -159,15 +162,14 @@ fn (m SimMessage) stamp_e2e(mut data []u8) {
 
 // advance_e2e records what was just sent and moves the counter on — unless frozen, in which
 // case e2e_n is left untouched so recovery resumes exactly one step later with no flag to keep.
-// A freeze of one window keeps that window's value and moves the others on.
+// A freeze of one window moves the counter on and that window's lag with it, so it keeps its value.
 pub fn (mut m SimMessage) advance_e2e() {
-	if m.fault.kind == .freeze_ctr && m.fault.group != '' {
-		if !m.has_tx {
-			m.last_e2e = m.e2e_n
-			m.has_tx = true
+	if m.fault.kind == .freeze_ctr && m.fault.group != '' && m.has_tx {
+		for w in m.e2e {
+			if m.fault.holds(w) {
+				m.lag[w.group] = m.lag[w.group] + 1
+			}
 		}
-		m.e2e_n++
-		return
 	}
 	v := m.e2e_value()
 	m.last_e2e = v
@@ -304,6 +306,9 @@ pub fn (e Engine) save_state(mut c Carry) {
 			if m.ev.seen {
 				c.changes['${ecu.name}|${m.msg.name}'] = m.ev
 			}
+			for g, n in m.lag {
+				c.counters['e2elag|${ecu.name}|${m.msg.name}|${g}'] = n
+			}
 		}
 	}
 }
@@ -327,6 +332,11 @@ pub fn (mut e Engine) restore_state(c Carry) {
 				if n >= 0 {
 					e.ecus[i].messages[j].last_e2e = n
 					e.ecus[i].messages[j].has_tx = true
+				}
+			}
+			for w in e.ecus[i].messages[j].e2e {
+				if n := from['e2elag|${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}|${w.group}'] {
+					e.ecus[i].messages[j].lag[w.group] = n
 				}
 			}
 		}

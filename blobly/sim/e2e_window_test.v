@@ -131,6 +131,24 @@ fn test_a_fault_acts_on_the_window_it_names() {
 		assert p01_window_ok(d, 0, 68) && p01_window_ok(d, 4, 69)
 		m.advance_e2e()
 	}
+	// it resumes one step past what it repeated, across an engine rebuild too
+	m.fault = Fault{}
+	mut e := Engine{
+		ecus: [ecu]
+	}
+	mut saved := Carry{}
+	e.save_state(mut saved)
+	mut again := Engine{
+		ecus: [from_project(db, project.NodeCfg{ name: 'Ecu' })]
+	}
+	again.restore_state(saved)
+	r := again.ecus[0].messages[0].build(0).data
+	assert r[1] & 0x0F == 3 && r[5] & 0x0F == 1
+	mut d := m.build(0).data
+	assert d[1] & 0x0F == 3 && d[5] & 0x0F == 1
+	m.advance_e2e()
+	d = m.build(0).data
+	assert d[1] & 0x0F == 4 && d[5] & 0x0F == 2
 }
 
 // a project's entries, each naming its window: Profile 1 in one, Profile 5 in the other

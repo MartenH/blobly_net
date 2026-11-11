@@ -390,4 +390,25 @@ channels:
 	assert again.version == 13
 	assert again.channels[0].verify[1].offset or { -1 } == 4
 	assert again.channels[0].verify[1].length or { -1 } == 4
+	// a malformed window is written back as given, so the entry stays ignored and not widened
+	for i in 2 .. 5 {
+		assert again.channels[0].verify[i].window_malformed, '${i}'
+	}
+	assert again.channels[0].verify[2].offset_text == '4'
+	assert again.channels[0].verify[3].length_text == '0'
+	assert again.channels[0].verify[4].offset_text == 'x'
+	only := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    verify:
+      - { message: M, crc: C, counter: D, profile: autosar_p01, data_id: 0x44, offset: 0 }
+') or {
+		panic(err)
+	}
+	assert version_for(only) == 13
+	twice := parse(only.to_yaml()) or { panic(err) }
+	assert twice.channels[0].verify[0].window_malformed
+	assert twice.version == 13
 }

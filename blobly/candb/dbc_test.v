@@ -723,15 +723,17 @@ BA_ "E2EProfile" BU_ N "P01";
 BA_ "E2EProfile" "P01";
 BA_ "E2ECrcSignal" BO_ 9 "C";
 BA_ "E2ECrcSignal" SG_ 1 C "C";
+BA_REL_ "E2EDataId" BU_SG_REL_ N SG_ 1 C 68;
 '
 	db := parse_dbc(text) or { panic(err) }
 	notes := db.e2e_notes()
-	assert notes.len == 4, notes.str()
+	assert notes.len == 5, notes.str()
 	assert notes[0].starts_with('"E2EProfile" at BU_ scope is not read')
 	assert notes[1].starts_with('"E2EProfile" at network scope is not read')
 	assert notes[2].contains('BO_ 9 names a message the file does not define')
-	assert notes[3] == 'A.C: no SIG_GROUP_ of A holds "C" — its E2E declaration is not applied'
-	// the SG_ declaration is written back; the three records not read are not
-	assert db.save_drops().len == 3
+	assert notes[3].starts_with('"E2EDataId" at BU_SG_REL_ scope is not read')
+	assert notes[4] == 'A.C: no SIG_GROUP_ of A holds "C" — its E2E declaration is not applied'
+	// the SG_ declaration is written back; the four records not read are not
+	assert db.save_drops().len == 4
 	assert db.to_dbc().contains('BA_ "E2ECrcSignal" SG_ 1 C "C";')
 }

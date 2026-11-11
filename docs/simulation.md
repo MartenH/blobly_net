@@ -286,9 +286,11 @@ bytes** — `offset` and `length`, both or neither:
   stamps every group with no `protect:` entry, and a script judges every group.
 - `bad_crc` and `freeze_counter` act on every window, or on the one named
   (`sim.fault(channel, node, message, "bad_crc", 0, "TorqueGroup")` in Lua,
-  `net.fault(..., group="TorqueGroup")` in Python).
+  `net.fault(..., group="TorqueGroup")` in Python). A window frozen alone resumes one step past
+  the value it repeated, as a freeze of every window does, while the other windows went on.
 - A project using `offset:`/`length:` declares schema v13: an older build would read every entry
-  as the whole payload.
+  as the whole payload. A window given with one key, or with a value that is not a whole number,
+  is ignored with a warning, and a Save writes it back as written rather than dropping it.
 
 ### AUTOSAR E2E Profile 1 (`autosar_p01`)
 

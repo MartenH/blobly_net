@@ -65,7 +65,8 @@ pub fn version_for(p Project) int {
 		if c.kind() == .can && !c.builtin_uds {
 			return 13
 		}
-		if c.verify.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none) {
+		if c.verify.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none
+			|| it.window_malformed) {
 			return 13
 		}
 		if c.senders.any(it.format != .wire) {
@@ -80,7 +81,8 @@ pub fn version_for(p Project) int {
 			return 13
 		}
 		for n in c.nodes {
-			if n.protect.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none) {
+			if n.protect.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none
+			|| it.window_malformed) {
 				return 13
 			}
 			if u := n.uds {
@@ -391,6 +393,10 @@ pub mut:
 	offset           ?int
 	length           ?int
 	window_malformed bool // either is not a whole number >= 0 (a length > 0), or only one is given
+	// what a malformed window's keys said, written back as given so a save cannot widen the entry
+	// to the whole payload
+	offset_text string
+	length_text string
 }
 
 // window: the entry names a window of bytes rather than the whole payload.
@@ -1448,7 +1454,10 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 		mut off := ?int(none)
 		mut wlen := ?int(none)
 		mut wbad := false
+		mut off_text := ''
+		mut len_text := ''
 		if v := p.value_opt('offset') {
+			off_text = v.str()
 			if n := window_int(v.str()) {
 				off = n
 			} else {
@@ -1456,6 +1465,7 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			}
 		}
 		if v := p.value_opt('length') {
+			len_text = v.str()
 			if n := window_int(v.str()) {
 				if n > 0 {
 					wlen = n
@@ -1475,6 +1485,8 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			offset:             off
 			length:             wlen
 			window_malformed:   wbad
+			offset_text:        if wbad { off_text } else { '' }
+			length_text:        if wbad { len_text } else { '' }
 			message:            p.value('message').default_to('').string()
 			id:                 mid
 			extended:           mext
