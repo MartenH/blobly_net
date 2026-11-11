@@ -237,7 +237,7 @@ fn (mut r Run) spawn_gen(mut g Gen) bool {
 // wire_for is the run's wire to `iface`, its loop started if it is new or its open failed, so a
 // later source tries the open again; the caller holds r.mu and has checked the run is not stopping.
 fn (mut r Run) wire_for(iface string) &cyclic.Wire {
-	key := transport.destination_key(iface)
+	key := transport.open_key(iface)
 	if mut w := r.wires[key] {
 		if !w.failed() {
 			return w

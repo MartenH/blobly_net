@@ -419,6 +419,16 @@ pub fn destination_key(iface string) string {
 	return vendor_destination_key(i)
 }
 
+// open_key is the identity of the bus an open of `iface` reaches: destination_key for a vendor
+// address, whose open reads it trimmed and by value, and the address as canonical_iface spells it
+// otherwise, untrimmed as the dispatcher reads it (`inproc:bench ` is a hub of its own).
+pub fn open_key(iface string) string {
+	if vendor_iface(trimmed(iface)) {
+		return vendor_destination_key(iface)
+	}
+	return canonical_iface(iface)
+}
+
 // vendor_destination_key is the vendor half of destination_key, WITHOUT the platform guard.
 // Callers that are opening a bus want destination_key; callers reading a project written
 // elsewhere want this.

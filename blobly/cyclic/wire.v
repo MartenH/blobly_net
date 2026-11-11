@@ -132,6 +132,18 @@ pub fn (mut w Wire) wait_opened() ! {
 	}
 }
 
+// stopping is whether the loop is to end: asked to, or its owner no longer runs.
+fn (mut w Wire) stopping() bool {
+	if w.life.running != unsafe { nil } && !w.life.running() {
+		return true
+	}
+	w.mu.lock()
+	defer {
+		w.mu.unlock()
+	}
+	return w.asked
+}
+
 fn now_ms() u64 {
 	return time.sys_mono_now() / 1_000_000
 }
@@ -165,15 +177,11 @@ pub fn (mut w Wire) run(open fn (string) !transport.Bus) !transport.BusDiagnosti
 	mut mine := []Slot{}
 	mut seen := -1
 	mut last := []Slot{} // a solo wire's last entries, let go once the handle is closed
-	for {
-		if w.life.running != unsafe { nil } && !w.life.running() {
+	outer: for {
+		if w.stopping() {
 			break
 		}
 		w.mu.lock()
-		if w.asked {
-			w.mu.unlock()
-			break
-		}
 		if w.version != seen {
 			mine = w.entries.clone()
 			seen = w.version
@@ -189,6 +197,10 @@ pub fn (mut w Wire) run(open fn (string) !transport.Bus) !transport.BusDiagnosti
 			now := now_ms()
 			mut next := sl.e.due(now) or { continue }
 			if next <= now {
+				// a stop asked while an earlier entry's send was blocked starts no further send
+				if w.stopping() {
+					break outer
+				}
 				said := sl.e.serve(mut bus, now)
 				if said != '' && w.say != unsafe { nil } {
 					w.say(said)

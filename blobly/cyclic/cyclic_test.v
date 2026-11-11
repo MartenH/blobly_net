@@ -376,3 +376,43 @@ fn test_senders_share_a_wire_and_leave_it_alone() {
 		assert false, 'a stopped wire took a sender'
 	}
 }
+
+// StopsWire asks its wire to stop while it sends, as a stop arriving during a blocked write does
+@[heap]
+struct StopsWire {
+mut:
+	w      &Wire = unsafe { nil }
+	served int
+}
+
+fn (mut e StopsWire) leaving() bool {
+	return false
+}
+
+fn (mut e StopsWire) due(now u64) ?u64 {
+	return now
+}
+
+fn (mut e StopsWire) serve(mut _ transport.Bus, _ u64) string {
+	e.served++
+	if e.w != unsafe { nil } {
+		e.w.ask_stop()
+	}
+	return ''
+}
+
+fn (mut e StopsWire) let_go(_ string) {}
+
+// a stop asked while one entry sends starts no send of the entries after it in that pass
+fn test_a_stop_during_a_send_starts_no_further_send() {
+	mut w := new_wire('inproc:CYC9', fn (_ string) {})
+	mut first := &StopsWire{
+		w: w
+	}
+	mut second := &StopsWire{}
+	w.add(first)!
+	w.add(second)!
+	w.run(transport.open)!
+	assert first.served == 1
+	assert second.served == 0, 'an entry was sent after the stop'
+}

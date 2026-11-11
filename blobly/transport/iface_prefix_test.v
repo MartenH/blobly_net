@@ -78,3 +78,11 @@ fn test_wire_key_and_destination_key_unchanged() {
 		assert destination_key(s) == destination_key(s.trim_space()), s.str()
 	}
 }
+
+// open_key keeps a software bus's spelling as the dispatcher reads it, and a vendor address's by value
+fn test_open_key_is_the_bus_an_open_reaches() {
+	assert open_key('inproc:bench') != open_key('inproc:bench ')
+	assert open_key('inproc') == open_key('inproc:CAN')
+	assert open_key('cansub:E5A16ADF/1@500000') == open_key(' cansub:e5a16adf/1@0500000 ')
+	assert open_key('cansub:E5A16ADF/1@500000') != open_key('cansub:E5A16ADF/1@250000')
+}
