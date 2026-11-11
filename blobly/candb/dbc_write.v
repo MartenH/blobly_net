@@ -121,7 +121,8 @@ pub fn (d E2eDecl) where_in(m Message) string {
 }
 
 // save_drops says what to_dbc leaves out of the file that the model read from it (the
-// difference E2eDecl.as_saved makes), one line per malformed value.
+// difference E2eDecl.as_saved makes), one line per malformed value, and one for the records the
+// reader did not take at all.
 pub fn (db Database) save_drops() []string {
 	mut out := db.e2e_unread.map(it.replace(' — not applied, and a Save drops it', ' — not saved'))
 	for m in db.messages {
@@ -134,6 +135,9 @@ pub fn (db Database) save_drops() []string {
 				out << '${at}: E2ETimeout ${d.bad_timeout} is not a number of ms — not saved'
 			}
 		}
+	}
+	if db.unread.len > 0 {
+		out << 'not read, so not saved: ${db.unread.join(', ')}'
 	}
 	return out
 }
@@ -164,6 +168,7 @@ pub fn (mut db Database) saved() {
 		m.e2e = m.e2e.map(it.as_saved()).filter(it.states_anything())
 	}
 	db.e2e_unread = []
+	db.unread = []
 }
 
 // to_dbc renders the database as canonical DBC text.

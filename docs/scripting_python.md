@@ -183,6 +183,14 @@ with an interface, its databases and the ECUs simulated on it.
   `bus:` named the row by its old interface, or named a wire every row on it left (an interface
   alias rows share, or a spelling with a rate), is rewritten to name where they went, and refused
   when they went two ways; a `bus:` naming a wire no row is on stays where the file says.
+- **What the load did not use** is `net.notes`, a list of lines: a key the file carries that no
+  section lists (`unknown key `cycle_msec` in channel "CAN1" / generator "G" (known: ...)`), a
+  reference that resolves only from the working directory, and per DBC the records the reader does
+  not take, counted by kind (`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`).
+  A misspelt key is otherwise dropped and its default applies, so the protection or generator it
+  configured does not exist. `blobly.Project(path, strict=True)` makes those lines a refusal:
+  `load()` raises `Refused` listing every one, before anything opens. In a file of a newer schema
+  than this build's, unknown keys are noted and not refused (the newer build knows them).
 - **What `start()` brings up**, for every enabled row: the simulated ECUs (`simulation:`) and
   their UDS servers, the cyclic generators (`senders:` with `trigger: cyclic`; every generator is
   then the script's to drive, [Generators](#generators)), and a DoIP
@@ -212,6 +220,7 @@ with an interface, its databases and the ECUs simulated on it.
 import blobly
 
 net = blobly.Project("projects/sim-demo.blobnet").load()     # read; nothing runs yet
+print(*net.notes, sep="\n")                                   # what this load did not use (nothing here)
 for ch in net.channels:
     print(ch.name, ch.kind, ch.iface)                         # the interfaces as the project says
 net.start()                                                   # the simulated ECUs come up
@@ -2433,11 +2442,11 @@ the end of the block.
 
 ### `Project`
 
-`blobly.Project(path, interfaces=None)`: a `.blobnet` project. `path` is a `str`, `bytes` or
-path-like; a NUL in it raises `ValueError`. `interfaces` maps row names to the interfaces they are
-attached to instead of the file's ([Projects](#3-projects)); a name with `=`, or a NUL or line
-break in either, raises `ValueError`, and the engine refuses the rest at `load()`. It is also an
-`EventLoop`.
+`blobly.Project(path, interfaces=None, strict=False)`: a `.blobnet` project. `path` is a `str`,
+`bytes` or path-like; a NUL in it raises `ValueError`. `interfaces` maps row names to the interfaces
+they are attached to instead of the file's ([Projects](#3-projects)); a name with `=`, or a NUL or
+line break in either, raises `ValueError`, and the engine refuses the rest at `load()`. `strict`
+makes what the load does not use a refusal (`net.notes`). It is also an `EventLoop`.
 
 | member | what |
 |---|---|
@@ -2449,6 +2458,8 @@ break in either, raises `ValueError`, and the engine refuses the rest at `load()
 | `net.channels` | The enabled rows, a `Channels`. `BloblyError` before `load()`. |
 | `net.path` | The project file's absolute path (bytes when given bytes). |
 | `net.interfaces` | The interface overrides by row name, a `dict` (empty for none); every load applies them. |
+| `net.strict` | Whether a load refuses what this build does not read: `Refused`, listing every line, for a key of the file no section lists (noted, not refused, in a file of a newer schema) and for a DBC record the reader does not take. |
+| `net.notes` | What the last load said about the file, a `list` of lines (empty before the first): its unknown keys, references that resolve only from the working directory, and per DBC the records not read, counted by kind. |
 | `net.started` | Whether this project is running. |
 | `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)`, `net.wait(duration_ms)` | The event loop: see `EventLoop`. |
 | `net.fault(channel, node, message, kind, ms=None, signal=None, *, group=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared; `group` the E2E window `bad_crc` or `freeze_counter` acts on (every window when `None`). `FaultRefused` where it could not take effect. |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The headless Lua runner's exit statuses and --report file, end to end: a passing, a failing, an
-# erroring and three hanging suites (tests/runner/), a row moved by --interface, a refused project
-# and bad arguments.
+# erroring and three hanging suites (tests/runner/), a row moved by --interface, a refused project,
+# a --strict load and bad arguments.
 #   scripts/runner_report_test.sh            (RUN=<built cmd/script> to skip the build)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -96,6 +96,17 @@ assert r['status'] == 'refused' and 'not NAME=IFACE' in r['message']" \
 expect refused 2 "
 assert r['status'] == 'refused' and 'cannot load project' in r['message']" \
   -- --project "$work/none.blobnet" tests/runner/pass.lua
+
+# --strict: a project carrying a key no section lists is refused before anything opens
+expect strict_clean 0 "
+assert r['status'] == 'passed'" \
+  -- --strict tests/runner/pass.lua
+
+printf 'project:\n  name: strict\nbuses:\n  - name: CAN1\n    interface: inproc:RUNNER_STRICT\n    bitrat: 500000\n' >"$work/strict.blobnet"
+expect strict 2 "
+assert r['status'] == 'refused' and 'a strict load refuses' in r['message']
+assert 'unknown key \`bitrat\` in channel \"CAN1\"' in r['message'] and r['tests'] == []" \
+  -- --strict --project "$work/strict.blobnet" tests/runner/pass.lua
 
 expect unknown 2 "
 assert r['status'] == 'refused' and 'unknown option --timeot' in r['message']" \

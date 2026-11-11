@@ -144,6 +144,7 @@ BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
 BB_RELEASING = 3   # bb_stop / bb_wait_released: a loop is still letting go of its wires
 BB_ANSWERED = 4    # bb_uds_raw_suppressed: a positive answer came although none was asked for
+BB_LOAD_STRICT = 1  # bb_load_flags: refuse what this build does not read
 
 # enum bb_kind and enum bb_health_source
 KINDS = {0: "can", 1: "doip", 2: "someip", 3: "lin"}
@@ -539,6 +540,9 @@ def _declare(lib):
         "bb_now_ns": ([], ctypes.c_int64),
         "bb_load": ([c_char_p], c_int),
         "bb_load_with": ([c_char_p, c_char_p], c_int),
+        "bb_load_flags": ([c_char_p, c_char_p, c_int], c_int),
+        "bb_note_count": ([], c_int),
+        "bb_note": ([c_int], c_char_p),
         "bb_start": ([], c_int),
         "bb_stop": ([], c_int),
         "bb_wait_released": ([c_int], c_int),

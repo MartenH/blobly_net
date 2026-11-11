@@ -51,7 +51,7 @@ statuses and its `--report` file are [below](#exit-status-and-the-run-report).
 ### Usage
 
 ```sh
-scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--interface <NAME=IFACE>]...
+scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--strict] [--interface <NAME=IFACE>]...
                     [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]
 ```
 
@@ -80,6 +80,12 @@ scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--interface <N
   wire no row is on stays). So is a name no row has (the refusal names the rows), a name two rows share or given
   twice, and an interface of another kind than the row's (a CAN row onto `doip:`). The runner
   prints each (`  CAN1: vcan0 (overridden)`).
+- `--strict` — refuse the project (exit 2, before anything opens or is sent) when it carries what
+  this build does not read: a key no section of the `.blobnet` lists — a misspelt `cycle_msec:` is
+  otherwise dropped and its default applies — or a record of one of its DBCs the reader does not
+  take. Without it the runner says each on stderr (`unknown key `cycle_msec` in channel "CAN1" /
+  generator "G" (known: ...)`, `u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`).
+  A file of a newer schema than this build's has its unknown keys said, not refused.
 - `--report <file.json>` — write the run's result as JSON ([below](#exit-status-and-the-run-report)).
 - `--timeout <s>` — end the run this many seconds after its scripts start (exit 4); up to 1000000.
 - One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every

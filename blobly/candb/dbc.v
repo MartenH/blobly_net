@@ -10,8 +10,8 @@
 //   VAL_ <id> <Signal> <int> "label" <int> "label" … ;       — value table (enum)
 //   CM_ SG_ <id> <Signal> "comment" ;                        — signal description
 // @order: 1 = Intel/little-endian, 0 = Motorola/big-endian.  sign: + unsigned, - signed.
-// Multiplexor markers (M / m<n>) are tolerated but not yet modelled. Other DBC
-// records (BU_, BA_, network attrs, …) are ignored.
+// Multiplexor markers (M / m<n>) are tolerated but not yet modelled. Every other record is
+// counted by kind (dbc_unread.v), and open_database says them.
 module candb
 
 import blobly.j1939
@@ -35,6 +35,9 @@ pub mut:
 	// the fill a row states (`fill:`), which replaces each message's own (filled); none where the
 	// row states none
 	fill ?u8
+	// every other record the reader does not take, by kind with its count (`SIG_VALTYPE_ × 3`,
+	// `attribute "GenSigSendType" × 40`), in file order; said by open_database and save_drops
+	unread []string
 }
 
 // filled is message `m` as this database sends it: its fill the row's where the row states one,
@@ -493,11 +496,13 @@ pub fn parse_dbc(text string) !Database {
 	mut e2e_defaults := []string{}
 	mut send := SendAttrs{} // the send attributes and start values, resolved after the loop
 	mut e2e_unread := []string{}
+	mut unread := Unread{}
 
 	for raw_line in text.split_into_lines() {
 		// an attribute record matched with its blanks collapsed (attr_record): CANdb++ writes two
 		// spaces after the keyword (`BA_DEF_DEF_  "VFrameFormat" "StandardCAN";`)
 		line := attr_record(raw_line.trim_space())
+		unread.begin(line)
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
 			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
@@ -552,8 +557,10 @@ pub fn parse_dbc(text string) !Database {
 			fmt_default = default_attr_value(line)
 		} else if line.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
 			fmt_choices = frame_format_choices(line)
+		} else {
+			unread.see(line)
 		}
-		// other records (BA_DEF_, blank, …) are ignored.
+		unread.end(line)
 	}
 
 	// VFrameFormat and CANFD_BRS, now that the file's own enum orderings are known
@@ -643,6 +650,7 @@ pub fn parse_dbc(text string) !Database {
 		nodes:      nodes
 		read_notes: read_notes
 		e2e_unread: e2e_unread
+		unread:     unread.lines()
 	}
 }
 

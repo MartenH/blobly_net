@@ -738,6 +738,8 @@ pub mut:
 	// NOT serialised: it describes this read, not the project, and `to_yaml` names its fields
 	// explicitly so nothing here reaches the file.
 	notes []string
+	// every key of the file no section of key_table lists (unknown_keys), also among `notes`
+	unknown_keys []string
 }
 
 // iface_with_bitrate is the interface string a transport should actually be opened with.
@@ -1044,7 +1046,15 @@ pub fn parse(text string) !Project {
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
+	p.unknown_keys = unknown_keys(doc.root)
+	p.notes << p.unknown_keys
 	return p
+}
+
+// strict_refusals is what a strict load refuses of the file itself: its unknown keys, unless the
+// file is of a newer schema than this build's, whose keys this build cannot know.
+pub fn (p Project) strict_refusals() []string {
+	return if p.is_supported() { p.unknown_keys } else { [] }
 }
 
 // load reads and parses a project file.

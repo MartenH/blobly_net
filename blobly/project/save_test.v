@@ -619,7 +619,9 @@ channels:
 		'db/my network.arxml#Body']
 	assert p.channels[1].databases == ['db/net.arxml#Chassis']
 	assert p.channels[2].databases == ['db/net.arxml#Body']
-	assert p.notes == []
+	// the block scalar under an unknown key is said as the key, never read as an entry
+	assert p.unknown_keys.len == 1 && p.unknown_keys[0].starts_with('unknown key `script` in channel "CAN2"')
+	assert p.notes == p.unknown_keys
 	win := parse('project:
   name: t
 channels:

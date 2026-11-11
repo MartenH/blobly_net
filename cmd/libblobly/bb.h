@@ -587,6 +587,7 @@ typedef struct bb_write_needs {
                                 asked for (the ECU ignored the suppress bit) */
 
 #define BB_ERROR_MAX   4095  /* the longest bb_last_error message, in bytes */
+#define BB_LOAD_STRICT 1      /* bb_load_flags: refuse what this build does not read */
 
 /* The prototypes are for hosts. V compiles the types and codes above and declares the
  * functions itself (there is no const in V, so its `char *` would clash with these). */
@@ -616,6 +617,17 @@ int bb_load(const char *project_path);
  * (BB_ERR) for a name no row has, naming the rows, a name two rows share or given twice, or an
  * interface of another kind than the row's. NULL or "" is bb_load. */
 int bb_load_with(const char *project_path, const char *interfaces);
+/* bb_load_with with flags. BB_LOAD_STRICT refuses (BB_ERR) a project carrying what this build does
+ * not read — a key of the .blobnet no section lists (noted, not refused, in a file of a newer
+ * schema), a record of one of its DBCs the reader does not take — and bb_note then holds every
+ * line it refused, whole (bb_last_error may be cut at BB_ERROR_MAX). */
+int bb_load_flags(const char *project_path, const char *interfaces, int flags);
+/* What the last bb_load said about the file, one line each: its unknown keys, references that
+ * resolve only from the working directory, the DBC records it did not read
+ * ("u.dbc: not read: SIG_VALTYPE_ × 3"). After a strict load's refusal, the lines it refused;
+ * after any other refusal, none. The strings stay valid until the next bb_load. */
+int         bb_note_count(void);
+const char *bb_note(int i);
 int bb_start(void);
 int bb_stop(void);
 int bb_wait_released(int timeout_ms);  /* 0: free for a start; BB_RELEASING: not within the
