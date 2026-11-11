@@ -218,13 +218,154 @@ pub mut:
 	// message or from the file-wide default; ARXML's CAN-FRAME-TX/RX-BEHAVIOR. `unstated` leaves
 	// the format to the row a frame is sent on (project.message_format is what a send takes).
 	format MsgFormat
-	// The E2E contract the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
+	// The E2E contracts the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
 	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"` / `"E2ETimeout"`, docs/dbc_attributes.md) — stated once in the file the whole
-	// bench shares, for its sender to stamp and its receivers to check. The simulation stamps it
-	// (sim.protection_for); `verify:` checks only what a verify: entry names. Empty when the
-	// file does not declare one.
-	e2e     E2eDecl
+	// bench shares, for its sender to stamp and its receivers to check. One per WINDOW (#615): at
+	// BO_ scope the whole payload, at SG_ scope the bytes a signal group spans (e2e_window). The
+	// simulation stamps them (sim.protection_for). Empty when the file declares none.
+	e2e     []E2eDecl
 	signals []Signal
+	// the signal groups (`SIG_GROUP_`), in file order: what an SG_-scope E2E declaration's
+	// window is, and kept so a Save writes them back
+	groups []SignalGroup
+}
+
+// SignalGroup is a `SIG_GROUP_` record: a named set of a message's signals.
+pub struct SignalGroup {
+pub mut:
+	name        string
+	repetitions int = 1
+	signals     []string
+}
+
+// E2eWindow is the bytes one E2E declaration protects: `length` 0 is the message's whole payload.
+pub struct E2eWindow {
+pub:
+	name   string // the signal group's; '' for the whole payload
+	offset int
+	length int
+}
+
+// e2e_declared: the file declares E2E for this message in any window.
+pub fn (m Message) e2e_declared() bool {
+	return m.e2e.any(it.declared())
+}
+
+// e2e_states_anything: the file wrote any E2E attribute for this message.
+pub fn (m Message) e2e_states_anything() bool {
+	return m.e2e.any(it.states_anything())
+}
+
+// frame_e2e is the declaration at BO_ scope (the whole payload), if the file states one.
+pub fn (m Message) frame_e2e() ?E2eDecl {
+	for d in m.e2e {
+		if d.signal == '' {
+			return d
+		}
+	}
+	return none
+}
+
+// byte_range is the first and last byte any bit of the signal occupies, in either byte order.
+pub fn (s Signal) byte_range() (int, int) {
+	if s.length <= 0 {
+		return s.start_bit / 8, s.start_bit / 8
+	}
+	if s.byte_order == .little_endian {
+		return s.start_bit / 8, (s.start_bit + s.length - 1) / 8
+	}
+	// Motorola: the MSB at start_bit, the bits after it walking down a byte and on to the next
+	mut pos := s.start_bit
+	for _ in 1 .. s.length {
+		pos = if pos % 8 == 0 { pos + 15 } else { pos - 1 }
+	}
+	return s.start_bit / 8, pos / 8
+}
+
+// group_window is the bytes a group's member signals span, the first to the last.
+pub fn (m Message) group_window(g SignalGroup) !E2eWindow {
+	mut lo := -1
+	mut hi := -1
+	for name in g.signals {
+		sig := m.signal_named(name) or {
+			return error('signal group ${g.name} names "${name}", which is not a signal of ${m.name}')
+		}
+		a, b := sig.byte_range()
+		if lo < 0 || a < lo {
+			lo = a
+		}
+		if b > hi {
+			hi = b
+		}
+	}
+	if lo < 0 {
+		return error('signal group ${g.name} has no signals')
+	}
+	return E2eWindow{
+		name:   g.name
+		offset: lo
+		length: hi - lo + 1
+	}
+}
+
+// group_holding is the one signal group of the message that holds `signal`.
+pub fn (m Message) group_holding(signal string) !SignalGroup {
+	held := m.groups.filter(signal in it.signals)
+	if held.len == 0 {
+		return error('no SIG_GROUP_ of ${m.name} holds "${signal}"')
+	}
+	if held.len > 1 {
+		return error('"${signal}" is in several signal groups of ${m.name} (${held.map(it.name).join(', ')})')
+	}
+	return held[0]
+}
+
+// e2e_window is the bytes declaration `d` protects: the whole payload at BO_ scope, at SG_ scope
+// the span of the signal group holding the signal its attributes sit on.
+pub fn (m Message) e2e_window(d E2eDecl) !E2eWindow {
+	if d.signal == '' {
+		return E2eWindow{}
+	}
+	return m.group_window(m.group_holding(d.signal)!)!
+}
+
+// rename_signal keeps the E2E declarations and the signal groups naming a signal the editor renamed.
+pub fn (mut m Message) rename_signal(old string, new string) {
+	for mut d in m.e2e {
+		d.follow_rename(old, new)
+		if d.signal == old {
+			d.signal = new
+		}
+	}
+	for mut g in m.groups {
+		for i, s in g.signals {
+			if s == old {
+				g.signals[i] = new
+			}
+		}
+	}
+}
+
+// forget_signal drops a deleted signal from the E2E declarations and the signal groups. An SG_
+// declaration whose own signal went moves to its CRC signal, else its counter, else goes too.
+pub fn (mut m Message) forget_signal(name string) {
+	for mut g in m.groups {
+		g.signals = g.signals.filter(it != name)
+	}
+	m.groups = m.groups.filter(it.signals.len > 0)
+	mut kept := []E2eDecl{}
+	for d0 in m.e2e {
+		mut d := d0
+		d.forget(name)
+		if d.signal == name {
+			d.signal = if d.crc != '' { d.crc } else { d.counter }
+			if d.signal == '' {
+				continue
+			}
+		}
+		kept << d
+	}
+	m.e2e = kept
 }
 
 // MsgFormat is the frame format a database states for a message: none, classic CAN, or CAN-FD
@@ -256,6 +397,9 @@ pub fn (f MsgFormat) is_fd() bool {
 // the Data ID.
 pub struct E2eDecl {
 pub mut:
+	// the signal the attributes sit on at SG_ scope (a group's CRC signal, else its counter); ''
+	// at BO_ scope
+	signal      string
 	counter     string
 	crc         string
 	profile     string

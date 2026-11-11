@@ -18,11 +18,9 @@ pub fn receive_checks(db candb.Database, verify []project.ProtectCfg) VerifySet 
 		if k in s.by_key {
 			continue
 		}
-		if e := declared_e2e(m) {
-			s.by_key[k] = Verifier{
-				msg: m
-				e2e: e
-			}
+		ws := declared_e2e(m)
+		if ws.len > 0 {
+			s.by_key[k] = new_verifier(m, ws)
 		}
 	}
 	return s
@@ -41,6 +39,7 @@ mut:
 	set      VerifySet
 	dbs      []candb.Database
 	unjudged map[string]bool // ids that resolve to no checked message
+	windows  []WindowVerdict // each window's verdict on the last frame judged, none for none
 }
 
 // new_e2e_reader is a reader of a row whose database is `db` and its verify: entries `verify`.
@@ -61,6 +60,7 @@ pub fn (r &E2eReader) judges() int {
 // not its placement on the host's clock, which an estimate that improves can move between two
 // frames; a frame with no stamp is timed only by its reading, and judged on its bytes alone.
 pub fn (mut r E2eReader) judge(f transport.CanFrame) ?Violation {
+	r.windows = []
 	if f.rtr || r.set.by_key.len == 0 {
 		return none
 	}
@@ -78,7 +78,15 @@ pub fn (mut r E2eReader) judge(f transport.CanFrame) ?Violation {
 	mut v := r.set.by_key[key] or { return none }
 	got := v.check_at(f.data, f.hw_domain, f.hw_ns)
 	r.set.by_key[key] = v
+	r.windows = v.labelled()
 	return got
+}
+
+// last_windows is each window's verdict on the frame judge last judged, by its name (E2e.label:
+// a signal group's, else the message's) — empty where that frame was not judged. judge's verdict
+// is the worst of these.
+pub fn (r &E2eReader) last_windows() []WindowVerdict {
+	return r.windows
 }
 
 // E2eStamper stamps what one sender sends by name with each message's declared E2E, counting
@@ -89,25 +97,28 @@ mut:
 	sent map[string]u64
 }
 
-// stamp writes `m`'s declared counter and checksum into `data`, its encoded payload, and counts
-// the send; false, `data` unchanged, when m declares no E2E, and an error when it declares one that
-// cannot be applied (declared_problem), which sent unstamped would go out unprotected unsaid, or
-// when `data` is shorter than m's payload, which holds no field to stamp.
+// stamp writes `m`'s declared counter and checksum into `data`, its encoded payload, in every
+// window it declares (#615), and counts the send; false, `data` unchanged, when m declares no
+// E2E, and an error when a declaration cannot be applied (declared_set), which sent unstamped
+// would go out unprotected unsaid, or when `data` is shorter than m's payload, which holds no
+// field to stamp.
 pub fn (mut s E2eStamper) stamp(m candb.Message, mut data []u8) !bool {
-	if !m.e2e.declared() {
+	if !m.e2e_declared() {
 		return false
 	}
 	if data.len < m.payload_len() {
 		return error('a frame of ${data.len} bytes is shorter than ${m.name} (${m.payload_len()})')
 	}
-	e := e2e_of_decl(m.e2e)
-	why := declared_problem(m, e)
-	if why != '' {
-		return error('${m.name} declares E2E that cannot be stamped: ${why}; send it as encoded instead')
+	ws, refused := declared_set(m)
+	if refused.len > 0 {
+		r := refused[0]
+		return error('${r.decl.where_in(m)} declares E2E that cannot be stamped: ${r.why}; send it as encoded instead')
 	}
 	k := vkey(m.id, m.ext)
 	n := s.sent[k] or { u64(0) }
-	e.apply(m, mut data, int(n))
+	for e in ws {
+		e.apply(m, mut data, int(n))
+	}
 	s.sent[k] = n + 1
 	return true
 }

@@ -65,9 +65,12 @@ pub fn message_order(a &Message, b &Message) int {
 // DbcAttr is a message attribute the writer emits beside GenMsgCycleTime: its definition
 // (`typ` is the BA_DEF_ type clause, 'STRING' or 'INT 0 65535'), its default (RENDERED, so
 // '""' for an empty string and '0' for a number), and its per-message values (rendered too).
+// `scope` is the object type it is defined for: BO_ (a message), or SG_ (a signal), whose values
+// name their signal.
 pub struct DbcAttr {
 pub mut:
 	name    string
+	scope   string = 'BO_'
 	typ     string
 	default string
 	values  []DbcAttrValue
@@ -75,9 +78,10 @@ pub mut:
 
 pub struct DbcAttrValue {
 pub:
-	id    u32
-	ext   bool
-	value string
+	id     u32
+	ext    bool
+	value  string
+	signal string // at SG_ scope, the signal it is stated on
 }
 
 // DbcExtras is what a caller may add to the canonical text: a network comment (`CM_ "…";`)
@@ -93,28 +97,42 @@ pub mut:
 // malformed E2EDataId or E2ETimeout is said, whoever sends the message; the simulation only
 // refuses to apply a declaration with a malformed Data ID.
 pub fn (db Database) e2e_notes() []string {
-	mut out := []string{}
+	mut out := db.e2e_unread.clone()
 	for m in db.messages {
-		if m.e2e.bad_data_id != '' {
-			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not applied, and a Save drops it'
-		}
-		if m.e2e.bad_timeout != '' {
-			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not read, and a Save drops it'
+		for d in m.e2e {
+			at := d.where_in(m)
+			if d.bad_data_id != '' {
+				out << '${at}: E2EDataId ${d.bad_data_id} is not a Data ID — its E2E declaration is not applied, and a Save drops it'
+			}
+			if d.bad_timeout != '' {
+				out << '${at}: E2ETimeout ${d.bad_timeout} is not a number of ms — not read, and a Save drops it'
+			}
+			if d.declared() {
+				m.e2e_window(d) or { out << '${at}: ${err.msg()} — its E2E declaration is not applied' }
+			}
 		}
 	}
 	return out
 }
 
+// where_in names a declaration in a note: its message, and at SG_ scope the signal it sits on.
+pub fn (d E2eDecl) where_in(m Message) string {
+	return if d.signal == '' { m.name } else { '${m.name}.${d.signal}' }
+}
+
 // save_drops says what to_dbc leaves out of the file that the model read from it (the
 // difference E2eDecl.as_saved makes), one line per malformed value.
 pub fn (db Database) save_drops() []string {
-	mut out := []string{}
+	mut out := db.e2e_unread.map(it.replace(' — not applied, and a Save drops it', ' — not saved'))
 	for m in db.messages {
-		if m.e2e.bad_data_id != '' {
-			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not saved'
-		}
-		if m.e2e.bad_timeout != '' {
-			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not saved'
+		for d in m.e2e {
+			at := d.where_in(m)
+			if d.bad_data_id != '' {
+				out << '${at}: E2EDataId ${d.bad_data_id} is not a Data ID — its E2E declaration is not saved'
+			}
+			if d.bad_timeout != '' {
+				out << '${at}: E2ETimeout ${d.bad_timeout} is not a number of ms — not saved'
+			}
 		}
 	}
 	return out
@@ -128,6 +146,7 @@ pub fn (db Database) save_drops() []string {
 pub fn (d E2eDecl) as_saved() E2eDecl {
 	if d.bad_data_id != '' {
 		return E2eDecl{
+			signal:      d.signal
 			timeout_ms:  d.timeout_ms
 			has_timeout: d.has_timeout
 		}
@@ -142,8 +161,9 @@ pub fn (d E2eDecl) as_saved() E2eDecl {
 // written, so it holds what the file now says and a later Save has nothing more to report.
 pub fn (mut db Database) saved() {
 	for mut m in db.messages {
-		m.e2e = m.e2e.as_saved()
+		m.e2e = m.e2e.map(it.as_saved()).filter(it.states_anything())
 	}
+	db.e2e_unread = []
 }
 
 // to_dbc renders the database as canonical DBC text.
@@ -274,7 +294,7 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	mut max_cyc := 1_000_000
 	for m in msgs {
 		if m.cycle_ms > 0 {
-			cycle.values << DbcAttrValue{m.id, m.ext, '${m.cycle_ms}'}
+			cycle.values << DbcAttrValue{m.id, m.ext, '${m.cycle_ms}', ''}
 			if m.cycle_ms > max_cyc {
 				max_cyc = m.cycle_ms
 			}
@@ -312,11 +332,11 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		// frame stating nothing needs no override: the default is already what it is.
 		for m in msgs {
 			if m.j1939 {
-				fmt.values << DbcAttrValue{m.id, m.ext, '3'} // J1939PG
+				fmt.values << DbcAttrValue{m.id, m.ext, '3', ''} // J1939PG
 			} else if m.format.is_fd() {
-				fmt.values << DbcAttrValue{m.id, m.ext, if m.ext { '15' } else { '14' }} // *CAN_FD
+				fmt.values << DbcAttrValue{m.id, m.ext, if m.ext { '15' } else { '14' }, ''} // *CAN_FD
 			} else if m.ext {
-				fmt.values << DbcAttrValue{m.id, m.ext, '1'} // ExtendedCAN
+				fmt.values << DbcAttrValue{m.id, m.ext, '1', ''} // ExtendedCAN
 			}
 		}
 		// Only when something actually needs saying: a database stating no format and holding
@@ -337,7 +357,7 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		}
 		for m in msgs {
 			if m.format.is_fd() {
-				brs.values << DbcAttrValue{m.id, m.ext, if m.format == .fd_brs { '1' } else { '0' }}
+				brs.values << DbcAttrValue{m.id, m.ext, if m.format == .fd_brs { '1' } else { '0' }, ''}
 			}
 		}
 		attrs << brs
@@ -345,83 +365,39 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	// The E2E contract, from the model (#271) — so an editor Save keeps what the parser read.
 	// NOT WHEN THE CALLER SUPPLIES ITS OWN, as for VFrameFormat: arxml_export passes them as
 	// extras, and two emitters of one attribute would write two definitions.
-	if !x.attrs.any(it.name.starts_with('E2E')) && msgs.any(it.e2e.states_anything()) {
-		mut ctr := DbcAttr{
-			name:    'E2ECounterSignal'
-			typ:     'STRING'
-			default: '""'
-		}
-		mut crc := DbcAttr{
-			name:    'E2ECrcSignal'
-			typ:     'STRING'
-			default: '""'
-		}
-		mut prof := DbcAttr{
-			name:    'E2EProfile'
-			typ:     'STRING'
-			default: '""'
-		}
-		mut did := DbcAttr{
-			name:    'E2EDataId'
-			default: '0'
-		}
-		mut tmo := DbcAttr{
-			name:    'E2ETimeout'
-			default: '0'
-		}
-		mut max_id := u32(65535)
-		mut max_tmo := u32(65535)
-		for m in msgs {
-			// what a Save keeps of the declaration — the one rule save_drops reports
-			d := m.e2e.as_saved()
-			if d.counter != '' {
-				ctr.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.counter)}"'}
-			}
-			if d.crc != '' {
-				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"'}
-			}
-			if d.profile != '' {
-				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"'}
-			}
-			if d.has_data_id {
-				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}'}
-				if d.data_id > max_id {
-					max_id = d.data_id
-				}
-			}
-			if d.has_timeout {
-				tmo.values << DbcAttrValue{m.id, m.ext, '${d.timeout_ms}'}
-				if d.timeout_ms > max_tmo {
-					max_tmo = d.timeout_ms
-				}
-			}
-		}
-		tmo.typ = 'INT 0 ${max_tmo}'
-		did.typ = 'INT 0 ${max_id}'
-		for a in [ctr, crc, prof, did, tmo] {
-			if a.values.len > 0 {
-				attrs << a
-			}
+	// at BO_ scope for a whole-payload declaration, at SG_ scope on the signal a group's sits on
+	// (#615): one definition per scope the file uses, a default per name
+	if !x.attrs.any(it.name.starts_with('E2E')) && msgs.any(it.e2e_states_anything()) {
+		for scope in ['BO_', 'SG_'] {
+			attrs << e2e_attrs(msgs, scope)
 		}
 	}
 	attrs << x.attrs
 	// a signal's start value: [definition, default, values…]
 	starts := start_value_lines(msgs) or { []string{} }
 	for a in attrs {
-		b << 'BA_DEF_ BO_ "${a.name}" ${a.typ};'
+		b << 'BA_DEF_ ${a.scope} "${a.name}" ${a.typ};'
 	}
 	if starts.len > 0 {
 		b << starts[0]
 	}
+	mut defaulted := map[string]bool{}
 	for a in attrs {
-		b << 'BA_DEF_DEF_ "${a.name}" ${a.default};'
+		if a.name !in defaulted {
+			defaulted[a.name] = true
+			b << 'BA_DEF_DEF_ "${a.name}" ${a.default};'
+		}
 	}
 	if starts.len > 0 {
 		b << starts[1]
 	}
 	for a in attrs {
 		for v in a.values {
-			b << 'BA_ "${a.name}" BO_ ${raw_id(v.id, v.ext)} ${v.value};'
+			if a.scope == 'SG_' {
+				b << 'BA_ "${a.name}" SG_ ${raw_id(v.id, v.ext)} ${v.signal} ${v.value};'
+			} else {
+				b << 'BA_ "${a.name}" BO_ ${raw_id(v.id, v.ext)} ${v.value};'
+			}
 		}
 	}
 	if starts.len > 2 {
@@ -471,5 +447,86 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		}
 	}
 
+	// signal groups, by name within a message
+	for m in msgs {
+		mut groups := m.groups.clone()
+		groups.sort_with_compare(fn (a &SignalGroup, g &SignalGroup) int {
+			return a.name.compare(g.name)
+		})
+		for g in groups {
+			b << 'SIG_GROUP_ ${raw_dbc_id(m)} ${g.name} ${g.repetitions} : ${g.signals.join(' ')};'
+		}
+	}
+
 	return b.join('\n') + '\n'
+}
+
+// e2e_attrs is the E2E attributes of the declarations at `scope` (BO_: a message's whole-payload
+// one; SG_: those of its signal groups, stated on the signal each sits on), as a Save keeps them
+// (as_saved, the one rule save_drops reports); none where nothing at that scope is stated.
+fn e2e_attrs(msgs []Message, scope string) []DbcAttr {
+	mut ctr := DbcAttr{
+		name:    'E2ECounterSignal'
+		scope:   scope
+		typ:     'STRING'
+		default: '""'
+	}
+	mut crc := DbcAttr{
+		name:    'E2ECrcSignal'
+		scope:   scope
+		typ:     'STRING'
+		default: '""'
+	}
+	mut prof := DbcAttr{
+		name:    'E2EProfile'
+		scope:   scope
+		typ:     'STRING'
+		default: '""'
+	}
+	mut did := DbcAttr{
+		name:    'E2EDataId'
+		scope:   scope
+		default: '0'
+	}
+	mut tmo := DbcAttr{
+		name:    'E2ETimeout'
+		scope:   scope
+		default: '0'
+	}
+	mut max_id := u32(65535)
+	mut max_tmo := u32(65535)
+	for m in msgs {
+		mut decls := m.e2e.filter((it.signal == '') == (scope == 'BO_'))
+		decls.sort_with_compare(fn (a &E2eDecl, b &E2eDecl) int {
+			return a.signal.compare(b.signal)
+		})
+		for d0 in decls {
+			d := d0.as_saved()
+			sg := d.signal
+			if d.counter != '' {
+				ctr.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.counter)}"', sg}
+			}
+			if d.crc != '' {
+				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"', sg}
+			}
+			if d.profile != '' {
+				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"', sg}
+			}
+			if d.has_data_id {
+				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}', sg}
+				if d.data_id > max_id {
+					max_id = d.data_id
+				}
+			}
+			if d.has_timeout {
+				tmo.values << DbcAttrValue{m.id, m.ext, '${d.timeout_ms}', sg}
+				if d.timeout_ms > max_tmo {
+					max_tmo = d.timeout_ms
+				}
+			}
+		}
+	}
+	tmo.typ = 'INT 0 ${max_tmo}'
+	did.typ = 'INT 0 ${max_id}'
+	return [ctr, crc, prof, did, tmo].filter(it.values.len > 0)
 }

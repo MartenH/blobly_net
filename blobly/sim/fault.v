@@ -37,7 +37,15 @@ pub struct Fault {
 pub mut:
 	kind         FaultKind = .none_
 	signal       string // which signal to force out of range (out_of_range only)
-	remaining_ms int    // 0 = until switched off; >0 = expires after this long
+	// the E2E window bad_crc and freeze_counter act on, by its name (E2e.label); '' for every
+	// window of the message (#615)
+	group        string
+	remaining_ms int // 0 = until switched off; >0 = expires after this long
+}
+
+// holds: the fault acts on window `w` — every window, or the one it names.
+pub fn (f Fault) holds(w E2e) bool {
+	return f.group == '' || f.group == w.group
 }
 
 // active reports whether this fault does anything.
@@ -85,19 +93,24 @@ pub fn (f Fault) apply_pre(msg candb.Message, mut data []u8) {
 
 // apply_post mutates the payload AFTER protection. Returns false when the frame must not be
 // sent at all.
-pub fn (f Fault) apply_post(msg candb.Message, e2e E2e, mut data []u8) bool {
+pub fn (f Fault) apply_post(msg candb.Message, ws []E2e, mut data []u8) bool {
 	match f.kind {
 		.drop {
 			return false
 		}
 		.bad_crc {
-			// Invert the checksum field. Inverting rather than zeroing because zero is a
-			// legitimate checksum value: a receiver that happened to compute 0 would accept
-			// the "corrupted" frame and the test would silently pass.
-			for sig in msg.active_signals(data) {
-				if sig.name == e2e.crc && e2e.crc != '' {
-					sig.set_raw(mut data, ~sig.raw_value(data) & mask_of(sig.length))
-					break
+			// Invert the checksum field of each window it acts on. Inverting rather than zeroing
+			// because zero is a legitimate checksum value: a receiver that happened to compute 0
+			// would accept the "corrupted" frame and the test would silently pass.
+			for e2e in ws {
+				if e2e.crc == '' || !f.holds(e2e) {
+					continue
+				}
+				for sig in msg.active_signals(data) {
+					if sig.name == e2e.crc {
+						sig.set_raw(mut data, ~sig.raw_value(data) & mask_of(sig.length))
+						break
+					}
 				}
 			}
 			return true
@@ -149,8 +162,8 @@ pub fn illegal_raw(sig candb.Signal) ?u64 {
 // `e2e` is the message's protection, because a violation written into the counter or checksum
 // field is overwritten moments later when protection is stamped: the frame goes out perfectly
 // valid and the fault silently tests nothing.
-pub fn can_force_out_of_range(msg candb.Message, name string, e2e E2e) bool {
-	if name == '' || name == e2e.counter || name == e2e.crc {
+pub fn can_force_out_of_range(msg candb.Message, name string, ws []E2e) bool {
+	if name == '' || ws.any(name == it.counter || name == it.crc) {
 		return false
 	}
 	for sig in msg.signals {

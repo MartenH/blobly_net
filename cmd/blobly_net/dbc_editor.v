@@ -867,11 +867,11 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 				app.mu.lock()
-				// the E2E declaration must not go on naming a signal that is gone (#271): it
-				// then says it is incomplete, which the simulation reports, rather than a Save
-				// writing an attribute that points at nothing
+				// the E2E declarations and signal groups must not go on naming a signal that is
+				// gone (#271, #615): a declaration then says it is incomplete, which the simulation
+				// reports, rather than a Save writing an attribute that points at nothing
 				gone := app.dbs[di].messages[mi].signals[si_left].name
-				app.dbs[di].messages[mi].e2e.forget(gone)
+				app.dbs[di].messages[mi].forget_signal(gone)
 				app.dbs[di].messages[mi].signals.delete(si_left)
 				app.mu.unlock()
 				app.dbc_ed.sig = -1
@@ -1257,7 +1257,7 @@ fn draw_dbc_editor(mut app App) {
 			old_sig := msg.signals[si].name
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].name = nv
-			app.dbs[di].messages[mi].e2e.follow_rename(old_sig, nv) // #271: the contract follows
+			app.dbs[di].messages[mi].rename_signal(old_sig, nv) // #271: the contract follows
 			app.mu.unlock()
 			app.mark_dirty(di)
 			wid := msg.id

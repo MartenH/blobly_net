@@ -109,7 +109,7 @@ fn l_wait_frame(l lua.State) i32 {
 	l.push_bytes(f.data)
 	push_received(l, f, t_ns)
 	push_e2e(l, env.e2e_verdict(name, f))
-	return 10
+	return 11
 }
 
 // __listen(channel) -> whether the channel's ladder needs its recv read: a channel a handler names

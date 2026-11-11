@@ -47,23 +47,58 @@ pub fn (v Violation) name() string {
 	}
 }
 
-// Verifier checks one message's protection across successive frames.
+// severity orders verdicts for the worst of several: a frame that cannot be judged, then a CRC
+// that fails, a frame late, a counter that jumped, one that repeated.
+fn severity(v Violation) int {
+	return match v {
+		.ok { 0 }
+		.stalled_ctr { 1 }
+		.skipped_ctr { 2 }
+		.timeout { 3 }
+		.bad_crc { 4 }
+		.truncated { 5 }
+	}
+}
+
+// worst is the worse of two verdicts — what a frame protected in several windows reads as.
+pub fn worst(a Violation, b Violation) Violation {
+	return if severity(b) > severity(a) { b } else { a }
+}
+
+// Verifier checks one message's protection across successive frames, window by window (#615).
 pub struct Verifier {
 pub:
-	msg candb.Message
-	e2e E2e
+	msg     candb.Message
+	windows []E2e
+pub mut:
+	state []WindowState // per window, sized at the first check
+	// each window's verdict on the last frame checked, in the order of `windows`
+	last []Violation
+	seen u64 // frames checked
+	bad  u64 // frames that failed in any window
+}
+
+// WindowState is what one window's check carries from frame to frame.
+pub struct WindowState {
 pub mut:
 	// u64 with an explicit "nothing yet" flag rather than a signed sentinel: a counter may be
 	// wide, and narrowing it into an int made a high-bit value look negative — which read as
 	// "first frame" and skipped the check on every frame after it.
 	last_ctr u64
 	have_ctr bool
-	seen     u64 // frames checked
-	bad      u64 // frames that failed
 	// when the last valid frame came (check_at): its raw stamp, in the clock domain `valid_clock`
 	last_valid_ns i64
 	valid_clock   string
 	have_valid    bool
+}
+
+// new_verifier is a verifier of message `msg` protected in `windows`.
+pub fn new_verifier(msg candb.Message, windows []E2e) Verifier {
+	return Verifier{
+		msg:     msg
+		windows: windows.clone()
+		state:   []WindowState{len: windows.len}
+	}
 }
 
 // holds is whether `data` holds the protection field `name` whole (and its multiplexor), if the
@@ -73,25 +108,63 @@ fn (v &Verifier) holds(name string, data []u8) bool {
 	return v.msg.holds(sig, data.len)
 }
 
-// check judges one received payload.
+// check judges one received payload in every window, the frame's verdict the worst of theirs.
+pub fn (mut v Verifier) check(data []u8) Violation {
+	return v.judge_frame(data, '', 0, false)
+}
+
+// check_at judges a received payload as check does, and its receive stamp `t_ns` in the clock
+// domain `clock` (CanFrame.hw_ns / hw_domain: raw stamps of one domain are exactly comparable)
+// against each window's E2ETimeout, its receiver's sender-loss timeout (0 or absent for none): a
+// frame whose CRC passes more than that after the last valid frame — its CRC right, its counter
+// not a repeat — is `.timeout`, ahead of its counter's verdict, and the counter is judged against
+// it from there. `clock` '' is a frame with no stamp, whose time is only when it was read: valid,
+// it ends the baseline rather than moving it, and a frame of another domain starts a new one, so
+// no gap is measured across a time that is not the bus's.
+pub fn (mut v Verifier) check_at(data []u8, clock string, t_ns i64) Violation {
+	return v.judge_frame(data, clock, t_ns, true)
+}
+
+fn (mut v Verifier) judge_frame(data []u8, clock string, t_ns i64, timed bool) Violation {
+	if v.state.len != v.windows.len {
+		v.state = []WindowState{len: v.windows.len}
+	}
+	v.seen++
+	mut verdicts := []Violation{cap: v.windows.len}
+	mut out := Violation.ok
+	for i in 0 .. v.windows.len {
+		mut got := v.check_window(i, data)
+		if timed {
+			got = v.timed(i, got, clock, t_ns)
+		}
+		verdicts << got
+		out = worst(out, got)
+	}
+	v.last = verdicts
+	if out != .ok {
+		v.bad++
+	}
+	return out
+}
+
+// check_window judges window i of one received payload.
 //
 // Order matters here as much as it does when stamping: the checksum is verified against the
 // frame EXACTLY as received, before anything is inferred from the counter, because a frame
 // whose checksum is wrong tells us nothing reliable about its counter — those bits are just as
 // likely to be corrupt.
-pub fn (mut v Verifier) check(data []u8) Violation {
-	v.seen++
+fn (mut v Verifier) check_window(i int, data []u8) Violation {
+	e := v.windows[i]
 	// A short frame cannot be judged: the missing checksum and counter bits read as zero, and
 	// an EMPTY payload computes zero for every supported checksum — which then matches the
 	// absent checksum field and sails through the first-counter rule as clean. A malformed
 	// frame must not be able to look better than a well-formed one.
-	if data.len < v.msg.dlc || !v.holds(v.e2e.crc, data) || !v.holds(v.e2e.counter, data) {
-		v.bad++
+	if data.len < v.msg.dlc || !v.holds(e.crc, data) || !v.holds(e.counter, data) {
 		return .truncated
 	}
-	if v.e2e.crc != '' {
+	if e.crc != '' {
 		for sig in v.msg.active_signals(data) {
-			if sig.name != v.e2e.crc {
+			if sig.name != e.crc {
 				continue
 			}
 			// Compare the WHOLE field at its declared width. Narrowing to u8 threw away the
@@ -100,34 +173,32 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 			// comparing against the full 8-bit value labelled the sender's own frames !CRC.
 			w := mask_of_bits(sig.length)
 			got := sig.raw_value(data) & w
-			if got != u64(v.e2e.checksum(v.msg, sig, data)) & w {
-				v.bad++
+			if got != u64(e.checksum(v.msg, sig, data)) & w {
 				return .bad_crc
 			}
 			break
 		}
 	}
-	if v.e2e.counter == '' {
+	if e.counter == '' {
 		return .ok
 	}
 	for sig in v.msg.active_signals(data) {
-		if sig.name != v.e2e.counter {
+		if sig.name != e.counter {
 			continue
 		}
 		cur := sig.raw_value(data)
 		// The modulus is the signal's own width, at any width (forcing it to zero past 30 bits
 		// turned a legal 31-bit wrap into a reported skip) — or Profile 1's 0..14, whose 15 is
 		// never a valid value and so reads as a skip from wherever it appears.
-		span := v.e2e.counter_span(sig)
-		prev := v.last_ctr
-		had := v.have_ctr
-		v.last_ctr = cur
-		v.have_ctr = true
+		span := e.counter_span(sig)
+		prev := v.state[i].last_ctr
+		had := v.state[i].have_ctr
+		v.state[i].last_ctr = cur
+		v.state[i].have_ctr = true
 		if span > 0 && cur >= span {
 			// a value the counter can never hold (Profile 1's 15): wrong from any frame, the
 			// first included, and it predicts nothing about the next
-			v.have_ctr = false
-			v.bad++
+			v.state[i].have_ctr = false
 			return .skipped_ctr
 		}
 		if !had {
@@ -135,14 +206,12 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 		}
 		expect := if span > 0 { (prev + 1) % span } else { prev + 1 }
 		if cur == prev {
-			v.bad++
 			return .stalled_ctr
 		}
 		if cur != expect {
 			// A jump is not automatically the sender's fault — frames can be lost on a real
 			// bus — but it is exactly what a receiver would reject, so it is reported and the
 			// operator decides. Reporting only stalls would miss a sender that skips.
-			v.bad++
 			return .skipped_ctr
 		}
 		break
@@ -150,36 +219,56 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 	return .ok
 }
 
-// check_at judges a received payload as check does, and its receive stamp `t_ns` in the clock
-// domain `clock` (CanFrame.hw_ns / hw_domain: raw stamps of one domain are exactly comparable)
-// against the message's E2ETimeout, its receiver's sender-loss timeout (0 or absent for none): a
-// frame whose CRC passes more than that after the last valid frame — its CRC right, its counter
-// not a repeat — is `.timeout`, ahead of its counter's verdict, and the counter is judged against
-// it from there. `clock` '' is a frame with no stamp, whose time is only when it was read: valid,
-// it ends the baseline rather than moving it, and a frame of another domain starts a new one, so
-// no gap is measured across a time that is not the bus's.
-pub fn (mut v Verifier) check_at(data []u8, clock string, t_ns i64) Violation {
-	got := v.check(data)
-	limit_ms := if v.msg.e2e.has_timeout { i64(v.msg.e2e.timeout_ms) } else { 0 }
+// timed is window i's verdict `got` with its time judged against the window's E2ETimeout.
+fn (mut v Verifier) timed(i int, got Violation, clock string, t_ns i64) Violation {
+	limit_ms := i64(declared_timeout_ms(v.msg, v.windows[i]))
 	if limit_ms == 0 || got in [.truncated, .bad_crc] {
 		return got
 	}
-	late := clock != '' && v.have_valid && v.valid_clock == clock
-		&& t_ns - v.last_valid_ns > limit_ms * 1_000_000
+	st := v.state[i]
+	late := clock != '' && st.have_valid && st.valid_clock == clock
+		&& t_ns - st.last_valid_ns > limit_ms * 1_000_000
 	// new data: neither a repeat nor a value the counter never holds (check forgets the counter
 	// for one of those, where a jump keeps it)
-	if got != .stalled_ctr && !(got == .skipped_ctr && !v.have_ctr) {
-		v.have_valid = clock != ''
-		v.valid_clock = clock
-		v.last_valid_ns = t_ns
+	if got != .stalled_ctr && !(got == .skipped_ctr && !st.have_ctr) {
+		v.state[i].have_valid = clock != ''
+		v.state[i].valid_clock = clock
+		v.state[i].last_valid_ns = t_ns
 	}
-	if !late {
-		return got
+	return if late { Violation.timeout } else { got }
+}
+
+// declared_timeout_ms is the E2ETimeout a message's file declares for window `e` — the
+// declaration of the same window, at BO_ scope for the whole payload; 0 for none.
+pub fn declared_timeout_ms(m candb.Message, e E2e) u32 {
+	for d in m.e2e {
+		if !d.has_timeout {
+			continue
+		}
+		w := m.e2e_window(d) or { continue }
+		if w.offset == e.offset && w.length == e.length {
+			return d.timeout_ms
+		}
 	}
-	if got == .ok {
-		v.bad++
+	return 0
+}
+
+// labelled is each window's verdict on the last frame checked, by its name (E2e.label).
+pub fn (v &Verifier) labelled() []WindowVerdict {
+	mut out := []WindowVerdict{cap: v.last.len}
+	for i, got in v.last {
+		if i < v.windows.len {
+			out << WindowVerdict{v.windows[i].label(v.msg), got}
+		}
 	}
-	return .timeout
+	return out
+}
+
+// WindowVerdict is one window's verdict on a frame.
+pub struct WindowVerdict {
+pub:
+	name    string
+	verdict Violation
 }
 
 fn mask_of_bits(bits int) u64 {
@@ -394,10 +483,7 @@ pub fn (mut s VerifySet) resolve(dbs []candb.Database, id u32, ext bool) ?string
 			continue
 		}
 		proto := s.by_key[src] or { continue }
-		s.by_key[k] = Verifier{
-			msg: proto.msg
-			e2e: proto.e2e
-		}
+		s.by_key[k] = new_verifier(proto.msg, proto.windows)
 		// DELIBERATELY NOT marking the adopted key as verify:-sourced (#95). It was, briefly,
 		// to reach the J1939 case — but verify_covers' own PGN walk already resolves a live
 		// source address to the message key from these same databases, so it bought nothing,
@@ -428,6 +514,10 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 	// rest-bus setup deliberately does not simulate, and therefore the one whose protection no
 	// simulated node's `protect:` can ever describe. Its messages are found anywhere in the
 	// database, since we are not the sender.
+	// the entries by the message each resolves to, in order: one window each (windows_of)
+	mut order := []string{}
+	mut msg_of := map[string]candb.Message{}
+	mut entries_of := map[string][]project.ProtectCfg{}
 	for p in verify {
 		for m in db.messages {
 			if m.name != p.message {
@@ -447,44 +537,47 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 				break // reported by validate_verify; building it anyway checks the wrong thing
 			}
 			k := vkey(m.id, m.ext)
-			if k in out.by_key {
-				break // first wins; a duplicate is reported by validate_verify
+			if k !in msg_of {
+				order << k
+				msg_of[k] = m
 			}
-			out.by_key[k] = Verifier{
-				msg: m
-				e2e: e2e_of(p)
-			}
-			// this one describes the ECU under test, not us — and it is THIS message, whose
-			// declaration travels with it rather than being looked up again later
-			out.from_verify[k] = VerifyOrigin{
-				name:  m.name
-				id:    m.id
-				ext:   m.ext
-				j1939: m.j1939
-			}
+			entries_of[k] << p
 			break
 		}
 	}
+	for k in order {
+		m := msg_of[k] or { continue }
+		ws := windows_of(m, entries_of[k] or { [] })
+		if ws.len == 0 {
+			continue
+		}
+		out.by_key[k] = new_verifier(m, ws)
+		// this one describes the ECU under test, not us — and it is THIS message, whose
+		// declaration travels with it rather than being looked up again later
+		out.from_verify[k] = VerifyOrigin{
+			name:  m.name
+			id:    m.id
+			ext:   m.ext
+			j1939: m.j1939
+		}
+	}
 	for n in nodes {
-		for p in n.protect {
-			// messages_from, not db.messages: the STAMPING path scopes to the sender, so a
-			// merged database with the same message name on two transmitters could otherwise
-			// verify against a different id, layout and field positions than were sent.
-			for m in db.messages_from(n.name) {
-				if m.name != p.message {
-					continue
-				}
-				k := vkey(m.id, m.ext)
-				if _ := e2e_problem(m, e2e_of(p)) {
-					break // not stamped either (from_project); said by validate_protection
-				}
-				if k !in out.by_key {
-					out.by_key[k] = Verifier{
-						msg: m
-						e2e: e2e_of(p)
-					}
-				}
-				break
+		// messages_from, not db.messages: the STAMPING path scopes to the sender, so a merged
+		// database with the same message name on two transmitters could otherwise verify against
+		// a different id, layout and field positions than were sent. What it stamps, window for
+		// window (protection_for's entries; an entry not stamped is not checked either).
+		for m in db.messages_from(n.name) {
+			mine := n.protect.filter(it.message == m.name)
+			if mine.len == 0 {
+				continue
+			}
+			k := vkey(m.id, m.ext)
+			if k in out.by_key {
+				continue
+			}
+			ws := windows_of(m, mine.filter(!it.window_malformed && shape_problem(m, e2e_of(it)) == none))
+			if ws.len > 0 {
+				out.by_key[k] = new_verifier(m, ws)
 			}
 		}
 	}
@@ -498,7 +591,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 // repaired value — so the measurement logged a warning and then checked the wrong frame, which
 // is worse than either alone. One predicate, no drift.
 pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
-	if p.id_malformed || p.data_id_malformed || p.extended_malformed {
+	if p.id_malformed || p.data_id_malformed || p.extended_malformed || p.window_malformed {
 		return false
 	}
 	if p.counter == '' && p.crc == '' {
@@ -510,7 +603,7 @@ pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
 	if p.crc != '' && p.profile !in candb.e2e_profiles {
 		return false
 	}
-	if _ := e2e_problem(m, e2e_of(p)) {
+	if _ := shape_problem(m, e2e_of(p)) {
 		return false
 	}
 	mut have := map[string]candb.Signal{}
@@ -557,14 +650,7 @@ pub fn (mut s VerifySet) merge_into(other VerifySet) []string {
 			// other field but differing here produce DIFFERENT expected checksums. Treating
 			// them as identical retained the first and reported the other's traffic as !CRC
 			// with no conflict warning — the precise outcome merge_into exists to prevent.
-			same_id := match true {
-				existing.e2e.data_id == none && v.e2e.data_id == none { true }
-				else { (existing.e2e.data_id or { u32(0) }) == (v.e2e.data_id or { u32(1) })
-					&& existing.e2e.data_id != none && v.e2e.data_id != none }
-			}
-			if existing.e2e.counter == v.e2e.counter && existing.e2e.crc == v.e2e.crc
-				&& existing.e2e.profile == v.e2e.profile && same_id
-				&& existing.e2e.data_id_mode == v.e2e.data_id_mode {
+			if same_windows(existing.windows, v.windows) {
 				continue // the same entry twice: harmless
 			}
 			warns << 'verify: "${v.msg.name}" is configured differently on two channel entries sharing this bus — only the first applies'
@@ -583,7 +669,9 @@ pub fn (mut s VerifySet) merge_into(other VerifySet) []string {
 // worse than no check, because it is trusted.
 pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string {
 	mut warns := []string{}
-	mut claimed := map[string]string{}
+	mut claimed := map[string]project.ProtectCfg{}
+	mut msg_by := map[string]candb.Message{}
+	mut windowed := map[string][]project.ProtectCfg{}
 	for p in verify {
 		if p.id_malformed {
 			// a stripped character produces a different VALID id, so the entry binds to
@@ -623,13 +711,22 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 			continue
 		}
 		m := matches[0]
-		// Two entries resolving to ONE message: the second replaced the first, so naming a
-		// counter in one and a checksum in the other silently disabled half the checks.
+		// Two entries resolving to ONE message are two windows, each naming its own: one naming
+		// none beside another, or overlapping one before it, is left out (windows_of).
 		k := '${m.id}|${m.ext}'
 		if prev := claimed[k] {
-			warns << 'verify: "${p.message}" and "${prev}" both describe 0x${m.id:X} — only the first applies; put counter and crc in ONE entry'
+			if !p.window() || !prev.window() {
+				warns << 'verify: "${p.message}" and "${prev.message}" both describe 0x${m.id:X} and do not each name a window (offset:/length:) — only the first applies; give each its window, or put counter and crc in ONE entry'
+			}
+		} else {
+			claimed[k] = p
 		}
-		claimed[k] = p.message
+		if verify_usable(m, p) && p.window() {
+			if k !in msg_by {
+				msg_by[k] = m
+			}
+			windowed[k] << p
+		}
 		mut have := map[string]bool{}
 		for sg in m.signals {
 			have[sg.name] = true
@@ -639,6 +736,9 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		}
 		if p.data_id_malformed {
 			warns << 'verify: the data_id on "${p.message}" is not a valid number — entry ignored'
+		}
+		if p.window_malformed {
+			warns << 'verify: the window of "${p.message}" is not two whole numbers, offset: and length: (> 0) — entry ignored'
 		}
 		if p.counter != '' && p.counter == p.crc {
 			// check() validates that field as a checksum and then reads the SAME bits as an
@@ -662,9 +762,40 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		if p.counter == '' && p.crc == '' {
 			warns << 'verify: "${p.message}" names neither counter nor crc — nothing is checked'
 		}
-		if why := e2e_problem(m, e2e_of(p)) {
+		if why := shape_problem(m, e2e_of(p)) {
 			warns << 'verify: ${p.message}: ${why} — entry ignored'
 		}
 	}
+	for k, entries in windowed {
+		m := msg_by[k] or { continue }
+		mut kept := []E2e{}
+		for p in entries {
+			e := e2e_of(p)
+			if why := overlap_with(kept, m, e) {
+				warns << 'verify: ${p.message}: the window at byte ${e.offset}: ${why} — entry ignored'
+				continue
+			}
+			kept << E2e{
+				...e
+				group: window_name(m, e)
+			}
+		}
+	}
 	return warns
+}
+
+// same_windows: two protections check alike, window for window.
+fn same_windows(a []E2e, b []E2e) bool {
+	if a.len != b.len {
+		return false
+	}
+	for i, x in a {
+		y := b[i]
+		if x.counter != y.counter || x.crc != y.crc || x.profile != y.profile
+			|| !same_data_id(x.data_id, y.data_id) || x.data_id_mode != y.data_id_mode
+			|| x.offset != y.offset || x.length != y.length {
+			return false
+		}
+	}
+	return true
 }

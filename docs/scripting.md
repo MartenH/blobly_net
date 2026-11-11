@@ -507,6 +507,13 @@ else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E
   one that deviates from the declaration on purpose (a wrong Data ID, to test a receiver's
   rejection path) reads as a receiver would read it: `bad_crc`.
 
+- A message protected in several **windows** (signal groups, each its own CRC, counter and Data
+  ID: a DBC's `E2E*` attributes at `SG_` scope, or `verify:` entries naming `offset`/`length`,
+  [simulation.md](simulation.md#several-protected-signal-groups-in-one-frame-windows)) is stamped
+  in every window by `bus.send_message`, and a received frame is judged in each:
+  `frame.e2e` is the worst verdict (truncated, then bad_crc, timeout, skipped, repeated) and
+  `frame.e2e_groups` each window's by its name, `{ SpeedGroup = "ok", TorqueGroup = "bad_crc" }`.
+
 ```lua
 check.e2e(expect("CAN1", 0x301, 500))                    -- passes, or fails naming the verdict
 sim.fault("CAN1", "Chassis", "BrakeStatus", "bad_crc")
@@ -634,7 +641,8 @@ settle (2 s at most) and raises when a write failed on the way, or that did not 
 bus.send(channel, id, data [, { ext = false, format = "classic" }])   -- send a raw frame
 local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil on timeout
 -- f = { id = <number>, ext = <bool>, data = <byte string>,
---       fd, brs, esi, rtr = <bool>, t_ms = <number>, e2e = <string or nil> }
+--       fd, brs, esi, rtr = <bool>, t_ms = <number>, e2e = <string or nil>,
+--       e2e_groups = { <window name> = <string> } or nil }
 local t = now_ms()                                  -- the clock f.t_ms is on
 
 bus.send_message(channel, "MsgName", { Sig = value, ... } [, { e2e = false, format = "classic" }])  -- DBC-encode + send
@@ -1098,7 +1106,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 
 | Function | What it does |
 |---|---|
-| `sim.fault(channel, node, message, kind [, ms [, signal]])` | inject a fault into a simulated ECU's message — `drop`, `bad_crc`, `freeze_counter`, `out_of_range` (with `signal`), or `clear`; `ms` limits it in time. A fault that cannot take effect (no such node, no protection field for `bad_crc`) is refused, not silently armed. See [simulation.md](simulation.md). |
+| `sim.fault(channel, node, message, kind [, ms [, signal]])` | inject a fault into a simulated ECU's message — `drop`, `bad_crc`, `freeze_counter`, `out_of_range` (with `signal`), or `clear`; `ms` limits it in time. For `bad_crc` and `freeze_counter` the sixth argument names the E2E window (signal group) they act on, every window when omitted. A fault that cannot take effect (no such node, no protection field for `bad_crc`) is refused, not silently armed. See [simulation.md](simulation.md). |
 | `sim.clear_fault(channel, node, message)` | lift it |
 | `sim.set(channel, node, message, signal, value)` | hold one signal of a simulated ECU's message at a physical value from its next frame, until changed or cleared: the other signals, the cycle and the alive counter go on, and the checksum covers it. Refused, nothing set: a node not simulated there, a message it does not send, a signal the message does not have, the E2E counter or checksum, a signal past the payload, a value past the signal's width (past its declared range is allowed). See [simulation.md](simulation.md#setting-a-signal). |
 | `sim.clear(channel, node, message [, signal])` | let go of it (no signal: every signal of the message), back to the project's source; `sim.clear_signals()` lets go of every one. A start clears them too |

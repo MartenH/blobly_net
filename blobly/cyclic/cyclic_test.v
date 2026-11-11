@@ -81,7 +81,7 @@ BA_ "E2EProfile" BO_ 256 "P01";
 BA_ "E2EDataId" BO_ 256 66;
 ')!
 	m := db.message_named('M') or { panic('no M') }
-	assert m.e2e.declared()
+	assert m.e2e_declared()
 	mut rx := transport.open('inproc:CYC3')!
 	defer {
 		rx.close()

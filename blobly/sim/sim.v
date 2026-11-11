@@ -93,7 +93,7 @@ pub mut:
 	msg       candb.Message
 	period_ms int
 	signals   []SimSignal
-	e2e       E2e   // alive counter + checksum, stamped after the generators (see e2e.v)
+	e2e       []E2e // alive counter + checksum per window, stamped after the generators (see e2e.v)
 	fault     Fault // deliberate misbehaviour (see fault.v)
 	set       []SetValue // signals a script holds at a value, over the generators (see setsignal.v)
 	send_n    int   // times sent so far (drives signal generators)
@@ -141,9 +141,34 @@ pub fn (m SimMessage) e2e_value() int {
 	return m.e2e_n
 }
 
+// e2e_value_for is the counter window `w` carries in this frame: e2e_value where the freeze holds
+// it (every window, or the one it names), the next value otherwise.
+pub fn (m SimMessage) e2e_value_for(w E2e) int {
+	if m.fault.kind == .freeze_ctr && !m.fault.holds(w) {
+		return m.e2e_n
+	}
+	return m.e2e_value()
+}
+
+// stamp_e2e stamps every window's counter and checksum onto `data`.
+fn (m SimMessage) stamp_e2e(mut data []u8) {
+	for w in m.e2e {
+		w.apply(m.msg, mut data, m.e2e_value_for(w))
+	}
+}
+
 // advance_e2e records what was just sent and moves the counter on — unless frozen, in which
 // case e2e_n is left untouched so recovery resumes exactly one step later with no flag to keep.
+// A freeze of one window keeps that window's value and moves the others on.
 pub fn (mut m SimMessage) advance_e2e() {
+	if m.fault.kind == .freeze_ctr && m.fault.group != '' {
+		if !m.has_tx {
+			m.last_e2e = m.e2e_n
+			m.has_tx = true
+		}
+		m.e2e_n++
+		return
+	}
 	v := m.e2e_value()
 	m.last_e2e = v
 	m.has_tx = true
@@ -207,7 +232,7 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 	m.fault.apply_pre(m.msg, mut data)
 	// End-to-end protection goes over the finished payload — the counter and checksum have to
 	// reflect what is actually on the wire, including every generator's contribution.
-	m.e2e.apply(m.msg, mut data, m.e2e_value())
+	m.stamp_e2e(mut data)
 	f := transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
@@ -554,7 +579,7 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext {
 					continue
 				}
-				if !m.e2e.active() && !m.fault.active() && m.set.len == 0 {
+				if !any_active(m.e2e) && !m.fault.active() && m.set.len == 0 {
 					continue // nothing to stamp, set or break
 				}
 				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST
@@ -569,7 +594,7 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				// silently skips out-of-bounds bits — so the response went out unchanged while
 				// the fault reported itself armed. An unfaulted, unprotected rule stays the
 				// plain echo of the request it is documented to be.
-				needs_layout := m.e2e.active() || m.fault.active() || m.set.len > 0
+				needs_layout := any_active(m.e2e) || m.fault.active() || m.set.len > 0
 				mut buf := []u8{len: if needs_layout { m.msg.dlc } else { data.len }}
 				for k in 0 .. buf.len {
 					if k < data.len {
@@ -578,9 +603,7 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				}
 				apply_set(m.msg, m.set, mut buf)
 				m.fault.apply_pre(m.msg, mut buf)
-				if m.e2e.active() {
-					m.e2e.apply(m.msg, mut buf, m.e2e_value())
-				}
+				m.stamp_e2e(mut buf)
 				m.send_n++
 				m.advance_e2e()
 				if !m.fault.apply_post(m.msg, m.e2e, mut buf) {

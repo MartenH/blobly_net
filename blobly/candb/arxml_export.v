@@ -210,7 +210,7 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 				fd { '14' }
 				m.ext { '1' }
 				else { '0' }
-			}}
+			}, ''}
 		}
 	}
 	mut x := DbcExtras{
@@ -233,9 +233,7 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 		messages: c.db.messages.clone()
 	}
 	for mut m in db.messages {
-		if m.e2e.profile != '' && !dbc_exports_profile(m.e2e.profile) {
-			m.e2e = E2eDecl{}
-		}
+		m.e2e = m.e2e.filter(it.profile == '' || dbc_exports_profile(it.profile))
 	}
 	return db.to_dbc_with(x)
 }

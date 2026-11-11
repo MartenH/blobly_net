@@ -21,7 +21,7 @@ fn vmsg() candb.Message {
 fn test_a_correctly_protected_stream_passes() {
 	m := vmsg()
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850', data_id: u32(42) }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	for n in 0 .. 20 {
 		mut d := []u8{len: 8}
 		e.apply(m, mut d, n)
@@ -35,7 +35,7 @@ fn test_a_correctly_protected_stream_passes() {
 fn test_counter_wrap_is_not_a_violation() {
 	m := vmsg()
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	for n in 14 .. 19 { // 14, 15, 0, 1, 2 across a 4-bit wrap
 		mut d := []u8{len: 8}
 		e.apply(m, mut d, n)
@@ -50,7 +50,7 @@ fn test_it_catches_what_fault_injection_produces() {
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
 
 	// bad_crc
-	mut v1 := Verifier{ msg: m, e2e: e }
+	mut v1 := new_verifier(m, [e])
 	mut d1 := []u8{len: 8}
 	e.apply(m, mut d1, 0)
 	assert v1.check(d1) == .ok
@@ -60,14 +60,14 @@ fn test_it_catches_what_fault_injection_produces() {
 	assert v1.check(bad) == .bad_crc, 'a corrupted checksum must be caught'
 
 	// a stalled counter
-	mut v2 := Verifier{ msg: m, e2e: e }
+	mut v2 := new_verifier(m, [e])
 	mut a := []u8{len: 8}
 	e.apply(m, mut a, 5)
 	assert v2.check(a) == .ok
 	assert v2.check(a) == .stalled_ctr, 'a repeated counter must be caught'
 
 	// a skipped counter
-	mut v3 := Verifier{ msg: m, e2e: e }
+	mut v3 := new_verifier(m, [e])
 	mut p := []u8{len: 8}
 	e.apply(m, mut p, 1)
 	assert v3.check(p) == .ok
@@ -82,7 +82,7 @@ fn test_it_catches_what_fault_injection_produces() {
 fn test_a_bad_checksum_is_reported_before_the_counter() {
 	m := vmsg()
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	mut first := []u8{len: 8}
 	e.apply(m, mut first, 0)
 	assert v.check(first) == .ok
@@ -98,7 +98,7 @@ fn test_a_bad_checksum_is_reported_before_the_counter() {
 fn test_first_frame_is_never_a_counter_violation() {
 	m := vmsg()
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	mut d := []u8{len: 8}
 	e.apply(m, mut d, 7) // arriving mid-stream, counter already at 7
 	assert v.check(d) == .ok
@@ -142,7 +142,7 @@ fn test_wide_counter_wraps_instead_of_reporting_a_skip() {
 		]
 	}
 	e := E2e{ counter: 'Ctr' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	span := u64(1) << 31
 	mut a := []u8{len: 8}
 	m.signals[0].set_raw(mut a, span - 2)
@@ -162,7 +162,7 @@ fn test_wide_counter_wraps_instead_of_reporting_a_skip() {
 fn test_truncated_frames_are_rejected_not_silently_accepted() {
 	m := vmsg() // dlc 8
 	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	assert v.check([]u8{len: 0}) == .truncated, 'an empty payload must not read as clean'
 	assert v.check([]u8{len: 4}) == .truncated
 	assert v.bad == 2
@@ -177,20 +177,16 @@ fn test_truncated_frames_are_rejected_not_silently_accepted() {
 fn test_a_field_past_the_payload_is_truncated() {
 	mut m := vmsg()
 	m.dlc = 4
-	mut v := Verifier{
-		msg: m
-		e2e: E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
-	}
+	mut v := new_verifier(m, [E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }])
 	assert v.check([]u8{len: 4}) == .truncated
 	mut whole := []u8{len: 8}
-	v.e2e.apply(m, mut whole, 0)
+	v.windows[0].apply(m, mut whole, 0)
 	assert v.check(whole) == .ok
 }
 
 // and so does a frame missing the switch that selects the field
 fn test_a_field_whose_switch_is_past_the_payload_is_truncated() {
-	mut v := Verifier{
-		msg: candb.Message{
+	mut v := new_verifier(candb.Message{
 		name:    'Muxed'
 		id:      0x125
 		dlc:     1
@@ -213,9 +209,7 @@ fn test_a_field_whose_switch_is_past_the_payload_is_truncated() {
 				is_multiplexor: true
 			},
 		]
-	}
-		e2e: E2e{ crc: 'CRC', profile: 'sum8' }
-	}
+	}, [E2e{ crc: 'CRC', profile: 'sum8' }])
 	assert v.check([u8(0x55)]) == .truncated
 }
 
@@ -275,7 +269,7 @@ fn test_checksum_compared_at_the_declared_width() {
 		]
 	}
 	e := E2e{ crc: 'CRC4', profile: 'crc8_j1850' }
-	mut v := Verifier{ msg: m, e2e: e }
+	mut v := new_verifier(m, [e])
 	// a frame the STAMPER produced must verify, even though the field holds only 4 bits of it
 	mut d := []u8{len: 8}
 	e.apply(m, mut d, 0)
@@ -347,7 +341,7 @@ fn test_validate_verify_catches_the_familiar_configuration_traps() {
 	]
 	assert validate_verify(db, split).any(it.contains('only the first applies'))
 	set := verifiers_for(db, [], split)
-	assert set.by_key[vkey(0x111, false)] or { panic('none') }.e2e.counter == 'AliveCounter',
+	assert set.by_key[vkey(0x111, false)] or { panic('none') }.windows[0].counter == 'AliveCounter',
 		'the FIRST entry must win, deterministically'
 
 	// a malformed id binds to whatever lives at the repaired value

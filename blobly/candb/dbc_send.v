@@ -270,7 +270,7 @@ fn send_type_attr(msgs []Message) ?DbcAttr {
 	}
 	for m in msgs {
 		if m.send_type_name != '' && m.send_type_name != choices[0] {
-			a.values << DbcAttrValue{m.id, m.ext, '${choices.index(m.send_type_name)}'}
+			a.values << DbcAttrValue{m.id, m.ext, '${choices.index(m.send_type_name)}', ''}
 		}
 	}
 	return a
@@ -291,7 +291,7 @@ fn send_int_attr(msgs []Message, name string) ?DbcAttr {
 			else { m.start_delay_ms }
 		}
 		if v > 0 {
-			a.values << DbcAttrValue{m.id, m.ext, '${v}'}
+			a.values << DbcAttrValue{m.id, m.ext, '${v}', ''}
 			if v > most {
 				most = v
 			}

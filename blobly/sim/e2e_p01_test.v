@@ -99,23 +99,20 @@ fn test_p01_counter_runs_0_to_14() {
 
 fn test_p01_verifier_accepts_its_own_frames_and_catches_the_rest() {
 	m := brake_status()
-	mut v := Verifier{
-		msg: m
-		e2e: p01_e2e('alt')
-	}
+	mut v := new_verifier(m, [p01_e2e('alt')])
 	for n in 0 .. 40 { // across two wraps: 14 -> 0 is the next counter, not a skip
 		mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
-		v.e2e.apply(m, mut d, n)
+		v.windows[0].apply(m, mut d, n)
 		assert v.check(d) == .ok, 'frame ${n}'
 	}
 	mut bad := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
-	v.e2e.apply(m, mut bad, 40)
+	v.windows[0].apply(m, mut bad, 40)
 	bad[0] ^= 0x01
 	assert v.check(bad) == .bad_crc
 	// 15 is never a Profile 1 counter: a frame carrying it, correctly checksummed, is a skip
 	mut fifteen := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x0F]
 	sig := m.signals[2]
-	fifteen[4] = u8(v.e2e.checksum(m, sig, fifteen))
+	fifteen[4] = u8(v.windows[0].checksum(m, sig, fifteen))
 	assert v.check(fifteen) == .skipped_ctr
 }
 
@@ -149,22 +146,16 @@ fn test_p01_needs_a_counter_and_covers_the_dlc_only() {
 	p01_e2e('both').apply(m, mut d, 0)
 	mut padded := d.clone()
 	padded << [u8(0xCC), 0xCC]
-	mut v := Verifier{
-		msg: m
-		e2e: p01_e2e('both')
-	}
+	mut v := new_verifier(m, [p01_e2e('both')])
 	assert v.check(padded) == .ok
 	assert d[4] == p01_vectors['both'][0]
 }
 
 fn test_p01_counter_fifteen_is_wrong_even_first() {
 	m := brake_status()
-	mut v := Verifier{
-		msg: m
-		e2e: p01_e2e('both')
-	}
+	mut v := new_verifier(m, [p01_e2e('both')])
 	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x0F]
-	d[4] = u8(v.e2e.checksum(m, m.signals[2], d))
+	d[4] = u8(v.windows[0].checksum(m, m.signals[2], d))
 	assert v.check(d) == .skipped_ctr
 }
 
@@ -190,7 +181,7 @@ fn test_p01_problems_are_reported_and_not_stamped() {
 	w := validate_protection(db, bad)
 	assert w.any(it.contains('needs a data_id') && it.contains('not applied')), '${w}'
 	ecu := from_project(db, bad)
-	assert ecu.messages.all(!it.e2e.active()), 'an unstampable Profile 1 entry was applied'
+	assert ecu.messages.all(!any_active(it.e2e)), 'an unstampable Profile 1 entry was applied'
 	stray := project.NodeCfg{
 		name:    'Chassis'
 		protect: [project.ProtectCfg{
@@ -210,24 +201,24 @@ fn test_dbc_declared_e2e_is_stamped_and_checked() {
 	mut m := candb.Message{
 		...brake_status()
 		sender: 'Chassis'
-		e2e:    candb.E2eDecl{
+		e2e:    [candb.E2eDecl{
 			counter:     'BrakeCounter'
 			crc:         'BrakeCrc'
 			profile:     'autosar_p01'
 			data_id:     0x1244
 			has_data_id: true
-		}
+		}]
 	}
 	db := candb.Database{
 		nodes:    ['Chassis']
 		messages: [m]
 	}
-	e := declared_e2e(m) or { panic('a usable declaration was refused') }
+	e := declared_e2e(m)[0]
 	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
 	e.apply(m, mut d, 5)
 	assert d[4] == p01_vectors['both'][5]
 	ecu := from_project(db, project.NodeCfg{ name: 'Chassis' })
-	assert ecu.messages.any(it.msg.name == 'BrakeStatus' && it.e2e.profile == 'autosar_p01')
+	assert ecu.messages.any(it.msg.name == 'BrakeStatus' && it.e2e.len == 1 && it.e2e[0].profile == 'autosar_p01')
 	differs := project.NodeCfg{
 		name:    'Chassis'
 		protect: [project.ProtectCfg{
@@ -239,12 +230,12 @@ fn test_dbc_declared_e2e_is_stamped_and_checked() {
 		}]
 	}
 	assert validate_protection(db, differs).any(it.contains('differs from the E2E the DBC declares'))
-	m.e2e.data_id = 0x10000 // not a Profile 1 Data ID
+	m.e2e[0].data_id = 0x10000 // not a Profile 1 Data ID
 	bad := candb.Database{
 		nodes:    ['Chassis']
 		messages: [m]
 	}
-	assert declared_e2e(m) == none
+	assert declared_e2e(m).len == 0
 	assert validate_protection(bad, project.NodeCfg{ name: 'Chassis' }).any(it.contains('cannot be applied'))
 }
 
@@ -254,27 +245,26 @@ fn test_declarations_are_exact_and_entries_override_them() {
 	base := candb.Message{
 		...brake_status()
 		sender: 'Chassis'
-		e2e:    candb.E2eDecl{
+		e2e:    [candb.E2eDecl{
 			counter:     'BrakeCounter'
 			crc:         'BrakeCrc'
 			profile:     'crc8_j1850'
 			data_id:     7
 			has_data_id: true
-		}
+		}]
 	}
-	assert declared_e2e(base) != none
+	assert declared_e2e(base).len > 0
 	mut same := base
-	same.e2e.crc = 'BrakeCounter'
-	assert declared_problem(same, e2e_of_decl(same.e2e)).contains('both counter and crc')
+	same.e2e = [candb.E2eDecl{ ...base.e2e[0], crc: 'BrakeCounter' }]
+	assert declared_problem(same, same.e2e[0]).contains('both counter and crc')
 	mut wide := base
-	wide.e2e.crc = 'BrakePressure'
-	assert declared_problem(wide, e2e_of_decl(wide.e2e)).contains('16 bits')
+	wide.e2e = [candb.E2eDecl{ ...base.e2e[0], crc: 'BrakePressure' }]
+	assert declared_problem(wide, wide.e2e[0]).contains('16 bits')
 	mut bad := base
-	bad.e2e.has_data_id = false
-	bad.e2e.bad_data_id = '0x2A'
-	assert declared_problem(bad, e2e_of_decl(bad.e2e)).contains('0x2A')
+	bad.e2e = [candb.E2eDecl{ ...base.e2e[0], has_data_id: false, bad_data_id: '0x2A' }]
+	assert declared_problem(bad, bad.e2e[0]).contains('0x2A')
 	// protection_for: the declaration, or the node's own entry over it
-	assert (protection_for(project.NodeCfg{ name: 'Chassis' }, base) or { E2e{} }).profile == 'crc8_j1850'
+	assert protection_for(project.NodeCfg{ name: 'Chassis' }, base)[0].profile == 'crc8_j1850'
 	own := project.NodeCfg{
 		name:    'Chassis'
 		protect: [project.ProtectCfg{
@@ -283,7 +273,7 @@ fn test_declarations_are_exact_and_entries_override_them() {
 			profile: 'crc8_j1850'
 		}]
 	}
-	e := protection_for(own, base) or { panic('the entry was lost') }
+	e := protection_for(own, base)[0]
 	assert e.crc == '', 'the declaration leaked past the entry'
 }
 
@@ -323,7 +313,7 @@ BA_ "E2ETimeout" BO_ 769 300;
 '
 	db := candb.parse_dbc(text) or { panic(err) }
 	m := db.messages[0]
-	assert declared_e2e(m) == none, 'refused before the save'
+	assert declared_e2e(m).len == 0, 'refused before the save'
 	node := project.NodeCfg{
 		name: 'Chassis'
 	}
@@ -333,10 +323,10 @@ BA_ "E2ETimeout" BO_ 769 300;
 	assert db.save_drops() == ['BrakeStatus: E2EDataId bogus is not a Data ID — its E2E declaration is not saved']
 	again := candb.parse_dbc(db.to_dbc()) or { panic(err) }
 	a := again.messages[0]
-	assert declared_e2e(a) == none, 'a Save turned a refused declaration into an applied one'
-	assert !a.e2e.declared(), 'the declaration should be absent after the save'
-	assert a.e2e.has_timeout && a.e2e.timeout_ms == 300, 'the receiver timeout is not part of it'
-	assert !from_project(again, node).messages.any(it.e2e.active())
+	assert declared_e2e(a).len == 0, 'a Save turned a refused declaration into an applied one'
+	assert !a.e2e_declared(), 'the declaration should be absent after the save'
+	assert a.e2e[0].has_timeout && a.e2e[0].timeout_ms == 300, 'the receiver timeout is not part of it'
+	assert !from_project(again, node).messages.any(any_active(it.e2e))
 	// the editor keeps the saved model, which matches the reload and has nothing left to report
 	mut kept := db
 	kept.saved()
@@ -349,19 +339,19 @@ fn test_a_malformed_timeout_refuses_nothing() {
 	m := candb.Message{
 		...brake_status()
 		sender: 'Chassis'
-		e2e:    candb.E2eDecl{
+		e2e:    [candb.E2eDecl{
 			counter:     'BrakeCounter'
 			crc:         'BrakeCrc'
 			profile:     'crc8_j1850'
 			bad_timeout: 'soon'
-		}
+		}]
 	}
 	db := candb.Database{
 		nodes:    ['Chassis']
 		messages: [m]
 	}
 	assert validate_protection(db, project.NodeCfg{ name: 'Chassis' }).len == 0
-	assert declared_e2e(m) != none, 'a bad receiver timeout refused the sender'
+	assert declared_e2e(m).len > 0, 'a bad receiver timeout refused the sender'
 	assert db.save_drops() == ['BrakeStatus: E2ETimeout soon is not a number of ms — not saved']
 }
 
@@ -396,7 +386,7 @@ BA_ "E2EDataId" BO_ 769 4676;
 		m := db.messages[0]
 		warns := validate_protection(db, cfg)
 		assert warns.len == 0, '${spelling}: ${warns}'
-		e := protection_for(cfg, m) or { panic('${spelling}: not stamped') }
+		e := protection_for(cfg, m)[0]
 		assert e.profile == p01, spelling
 	}
 }

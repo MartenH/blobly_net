@@ -361,3 +361,33 @@ channels:
 		assert again.version == 13, spelling
 	}
 }
+
+// #615: an entry names its window by offset and length, both or neither; a project that does is
+// v13, and a save keeps them
+fn test_protect_window_keys() {
+	p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    verify:
+      - { message: M, crc: A, counter: B, profile: autosar_p01, data_id: 0x44, offset: 0, length: 4 }
+      - { message: M, crc: C, counter: D, profile: autosar_p01, data_id: 0x45, offset: 0x4, length: 4 }
+      - { message: M, crc: C, offset: 4 }
+      - { message: M, crc: C, offset: 1, length: 0 }
+      - { message: M, crc: C, offset: x, length: 4 }
+') or {
+		panic(err)
+	}
+	v := p.channels[0].verify
+	assert v[0].offset or { -1 } == 0 && v[0].length or { -1 } == 4 && v[0].window()
+	assert v[1].offset or { -1 } == 4 && !v[1].window_malformed
+	assert v[2].window_malformed && !v[2].window(), 'an offset alone is no window'
+	assert v[3].window_malformed, 'a window of no bytes'
+	assert v[4].window_malformed
+	assert version_for(p) == 13
+	again := parse(p.to_yaml()) or { panic(err) }
+	assert again.version == 13
+	assert again.channels[0].verify[1].offset or { -1 } == 4
+	assert again.channels[0].verify[1].length or { -1 } == 4
+}

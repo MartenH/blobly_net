@@ -1839,13 +1839,15 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	}
 	for i, m in msgs {
 		if s := probe.e2e_signals(m) {
-			msgs[i].e2e = E2eDecl{
-				counter:     s.counter
-				crc:         s.crc
-				profile:     s.profile
-				data_id:     s.data_id
-				has_data_id: true
-			}
+			msgs[i].e2e = [
+				E2eDecl{
+					counter:     s.counter
+					crc:         s.crc
+					profile:     s.profile
+					data_id:     s.data_id
+					has_data_id: true
+				},
+			]
 		}
 	}
 	return ArxmlCluster{

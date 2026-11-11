@@ -68,10 +68,10 @@ fn test_a_send_by_name_is_stamped_as_declared() {
 	// a declaration that cannot be applied is refused, not sent unprotected
 	broken := candb.Message{
 		...m
-		e2e: candb.E2eDecl{
-			...m.e2e
+		e2e: [candb.E2eDecl{
+			...m.e2e[0]
 			profile: 'P02'
-		}
+		}]
 	}
 	mut b := brake_payload()
 	if _ := st.stamp(broken, mut b) {
@@ -248,7 +248,7 @@ fn test_receive_checks_take_the_verify_entry_then_the_declaration() {
 	s := receive_checks(db, [])
 	assert s.by_key.len == 1, 'only BrakeStatus declares E2E'
 	brake := s.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
-	assert brake.e2e.profile == p01
+	assert brake.windows[0].profile == p01
 	verify := [
 		project.ProtectCfg{
 			message: 'BrakeStatus'
@@ -266,14 +266,14 @@ fn test_receive_checks_take_the_verify_entry_then_the_declaration() {
 	v := receive_checks(db, verify)
 	assert v.by_key.len == 2
 	mut brake2 := v.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
-	assert brake2.e2e.profile == 'xor8', 'the verify: entry did not win'
+	assert brake2.windows[0].profile == 'xor8', 'the verify: entry did not win'
 	level := v.by_key[vkey(0x303, false)] or { panic('no Stamped') }
-	assert level.e2e.profile == 'crc8_j1850'
+	assert level.windows[0].profile == 'crc8_j1850'
 	// judged by the message's E2ETimeout all the same
 	mut d := brake_payload()
-	brake2.e2e.apply(brake2.msg, mut d, 0)
+	brake2.windows[0].apply(brake2.msg, mut d, 0)
 	assert brake2.check_at(d, kernel, 0) == .ok
-	brake2.e2e.apply(brake2.msg, mut d, 1)
+	brake2.windows[0].apply(brake2.msg, mut d, 1)
 	assert brake2.check_at(d, kernel, 101_000_000) == .timeout, 'the verify: entry lost the message timeout'
 	assert receive_checks(candb.Database{}, []).by_key.len == 0
 }

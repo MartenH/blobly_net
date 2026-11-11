@@ -115,7 +115,7 @@ fn draw_sim(mut app App) {
 
 					// only what takes effect on THIS message, by the rule a script's arm keeps:
 					// a fault that changes no bit on the wire would read as active and do nothing
-					offer := sim.fault_offer(node, m, nprot[m.name] or { sim.E2e{} }, anns)
+					offer := sim.fault_offer(node, m, nprot[m.name] or { []sim.E2e{} }, anns)
 					kind_of := offer.kinds
 					oor_sig := offer.oor_signal
 					kinds := kind_of.map(match it {

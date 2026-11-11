@@ -54,7 +54,10 @@ pub fn version_for(p Project) int {
 	// ODX), whose names an older build drops the same way, with nothing said; and AUTOSAR E2E
 	// Profile 5 (#616), which an older build reads as an unknown profile and stamps sum8 into a
 	// 16-bit field, so the entry goes out with a checksum no receiver accepts and nothing said —
-	// v7's loss for Profile 1.
+	// v7's loss for Profile 1; and a protect:/verify: entry naming its window (`offset:`/`length:`,
+	// #615), whose keys an older build drops: the entry protects the whole payload, a second entry
+	// for the message replaces the first, and its structured save writes them back without the
+	// window.
 	if p.channels.any(it.data_sample_point != 0 || it.diagnostics.len > 0) {
 		return 13
 	}
@@ -62,7 +65,7 @@ pub fn version_for(p Project) int {
 		if c.kind() == .can && !c.builtin_uds {
 			return 13
 		}
-		if c.verify.any(it.profile == 'autosar_p05') {
+		if c.verify.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none) {
 			return 13
 		}
 		if c.senders.any(it.format != .wire) {
@@ -77,7 +80,7 @@ pub fn version_for(p Project) int {
 			return 13
 		}
 		for n in c.nodes {
-			if n.protect.any(it.profile == 'autosar_p05') {
+			if n.protect.any(it.profile == 'autosar_p05' || it.offset != none || it.length != none) {
 				return 13
 			}
 			if u := n.uds {
@@ -382,6 +385,17 @@ pub mut:
 	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three
 	// places to remember it and the GUI forgot one, showing an explicit zero id as absent.
 	data_id ?u32
+	// The window it protects, in bytes (#615): `length` bytes from `offset`, both given or
+	// neither — none is the message's whole payload. Several entries for one message each name
+	// theirs, one window per signal group the frame carries.
+	offset           ?int
+	length           ?int
+	window_malformed bool // either is not a whole number >= 0 (a length > 0), or only one is given
+}
+
+// window: the entry names a window of bytes rather than the whole payload.
+pub fn (p ProtectCfg) window() bool {
+	return p.length != none
 }
 
 // SenderSig is one signal value applied when building a Sender's frame: the
@@ -1430,7 +1444,37 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 				extbad = true
 			}
 		}
+		// the window: two whole numbers or none, read as written so a typo is not a window
+		mut off := ?int(none)
+		mut wlen := ?int(none)
+		mut wbad := false
+		if v := p.value_opt('offset') {
+			if n := window_int(v.str()) {
+				off = n
+			} else {
+				wbad = true
+			}
+		}
+		if v := p.value_opt('length') {
+			if n := window_int(v.str()) {
+				if n > 0 {
+					wlen = n
+				} else {
+					wbad = true
+				}
+			} else {
+				wbad = true
+			}
+		}
+		if (off == none) != (wlen == none) && !wbad {
+			wbad = true
+			off = none
+			wlen = none
+		}
 		out << ProtectCfg{
+			offset:             off
+			length:             wlen
+			window_malformed:   wbad
 			message:            p.value('message').default_to('').string()
 			id:                 mid
 			extended:           mext
@@ -1446,6 +1490,26 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 		}
 	}
 	return out
+}
+
+// window_int is a window's offset or length as written: decimal or 0x hex digits, at most 64 bytes'
+// worth.
+fn window_int(raw string) ?int {
+	t := raw.trim_space()
+	if t == '' {
+		return none
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		h := t[2..]
+		if h == '' || h.len > 4 || !h.bytes().all(it.is_hex_digit()) {
+			return none
+		}
+		return int(('0x' + h).parse_int(0, 32) or { return none })
+	}
+	if t.len > 4 || !t.bytes().all(it.is_digit()) {
+		return none
+	}
+	return t.int()
 }
 
 fn parse_node(n yaml.Any) !NodeCfg {

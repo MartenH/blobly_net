@@ -139,3 +139,59 @@ fn test_the_channels_verify_entry_wins_over_the_declaration() {
 	')!
 	assert env.passed() == 1, '${env.results}'
 }
+
+// #615: two signal groups in one frame, each its own window: stamped both by bus.send_message,
+// and a received frame carries each window's verdict in e2e_groups, e2e the worst of them
+const e2e_group_dbc = 'BU_: Tester Chassis
+BO_ 291 EngineData: 8 Tester
+ SG_ Speed_CRC : 0|8@1+ (1,0) [0|255] "" Chassis
+ SG_ Speed_Counter : 8|4@1+ (1,0) [0|15] "" Chassis
+ SG_ Speed : 16|16@1+ (1,0) [0|65535] "" Chassis
+ SG_ Torque_CRC : 32|8@1+ (1,0) [0|255] "" Chassis
+ SG_ Torque_Counter : 40|4@1+ (1,0) [0|15] "" Chassis
+ SG_ Torque : 48|16@1+ (1,0) [0|65535] "" Chassis
+BA_ "E2ECrcSignal" SG_ 291 Speed_CRC "Speed_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Speed_CRC "Speed_Counter";
+BA_ "E2EProfile" SG_ 291 Speed_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Speed_CRC 68;
+BA_ "E2ECrcSignal" SG_ 291 Torque_CRC "Torque_CRC";
+BA_ "E2ECounterSignal" SG_ 291 Torque_CRC "Torque_Counter";
+BA_ "E2EProfile" SG_ 291 Torque_CRC "P01";
+BA_ "E2EDataId" SG_ 291 Torque_CRC 69;
+SIG_GROUP_ 291 SpeedGroup 1 : Speed_CRC Speed_Counter Speed;
+SIG_GROUP_ 291 TorqueGroup 1 : Torque_CRC Torque_Counter Torque;
+'
+
+fn test_each_signal_group_is_stamped_and_judged() {
+	db := candb.parse_dbc(e2e_group_dbc) or { panic(err) }
+	mut env := new_env([ChanInfo{
+		name:  'A'
+		iface: 'inproc:UTE2EG'
+		db:    db
+	}, ChanInfo{
+		name:  'B'
+		iface: 'inproc:UTE2EG'
+		db:    db
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source('
+		test("both windows stamped, each judged", function()
+			bus.recv("B", 0)
+			for i = 0, 2 do
+				local sent = bus.send_message("A", "EngineData", { Speed = i, Torque = 7 })
+				check.equal(string.byte(sent.data, 1), e2e.p01_crc(string.sub(sent.data, 1, 4), 68, 0, 1))
+				check.equal(string.byte(sent.data, 5), e2e.p01_crc(string.sub(sent.data, 5, 8), 69, 0, 1))
+				local f = bus.recv("B", 500)
+				check.equal(f.e2e, "ok")
+				check.equal(f.e2e_groups.SpeedGroup, "ok")
+				check.equal(f.e2e_groups.TorqueGroup, "ok")
+			end
+			local sent = bus.send_message("A", "EngineData", { Speed = 3 }, { e2e = false })
+			local f = bus.recv("B", 500)
+			check.equal(f.e2e, "bad_crc")
+			check.equal(f.e2e_groups.TorqueGroup, "bad_crc")
+		end)
+	')!
+	assert env.passed() == 1, '${env.results}'
+}

@@ -342,7 +342,8 @@ fn test_the_fault_offer_on_the_announced_frame_is_drop_alone() {
 		nid:      0x11
 		cycle_ms: 100
 	}
-	prot := protection_for(node, msg) or { panic('no protection') }
+	prot := protection_for(node, msg)
+	assert prot.len == 1, 'no protection'
 	open := fault_offer(node, msg, prot, [])
 	assert open.kinds == [FaultKind.none_, .drop, .bad_crc, .freeze_ctr, .out_of_range]
 	assert open.oor_signal == 'Level'

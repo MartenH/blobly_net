@@ -45,9 +45,12 @@ class Frame:
     clock (`blobly.now_ms()`), the time the GUI's trace gives it: its receive stamp where the
     backend reads one, else its receipt. None on a frame not received. `e2e` is a received frame's
     E2E verdict (an E2eStatus), None where its message has no E2E on its channel or the frame was
-    not received. A value: equal frames hash alike, and none is changed once made; `t_ms` and `e2e`
-    are not part of the value, so a received frame equals the frame built from its content."""
-    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms", "e2e")
+    not received; where the message is protected in several windows (a signal group's bytes each),
+    the worst of theirs, and `e2e_groups` each window's by name (its signal group's, else the
+    message's), None where `e2e` is. A value: equal frames hash alike, and none is changed once
+    made; `t_ms`, `e2e` and `e2e_groups` are not part of the value, so a received frame equals the
+    frame built from its content."""
+    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms", "e2e", "e2e_groups")
     id: int
     data: bytes
     length: int
@@ -58,13 +61,16 @@ class Frame:
     esi: bool
     t_ms: float | None
     e2e: E2eStatus | None
+    e2e_groups: dict[str, E2eStatus] | None
 
     def __init__(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
                  brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
-                 t_ms: float | None = None, e2e: E2eStatus | str | None = None) -> None:
+                 t_ms: float | None = None, e2e: E2eStatus | str | None = None,
+                 e2e_groups: Mapping[str, E2eStatus | str] | None = None) -> None:
         data = _lib.byte_data("data", data)
         _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms,
-                     None if e2e is None else E2eStatus(e2e)))
+                     None if e2e is None else E2eStatus(e2e),
+                     None if e2e_groups is None else {k: E2eStatus(v) for k, v in e2e_groups.items()}))
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(f"a Frame is a value: make another rather than set {name}")
@@ -77,6 +83,7 @@ class Frame:
         attrs, slots = state if isinstance(state, tuple) else (state, None)
         object.__setattr__(self, "t_ms", None)  # a frame pickled before frames carried a time
         object.__setattr__(self, "e2e", None)  # or a verdict
+        object.__setattr__(self, "e2e_groups", None)
         for k, v in {**(attrs or {}), **(slots or {})}.items():
             object.__setattr__(self, k, v)
 
@@ -94,7 +101,7 @@ class Frame:
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
 
 
-# what a frame is: every field but when it was received and its E2E verdict
+# what a frame is: every field but when it was received and its E2E verdicts
 _IDENTITY = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
 
 
@@ -103,12 +110,26 @@ def _fill(frame, fields):
         object.__setattr__(frame, k, v)
 
 
-def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
+def frame_of(f: _lib.BbFrame, received: bool = False, h: int | None = None) -> Frame:
     """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload;
-    a received one carries its t_ns as t_ms, and its E2E verdict."""
+    a received one carries its t_ns as t_ms, and its E2E verdict, with each window's read from `h`,
+    the handle that received it."""
     data = b"" if f.rtr else bytes(memoryview(f.data)[:f.len])
+    e2e = status_of(f.e2e) if received else None
+    groups = _e2e_groups(h) if e2e is not None and h is not None else None
     return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len,
-                 _lib.ms_of(f.t_ns) if received else None, status_of(f.e2e) if received else None)
+                 _lib.ms_of(f.t_ns) if received else None, e2e, groups)
+
+
+def _e2e_groups(h: int) -> dict[str, E2eStatus]:
+    """Each window's verdict on the last frame handle `h` received, by name."""
+    lib = _lib.lib()
+    out: dict[str, E2eStatus] = {}
+    for i in range(_lib.check(lib.bb_e2e_groups(h))):
+        status = status_of(_lib.check(lib.bb_e2e_group_verdict(h, i)))
+        if status is not None:
+            out[_lib.string(lib.bb_e2e_group_name, h, i)] = status
+    return out
 
 
 # an enum bb_format as a stated format: BB_FORMAT_WIRE (0) states none
@@ -283,7 +304,7 @@ class Bus:
         rc = _lib.check(lib.bb_bus_recv(h, ms, ctypes.byref(f)))
         if rc in (_lib.BB_NONE, _lib.BB_SPENT):
             return None, rc == _lib.BB_SPENT
-        frame = frame_of(f, received=True)
+        frame = frame_of(f, received=True, h=h)
         if not frame.rtr:  # every read path comes through here; a remote frame carries no data
             table[(frame.id, frame.ext)] = frame
         return frame, False

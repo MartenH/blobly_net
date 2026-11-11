@@ -12,9 +12,9 @@ fn (mut env Env) register_e2e() {
 	env.st.register('__e2e_stamp', l_e2e_stamp)
 }
 
-// e2e_verdict is the verdict on a frame the script's handle on `name` received, none for one its
-// message has no E2E for.
-fn (mut env Env) e2e_verdict(name string, f transport.CanFrame) ?string {
+// e2e_verdict is the verdict on a frame the script's handle on `name` received, with each
+// window's, none for one its message has no E2E for.
+fn (mut env Env) e2e_verdict(name string, f transport.CanFrame) ?E2eSeen {
 	mut r := env.e2e_rx[name] or {
 		ci := env.find_chan(name) or { return none }
 		c := env.chans[ci]
@@ -23,14 +23,29 @@ fn (mut env Env) e2e_verdict(name string, f transport.CanFrame) ?string {
 		r
 	}
 	v := r.judge(f) or { return none }
-	return v.name()
+	return E2eSeen{
+		verdict: v.name()
+		windows: r.last_windows()
+	}
 }
 
-// push_e2e pushes a received frame's verdict, nil where none
-fn push_e2e(l lua.State, verdict ?string) {
-	if v := verdict {
-		l.push_str(v)
+// E2eSeen is a received frame's E2E verdict, the worst of its windows', and each window's.
+struct E2eSeen {
+	verdict string
+	windows []sim.WindowVerdict
+}
+
+// push_e2e pushes a received frame's verdict and a table of each window's by name, nil and nil
+// where none
+fn push_e2e(l lua.State, seen ?E2eSeen) {
+	if s := seen {
+		l.push_str(s.verdict)
+		l.new_table()
+		for w in s.windows {
+			l.set_str(w.name, w.verdict.name())
+		}
 	} else {
+		l.push_nil()
 		l.push_nil()
 	}
 }

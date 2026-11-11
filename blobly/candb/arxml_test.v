@@ -572,11 +572,11 @@ fn test_profile_5_is_applied_from_its_offset() {
 	assert e2e_export_refusal(m, e) == ''
 	s := c.e2e_signals(m) or { panic('Profile 5 is exported') }
 	assert s.crc == 'Crc' && s.counter == 'Ctr' && s.profile == 'autosar_p05' && s.data_id == 7
-	assert m.e2e.profile == 'autosar_p05' && m.e2e.crc == 'Crc' && m.e2e.counter == 'Ctr'
+	assert m.e2e[0].profile == 'autosar_p05' && m.e2e[0].crc == 'Crc' && m.e2e[0].counter == 'Ctr'
 	// blobly_emb implements Profile 1 only, so the export leaves it out of the DBC and says so
 	dbc := c.export_dbc(ArxmlProvenance{}, a.report)
 	assert !dbc.contains('E2E')
-	assert c.db.messages[0].e2e.profile == 'autosar_p05'
+	assert c.db.messages[0].e2e[0].profile == 'autosar_p05'
 	assert c.frame_toml('').contains('blobly_emb implements Profile 1 only, so neither this fragment nor the exported DBC carries it')
 	assert !c.frame_toml('').contains('e2e  =')
 	assert a.report.notes.any(it.contains('PROFILE_05 contract is applied by the simulation but not exported as DBC attributes'))
@@ -595,12 +595,12 @@ fn test_profile_5_is_applied_from_its_offset() {
 	offsets := '<COUNTER-OFFSET>16</COUNTER-OFFSET><CRC-OFFSET>8</CRC-OFFSET>'
 	ok := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p1 + e2e_xml('PROFILE_01', offsets) + arxml_tail) or { panic(err) }
 	okc := ok.cluster('') or { panic(err) }
-	assert okc.db.messages[0].e2e.profile == 'autosar_p01'
+	assert okc.db.messages[0].e2e[0].profile == 'autosar_p01'
 	cc := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p1 + e2e_xml('PROFILE_05', offsets) + arxml_tail) or { panic(err) }
 	ccc := cc.cluster('') or { panic(err) }
 	cm := ccc.db.messages[0]
 	assert ccc.e2e_signals(cm) == none
-	assert cm.e2e.profile == ''
+	assert cm.e2e.len == 0
 	assert !ccc.export_dbc(ArxmlProvenance{}, cc.report).contains('E2E')
 	assert !ccc.frame_toml('').contains('e2e  =')
 	assert ccc.frame_toml('').contains('# E2E PROFILE_05 (data_id 0x7): no OFFSET declared')

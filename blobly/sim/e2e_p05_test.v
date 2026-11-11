@@ -84,32 +84,29 @@ fn test_p05_matches_the_reference() {
 
 fn test_p05_verifier_judges_the_counter_over_0_to_255() {
 	m := p05_msg_b()
-	mut v := Verifier{
-		msg: m
-		e2e: p05_e2e(0x0BEE)
-	}
+	mut v := new_verifier(m, [p05_e2e(0x0BEE)])
 	for n in 0 .. 300 { // across a wrap: 255 -> 0 is the next counter, not a skip
 		mut d := p05_base_b.clone()
-		v.e2e.apply(m, mut d, n)
+		v.windows[0].apply(m, mut d, n)
 		assert v.check(d) == .ok, 'frame ${n}'
 	}
 	mut bad := p05_base_b.clone()
-	v.e2e.apply(m, mut bad, 300)
+	v.windows[0].apply(m, mut bad, 300)
 	bad[11] ^= 0x80 // a byte after the header
 	assert v.check(bad) == .bad_crc
 	mut hi := p05_base_b.clone()
-	v.e2e.apply(m, mut hi, 300)
+	v.windows[0].apply(m, mut hi, 300)
 	hi[4] ^= 0x01 // the CRC's HIGH byte alone
 	assert v.check(hi) == .bad_crc
 	mut same := p05_base_b.clone()
-	v.e2e.apply(m, mut same, 299)
+	v.windows[0].apply(m, mut same, 299)
 	assert v.check(same) == .stalled_ctr
 	mut skip := p05_base_b.clone()
-	v.e2e.apply(m, mut skip, 302)
+	v.windows[0].apply(m, mut skip, 302)
 	assert v.check(skip) == .skipped_ctr
 	// the CRC covers the declared 12 bytes only, not padding a frame is carried with
 	mut padded := p05_base_b.clone()
-	v.e2e.apply(m, mut padded, 303)
+	v.windows[0].apply(m, mut padded, 303)
 	padded << [u8(0xCC), 0xCC, 0xCC, 0xCC]
 	assert v.check(padded) == .ok
 }
@@ -143,8 +140,8 @@ fn test_p05_refuses_what_it_cannot_stamp() {
 	}
 	assert (p05_problem(be, p05_e2e(1)) or { '' }).contains('little-endian')
 	// a 16-bit CRC is Profile 5's width, and only its
-	assert declared_problem(m, p05_e2e(1)) == ''
-	assert declared_problem(m, E2e{ ...p05_e2e(1), profile: 'crc8_j1850' }).contains('produces 8')
+	assert stated_problem(m, p05_e2e(1)) == ''
+	assert stated_problem(m, E2e{ ...p05_e2e(1), profile: 'crc8_j1850' }).contains('produces 8')
 	// a primitive is not Profile 5's to judge
 	assert p05_problem(m, E2e{ crc: 'Crc', profile: 'crc8_j1850' }) == none
 }
@@ -185,7 +182,7 @@ BA_ "E2EDataId" BO_ 288 4660;
 '
 	db := candb.parse_dbc(text) or { panic(err) }
 	m := db.messages[0]
-	e := protection_for(project.NodeCfg{ name: 'Engine' }, m) or { panic('P05 was not stamped') }
+	e := protection_for(project.NodeCfg{ name: 'Engine' }, m)[0]
 	assert e.profile == p05
 	mut d := m.template()
 	d[3] = 0x11

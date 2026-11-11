@@ -43,15 +43,25 @@ class Faults:
     out."""
 
     def fault(self, channel: "Channel | str", node: str, message: "Message | str", kind: FaultKind | str,
-              ms: float | None = None, signal: "Signal | str | None" = None) -> None:
+              ms: float | None = None, signal: "Signal | str | None" = None, *,
+              group: str | None = None) -> None:
         """Arms `kind` on the simulated `node`'s `message` on `channel` (a Channel or its name; a
         Message or its name): for `ms` milliseconds, rounded up, or until cleared (None). A fault
         is keyed by the message's name, so a name the node sends at two ids reaches both: a Message
         whose name another message of its channel shares is refused (ValueError) rather than
         broadened.
         `signal` (a Signal or its name) is the one out_of_range forces; None lets the engine choose
-        one that can carry the violation. Raises FaultRefused where the fault could not take
-        effect, and BloblyError (code -3) when the project is not started."""
+        one that can carry the violation. `group` is the E2E window bad_crc and freeze_counter act
+        on, by its name as Frame.e2e_groups names it; None for every window. Raises FaultRefused
+        where the fault could not take effect, and BloblyError (code -3) when the project is not
+        started."""
+        if group is not None:
+            if signal is not None:
+                raise ValueError("a fault takes a signal (out_of_range) or a group (bad_crc, "
+                                 "freeze_counter), not both")
+            if str(kind) not in ("bad_crc", "freeze_counter"):
+                raise ValueError(f"group= names the E2E window of bad_crc or freeze_counter, not of {kind}")
+            signal = group
         self._arm(channel, node, message, kind, _duration(ms), signal)
 
     def clear_fault(self, channel: "Channel | str", node: str, message: "Message | str") -> None:
