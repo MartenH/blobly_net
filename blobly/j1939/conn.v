@@ -24,6 +24,10 @@ pub const conn_t2_ms = 1250
 pub const conn_t3_ms = 1250
 pub const conn_t4_ms = 1050
 
+// conn_per_cts is the most packets this side's RTS lets one CTS clear: a window is written back to
+// back, and a SocketCAN interface's queue is ten frames (txqueuelen) before a write is refused.
+pub const conn_per_cts = u8(8)
+
 // abort reasons this side sends (J1939-21; abort_reason names every one)
 const abort_timeout = u8(3)
 const abort_bad_sequence = u8(7)
@@ -82,6 +86,7 @@ mut:
 	owner    u64
 	state    OrigState
 	deadline f64
+	sent     int // the highest packet sent so far
 }
 
 // needs_connection says whether a message's frame `f` goes out as an RTS/CTS connection: a message
@@ -158,15 +163,15 @@ pub fn (o Originator) free_lane(now_ns u64) {
 	lane_free(o.lane, o.owner, now_ns, 0)
 }
 
-// start opens the connection at `now_ms`: the RTS (no limit on packets per CTS), and the wait for
-// the first CTS.
+// start opens the connection at `now_ms`: the RTS (at most conn_per_cts packets per CTS), and the
+// wait for the first CTS.
 pub fn (mut o Originator) start(now_ms f64) ConnOut {
 	n := o.data.len
 	o.state = .wait_cts
 	o.deadline = now_ms + o.answer_ms
 	return ConnOut{
 		frames: [
-			control_frame(o.sa, o.da, [cm_rts, u8(n & 0xFF), u8(n >> 8), u8(o.packets()), 0xFF,
+			control_frame(o.sa, o.da, [cm_rts, u8(n & 0xFF), u8(n >> 8), u8(o.packets()), conn_per_cts,
 				pgn_byte(o.pgn, 0), pgn_byte(o.pgn, 1), pgn_byte(o.pgn, 2)]),
 		]
 	}
@@ -208,12 +213,16 @@ pub fn (mut o Originator) feed(f transport.CanFrame, now_ms f64) ConnOut {
 			for k in first .. last + 1 {
 				out.frames << dt_packet(o.sa, o.da, o.data, k)
 			}
+			if last > o.sent {
+				o.sent = last
+			}
 			o.state = if last == o.packets() { OrigState.wait_ack } else { OrigState.wait_cts }
 			o.deadline = now_ms + o.answer_ms
 			return out
 		}
+		// accepted once every packet has gone out, whether a retransmission was asked for since
 		cm_eom_ack {
-			if o.state == .wait_ack && cm.acknowledges(o.pgn, o.data.len, o.packets()) {
+			if o.sent == o.packets() && cm.acknowledges(o.pgn, o.data.len, o.packets()) {
 				o.state = .ended
 				return ConnOut{
 					end: .done
@@ -389,6 +398,16 @@ pub fn (mut r Responder) poll(now_ms f64) []transport.CanFrame {
 	return out
 }
 
+// stop aborts (reason 250) every connection it is answering, for an owner going away.
+pub fn (mut r Responder) stop() []transport.CanFrame {
+	mut out := []transport.CanFrame{}
+	for k, c in r.conns {
+		out << abort_frame(u8(k & 0xFF), u8(k >> 8), abort_other, .responder, c.pgn)
+	}
+	r.conns = map[u16]Answering{}
+	return out
+}
+
 // clear is the CTS for the next window, from `me` to the originator `to`, and the wait for its
 // first packet (T2).
 fn (mut c Answering) clear(me u8, to u8, now_ms f64) transport.CanFrame {
@@ -426,16 +445,6 @@ fn pgn_byte(pgn u32, i int) u8 {
 pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms int, stop fn () bool) ! {
 	wire := transport.wire_of(bus)
 	mut o := connection_for(f, wire, answer_ms)!
-	mut rd := bus // copy: an interface value, the same bus
-	if wire != '' {
-		rd = transport.open(wire)!
-	}
-	defer {
-		if wire != '' {
-			rd.close()
-		}
-		o.free_lane(time.sys_mono_now())
-	}
 	for !o.take_lane(time.sys_mono_now()) {
 		if stop != unsafe { nil } && stop() {
 			return ConnError{
@@ -444,6 +453,19 @@ pub fn send_connection(mut bus transport.Bus, f transport.CanFrame, answer_ms in
 			}
 		}
 		time.sleep(5 * time.millisecond)
+	}
+	defer {
+		o.free_lane(time.sys_mono_now())
+	}
+	// opened once the lane is ours, so no answer to the connection that held it is read as one
+	mut rd := bus // copy: an interface value, the same bus
+	if wire != '' {
+		rd = transport.open(wire)!
+	}
+	defer {
+		if wire != '' {
+			rd.close()
+		}
 	}
 	// subscribed before the RTS goes out, so its answer cannot pass the reader by
 	rd.recv(0) or {}

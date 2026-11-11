@@ -723,6 +723,21 @@ fn (mut e Engine) conn_ended(o j1939.Originator, out j1939.ConnOut) {
 	}
 }
 
+// end_connections aborts (reason 250) every RTS/CTS connection the engine sends or answers, each
+// abort handed to `send`, and lets their lanes go: for a loop that is ending with the engine.
+pub fn (mut e Engine) end_connections(send fn (f transport.CanFrame) bool) {
+	for mut o in e.conns {
+		for f in o.stop().frames {
+			send(f)
+		}
+		o.free_lane(time.sys_mono_now())
+	}
+	e.conns = []
+	for f in e.answers.stop() {
+		send(f)
+	}
+}
+
 // say_once notes `text` the first time `key` is said.
 fn (mut e Engine) say_once(key string, text string) {
 	if !e.said[key] {

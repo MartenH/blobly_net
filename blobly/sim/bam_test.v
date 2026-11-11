@@ -251,3 +251,31 @@ struct SentAt {
 mut:
 	at []int
 }
+
+// A loop ending with connections open aborts what the engine sends and answers, and lets the
+// lane go for the next sender.
+fn test_ending_the_connections_aborts_them_and_frees_the_lane() {
+	wire := 'inproc:sim_conn_end'
+	mut body := Engine{
+		iface: wire
+		ecus:  [j1939_node('Body', 'PropA_Cfg', 1000)]
+	}
+	mut engine := Engine{
+		ecus: [j1939_node('Engine', 'EEC1', 0)]
+	}
+	rts := body.due_frames(0)
+	assert rts.len == 1 && rts[0].data[0] == j1939.cm_rts
+	assert engine.on_frame(rts[0]).len == 1 && engine.answers.open() == 1
+	mut out := &FrameBox{}
+	collect := fn [mut out] (f transport.CanFrame) bool {
+		out.frames << f
+		return true
+	}
+	body.end_connections(collect)
+	engine.end_connections(collect)
+	assert out.frames.map(it.data[..3]) == [[j1939.cm_abort, u8(250), 0xFC], [j1939.cm_abort, u8(250), 0xFD]]
+	assert body.conns.len == 0 && engine.answers.open() == 0
+	next := j1939.connection_for(transport.CanFrame{ ...rts[0], id: j1939.compose(6, 0xEF00, 0x00,
+		0x21), data: []u8{len: 16} }, wire, 0)!
+	assert next.take_lane(time.sys_mono_now())
+}

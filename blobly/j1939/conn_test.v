@@ -61,7 +61,7 @@ fn test_an_originator_and_a_responder_carry_a_message_whole() {
 fn test_the_frames_of_a_connection() {
 	mut o := connection_for(prop_cfg(), '', 0)!
 	rts := o.start(0).frames
-	assert rts.len == 1 && rts[0].data == [cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00]
+	assert rts.len == 1 && rts[0].data == [cm_rts, 16, 0, 3, conn_per_cts, 0x00, 0xEF, 0x00]
 	assert rts[0].id == compose(7, pgn_tp_cm, 0x00, 0x21) && rts[0].format_stated
 	mut r := Responder{
 		addresses: [u8(0x00)]
@@ -247,4 +247,82 @@ fn test_send_connection_on_a_bus() {
 		return
 	}
 	assert false, 'nobody answers'
+}
+
+// A CTS asking again for a packet that is not the last leaves the originator waiting for a CTS;
+// the acknowledgement that follows, once every packet has gone out, still ends it done.
+fn test_an_acknowledgement_after_a_retransmission_is_taken() {
+	mut o := connection_for(prop_cfg(), '', 0)!
+	o.start(0)
+	cts := fn (count u8, next u8) transport.CanFrame {
+		return control_frame(0x00, 0x21, [cm_cts, count, next, 0xFF, 0xFF, 0x00, 0xEF, 0x00])
+	}
+	assert o.feed(cts(3, 1), 1).frames.len == 3
+	assert o.feed(cts(1, 2), 2).frames.map(it.data[0]) == [u8(2)]
+	ack := control_frame(0x00, 0x21, [cm_eom_ack, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])
+	assert o.feed(ack, 3).end == .done
+}
+
+// An acknowledgement before every packet has gone out is not this message's.
+fn test_an_early_acknowledgement_is_not_taken() {
+	mut o := connection_for(prop_cfg(), '', 0)!
+	o.start(0)
+	o.feed(control_frame(0x00, 0x21, [cm_cts, 2, 1, 0xFF, 0xFF, 0x00, 0xEF, 0x00]), 1)
+	ack := control_frame(0x00, 0x21, [cm_eom_ack, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00])
+	assert o.feed(ack, 2).end == .open
+}
+
+// The RTS lets a CTS clear conn_per_cts packets, so a responder clears a long message a window
+// of that many at a time.
+fn test_a_window_is_at_most_conn_per_cts() {
+	mut o := connection_for(transport.CanFrame{ ...prop_cfg(), data: []u8{len: 100} }, '', 0)!
+	mut r := Responder{
+		addresses: [u8(0x00)]
+	}
+	cts := r.feed(o.start(0).frames[0], 0)
+	assert cts[0].data[1..3] == [conn_per_cts, 1]
+	assert o.feed(cts[0], 1).frames.len == int(conn_per_cts)
+}
+
+// A responder whose owner goes away aborts what it answers (reason 250).
+fn test_a_responder_stopped_aborts_what_it_answers() {
+	mut o := connection_for(prop_cfg(), '', 0)!
+	mut r := Responder{
+		addresses: [u8(0x00)]
+	}
+	r.feed(o.start(0).frames[0], 0)
+	gone := r.stop()
+	assert gone.len == 1 && gone[0].data[..3] == [cm_abort, 250, 0xFD] && r.open() == 0
+	assert gone[0].id == compose(7, pgn_tp_cm, 0x21, 0x00)
+}
+
+// Answers to the connection that held the lane, sent while this one waited for it, are not
+// taken as answers to this one's RTS.
+fn test_send_connection_reads_no_answer_meant_for_the_lane_holder() {
+	wire := 'inproc:J1939_CONN_LANE'
+	mut tx := transport.row_framed(transport.open(wire)!, wire, 'row')
+	mut peer := transport.open(wire)!
+	defer {
+		tx.close()
+		peer.close()
+	}
+	holder := connection_for(prop_cfg(), wire, 0)!
+	assert holder.take_lane(time.sys_mono_now())
+	ch := chan string{cap: 1}
+	spawn fn (mut tx transport.Bus, ch chan string) {
+		send_connection(mut tx, prop_cfg(), 100, unsafe { nil }) or {
+			ch <- err.msg()
+			return
+		}
+		ch <- 'done'
+	}(mut tx, ch)
+	time.sleep(20 * time.millisecond)
+	// the holder's RTS, the destination's CTS and acknowledgement
+	peer.send(control_frame(0x21, 0x00, [cm_rts, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00]))!
+	peer.send(control_frame(0x00, 0x21, [cm_cts, 3, 1, 0xFF, 0xFF, 0x00, 0xEF, 0x00]))!
+	peer.send(control_frame(0x00, 0x21, [cm_eom_ack, 16, 0, 3, 0xFF, 0x00, 0xEF, 0x00]))!
+	time.sleep(20 * time.millisecond)
+	holder.free_lane(time.sys_mono_now())
+	got := <-ch
+	assert got.contains('no CTS'), got
 }
