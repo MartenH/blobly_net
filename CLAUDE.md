@@ -401,7 +401,7 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-5f7d4d0-windows.zip` asset disappears, the Windows job breaks — and runs
-`v test blobly/isotp/` plus the cmd sweep there. The asset is the V3 of `.v-version`
+`v test blobly/isotp/`, `blobly/sim/loop_test.v` (a simulated node's cadence, which only the Windows clock can fail) and the cmd sweep there. The asset is the V3 of `.v-version`
 cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the pin moves.
 **The toolchain is V3.** Every job sets
 `V_MACOS_V3_NO_FALLBACK=1` and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level: without the

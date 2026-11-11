@@ -125,6 +125,12 @@ jobs:
         shell: msys2 {0}
         run: /c/v-ct/v.exe -cc gcc -enable-globals test blobly/isotp/
 
+      # The simulated-node loop's cadence. Linux's clocks are fine-grained enough that a coarse
+      # clock passes there too; only Windows' 15.6 ms tick tells a 10 ms message from a 16 ms one.
+      - name: Simulated-node cadence on the Windows clock (blobly/sim/loop_test.v)
+        shell: msys2 {0}
+        run: /c/v-ct/v.exe -cc gcc -enable-globals test blobly/sim/loop_test.v
+
   build-msys2:
     name: mingw (MSYS2) • libblobly + GUI build
     runs-on: windows-latest

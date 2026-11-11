@@ -2,6 +2,7 @@ module sim
 
 import time
 import blobly.candb
+import blobly.player
 import blobly.transport
 
 fn ten_ms_engine() Engine {
@@ -55,6 +56,8 @@ fn (mut l LoopRun) run(ms int) {
 }
 
 fn test_a_10_ms_message_is_sent_about_100_times_a_second() {
+	// the 1 ms timer period every front end asks for at startup (Windows; nothing elsewhere)
+	player.raise_timer_resolution()
 	mut mon := transport.open('inproc:sim_loop_cadence')!
 	mut l := &LoopRun{
 		engine: ten_ms_engine()
@@ -72,6 +75,6 @@ fn test_a_10_ms_message_is_sent_about_100_times_a_second() {
 	th.wait()
 	l.bus.close()
 	mon.close()
-	// slots 0, 10 .. 990 (1000 at most): a coarse clock or a fixed wait sends far fewer
+	// slots 0, 10 .. 990 (1000 at most); on Windows the 15.6 ms tick as the clock sends about 64
 	assert n >= 80 && n <= 101, '${n} frames of a 10 ms message in 1 s'
 }
