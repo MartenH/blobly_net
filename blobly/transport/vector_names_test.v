@@ -692,3 +692,14 @@ fn test_vector_overrun_bit_per_protocol() {
 	assert vector_overrun_mask(false) == 0x01, 'XL_EVENT_FLAG_OVERRUN in XLevent.flags'
 	assert vector_overrun_mask(true) == 0x100, 'XL_CAN_QUEUE_OVERFLOW in XLcanRxEvent.flagsChip'
 }
+
+fn test_vector_open_note_is_the_last_open_of_that_channel() {
+	vector_keep_queue_note(7, vector_rx_queue_note(7, false, 256))
+	n := vector_open_note('vector:7@500000') or { '' }
+	assert n.contains('channel 7') && n.contains('256')
+	assert vector_open_note('vector:ch7,silent') or { '' } == n, 'one channel however it is spelled'
+	assert vector_open_note('vector:8') == none
+	assert vector_open_note('pcan:PCAN_USBBUS7') == none
+	vector_keep_queue_note(7, vector_rx_queue_note(7, false, 32768))
+	assert vector_open_note('vector:7') == none, 'an open that got the full queue clears it'
+}

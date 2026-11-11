@@ -280,12 +280,14 @@ Quirks. The first one is the worst thing in this file, and everything under it f
 - **Each port has its own receive queue, and only its own reads empty it** — Vector is not
   behind the shared reader, so a script that pauses reading leaves its frames there. A port asks
   for the most the XL API allows (`vector_rx_queue`, `vector_names.v`: 32768 events classic,
-  524288 bytes CAN-FD, about 16 s and 4 s of a 2000 frame/s bus); a driver that refuses that size
-  is opened at 256 events / 64 KiB and says so once on stderr. An overflow is still counted: the
-  event after the loss carries the queue-overflow bit in its header (`XL_EVENT_FLAG_OVERRUN` in a
-  classic event's `flags`, `XL_CAN_QUEUE_OVERFLOW` in an FD event's `flagsChip`), and
-  `diagnostics().dropped` counts those events — overruns, not frames, since the driver does not
-  say how many were lost.
+  524288 bytes CAN-FD, about 16 s of a 2000 frame/s bus classic and, at the 128 bytes a
+  maximum-size FD event takes, about 2 s on FD); a driver that refuses that size is opened at
+  256 events / 64 KiB and says so in the Log line announcing the row (and once on stderr, for a
+  console host). An overflow is still counted: the event after the loss carries the
+  queue-overflow bit in its header (`XL_EVENT_FLAG_OVERRUN` in a classic event's `flags`,
+  `XL_CAN_QUEUE_OVERFLOW` in an FD event's `flagsChip`), and a classic message the driver or
+  controller overran before carries `XL_CAN_MSG_FLAG_OVERRUN`; `diagnostics().dropped` counts
+  those events — overruns, not frames, since the driver does not say how many were lost.
 - **`,silent` reaches the transceiver** — ACK-free output is set *before* the channel is
   activated, the only ordering that is safe against a running vehicle. A project's
   `listen_only:` is translated to it, and `cmd/vectorcheck --channel N` defaults to silent.

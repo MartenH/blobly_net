@@ -247,8 +247,11 @@ pub fn open_vector(spec string) !&VectorBus {
 		extra := if msg == '' { '' } else { ' (${msg})' }
 		return error('Vector channel ${s.channel} failed to open (XL status ${-rc})${extra}')
 	}
-	// The fallback queue is said once per process: every open of the channel would repeat it.
-	if note := vector_rx_queue_note(s.channel, s.fd, granted) {
+	// The fallback queue is kept for the GUI's Log (vector_open_note) and said once per process
+	// on stderr, for a console host: every open of the channel would repeat it.
+	qnote := vector_rx_queue_note(s.channel, s.fd, granted)
+	vector_keep_queue_note(s.channel, qnote)
+	if note := qnote {
 		if stdatomic.fetch_add_u64(&vector_rxq_noted, 1) == 0 {
 			eprintln(note)
 		}

@@ -787,6 +787,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// open that has been slow, and a line here beats a probe (2026-08-29).
 				how := if n := transport.cansub_lookup_note(c.iface) { ' (${n})' } else { '' }
 				a.log_append_locked('${c.name}: open on ${c.iface}${how}')
+				// A Vector port that got the fallback receive queue says so here.
+				if n := transport.vector_open_note(c.iface) {
+					a.log_append_locked('${c.name}: ${n}')
+				}
 			}
 		}
 	}

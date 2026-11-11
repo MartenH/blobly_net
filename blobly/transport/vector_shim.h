@@ -59,6 +59,8 @@
 #define CT_XL_ERR_TX_NOT_POSSIBLE 12
 #define CT_XL_CAN_EXT_MSG_ID      0x80000000
 #define CT_XL_CAN_MSG_FLAG_ERROR_FRAME  0x01
+/* vxlapi.h: "Overrun in Driver or CAN Controller, previous msgs have been lost." */
+#define CT_XL_CAN_MSG_FLAG_OVERRUN      0x02
 #define CT_XL_CAN_MSG_FLAG_REMOTE_FRAME 0x10
 #define CT_XL_CAN_MSG_FLAG_TX_COMPLETED 0x40
 #define CT_XL_CAN_MSG_FLAG_TX_REQUEST   0x80
@@ -1036,6 +1038,8 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 		return 2;
 	}
 	if (ev.tag != CT_XL_RECEIVE_MSG) return 2;
+	/* A message the driver or controller overran before is a loss too, counted the same way. */
+	if (overran && (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_OVERRUN)) *overran = 1;
 	/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
 	 * back: filing either as bus traffic puts a message on the trace nobody sent. */
 	if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
@@ -1125,7 +1129,8 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 /* errs, if given, is incremented once per error record consumed during this call: the
  * process-wide ct_vector_errframes cannot say which PORT saw them, and diagnostics() reports per
  * port (#213). overruns, likewise, once per event taken whose header carries ovf_mask: the
- * queue overflowed before it (vector_overrun_mask). */
+ * queue overflowed before it (vector_overrun_mask) -- or, on a classic port, whose message
+ * carries XL_CAN_MSG_FLAG_OVERRUN: the driver or controller overran before it. */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
                           uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status,
                           int port_is_fd, int *fd, int *brs, int *esi, int *errs, int *skips,
