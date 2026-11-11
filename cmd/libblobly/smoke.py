@@ -25,7 +25,10 @@ class Busload(ctypes.Structure):
 
 class Message(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
-                ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
+                ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32),
+                ("cycle_ms", ctypes.c_int32), ("cycle_fast_ms", ctypes.c_int32),
+                ("repetitions", ctypes.c_int32), ("delay_ms", ctypes.c_int32),
+                ("start_delay_ms", ctypes.c_int32), ("send_type", ctypes.c_uint8)]
 
 
 class Signal(ctypes.Structure):
@@ -34,7 +37,9 @@ class Signal(ctypes.Structure):
                 ("multiplexor", ctypes.c_uint8), ("multiplexed", ctypes.c_uint8),
                 ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32),
                 ("factor", ctypes.c_double), ("offset", ctypes.c_double),
-                ("minimum", ctypes.c_double), ("maximum", ctypes.c_double)]
+                ("minimum", ctypes.c_double), ("maximum", ctypes.c_double),
+                ("start_raw", ctypes.c_uint64), ("start", ctypes.c_double),
+                ("has_start", ctypes.c_uint8)]
 
 
 class DoipAnnouncement(ctypes.Structure):
@@ -139,6 +144,7 @@ def dbc_steps(lib, row):
     mi = Message()
     assert lib.bb_message_info(row, pt, ctypes.byref(mi)) == 0, err(lib)
     assert (mi.id, mi.ext, mi.dlc, mi.signals) == (0x100, 0, 8, 6), (mi.id, mi.dlc, mi.signals)
+    assert (mi.cycle_ms, mi.repetitions, mi.send_type) == (100, 0, 0), (mi.cycle_ms, mi.send_type)
     sigs = {}
     for s in range(mi.signals):
         si = Signal()
@@ -146,6 +152,7 @@ def dbc_steps(lib, row):
         sigs[name_of(lib.bb_signal_name, row, pt, s)] = (s, si)
     s, es = sigs["EngineSpeed"]
     assert (es.start_bit, es.length, es.factor, es.maximum) == (0, 16, 0.25, 16383.75)
+    assert (es.has_start, es.start_raw) == (0, 0), (es.has_start, es.start_raw)
     assert name_of(lib.bb_signal_unit, row, pt, s) == "rpm"
     g, gear = sigs["Gear"]
     raw, value = ctypes.c_uint64(), ctypes.c_double()
