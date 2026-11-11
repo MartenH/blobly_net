@@ -174,6 +174,10 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		ctl:     r.ctl
 		run_t0:  r.run_t0
 	}
+	ctl := r.ctl
+	g.tp.stop_by(fn [ctl] () bool {
+		return !ctl.running
+	})
 	r.gens << g
 	// what it is, from its own channel's databases, even where it can send nowhere; what it sends
 	// is resolved below from its target's

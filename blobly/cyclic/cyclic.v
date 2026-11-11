@@ -187,7 +187,20 @@ pub fn new_sender(spec Spec, iface string, row string) !&Sender {
 		out:   true
 	}
 	s.frame = encoded(s.spec)!
+	s.tp.stop_by(fn [s] () bool {
+		mut me := unsafe { s }
+		return me.stopping()
+	})
 	return s
+}
+
+// stopping is whether its send is to end: a stop asked, or its wire stopping.
+fn (mut s Sender) stopping() bool {
+	s.mu.lock()
+	asked := s.asked
+	mut w := s.wire
+	s.mu.unlock()
+	return asked || (!isnil(w) && w.stopping())
 }
 
 // join puts s on wire `w`, which sends it from its next pass.

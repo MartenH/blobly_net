@@ -42,6 +42,14 @@ mut:
 	own_rd  bool // rd was opened for it (else it is the wire's handle)
 	look_at u64  // when a connection looks for its lane or its answers next (ms, monotonic)
 	took    bool // a frame of the send went out
+	// asked between a connection's packets: true ends it there with its abort (nil: never)
+	stop fn () bool = unsafe { nil }
+}
+
+// stop_by makes `stop` what a connection asks between its packets, set once by the owner: a stop
+// asked while a window is going out ends the connection before its next packet.
+pub fn (mut t Tp) stop_by(stop fn () bool) {
+	t.stop = stop
 }
 
 // busy is whether a transfer is in progress.
@@ -194,9 +202,13 @@ fn (mut t Tp) pump_conn(mut bus transport.Bus) Step {
 // conn_out sends what a connection step produced, in order, and says where it stands.
 fn (mut t Tp) conn_out(mut bus transport.Bus, out j1939.ConnOut) Step {
 	for x in out.frames {
-		if out.end == .open && j1939.pgn(x.id) == j1939.pgn_tp_dt
-			&& !t.conn.take_lane(time.sys_mono_now()) {
-			return t.conn_lost()
+		if out.end == .open && j1939.pgn(x.id) == j1939.pgn_tp_dt {
+			if !t.conn.take_lane(time.sys_mono_now()) {
+				return t.conn_lost()
+			}
+			if t.stop != unsafe { nil } && t.stop() {
+				return t.conn_out(mut bus, t.conn.stop())
+			}
 		}
 		bus.send(x) or {
 			if t.conn.open() {
@@ -246,14 +258,15 @@ fn (mut t Tp) conn_end(why string) Step {
 }
 
 // quit ends the transfer in progress, for a stop: a BAM's lane let go with the rest unsent, a
-// connection aborted on `bus` (reason 250).
+// connection aborted on `bus` (reason 250) while its lane is still its own — another sender's
+// connection between the same two addresses is not aborted.
 pub fn (mut t Tp) quit(mut bus transport.Bus) {
 	if t.bam {
 		t.pacer.abandon(0)
 		t.bam = false
 	}
 	if t.in_conn {
-		if t.opened {
+		if t.opened && t.conn.take_lane(time.sys_mono_now()) {
 			for a in t.conn.stop().frames {
 				bus.send(a) or {}
 			}
