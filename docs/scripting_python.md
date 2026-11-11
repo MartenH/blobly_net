@@ -885,8 +885,9 @@ load, computed by the same code, with two things to know:
 
 `ch.diagnostics()` is a `BusDiagnostics`: what the backend counted since the handle opened that no
 frame carried. `dropped` is frames lost before delivery (this handle's queue full, a driver
-overrun, a shared ring overwritten), `bus_errors` controller error records, `decode_errors`
-records the backend could not decode. Counts only grow while the handle is open, and
+overrun, a shared ring overwritten; on Vector the times the port's receive queue overflowed,
+since the driver marks that frames were lost and not how many), `bus_errors` controller error
+records, `decode_errors` records the backend could not decode. Counts only grow while the handle is open, and
 `ch.close()` starts the load again at zero. The diagnostics count from the handle's open too,
 except on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge): there they are
 the wire's, its other handles' ring gaps included, and start again only once the last handle on

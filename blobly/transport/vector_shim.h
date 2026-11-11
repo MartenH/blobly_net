@@ -35,12 +35,9 @@
  * bytes through the other's layout. Which version a port was opened with therefore travels with
  * the port (ct_vector_open's `fd`, VectorBus.fd) rather than being decided per call. */
 #define CT_XL_INTERFACE_VERSION_V4 4
-/* rxQueueSize is EVENTS for V3 and BYTES for V4 — the same argument with two units. 256 events
- * is what the classic port asks for; 256 BYTES would be below the library's own minimum
- * (RX_FIFO_CANFD_QUEUE_SIZE_MIN, 8192) and is rejected. 64 KiB holds ~512 maximum-size FD
- * events, which is the same order of buffering the classic port gets. */
-#define CT_XL_RX_QUEUE_EVENTS     256
-#define CT_XL_RX_QUEUE_BYTES_FD   65536
+/* rxQueueSize is EVENTS for V3 and BYTES for V4 — the same argument with two units. The sizes,
+ * and the bit that marks a queue overflow in each event encoding, are vector_rx_queue and
+ * vector_overrun_mask (vector_names.v), passed in by the caller. */
 /* NO FLAGS on activation. vxlapi.h says of XL_ACTIVATE_RESET_CLOCK (8): "using this flag with
  * time synchronisation protocols supported by Vector Timesync Service is not recommended" — and
  * that service is installed alongside the driver, so on an ordinary Vector bench it is running.
@@ -62,6 +59,8 @@
 #define CT_XL_ERR_TX_NOT_POSSIBLE 12
 #define CT_XL_CAN_EXT_MSG_ID      0x80000000
 #define CT_XL_CAN_MSG_FLAG_ERROR_FRAME  0x01
+/* vxlapi.h: "Overrun in Driver or CAN Controller, previous msgs have been lost." */
+#define CT_XL_CAN_MSG_FLAG_OVERRUN      0x02
 #define CT_XL_CAN_MSG_FLAG_REMOTE_FRAME 0x10
 #define CT_XL_CAN_MSG_FLAG_TX_COMPLETED 0x40
 #define CT_XL_CAN_MSG_FLAG_TX_REQUEST   0x80
@@ -720,7 +719,8 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
                           ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event,
                           uint64_t *out_gen, int fd, unsigned int dbitrate,
                           unsigned int a_tseg1, unsigned int a_tseg2, unsigned int a_sjw,
-                          unsigned int d_tseg1, unsigned int d_tseg2, unsigned int d_sjw) {
+                          unsigned int d_tseg1, unsigned int d_tseg2, unsigned int d_sjw,
+                          unsigned int rxq, unsigned int rxq_fallback, unsigned int *out_rxq) {
 	ct_xlaccess mask, permission;
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
@@ -758,15 +758,26 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	 * two calls after this one mean anything. */
 	permission = mask;
 	/* THE PORT'S INTERFACE VERSION IS THE PROTOCOL, and the queue size argument changes units with
-	 * it (events for V3, bytes for V4). Both travel together here so the two can never disagree —
+	 * it (events for V3, bytes for V4). The caller picks the size by the same `fd`, so the two can never disagree —
 	 * a V4 port with a 256-BYTE queue is below the library's minimum and refuses to open, which
 	 * would read as "the adapter would not open". */
-	st = ct_xl_openport(&port, "blobly_net", mask, &permission,
-	                    fd ? CT_XL_RX_QUEUE_BYTES_FD : CT_XL_RX_QUEUE_EVENTS,
+	st = ct_xl_openport(&port, "blobly_net", mask, &permission, rxq,
 	                    fd ? CT_XL_INTERFACE_VERSION_V4 : CT_XL_INTERFACE_VERSION,
 	                    CT_XL_BUS_TYPE_CAN);
-	CT_VLOG("xlOpenPort(v%d) -> st=%d port=%d permission=0x%016llX\n",
-	        fd ? 4 : 3, (int)st, (int)port, (unsigned long long)permission);
+	CT_VLOG("xlOpenPort(v%d, queue %u) -> st=%d port=%d permission=0x%016llX\n",
+	        fd ? 4 : 3, rxq, (int)st, (int)port, (unsigned long long)permission);
+	/* A driver that refuses the queue size gets the fallback, and the caller says so. */
+	if (st != 0 && rxq_fallback && rxq_fallback != rxq) {
+		permission = mask;
+		port = CT_XL_INVALID_PORTHANDLE;
+		st = ct_xl_openport(&port, "blobly_net", mask, &permission, rxq_fallback,
+		                    fd ? CT_XL_INTERFACE_VERSION_V4 : CT_XL_INTERFACE_VERSION,
+		                    CT_XL_BUS_TYPE_CAN);
+		CT_VLOG("xlOpenPort(v%d, queue %u) -> st=%d port=%d permission=0x%016llX\n",
+		        fd ? 4 : 3, rxq_fallback, (int)st, (int)port, (unsigned long long)permission);
+		rxq = rxq_fallback;
+	}
+	if (out_rxq) *out_rxq = rxq;
 	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) { ct_vec_leave(); return st ? -(int)st : -1001; }
 	/* Init access decides whether this port may set the bitrate at all. Without it another
 	 * application already owns the channel's parameters, and setting them would either fail
@@ -1007,7 +1018,7 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
  * decodable frames sitting in the queue behind it. The loop below acts on the difference. */
 static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8_t *data,
                                int *ext, int *rtr, int *fd, int *brs, int *esi,
-                               int *chip_status) {
+                               int *chip_status, unsigned int ovf_mask, int *overran) {
 	ct_xlevent ev;
 	unsigned int count = 1;
 	int i;
@@ -1016,6 +1027,8 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 		if (st != CT_XL_ERR_QUEUE_IS_EMPTY && st != 0) return -(int)st;
 		return 1;
 	}
+	/* The overflow mark rides the header of whatever event follows the loss, any tag. */
+	if (overran && ((unsigned int)ev.flags & ovf_mask)) *overran = 1;
 	/* A chip-state reply riding the same queue: capture it for the health latch
 	 * instead of discarding it. The old helper that DRAINED the queue hunting for
 	 * this event threw away data frames mid-run — health must ride the stream the
@@ -1025,6 +1038,8 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 		return 2;
 	}
 	if (ev.tag != CT_XL_RECEIVE_MSG) return 2;
+	/* A message the driver or controller overran before is a loss too, counted the same way. */
+	if (overran && (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_OVERRUN)) *overran = 1;
 	/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
 	 * back: filing either as bus traffic puts a message on the trace nobody sent. */
 	if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
@@ -1048,7 +1063,7 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
  * bus traffic — expressed by TAG here, where the classic path reads flags. */
 static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8_t *data,
                                int *ext, int *rtr, int *fd, int *brs, int *esi,
-                               int *chip_status) {
+                               int *chip_status, unsigned int ovf_mask, int *overran) {
 	ct_xl_can_rx_event ev;
 	int i;
 	uint8_t n;
@@ -1059,6 +1074,8 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 		if (st != CT_XL_ERR_QUEUE_IS_EMPTY) return -(int)st;
 		return 1;
 	}
+	/* The overflow mark rides the header of whatever event follows the loss, any tag. */
+	if (overran && ((unsigned int)ev.flagsChip & ovf_mask)) *overran = 1;
 	if (ev.tag == CT_XL_CAN_EV_TAG_CHIP_STATE) {
 		if (chip_status) *chip_status = ev.tagData.canChipState.busStatus;
 		return 2;
@@ -1111,11 +1128,16 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 
 /* errs, if given, is incremented once per error record consumed during this call: the
  * process-wide ct_vector_errframes cannot say which PORT saw them, and diagnostics() reports per
- * port (#213). */
+ * port (#213). overruns, likewise, once per event taken whose header carries ovf_mask: the
+ * queue overflowed before it (vector_overrun_mask) -- or, on a classic port, whose message
+ * carries XL_CAN_MSG_FLAG_OVERRUN: the driver or controller overran before it. */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
                           uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status,
-                          int port_is_fd, int *fd, int *brs, int *esi, int *errs, int *skips) {
+                          int port_is_fd, int *fd, int *brs, int *esi, int *errs, int *skips,
+                          unsigned int ovf_mask, int *overruns) {
 	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
+	if (overruns) *overruns = 0;
+	int overran;
 	/* SKIPS: events this call took off the queue and dropped. A zero-timeout read answers 1 after
 	 * its one poll whether that poll found the queue empty or skipped an event; the count is what
 	 * tells the caller which, so it can look again under the one rule every backend shares
@@ -1149,9 +1171,13 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		 * with decides the event encoding on its queue, so this cannot be chosen per event —
 		 * reading a V4 queue with xlReceive returns whatever the first 48 bytes of a 128-byte
 		 * event happen to look like. */
+		overran = 0;
 		rc = port_is_fd
-		     ? ct_vector_decode_v4(port, id, len, data, ext, rtr, fd, brs, esi, chip_status)
-		     : ct_vector_decode_v3(port, id, len, data, ext, rtr, fd, brs, esi, chip_status);
+		     ? ct_vector_decode_v4(port, id, len, data, ext, rtr, fd, brs, esi, chip_status,
+		                           ovf_mask, &overran)
+		     : ct_vector_decode_v3(port, id, len, data, ext, rtr, fd, brs, esi, chip_status,
+		                           ovf_mask, &overran);
+		if (overran && overruns) (*overruns)++;
 		if (rc == 0) return 0;
 		if (rc < 0) return rc;
 		/* AN EVENT WAS TAKEN AND SKIPPED: poll again rather than wait. The notification is

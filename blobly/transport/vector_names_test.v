@@ -666,3 +666,40 @@ fn test_the_application_is_seen_only_where_a_channel_described_it() {
 	assert !application_seen_in([AppSlot.absent, .unreadable])
 	assert !application_seen_in([]AppSlot{})
 }
+
+fn test_vector_rx_queue_is_the_xl_ceiling() {
+	classic := vector_rx_queue(false)
+	assert classic.size == 32768
+	assert classic.fallback == 256
+	assert classic.size & (classic.size - 1) == 0, 'a classic queue is a power of two'
+	assert classic.fallback & (classic.fallback - 1) == 0
+	fd := vector_rx_queue(true)
+	assert fd.size == 524288, 'RX_FIFO_CANFD_QUEUE_SIZE_MAX'
+	assert fd.fallback == 65536
+	assert fd.fallback >= 8192, 'RX_FIFO_CANFD_QUEUE_SIZE_MIN'
+}
+
+fn test_vector_rx_queue_note_only_for_the_fallback() {
+	assert vector_rx_queue_note(1, false, 32768) == none
+	assert vector_rx_queue_note(1, true, 524288) == none
+	n := vector_rx_queue_note(2, false, 256) or { '' }
+	assert n.contains('channel 2') && n.contains('32768 events') && n.contains('256')
+	m := vector_rx_queue_note(3, true, 65536) or { '' }
+	assert m.contains('524288 bytes') && m.contains('65536')
+}
+
+fn test_vector_overrun_bit_per_protocol() {
+	assert vector_overrun_mask(false) == 0x01, 'XL_EVENT_FLAG_OVERRUN in XLevent.flags'
+	assert vector_overrun_mask(true) == 0x100, 'XL_CAN_QUEUE_OVERFLOW in XLcanRxEvent.flagsChip'
+}
+
+fn test_vector_open_note_is_the_last_open_of_that_channel() {
+	vector_keep_queue_note(7, vector_rx_queue_note(7, false, 256))
+	n := vector_open_note('vector:7@500000') or { '' }
+	assert n.contains('channel 7') && n.contains('256')
+	assert vector_open_note('vector:ch7,silent') or { '' } == n, 'one channel however it is spelled'
+	assert vector_open_note('vector:8') == none
+	assert vector_open_note('pcan:PCAN_USBBUS7') == none
+	vector_keep_queue_note(7, vector_rx_queue_note(7, false, 32768))
+	assert vector_open_note('vector:7') == none, 'an open that got the full queue clears it'
+}

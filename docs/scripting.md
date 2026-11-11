@@ -670,7 +670,8 @@ local d = bus.diagnostics(channel)
   `run()`). A channel the script never reads sees only its own sends, and a frame left queued
   lands in the second it is read.
 - `bus.diagnostics` is what the backend counted that no frame carried: `dropped` frames lost
-  before delivery (the handle's queue full, a driver overrun, a shared ring overwritten),
+  before delivery (the handle's queue full, a driver overrun, a shared ring overwritten; on Vector
+  the times the port's receive queue overflowed, not frames),
   `bus_errors` controller error records, `decode_errors` records it could not decode — on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other handles' ring gaps included. The runner prints the non-empty ones at close, as before.
 
 ### Interfaces — bus.open_iface / bus.interfaces / vector

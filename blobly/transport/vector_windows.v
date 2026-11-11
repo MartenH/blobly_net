@@ -65,10 +65,10 @@ import time
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
-fn C.ct_vector_open(u32, u32, int, &i32, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
+fn C.ct_vector_open(u32, u32, int, &i32, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32, u32, u32, &u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &i32, &i32, int, &i32, int, &i32, &i32, &i32, &i32, &i32) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &i32, &i32, int, &i32, int, &i32, &i32, &i32, &i32, &i32, u32, &i32) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -86,16 +86,21 @@ fn C.ct_vector_reqchip(int, u64) int
 fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
 
+// How many opens got the fallback receive queue; the first says so.
+__global vector_rxq_noted = u64(0)
+
 // VectorBus is one open, activated XL port on a single channel.
 pub struct VectorBus {
 mut:
 	// Error records this port's queue carried, counted per read -- see diagnostics() (#213).
 	bus_errors u64
-	port       int
-	mask       u64
-	gen        u64 // which open of this channel we are; see the generation note in vector_shim.h
-	notify     voidptr
-	silent     bool
+	// Receive-queue overflows this port's events were marked with -- see diagnostics() (#623).
+	overruns u64
+	port     int
+	mask     u64
+	gen      u64 // which open of this channel we are; see the generation note in vector_shim.h
+	notify   voidptr
+	silent   bool
 	// WHICH INTERFACE VERSION THIS PORT WAS OPENED WITH, and therefore which of the two event
 	// encodings its queue carries. Not a preference that send/recv could reconsider per frame:
 	// reading a V4 queue with xlReceive decodes the first 48 bytes of a 128-byte event as if they
@@ -148,9 +153,11 @@ pub fn open_vector(spec string) !&VectorBus {
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
+	rxq := vector_rx_queue(s.fd)
+	mut granted := u32(0)
 	mut rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
 		&gen, isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw), u32(dt.tseg1),
-		u32(dt.tseg2), u32(dt.sjw))
+		u32(dt.tseg2), u32(dt.sjw), rxq.size, rxq.fallback, &granted)
 	// WAIT OUT A WINDING-DOWN RUN. -1009 means the previous run's ports are still closing, which
 	// is what an immediate Stop/Start looks like from here; it clears itself when the last one
 	// goes. Bounded, because a port that never closes must not hang the open forever.
@@ -161,7 +168,7 @@ pub fn open_vector(spec string) !&VectorBus {
 		time.sleep(10 * time.millisecond)
 		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen,
 			isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw), u32(dt.tseg1),
-			u32(dt.tseg2), u32(dt.sjw))
+			u32(dt.tseg2), u32(dt.sjw), rxq.size, rxq.fallback, &granted)
 	}
 	if rc == -1009 {
 		return error('Vector channel ${s.channel} is still being released by the previous run — try again in a moment')
@@ -239,6 +246,15 @@ pub fn open_vector(spec string) !&VectorBus {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-rc)) }
 		extra := if msg == '' { '' } else { ' (${msg})' }
 		return error('Vector channel ${s.channel} failed to open (XL status ${-rc})${extra}')
+	}
+	// The fallback queue is kept for the GUI's Log (vector_open_note) and said once per process
+	// on stderr, for a console host: every open of the channel would repeat it.
+	qnote := vector_rx_queue_note(s.channel, s.fd, granted)
+	vector_keep_queue_note(s.channel, qnote)
+	if note := qnote {
+		if stdatomic.fetch_add_u64(&vector_rxq_noted, 1) == 0 {
+			eprintln(note)
+		}
 	}
 	return &VectorBus{
 		port:   port
@@ -394,8 +410,9 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	for {
 		mut errs := i32(0)
 		mut skips := i32(0)
+		mut overruns := i32(0)
 		r = C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip,
-			pfd, &isfd, &brs, &esi, &errs, &skips)
+			pfd, &isfd, &brs, &esi, &errs, &skips, vector_overrun_mask(b.fd), &overruns)
 		if chip >= 0 {
 			b.last_chip = chip
 		}
@@ -403,6 +420,9 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 			// Error records the shim consumed on this port's queue during this read: not frames,
 			// reported through diagnostics() (#213). Atomic: read by the GUI's RX loop.
 			stdatomic.add_u64(&b.bus_errors, errs)
+		}
+		if overruns > 0 {
+			stdatomic.add_u64(&b.overruns, overruns)
 		}
 		// A ZERO-TIMEOUT READ stops after one poll; one that skipped an event looks again under
 		// the shared rule, since a data frame may be queued right behind it. A positive timeout
@@ -716,10 +736,13 @@ pub fn (mut b VectorBus) health() BusHealth {
 	return h
 }
 
-// diagnostics: the error records this port's queue carried (#213). Per port, where
-// vector_error_frames() is the process-wide total the bench tools read.
+// diagnostics: the error records this port's queue carried (#213), and as `dropped` the times
+// its queue overflowed (#623) -- the driver marks that events were lost, not how many, so on
+// Vector the count is overruns, not frames. Per port, where vector_error_frames() is the
+// process-wide total the bench tools read.
 pub fn (mut b VectorBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{
+		dropped:    stdatomic.load_u64(&b.overruns)
 		bus_errors: stdatomic.load_u64(&b.bus_errors)
 	}
 }

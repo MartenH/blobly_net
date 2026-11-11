@@ -800,3 +800,95 @@ pub fn hw_owner_refusal(hw VectorChannel, mappings []VectorMapping) ?string {
 	}
 	return 'could not confirm whether ${hw.name} is already assigned — the Vector driver did not answer for every application channel. Try again.'
 }
+
+// VectorRxQueue is the receive queue a port asks xlOpenPort for, and the smaller one it asks for
+// when the driver refuses that. The size is EVENTS on a classic (V3) port and BYTES on a CAN-FD
+// (V4) port: the same argument with two units, so the protocol picks the pair and nothing else
+// may. Only the caller's reads empty a port's queue (Vector is not behind the shared reader), so
+// it is the whole buffer a script has while it does something else.
+pub struct VectorRxQueue {
+pub:
+	size     u32
+	fallback u32
+}
+
+// The XL Driver Library's ceilings: a classic queue is a power of two up to 32768 events, an FD
+// one 8192 (RX_FIFO_CANFD_QUEUE_SIZE_MIN) to 524288 bytes (RX_FIFO_CANFD_QUEUE_SIZE_MAX). At
+// 2000 frames a second that is about 16 s classic, and 4096 maximum-size (128-byte) FD events,
+// about 2 s, on FD. The cost is
+// driver memory per port: 32768 events of 48 bytes is 1.5 MiB. The fallbacks are what a port
+// asked for before, so a driver that refuses the ceiling still opens.
+const vector_rx_queue_events = u32(32768)
+const vector_rx_queue_events_fallback = u32(256)
+const vector_rx_queue_bytes_fd = u32(524288)
+const vector_rx_queue_bytes_fd_fallback = u32(65536)
+
+// vector_rx_queue is the queue a port of that protocol asks for.
+pub fn vector_rx_queue(fd bool) VectorRxQueue {
+	return if fd {
+		VectorRxQueue{vector_rx_queue_bytes_fd, vector_rx_queue_bytes_fd_fallback}
+	} else {
+		VectorRxQueue{vector_rx_queue_events, vector_rx_queue_events_fallback}
+	}
+}
+
+// vector_rx_queue_note says that a port opened with the fallback queue, or nothing when it got
+// the size it asked for.
+pub fn vector_rx_queue_note(channel int, fd bool, granted u32) ?string {
+	q := vector_rx_queue(fd)
+	if granted == q.size {
+		return none
+	}
+	unit := if fd { 'bytes' } else { 'events' }
+	return 'Vector channel ${channel}: the driver refused a receive queue of ${q.size} ${unit}; opened with ${granted}, which a reader that pauses fills sooner — update the XL Driver Library'
+}
+
+// What the last open of each Vector application channel said about its queue, for the GUI's
+// Log line announcing the row: the GUI-subsystem exe has no stderr.
+__global (
+	vector_queue_notes shared VectorQueueNotes
+)
+
+struct VectorQueueNotes {
+mut:
+	by_channel map[int]string
+}
+
+// vector_keep_queue_note records what an open of `channel` got: the fallback note, or none.
+pub fn vector_keep_queue_note(channel int, note ?string) {
+	lock vector_queue_notes {
+		if n := note {
+			vector_queue_notes.by_channel[channel] = n
+		} else {
+			vector_queue_notes.by_channel.delete(channel)
+		}
+	}
+}
+
+// vector_open_note is the fallback-queue note of the last open of the channel `iface` names;
+// none for any other interface, or when that open got the queue it asked for.
+pub fn vector_open_note(iface string) ?string {
+	if !iface.starts_with('vector:') {
+		return none
+	}
+	s := parse_vector_spec(iface['vector:'.len..]) or { return none }
+	note := rlock vector_queue_notes {
+		vector_queue_notes.by_channel[s.channel] or { '' }
+	}
+	if note == '' {
+		return none
+	}
+	return note
+}
+
+// The bit in an event's header that says the port's receive queue overflowed before it: the
+// classic XLevent's `flags` byte (XL_EVENT_FLAG_OVERRUN) and the CAN-FD XLcanRxEvent's
+// `flagsChip` word (XL_CAN_QUEUE_OVERFLOW). It says events were lost, not how many.
+const vector_event_flag_overrun = u32(0x01)
+const vector_can_queue_overflow = u32(0x100)
+
+// vector_overrun_mask is the bit of the event header's flags field that marks an overflow on a
+// port of that protocol; the shim counts each event taken with it set.
+pub fn vector_overrun_mask(fd bool) u32 {
+	return if fd { vector_can_queue_overflow } else { vector_event_flag_overrun }
+}
