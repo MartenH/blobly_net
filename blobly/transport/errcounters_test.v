@@ -39,11 +39,72 @@ fn test_cansub_counters() {
 	assert cansub_counters('{"state":"error_active","rx_error_count":0}') == none
 }
 
-// The software buses have no controller; a wrapper passes its inner bus's through.
+// The software buses have no controller.
 fn test_software_buses_cannot_say() {
 	mut b := open('inproc:errcounters_test') or { panic(err) }
 	defer {
 		b.close()
 	}
 	assert !b.error_counters().known
+}
+
+// CountingBus is a bus whose controller reports counters, for the wrappers to pass through.
+struct CountingBus {
+mut:
+	closed bool
+}
+
+fn (mut c CountingBus) send(_ CanFrame) ! {}
+
+fn (mut c CountingBus) recv(_ int) !CanFrame {
+	return error('timeout')
+}
+
+fn (mut c CountingBus) reconcile_silence(_ bool) ! {}
+
+fn (mut c CountingBus) close() {
+	c.closed = true
+}
+
+fn (mut c CountingBus) health() BusHealth {
+	return .warning
+}
+
+fn (mut c CountingBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
+fn (mut c CountingBus) error_counters() ErrorCounters {
+	return ErrorCounters{
+		tx:    97
+		rx:    3
+		known: true
+	}
+}
+
+fn counting_make(_ string) !Bus {
+	return &CountingBus{}
+}
+
+fn assert_counted(mut b Bus, what string) {
+	c := b.error_counters()
+	assert c.known && c.tx == 97 && c.rx == 3, '${what} dropped the counters: ${c}'
+}
+
+// Every wrapper a handle is made of passes its inner bus's counters through: open()'s SilentBus,
+// a row's emitter, a script's MeteredBus, a Vector port's pin and a shared-hub handle.
+fn test_wrappers_pass_counters_through() {
+	mut silent := silenced('errcnt:silent', &CountingBus{})
+	assert_counted(mut silent, 'SilentBus')
+	mut row := row_framed(silent, 'errcnt:silent', 'Row')
+	assert_counted(mut row, 'RowFramedBus')
+	mut meter := Bus(metered(row, 'errcnt:silent', 500000, 0))
+	assert_counted(mut meter, 'MeteredBus')
+	mut pin := pinned_open('vector:11@500000', counting_make)!
+	assert_counted(mut pin, 'PinnedBus')
+	pin.close()
+	mut hub := shared_open('errcnt:hub', 'errcnt:hub', counting_make)!
+	assert_counted(mut hub, 'SharedHandle')
+	hub.close()
+	assert !hub.error_counters().known
 }

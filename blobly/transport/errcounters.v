@@ -4,8 +4,9 @@ module transport
 // reported them: what drives the health ladder (warning at 96, error-passive at 128, bus-off at
 // 256), so a test can watch a counter climb and come back while the rung still reads `ok`.
 // `known` false is "this backend cannot say", never zero counters: the software buses have no
-// controller, PCAN and Kvaser are not read, and a SocketCAN or Vector wire says nothing until an
-// error frame or chip-state event has been read off it (health_source's `needs_reader`).
+// controller, PCAN and the CAN bridge do not carry them, Kvaser and CANsub are asked with no
+// reader, and a SocketCAN or Vector wire says nothing until an error frame or chip-state event
+// has been read off it (health_source's `needs_reader`).
 pub struct ErrorCounters {
 pub:
 	tx    int
