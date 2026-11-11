@@ -239,3 +239,18 @@ fn test_a_rebuild_mid_burst_keeps_the_burst() {
 	sent << frames_by(mut fresh, rest).filter(it[1] == '257').map(it[0])
 	assert sent == ['200.0', '230.0', '260.0']
 }
+
+fn test_a_change_sends_repetition_bounds_the_loop_wait() {
+	db := candb.parse_dbc(send_type_dbc)!
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'Body', {
+			'Value': gen_stepmod(0.2, 100, 0)
+		}, [])]
+	}
+	for t in grid(200, 5) {
+		e.due_frames(t)
+	}
+	// the change at 200 ms went out; its next repetition is due 30 ms later (the delay)
+	assert e.next_due_ms()? == 230
+	assert e.recv_wait_ms(228.5) == 2
+}

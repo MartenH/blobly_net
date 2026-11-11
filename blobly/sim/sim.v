@@ -424,13 +424,20 @@ pub fn (e &Engine) next_due_ms() ?f64 {
 	mut any := false
 	for ecu in e.ecus {
 		for m in ecu.messages {
-			if m.period_ms > 0 && (!any || m.next_ms < next) {
-				next = m.next_ms
-				any = true
+			// a send is held back to its delay after the one before (ChangeState.hold_ms)
+			if m.period_ms > 0 {
+				due := math.max(m.next_ms, m.ev.hold_ms)
+				if !any || due < next {
+					next = due
+					any = true
+				}
 			}
-			if m.ev_left > 0 && (!any || m.ev_next_ms < next) {
-				next = m.ev_next_ms
-				any = true
+			if m.ev.left > 0 {
+				due := math.max(m.ev.next_ms, m.ev.hold_ms)
+				if !any || due < next {
+					next = due
+					any = true
+				}
 			}
 		}
 	}
