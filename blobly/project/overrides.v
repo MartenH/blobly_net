@@ -72,6 +72,20 @@ fn iface_override_refusal(ch Channel, iface string) ?string {
 	return none
 }
 
+// lin_address_rate is the rate a serial LIN address states (`tty:<path>@<baud>[,plain]`), 0 for
+// none; a LIN row with no bitrate: runs at it, so a row moved off that address keeps it.
+fn lin_address_rate(address string) int {
+	if !address.starts_with('tty:') && !address.starts_with('pty:') {
+		return 0
+	}
+	path := address.all_before(',plain')
+	if !path.contains('@') {
+		return 0
+	}
+	rate := path.all_after_last('@')
+	return if is_all_digits(rate) && rate.len <= 6 { rate.int() } else { 0 }
+}
+
 // override_interfaces attaches each named row to its override's interface, before anything is
 // checked or opened. Refused whole, changing nothing, for a name no row has (naming the rows),
 // a name two rows share, a name given twice, or an interface iface_override_refusal refuses.
@@ -108,6 +122,9 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 			return error('interface override: ${why}')
 		}
 		adapter, address := decompose_iface(o.iface)
+		if chs[i].kind() == .lin && chs[i].bitrate == 0 {
+			chs[i].bitrate = lin_address_rate(chs[i].address)
+		}
 		chs[i].adapter = adapter
 		chs[i].address = address
 		chs[i].iface = compose_iface(adapter, address)

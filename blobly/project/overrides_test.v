@@ -227,3 +227,14 @@ fn test_a_rate_in_a_lin_serial_address_is_refused() {
 	assert refusal([IfaceOverride{'Lin1', 'lin:pty:/tmp/x,plain'}]) == ''
 	assert refusal([IfaceOverride{'Lin1', 'lin:inproc:bench@A'}]) == ''
 }
+
+fn test_a_lin_row_keeps_the_rate_its_serial_address_stated() {
+	text := overrides_yaml + '  - name: Lin2\n    adapter: lin\n    address: tty:/dev/ttyUSB0@9600\n  - name: Lin3\n    adapter: lin\n    address: pty:/tmp/a@10417,plain\n    bitrate: 19200\n'
+	mut p := parse(text) or { panic(err) }
+	p.override_interfaces([IfaceOverride{'Lin2', 'lin:tty:/dev/ttyUSB1'},
+		IfaceOverride{'Lin3', 'lin:pty:/tmp/b,plain'}, IfaceOverride{'Lin1', 'lin:inproc:L9'}])!
+	assert row(p, 'Lin2').address == 'tty:/dev/ttyUSB1'
+	assert row(p, 'Lin2').bitrate == 9600
+	assert row(p, 'Lin3').bitrate == 19200
+	assert row(p, 'Lin1').bitrate == 0
+}
