@@ -147,17 +147,28 @@ pub fn apply_set(msg candb.Message, set []SetValue, mut data []u8) {
 			}
 		}
 	}
-	carried := msg.carried(data)
+	taken := set_taken(msg, data)
 	for v in set {
 		for i, sig in msg.signals {
 			if sig.name == v.signal {
-				if i != sw && carried[i] {
+				if i != sw && taken[i] {
 					sig.encode(mut data, v.value)
 				}
 				break
 			}
 		}
 	}
+}
+
+// set_taken is which of the message's signals take a value set on them in a payload `data` with
+// the multiplexor switch already written: the switch, and every signal the frame carries.
+fn set_taken(msg candb.Message, data []u8) []bool {
+	mut taken := msg.carried(data)
+	sw := msg.multiplexor_index()
+	if sw >= 0 {
+		taken[sw] = true
+	}
+	return taken
 }
 
 // encodable_refusal says why `value` cannot go into `sig` as it is, if it cannot: not a finite

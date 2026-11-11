@@ -125,7 +125,10 @@ where the file states neither a fast cycle nor a delay, change sends are 10 ms a
 (`sim.change_gap_ms`), so a generator that changes all the time is not sent at the rate the
 simulation loop runs. The values at the start
 are not a change: only a generator that moves with time (`sine`, `sawtooth`, `stepmod`) starts one,
-since a `const` never changes and a `counter` moves only with a send. A
+since a `const` never changes and a `counter` moves only with a send — or a value a script sets or
+clears ([Setting a signal](#setting-a-signal)) that changes the raw value the message carries.
+Nothing is sent before the message's `GenMsgStartDelayTime`; a change during it is sent when it
+ends. A
 message with no cycle and nothing to change it is **not** transmitted, and the node's line in the
 Simulation panel (and the headless runner's output) says how many such messages it has. Send
 those from the Generators panel, or drive them from a script; if a rest-bus test needs event
@@ -800,7 +803,10 @@ From Python the same calls are `net.set_signal(...)`, `net.clear_signal(...)` an
 `bb_sim_set`, `bb_sim_clear` and `bb_sim_clear_signals` (`bb.h`).
 
 The value is written **over the node's own source** for that signal and **before protection**, so
-the checksum covers it and a receiver reads a valid frame carrying it. A multiplexed signal is
+the checksum covers it and a receiver reads a valid frame carrying it. On an event or mixed
+message, a set or clear that changes the raw value the next frame carries is a change: the message
+is sent `1 + GenMsgNrOfRepetition` times, no closer than its delay, as a changing generator sends
+it; one that changes nothing (the value it already carries) sends nothing. A multiplexed signal is
 written only in the frames its multiplexor selects; set the multiplexor too to choose the page.
 The values live in one process-wide table keyed by channel, node and message, like the faults,
 so a script reaches the GUI's simulation and the headless runner's alike. A start clears them,

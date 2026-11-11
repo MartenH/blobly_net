@@ -130,6 +130,7 @@ pub mut:
 pub struct ChangeState {
 pub mut:
 	raws    []u64
+	set     []SetValue // the values set when last looked at (setsignal.v)
 	seen    bool
 	left    int
 	next_ms f64
@@ -188,17 +189,26 @@ pub fn (m SimMessage) sends() bool {
 }
 
 // change_raws is the raw value each generator that moves with time (Gen.follows_time) gives its
-// signal at time t (s): what a change is a change of.
+// signal at time t (s), a value set on the signal standing in for it where the payload takes that
+// value (payload_of): what a change is a change of.
 fn (m SimMessage) change_raws(t f64) []u64 {
 	mut out := []u64{cap: m.signals.len}
+	mut taken := []bool{}
+	if m.set.len > 0 {
+		taken = set_taken(m.msg, m.payload(t, m.set))
+	}
 	for s in m.signals {
 		if !s.gen.follows_time() {
 			continue
 		}
 		mut raw := u64(0)
-		for sig in m.msg.signals {
+		for i, sig in m.msg.signals {
 			if sig.name == s.name {
-				raw = sig.raw_from_phys(s.gen.value(t, 0))
+				mut v := s.gen.value(t, 0)
+				if taken.len > 0 && taken[i] {
+					v = set_value_of(m.set, s.name) or { v }
+				}
+				raw = sig.raw_from_phys(v)
 				break
 			}
 		}
@@ -207,18 +217,44 @@ fn (m SimMessage) change_raws(t f64) []u64 {
 	return out
 }
 
-// build encodes the message's signals at time t into a CAN frame (payload_of): its generators'
-// values, then the values a script set on it, so a set switch picks the page and a set value goes
-// over its generator's, under protection so the checksum covers them.
-pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
-	mut vals := []SetValue{cap: m.signals.len + m.set.len}
+// set_value_of is the value `set` holds `signal` at, none where it holds none.
+fn set_value_of(set []SetValue, signal string) ?f64 {
+	for v in set {
+		if v.signal == signal {
+			return v.value
+		}
+	}
+	return none
+}
+
+// set_moves is whether the values set going from `before` to m.set changes the payload the next
+// frame carries at time t (s): a value set where the frame carries the signal, at a raw value other
+// than the one it carried.
+fn (m SimMessage) set_moves(before []SetValue, t f64) bool {
+	if before.len == 0 && m.set.len == 0 {
+		return false
+	}
+	return m.payload(t, before) != m.payload(t, m.set)
+}
+
+// payload is the message's signals at time t (s) (payload_of): its generators' values, then the
+// values `set` holds, so a set switch picks the page and a set value goes over its generator's; the
+// bits no signal covers at the message's fill: what build protects and sends.
+fn (m SimMessage) payload(t f64, set []SetValue) []u8 {
+	mut vals := []SetValue{cap: m.signals.len + set.len}
 	for s in m.signals {
 		vals << SetValue{s.name, s.gen.value(t, m.send_n)}
 	}
-	vals << m.set
+	vals << set
 	mut data := payload_of(m.msg, vals)
-	// the bits no signal covers at the message's fill, under protection too
 	m.msg.fill_unused(mut data)
+	return data
+}
+
+// build encodes the message's payload at time t (s) into a CAN frame, faulted and protected, so
+// the checksum covers the values set and the fill.
+pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
+	mut data := m.payload(t, m.set)
 	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid
 	// checksum and the receiver reaches its range handling instead of rejecting a CRC error.
 	m.fault.apply_pre(m.msg, mut data)
@@ -539,25 +575,29 @@ fn (mut m SimMessage) emit(now_ms f64, mut e Engine, ecu string, send fn (f tran
 // rather than the simulation loop's.
 pub const change_gap_ms = 10
 
-// step_change sends a message whose send type is event or mixed when a generator that moves with
-// time changes the raw value of one of its signals (a counter moving with a send is no change): 1 + its repetitions times, the repetitions a fast cycle apart, no
-// send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
-// change_gap_ms apart where the file states neither, none before its start delay. The values when
-// first looked at are where it starts, not a change.
+// step_change sends a message whose send type is event or mixed when the raw value of one of its
+// signals changes — by a generator that moves with time (a counter moving with a send is no
+// change), or by a value a script sets or lets go of (setsignal.v): 1 + its repetitions times, the
+// repetitions a fast cycle apart, no send of it (a cyclic one of a mixed message included) closer
+// than the delay to the one before, change_gap_ms apart where the file states neither, none before
+// its start delay (a change during it sent when it ends). The values when first looked at are
+// where it starts, not a change.
 fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, ecu string, send fn (f transport.CanFrame) bool) {
-	if !m.msg.on_change() || !m.signals.any(it.gen.follows_time())
-		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
+	if !m.msg.on_change() {
 		return
 	}
-	raws := m.change_raws(now_ms / 1000.0)
+	t := now_ms / 1000.0
+	raws := m.change_raws(t)
 	if !m.ev.seen {
 		m.ev.seen = true
 		m.ev.raws = raws
-	} else if raws != m.ev.raws {
+	} else if raws != m.ev.raws || m.set_moves(m.ev.set, t) {
 		m.ev.raws = raws
 		m.ev.left = 1 + m.msg.repetitions
 	}
-	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
+	m.ev.set = m.set
+	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms
+		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
 	}
 	m.emit(now_ms, mut e, ecu, send)
@@ -606,7 +646,7 @@ pub fn (e &Engine) next_due_ms() ?f64 {
 				}
 			}
 			if m.ev.left > 0 {
-				due := math.max(m.ev.next_ms, m.ev.hold_ms)
+				due := math.max(math.max(m.ev.next_ms, m.ev.hold_ms), f64(m.msg.start_delay_ms))
 				if !any || due < next {
 					next = due
 					any = true
