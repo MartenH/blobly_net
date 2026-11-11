@@ -246,3 +246,30 @@ fn test_a_lin_row_keeps_the_rate_its_serial_address_stated() {
 	assert row(p, 'Lin3').bitrate == 19200
 	assert row(p, 'Lin1').bitrate == 0
 }
+
+const respell_yaml = '
+project:
+  name: respell
+  version: 4
+buses:
+  - name: A
+    interface: inproc
+  - name: B
+    adapter: pcan
+    address: PCAN_USBBUS2
+    senders:
+      - name: tick
+        bus: inproc
+        trigger: manual
+'
+
+fn test_a_generator_naming_a_row_by_a_respelled_interface_follows_it() {
+	mut p := parse(respell_yaml) or { panic(err) }
+	assert resolve_sender_bus('inproc', row(p, 'B'), p.channels).chan == 'A'
+	was := conflict_wire_key(row(p, 'A'))
+	p.override_interfaces([IfaceOverride{'A', 'inproc:CAN'}])!
+	assert conflict_wire_key(row(p, 'A')) == was
+	s := sender_of(p, 'B', 'tick')
+	assert s.bus == 'A'
+	assert resolve_sender_bus(s.bus, row(p, 'B'), p.channels).chan == 'A'
+}
