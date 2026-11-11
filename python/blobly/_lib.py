@@ -705,6 +705,9 @@ def _declare(lib):
         "bb_uds_get_timing": ([c_int, P(BbUdsTiming)], c_int),
         "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
         "bb_uds_check_wait": ([c_int, c_int], c_int),
+        "bb_isotp_check_settings": ([c_int, c_int, ctypes.c_double], c_int),
+        "bb_isotp_set_settings": ([c_int, c_int, c_int, ctypes.c_double], c_int),
+        "bb_uds_set_isotp": ([c_int, c_int, c_int, ctypes.c_double], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
         # interfaces present and Vector assignment (discovery.py, vector.py)
         "bb_ifaces": ([], c_int),

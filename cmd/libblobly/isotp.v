@@ -105,6 +105,28 @@ fn isotp_failed(hd &IsotpHandle, err IError, sending bool) i32 {
 	}
 }
 
+// settings_in is an ISO-TP channel's settings as bb.h states them (isotp.settings_of).
+fn settings_in(padding i32, block_size i32, stmin_ms f64) !isotp.Settings {
+	return isotp.settings_of(i64(padding), i64(block_size), stmin_ms)
+}
+
+// bb_isotp_check_settings: whether the settings would be taken, asked of no handle.
+@[export: 'bb_isotp_check_settings']
+pub fn bb_isotp_check_settings(padding i32, block_size i32, stmin_ms f64) i32 {
+	settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+	return ok()
+}
+
+// bb_isotp_set_settings: a raw handle's padding and Flow Control, from the next frame on.
+@[export: 'bb_isotp_set_settings']
+pub fn bb_isotp_set_settings(h i32, padding i32, block_size i32, stmin_ms f64) i32 {
+	s := settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+	return with_isotp(h, fn [s] (mut hd IsotpHandle) i32 {
+		hd.ch.settings = s
+		return ok()
+	})
+}
+
 @[export: 'bb_isotp_send']
 pub fn bb_isotp_send(h i32, data &u8, n i32) i32 {
 	return with_isotp(h, fn [data, n] (mut hd IsotpHandle) i32 {

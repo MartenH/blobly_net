@@ -57,6 +57,44 @@ test("raw ISO-TP refuses what it cannot carry", function()
   check.truthy(not ok, "a closed channel sent")
 end)
 
+test("an ISO-TP channel pads with the byte asked for, or sends frames unpadded", function()
+  bus.recv("CAN1", 0)                  -- the script hears the wire from here
+  local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, padding = 0xAA })
+  tp:send("\x3E\x00")
+  check.equal(tohex(expect("CAN1", 0x7E0, 500).data), "02 3E 00 AA AA AA AA AA")
+  check.equal(tp:recv(1000), "\x7E\x00")
+  tp:close()
+  tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, padding = false })
+  tp:send("\x3E\x00")
+  check.equal(tohex(expect("CAN1", 0x7E0, 500).data), "02 3E 00")
+  check.equal(tp:recv(1000), "\x7E\x00")
+  tp:close()
+end)
+
+test("a multi-frame answer comes in the blocks and spacing the channel asks for", function()
+  local diag = uds.open("CAN1", { block_size = 1, stmin_ms = 2, padding = 0xCC })
+  check.equal(diag:read_did(0xF190), "BLOBLYNETV0SUT001")
+  diag:close()
+  local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8, stmin_ms = 0.5 })
+  tp:send("\x22\xF1\x90")
+  check.equal(tp:recv(1000), "\x62\xF1\x90BLOBLYNETV0SUT001")
+  tp:close()
+end)
+
+test("ISO-TP settings out of range are refused before the channel opens", function()
+  local bad = { { padding = 256 }, { padding = true }, { block_size = -1 }, { block_size = 256 },
+    { stmin_ms = 1.5 }, { stmin_ms = 128 }, { stmin_ms = "5" } }
+  for _, o in ipairs(bad) do
+    o.tx, o.rx = 0x7E0, 0x7E8
+    local ok = pcall(isotp.open, "CAN1", o)
+    check.truthy(not ok, "isotp.open took a bad setting")
+    ok = pcall(uds.open, "CAN1", o)
+    check.truthy(not ok, "uds.open took a bad setting")
+  end
+  local ok, err = pcall(uds.open, "DoIP1", { padding = 0xAA })
+  check.truthy(not ok and tostring(err):find("carries no ISO-TP frames", 1, true), tostring(err))
+end)
+
 test("a UDS connection reads and states its timing", function()
   local diag = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8, timeout_ms = 300, pending_budget_ms = 9000 })
   local t = diag:timing()

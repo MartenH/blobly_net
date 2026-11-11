@@ -223,6 +223,17 @@ pub fn (l State) arg_is_string(i int) bool {
 	return C.ctlua_type(l, i) == 4
 }
 
+// arg_absent is whether argument i is nil or was not passed at all.
+pub fn (l State) arg_absent(i int) bool {
+	t := C.ctlua_type(l, i)
+	return t == 0 || t == -1
+}
+
+// arg_is_bool is whether argument i is a boolean.
+pub fn (l State) arg_is_bool(i int) bool {
+	return C.ctlua_type(l, i) == 1
+}
+
 pub fn (l State) arg_is_num(i int) bool {
 	return C.ctlua_is_num(l, i) != 0
 }

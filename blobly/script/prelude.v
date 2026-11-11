@@ -649,7 +649,7 @@ function uds.open(channel, opts)
   if ka ~= nil and ka ~= 0 and (math.type(ka) ~= "integer" or ka < 250 or ka > 60000) then
     error("uds.open: keep_alive_ms " .. tostring(ka) .. ": give 250 .. 60000", 2)
   end
-  local h = __uds_open(channel, opts.tx, opts.rx)
+  local h = __uds_open(channel, opts.tx, opts.rx, opts.padding, opts.block_size, opts.stmin_ms)
   local self = connection(h, channel)
   if timed then self:set_timing(opts) end
   if opts.keep_alive_ms ~= nil then self:keep_alive(opts.keep_alive_ms) end
@@ -754,10 +754,13 @@ end
 -- received on rx (both needed), segmented and reassembled by the ISO-TP a uds.open connection
 -- rides, with no UDS on top. :send(data) returns once the message is on the wire; :recv(timeout_ms)
 -- the next whole message, or nil after timeout_ms (default 1000); :close() lets it go.
+-- opts.padding is the byte frames are padded to 8 bytes with (0x00), false for frames as long as
+-- their content; opts.block_size (0 .. 255, 0) and opts.stmin_ms (0 .. 127, or 0.1 .. 0.9; 0) are
+-- the Flow Control it answers a First Frame with. uds.open takes the same three.
 isotp = {}
 function isotp.open(channel, opts)
   opts = opts or {}
-  local h = __isotp_open(channel, opts.tx, opts.rx)
+  local h = __isotp_open(channel, opts.tx, opts.rx, opts.padding, opts.block_size, opts.stmin_ms)
   local self = { handle = h, channel = channel }
   function self:send(data) __isotp_send(self.handle, data) end
   function self:recv(timeout_ms)

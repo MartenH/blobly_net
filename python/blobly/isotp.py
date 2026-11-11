@@ -10,7 +10,7 @@ from . import _lib
 from ._lib import BloblyError, ByteData
 from .doip import _ms
 from .events import _sliced
-from .uds import _CAP, _close_orphans, _data, _int, _orphans
+from .uds import _CAP, _ISOTP_DEFAULT, _close_orphans, _data, _int, _isotp_settings, _orphans
 
 if TYPE_CHECKING:
     from .project import Channel
@@ -21,6 +21,12 @@ class IsoTp:
     id `tx` and received on `rx`, 29-bit when `ext` (either id past 0x7FF), in 8-byte frames (sent FD
     on a row the project declares CAN-FD).
     As a sender it honours the receiver's Flow Control; as a receiver it asks for no pacing.
+
+    ch.isotp's `padding` is the byte frames are padded to 8 bytes with (0x00), None for frames as
+    long as their content; `block_size` (0 .. 255) and `stmin_ms` (a whole 0 .. 127, or 0.1 .. 0.9
+    for 100 .. 900 µs) are the Flow Control it answers a First Frame with as a receiver, 0 and 0
+    asking for no pacing; above 0 it sends the next Flow Control after each block. Out of range is
+    refused before the channel opens; what was asked holds on every handle it opens.
 
     send() returns once the message is on the wire; a long one waits for the receiver's Flow Control
     (1000 ms each, N_Bs; 120 s in all) and raises Timeout when none came. recv() returns the next
@@ -40,9 +46,11 @@ class IsoTp:
     rx: int
     ext: bool
 
-    def __init__(self, channel: "Channel", tx: int, rx: int) -> None:
+    def __init__(self, channel: "Channel", tx: int, rx: int, *, padding: int | None = 0, block_size: int = 0,
+                 stmin_ms: float = 0) -> None:
         self.channel = channel
         self._ask = (_int("tx", tx, 64), _int("rx", rx, 64))
+        self._settings = _isotp_settings(padding, block_size, stmin_ms)  # stated on each handle
         self.tx, self.rx = self._ask
         self.ext = False
         self._h = None
@@ -62,6 +70,12 @@ class IsoTp:
         self._h = _lib.check(lib.bb_isotp_open(self.channel._index, self._ask[0], self._ask[1], ctypes.byref(out)))
         self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
         self.channel._uds.add(self)
+        if self._settings != _ISOTP_DEFAULT:
+            try:
+                _lib.check(lib.bb_isotp_set_settings(self._h, *self._settings))
+            except BloblyError:
+                self._let_go()
+                raise
 
     def _handle(self) -> int:
         with _lib.state_lock:

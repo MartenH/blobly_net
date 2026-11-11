@@ -80,6 +80,14 @@ class TestSimDemo:
         with pytest.raises(TypeError):
             can1.isotp(0x7E0, None)
 
+    def test_a_doip_row_refuses_isotp_settings(self, sim_demo):
+        with pytest.raises(blobly.Refused, match="carries no ISO-TP frames"):
+            sim_demo.channels.DoIP1.uds(padding=0xAA)
+
+    def test_a_multi_frame_answer_in_blocks_and_spacing(self, can1):
+        with can1.uds(block_size=1, stmin_ms=2, padding=0xCC) as diag:
+            assert diag.read_did(0xF190) == VIN_ANSWER[3:]
+
     def test_a_closed_channel_refuses(self, can1):
         tp = can1.isotp(0x7E0, 0x7E8)
         tp.close()
@@ -221,3 +229,68 @@ class TestPeer:
             with pytest.raises(blobly.Refused, match="listen-only"):
                 quiet.send(b"\x3e\x00")
         net.start()
+
+
+class TestSettings:
+    """The padding a channel sends and the Flow Control it answers with (ch.isotp / ch.uds keywords),
+    seen by the test's own peer on an in-process bus."""
+
+    @pytest.fixture
+    def net(self, tmp_path):
+        net = blobly.Project(write(tmp_path, "bare.blobnet", BARE)).start()
+        yield net
+        net.stop()
+
+    @pytest.fixture
+    def ch(self, net):
+        return net.channels.B
+
+    def test_frames_carry_the_padding_asked_for(self, ch):
+        ch.look()
+        with ch.isotp(0x700, 0x708, padding=0xAA) as tp:
+            tp.send(b"\x3e\x00")
+            assert ch.expect(0x700, 1000).data == b"\x02\x3e\x00" + b"\xaa" * 5
+        with ch.isotp(0x700, 0x708, padding=None) as tp:
+            tp.send(b"\x3e\x00")
+            assert ch.expect(0x700, 1000).data == b"\x02\x3e\x00"
+        with ch.uds(0x700, 0x708, padding=0x55, timeout_ms=50) as diag:
+            with pytest.raises(blobly.Timeout):
+                diag.raw(b"\x3e\x00")
+            assert ch.expect(0x700, 1000).data == b"\x02\x3e\x00" + b"\x55" * 5
+
+    def test_the_receiver_answers_with_its_block_size_and_stmin(self, ch):
+        ch.look()
+        want = bytes(range(34))  # 6 in the First Frame, four Consecutive Frames in two blocks of 2
+        with ch.isotp(0x700, 0x708, padding=None, block_size=2, stmin_ms=0.5) as tp:
+            got = []
+            t = threading.Thread(target=lambda: got.append(tp.recv(5000)))
+            t.start()
+            ch.send(0x708, b"\x10\x22" + want[:6])
+            sn, off = 1, 6
+            for _ in range(2):
+                assert ch.expect(0x700, 2000).data == b"\x30\x02\xf5"
+                for _ in range(2):
+                    ch.send(0x708, bytes([0x20 | sn]) + want[off:off + 7])
+                    sn, off = sn + 1, off + 7
+            t.join(5)
+            assert got == [want]
+
+    def test_settings_hold_across_a_stop_and_start(self, net, ch):
+        tp = ch.isotp(0x700, 0x708, padding=None)
+        net.stop()
+        net.start()
+        ch.look()
+        tp.send(b"\x3e\x00")
+        assert ch.expect(0x700, 1000).data == b"\x02\x3e\x00"
+        tp.close()
+
+    def test_out_of_range_is_refused_before_the_channel_opens(self, ch):
+        for kw, kind in (({"padding": 256}, ValueError), ({"padding": True}, TypeError),
+                         ({"block_size": 256}, blobly.Refused), ({"block_size": -1}, blobly.Refused),
+                         ({"stmin_ms": 1.5}, blobly.Refused), ({"stmin_ms": 128}, blobly.Refused),
+                         ({"stmin_ms": "5"}, TypeError)):
+            with pytest.raises(kind):
+                ch.isotp(0x700, 0x708, **kw)
+            with pytest.raises(kind):
+                ch.uds(0x700, 0x708, **kw)
+        assert not ch._uds, "a refused channel was opened"
