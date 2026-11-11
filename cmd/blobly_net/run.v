@@ -75,6 +75,8 @@ fn (c Chan) for_open() project.Channel {
 		fd:           c.fd
 		data_bitrate: c.data_bitrate
 		listen_only:  c.listen_only
+		sample_point: c.sample_point
+		data_sample_point: c.data_sample_point
 	}
 }
 
@@ -176,6 +178,9 @@ fn (app &App) runtime_rows() []project.Channel {
 			data_bitrate: c.data_bitrate
 			listen_only:  c.listen_only
 			enabled:      c.enabled
+			// and where it samples, which a Vector wire's rows must agree on
+			sample_point:      c.sample_point
+			data_sample_point: c.data_sample_point
 			// and the databases, which arxml_rate_warnings compares the rates with (#439)
 			databases: c.databases
 		}

@@ -50,6 +50,10 @@ struct Opts {
 	// pass for an experiment nobody asked for (codex #181 r2 for --length, r3 for --dbitrate).
 	length_set   bool
 	dbitrate_set bool
+	// --sp / --dsp: where each phase samples, carried in the address as `,sp=` / `,dsp=`.
+	sp      string
+	dsp     string
+	verbose bool
 }
 
 // FdOpts is what the FD flags actually MEAN, resolved once.
@@ -123,10 +127,23 @@ fn resolve_fd(o Opts) !FdOpts {
 		// FROM THE EFFECTIVE RATE, which is the whole reason this struct exists. With an equal
 		// data rate there is no faster phase to switch into and the library refuses the flag.
 		brs:   fd && dbr != o.bitrate
-		rate:  if fd { '${o.bitrate}/${dbr}' } else { '${o.bitrate}' }
+		rate:  (if fd { '${o.bitrate}/${dbr}' } else { '${o.bitrate}' }) + sample_options(o)
 		len:   ln
 		given: o.length_set
 	}
+}
+
+// sample_options is the `,sp=` / `,dsp=` suffix --sp and --dsp ask for; the backend's own
+// parser judges them when the address opens.
+fn sample_options(o Opts) string {
+	mut out := ''
+	if o.sp != '' {
+		out += ',sp=${o.sp}'
+	}
+	if o.dsp != '' {
+		out += ',dsp=${o.dsp}'
+	}
+	return out
 }
 
 // nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
@@ -522,6 +539,10 @@ fn usage() {
 	eprintln('  --fd        CAN-FD: open both ends with a data phase and send FD frames.')
 	eprintln('              Applies to --pair and --channel.')
 	eprintln('  --dbitrate  CAN-FD data-phase bits/s (default 2000000). Implies --fd.')
+	eprintln('  --sp        sample point in percent for --pair and --channel (the arbitration phase,')
+	eprintln('              and the data phase too unless --dsp says otherwise), e.g. --sp 75.')
+	eprintln('  --dsp       CAN-FD data-phase sample point in percent. Needs --fd.')
+	eprintln('  --verbose   narrate every XL call the backend makes, with the segments it passes.')
 	eprintln('  --length    payload bytes for --pair (default 8, or 64 with --fd). One of')
 	eprintln('              8, 12, 16, 20, 24, 32, 48, 64 — the DLC sizes from 8 up. Shorter')
 	eprintln('              frames are legal CAN but not checkable here: each carries a 4-byte')
@@ -603,6 +624,26 @@ fn parse(args []string) !Opts {
 					fd: true
 				}
 			}
+			'--sp' {
+				i++
+				o = Opts{
+					...o
+					sp: args[i] or { return error('--sp needs a value') }
+				}
+			}
+			'--dsp' {
+				i++
+				o = Opts{
+					...o
+					dsp: args[i] or { return error('--dsp needs a value') }
+				}
+			}
+			'--verbose' {
+				o = Opts{
+					...o
+					verbose: true
+				}
+			}
 			'--dbitrate' {
 				i++
 				o = Opts{
@@ -670,6 +711,7 @@ fn main() {
 		usage()
 		exit(2)
 	}
+	transport.vector_verbose(o.verbose)
 	if o.probe {
 		chans := transport.vector_channels()
 		if chans.len == 0 {

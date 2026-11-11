@@ -25,6 +25,12 @@ struct Chan {
 	fd           bool
 	data_bitrate int
 	listen_only  bool
+
+	// Where the row asks its wire to sample (project.Channel), which iface_with_bitrate carries
+	// to a Vector controller.
+	sample_point      f64
+	data_sample_point f64
+
 	// The row declares its wire's traffic to be SAE J1939 (project.Channel.j1939). Folded with
 	// what the wire's databases declare, into `app.j1939_dbs`.
 	j1939        bool

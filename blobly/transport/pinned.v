@@ -62,6 +62,9 @@ struct PinnedConfig {
 	// -1011/-1012 down in the shim; predicted here, so the front end asks before it opens.
 	fd           bool
 	data_bitrate int
+	// The segments each phase is configured with (vector_open_timings), which is where it
+	// samples: refused in the shim with -1014 when a port asks for others.
+	timings VectorTimings
 }
 
 struct PinnedModes {
@@ -113,11 +116,13 @@ fn pinned_open_config(iface string) ?PinnedConfig {
 	}
 	i := iface.trim_space()
 	s := parse_vector_spec(i.all_after_first(':')) or { return none }
+	t := vector_open_timings(s) or { return none }
 	return PinnedConfig{
 		silent:       s.silent
 		bitrate:      s.bitrate
 		fd:           s.fd
 		data_bitrate: s.data_bitrate
+		timings:      t
 	}
 }
 
@@ -163,6 +168,9 @@ pub fn wire_pin_clash(iface string) string {
 		}
 		if want.fd && want.data_bitrate != p.cfg.data_bitrate {
 			return 'asks a ${want.data_bitrate} bit/s data phase and ports are still open on ${iface.all_before('@')} at ${p.cfg.data_bitrate}'
+		}
+		if want.timings != p.cfg.timings {
+			return 'samples ${want.timings.describe(want.fd)} and ports are still open on ${iface.all_before('@')} sampling ${p.cfg.timings.describe(p.cfg.fd)}'
 		}
 	}
 	return ''

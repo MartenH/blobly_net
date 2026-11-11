@@ -2,7 +2,7 @@
 // implementing the platform-agnostic `Bus` interface. Windows-only (`_windows.v` gates
 // compilation). vxlapi64.dll is loaded at RUNTIME via vector_shim.h — no SDK, no import lib.
 //
-// Interface string: `vector:<channel>[@<bitrate>[/<data bitrate>]][,silent]`
+// Interface string: `vector:<channel>[@<bitrate>[/<data bitrate>]][,silent][,sp=<%>][,dsp=<%>]`
 //   channel : the APPLICATION channel as shown in Vector Hardware Configuration, from 1.
 //             Assign hardware to it there once; opening an unassigned channel registers
 //             `blobly_net` so it appears in that dialog, and says so.
@@ -11,6 +11,11 @@
 //             Its presence is what asks for FD; `@500000/500000` is FD with no bit-rate switch.
 //   ,silent : listen only — the transceiver never acknowledges, so the channel cannot
 //             disturb the bus. See the note below; on a live vehicle, start here.
+//   ,sp=<%> : where the (arbitration) phase samples, e.g. ,sp=75; ,dsp=<%> the CAN-FD data
+//             phase's, defaulting to sp. Unset, an FD phase samples at ~80% and a classic
+//             channel where the driver puts it. Solved by vector_open_timings (an FD phase on
+//             the 80 MHz clock, a classic one on XLchipParams' 16 MHz), refused when the clock
+//             cannot place it; options, like the mode, are not part of the wire.
 //
 // **Silent first.** A CAN node that goes on the bus at the WRONG bitrate does not merely fail
 // to read: it acknowledges nothing correctly and floods error frames, which degrades a bus
@@ -102,7 +107,7 @@ mut:
 	last_chip int = -1
 }
 
-// open_vector parses `vector:<channel>[@<bitrate>][,silent]`, loads vxlapi64.dll, resolves the
+// open_vector parses `vector:<channel>[@<bitrate>][,<option>...]`, loads vxlapi64.dll, resolves the
 // application channel to hardware, opens the port and activates it. Referenced only from
 // open_windows.v.
 pub fn open_vector(spec string) !&VectorBus {
@@ -135,13 +140,11 @@ pub fn open_vector(spec string) !&VectorBus {
 	if why := vector_timing_error(s) {
 		return error('Vector channel ${s.channel}: ${why}')
 	}
-	mut at := FdTiming{}
-	mut dt := FdTiming{}
-	if s.fd {
-		// Cannot fail: vector_timing_error just proved both phases resolve.
-		at = vector_fd_timing(s.bitrate) or { FdTiming{} }
-		dt = vector_fd_timing_data(s.data_bitrate) or { FdTiming{} }
-	}
+	// Cannot fail: vector_timing_error just proved every phase resolves. A classic address with a
+	// sample point carries arbitration segments, which the shim hands xlCanSetChannelParams.
+	tm := vector_open_timings(s) or { VectorTimings{} }
+	at := tm.arb
+	dt := tm.dat
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
@@ -222,6 +225,12 @@ pub fn open_vector(spec string) !&VectorBus {
 	}
 	if rc == -1012 {
 		return error('Vector channel ${s.channel} is already open with a different CAN-FD data bitrate by this project — one wire cannot run two data phases')
+	}
+	if rc == -1014 {
+		return error('Vector channel ${s.channel} is already open with a different sample point by this project — the bit timing belongs to the ports open on this channel, so make every channel on this wire agree, or Stop and Start to change it')
+	}
+	if rc == -1015 {
+		return error("this vxlapi build has no xlCanSetChannelParams, so a classic channel's sample point cannot be set — update the Vector XL Driver Library, or remove the sample point from vector:${s.channel}")
 	}
 	if rc == -1002 {
 		return error('this vxlapi build has no xlCanSetChannelOutput, so the transceiver mode can be neither set nor read — refusing rather than guessing whether this channel would acknowledge. Update the Vector XL Driver Library.')

@@ -120,6 +120,12 @@ as v12, and a v11 file's top-level `lin:` list is read as such rows. In the Conf
 its row edits the address and rate; the rest is edited in the File tab. The fields and what runs
 them are in [lin.md](lin.md#in-a-project).
 
+A CAN row's `sample_point` (percent) places where the controller samples, and on CAN-FD
+`data_sample_point` the data phase's (unset, where `sample_point` is; a project with one is
+written as v13). Edited in the File tab. A Vector channel honours both, and refuses a point its
+clock cannot place; PCAN and CANsub refuse anything but the point they use, and a data-phase point
+on any adapter but Vector (see [windows_can_hardware.md](windows_can_hardware.md)).
+
 ## Example configurations
 
 How a range of setups look under the merged **Bus + `network` label** model. A subgraph is
