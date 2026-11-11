@@ -83,6 +83,12 @@ const most_pending = 4
 // node waits after a wakeup, and above a USB adapter's usual packet gap within one burst.
 const wake_quiet_ns = i64(10_000_000)
 
+// wake_repeat_ns is how long a pty handle waits after a wakeup pulse before writing another: the
+// 150 ms a LIN node leaves before repeating a wakeup request. The other end reads the line
+// through a relay and a reader thread, so it confirms the pulse (wake_quiet_ns of quiet as it
+// reads) only as soon as the host runs them; a next byte reaching it first makes both noise.
+const wake_repeat_ns = i64(150_000_000)
+
 // drain_reads bounds one drain, so a port that never runs dry cannot hold the lock for ever.
 const drain_reads = 4
 
@@ -137,6 +143,8 @@ mut:
 	// woke: this handle sent a wakeup that has not been read yet; woke_ns when it went out.
 	woke    bool
 	woke_ns i64
+	// pulse_ns is when this handle's last wakeup pulse went out (last_byte_ns then), -1 before one.
+	pulse_ns i64 = -1
 	// brk_out: the last put's break reached the line (tty) or this handle's decoder (pty).
 	brk_out bool
 	// lost is why the port stopped, '' while it works.
@@ -431,19 +439,25 @@ pub fn (mut b SerialBus) wakeup() ! {
 		b.woke = false
 		return err
 	}
+	b.pulse_ns = b.last_byte_ns
 }
 
 // wait_slot waits, with mu released, until the last header's slot has ended. Before a wakeup,
 // which has no break to end what is open, an open frame or wakeup pulse is ended too: on a pty,
-// whose decoder is current, once two byte times (a pulse: twice wake_quiet_ns, so another
-// receiver has confirmed it) have passed since the last byte; on a tty once the reader has the echo,
-// or after idle_ns. The caller holds mu.
+// whose decoder is current, once two byte times (a pulse: twice wake_quiet_ns) have passed since
+// the last byte; on a tty once the reader has the echo, or after idle_ns. On a pty a wakeup also
+// waits wake_repeat_ns after this handle's own pulse when nothing has followed it. The caller
+// holds mu.
 fn (mut b SerialBus) wait_slot(ends_frame bool) ! {
 	for {
 		b.drain()
 		b.live()!
 		now := i64(time.sys_mono_now())
 		mut until := b.slot_end_ns
+		if ends_frame && b.addr.kind == .pty && b.last_byte_ns == b.pulse_ns
+			&& b.pulse_ns + wake_repeat_ns > until {
+			until = b.pulse_ns + wake_repeat_ns
+		}
 		if ends_frame && (b.frame_open() || b.dec.st == .wake) {
 			if b.addr.kind == .pty {
 				quiet := b.last_byte_ns + if b.dec.st == .wake {

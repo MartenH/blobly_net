@@ -51,7 +51,8 @@ LIN is being added in steps. This page says what exists today and what comes nex
     - One handle per device in a process; a second open of the same path is refused.
     - A header, a wakeup or a go-to-sleep waits until the previous frame's slot (its longest
       allowed time) has ended, as a LIN master must. A wakeup is a dominant pulse of 250 µs to
-      5 ms at every rate.
+      5 ms at every rate. On a pty a wakeup written right after another waits 150 ms, the gap a
+      LIN node leaves before repeating one, so the other end has read the first as a wakeup.
     - A port that goes away (an adapter unplugged) ends the bus: calls answer that the carrier
       is gone, and a running schedule stops.
     - On other systems a `tty:` or `pty:` address is refused by name.
