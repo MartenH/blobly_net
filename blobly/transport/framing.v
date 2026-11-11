@@ -279,6 +279,10 @@ pub fn (mut r RowFramedBus) diagnostics() BusDiagnostics {
 	return r.inner.diagnostics()
 }
 
+pub fn (mut r RowFramedBus) error_counters() ErrorCounters {
+	return r.inner.error_counters()
+}
+
 pub fn (mut r RowFramedBus) reconcile_silence(want bool) ! {
 	r.inner.reconcile_silence(want)!
 }

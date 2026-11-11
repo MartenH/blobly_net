@@ -181,6 +181,10 @@ mut:
 	// V's interface-to-interface casts are not a foundation to build that on. Empty for a backend
 	// with nothing to say; a wrapper passes its inner bus's through.
 	diagnostics() BusDiagnostics
+	// error_counters is the controller's TEC and REC as it last reported them (errcounters.v);
+	// `known` false where the backend cannot say. Moves when health() does: on a `needs_reader`
+	// wire only while something reads it. A wrapper passes its inner bus's through.
+	error_counters() ErrorCounters
 	// reconcile_silence brings this wire's CONTROLLER into line with the listen-only policy, for
 	// the backends that have a controller to bring. Everything else answers by doing nothing:
 	// a software bus has no acknowledgement to suppress, so refusing to send is already the whole

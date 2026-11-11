@@ -87,6 +87,7 @@ mut:
 	close()
 	health() BusHealth
 	diagnostics() BusDiagnostics
+	error_counters() ErrorCounters
 	reconcile_silence(want bool) !
 	reports_tx_ack() bool
 }
@@ -119,6 +120,10 @@ fn (mut d SharedBusDriver) health() BusHealth {
 
 fn (mut d SharedBusDriver) diagnostics() BusDiagnostics {
 	return d.bus.diagnostics()
+}
+
+fn (mut d SharedBusDriver) error_counters() ErrorCounters {
+	return d.bus.error_counters()
 }
 
 fn (mut d SharedBusDriver) reconcile_silence(want bool) ! {
@@ -183,6 +188,10 @@ fn (mut d SharedNoDriver) health() BusHealth {
 
 fn (mut d SharedNoDriver) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
+}
+
+fn (mut d SharedNoDriver) error_counters() ErrorCounters {
+	return ErrorCounters{}
 }
 
 fn (mut d SharedNoDriver) reconcile_silence(_ bool) ! {
@@ -1495,6 +1504,25 @@ fn (mut h SharedHandle) health() BusHealth {
 		return .unknown
 	}
 	return e.driver.health()
+}
+
+// error_counters is the driver's, asked under the rule health() is: unknown for a closed handle
+// or a generation that is not running, no lock across the driver call.
+fn (mut h SharedHandle) error_counters() ErrorCounters {
+	h.mu.lock()
+	closed := h.closed
+	h.mu.unlock()
+	if closed {
+		return ErrorCounters{}
+	}
+	mut e := h.entry
+	e.mu.lock()
+	running := e.state == .running
+	e.mu.unlock()
+	if !running {
+		return ErrorCounters{}
+	}
+	return e.driver.error_counters()
 }
 
 // diagnostics is the driver's counters plus the WIRE's ring gaps -- every handle's, not this

@@ -1058,6 +1058,10 @@ fn (mut b CfStamps) diagnostics() transport.BusDiagnostics {
 	return b.inner.diagnostics()
 }
 
+fn (mut b CfStamps) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b CfStamps) reconcile_silence(want bool) ! {
 	b.inner.reconcile_silence(want)!
 }
@@ -1733,6 +1737,10 @@ fn (mut b RecvCount) health() transport.BusHealth {
 
 fn (mut b RecvCount) diagnostics() transport.BusDiagnostics {
 	return b.inner.diagnostics()
+}
+
+fn (mut b RecvCount) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
 }
 
 fn (mut b RecvCount) reconcile_silence(want bool) ! {

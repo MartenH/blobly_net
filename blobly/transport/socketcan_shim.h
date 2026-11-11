@@ -16,6 +16,9 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <linux/can/error.h>
+#ifndef CAN_ERR_CNT
+#define CAN_ERR_CNT 0x00000200U /* TX error counter in data[6], RX in data[7] */
+#endif
 
 // Open a raw CAN socket bound to `ifname` (e.g. "vcan0"). Returns fd >= 0, or
 // -errno on failure.
@@ -46,8 +49,11 @@ static inline int ct_can_open(const char *ifname) {
 	 * EVERY socket (taps included), and with berr-reporting on that is one frame per bus
 	 * error — tens of thousands a second flooding queues nothing drains (self-review) */
 	/* CRTL/BUSOFF/RESTARTED feed the health ladder; PROT and ACK are the controller errors
-	 * diagnostics() counts (#213) -- unsubscribed, the kernel never delivers them. */
-	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_PROT | CAN_ERR_ACK;
+	 * diagnostics() counts (#213) -- unsubscribed, the kernel never delivers them. CNT carries
+	 * the TEC and REC error_counters() reports, subscribed so a frame naming no other class
+	 * still reaches it. */
+	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_PROT | CAN_ERR_ACK
+	                      | CAN_ERR_CNT;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
 	/* The kernel's software receive stamp on every frame (#149): taken at device receive, so it is
 	 * free of this reader's own scheduling delay — though not of a USB adapter's batching, which

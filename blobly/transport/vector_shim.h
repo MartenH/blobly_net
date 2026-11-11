@@ -1034,7 +1034,8 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	 * this event threw away data frames mid-run — health must ride the stream the
 	 * reader is already emptying, never compete with it (self-review). */
 	if (ev.tag == CT_XL_CHIP_STATE) {
-		if (chip_status) *chip_status = ev.tagData.raw[0];
+		/* busStatus, txErrorCounter, rxErrorCounter packed low to high (vector_chip_word) */
+		if (chip_status) *chip_status = ev.tagData.raw[0] | (ev.tagData.raw[1] << 8) | (ev.tagData.raw[2] << 16);
 		return 2;
 	}
 	if (ev.tag != CT_XL_RECEIVE_MSG) return 2;
@@ -1077,7 +1078,9 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	/* The overflow mark rides the header of whatever event follows the loss, any tag. */
 	if (overran && ((unsigned int)ev.flagsChip & ovf_mask)) *overran = 1;
 	if (ev.tag == CT_XL_CAN_EV_TAG_CHIP_STATE) {
-		if (chip_status) *chip_status = ev.tagData.canChipState.busStatus;
+		if (chip_status) *chip_status = ev.tagData.canChipState.busStatus
+		                               | (ev.tagData.canChipState.txErrorCounter << 8)
+		                               | (ev.tagData.canChipState.rxErrorCounter << 16);
 		return 2;
 	}
 	/* AN ERROR IS COUNTED, NOT REPORTED, exactly as on the classic port — and on a V4 port it

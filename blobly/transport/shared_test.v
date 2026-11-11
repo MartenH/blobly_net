@@ -108,6 +108,10 @@ fn (mut f FakeBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
+fn (mut f FakeBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 // HubFakeConfig is everything a HubFakeDriver is made from: the channels the test thread
 // injects into and reads from, and the knobs a test turns before it opens. One global, one
 // fresh literal per reset, one snapshot by value at make -- there is no list to keep in step.
@@ -601,6 +605,10 @@ fn (mut d HubFakeDriver) health() BusHealth {
 
 fn (mut d HubFakeDriver) diagnostics() BusDiagnostics {
 	return d.diag
+}
+
+fn (mut d HubFakeDriver) error_counters() ErrorCounters {
+	return ErrorCounters{}
 }
 
 fn (mut d HubFakeDriver) reconcile_silence(_ bool) ! {}

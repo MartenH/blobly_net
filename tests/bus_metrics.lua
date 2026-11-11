@@ -1,5 +1,5 @@
 -- @project ../projects/sim-demo.blobnet
--- bus.load / bus.diagnostics: the metrics of the script's own handle on a channel. CAN2 is an
+-- bus.load / bus.diagnostics / bus.error_counters: the metrics of the script's own handle on a channel. CAN2 is an
 -- in-process bus at sim-demo's default 500 kbit/s; a standard 8-byte frame is 135 bit-times
 -- (worst-case stuffing, transport.frame_bits).
 
@@ -32,7 +32,12 @@ test("bus.diagnostics counts since open", function()
   check.equal(d.decode_errors, 0)
 end)
 
+test("bus.error_counters is nil where the backend cannot say", function()
+  check.equal(bus.error_counters("CAN2"), nil)
+end)
+
 test("bus metrics refuse what is not a CAN bus", function()
   check.truthy(not pcall(bus.load, "DoIP1"), "a DoIP row had a load")
   check.truthy(not pcall(bus.diagnostics, "NoSuch"), "an unknown channel had diagnostics")
+  check.truthy(not pcall(bus.error_counters, "DoIP1"), "a DoIP row had error counters")
 end)

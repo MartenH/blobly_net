@@ -354,6 +354,10 @@ fn (mut t TapBus) diagnostics() transport.BusDiagnostics {
 	return t.inner.diagnostics()
 }
 
+fn (mut t TapBus) error_counters() transport.ErrorCounters {
+	return t.inner.error_counters()
+}
+
 fn (mut t TapBus) reconcile_silence(want bool) ! {
 	t.inner.reconcile_silence(want)!
 }

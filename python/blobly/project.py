@@ -17,7 +17,7 @@ from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_m
 from .doip import DoipAnnouncement, discover
 from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
 from .faults import Faults
-from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
+from .metrics import BusDiagnostics, BusLoad, ErrorCounters, diagnostics_of, error_counters_of, load_of
 from .generators import Generators, listed as _listed_generators
 from .isotp import IsoTp
 from .j1939 import J1939Listener
@@ -180,8 +180,8 @@ def _ms(timeout_ms):
 
 
 class Bus:
-    """A CAN bus by its address (blobly.open): send, recv, look, expect, health, load and
-    diagnostics on one handle of its own, opened at once and let go by close (or the end of a
+    """A CAN bus by its address (blobly.open): send, recv, look, expect, health, load,
+    diagnostics and error_counters on one handle of its own, opened at once and let go by close (or the end of a
     `with`). A project row's Channel is a Bus too. Every send is checked against the wire policy
     of the loaded project, if any — a wire it marks listen-only refuses here as on its row — and
     the handle's load is priced at the rates of the project's first enabled row on that wire, else
@@ -399,6 +399,13 @@ class Bus:
         """What the backend counted since this channel's handle opened: dropped, controller-error
         and undecodable records. From the thread that uses the channel."""
         return diagnostics_of(self._handle())
+
+    def error_counters(self) -> ErrorCounters | None:
+        """The controller's transmit and receive error counters as it last reported them, None
+        where the backend cannot say (the software buses, PCAN, the CAN bridge). On SocketCAN and
+        Vector they move only while the channel is read, as health() does. From the thread that
+        uses the channel."""
+        return error_counters_of(self._handle())
 
     def close(self) -> None:
         """Lets the handle go; a wait in progress on another thread ends within 20 ms. Closing

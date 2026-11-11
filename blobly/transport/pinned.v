@@ -270,6 +270,10 @@ fn (mut p PinnedBus) diagnostics() BusDiagnostics {
 	return p.inner.diagnostics()
 }
 
+fn (mut p PinnedBus) error_counters() ErrorCounters {
+	return p.inner.error_counters()
+}
+
 // close releases THIS port's hold. Idempotent, for the reason SharedHandle.close is: the app
 // closes a bus twice on at least one race path, and a second decrement would report a wire as
 // free while ports are still open on it — which is the failure this file exists to prevent,

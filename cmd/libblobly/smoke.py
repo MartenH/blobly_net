@@ -67,6 +67,7 @@ def bind(lib):
     lib.bb_bus_health.argtypes = [ctypes.c_int]
     lib.bb_bus_load.argtypes = [ctypes.c_int, ctypes.POINTER(Busload)]
     lib.bb_bus_diagnostics.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint64 * 3)]
+    lib.bb_bus_error_counters.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
     lib.bb_now_ns.restype = ctypes.c_int64
     lib.bb_bus_close.argtypes = [ctypes.c_int]
     lib.bb_channel_kind.argtypes = [ctypes.c_int]
@@ -113,6 +114,8 @@ def exchange(lib, who, n):
     load, diag = Busload(), (ctypes.c_uint64 * 3)()
     assert lib.bb_bus_load(h, ctypes.byref(load)) == 0 and load.frames == n + 1, f"{who} load: {err(lib)}"
     assert lib.bb_bus_diagnostics(h, ctypes.byref(diag)) == 0, f"{who} diagnostics: {err(lib)}"
+    tec, rec = ctypes.c_int(), ctypes.c_int()
+    assert lib.bb_bus_error_counters(h, ctypes.byref(tec), ctypes.byref(rec)) == BB_NONE, f"{who}: a software bus has no error counters"
     assert lib.bb_bus_close(h) == 0, f"{who} close: {err(lib)}"
     assert lib.bb_bus_recv(h, 0, ctypes.byref(f)) == BB_ERR_HANDLE, f"{who}: a closed handle must refuse"
     print(f"ok   {who}: {n} frames heard, one sent")

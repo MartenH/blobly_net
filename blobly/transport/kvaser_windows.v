@@ -39,6 +39,7 @@ fn C.ct_kvaser_write(int, u32, u8, &u8, int, int) int
 fn C.ct_kvaser_read(int, &u32, &u8, &u8, &u32, u32) int
 fn C.ct_kvaser_close(int)
 fn C.ct_kvaser_status(int, &u32) int
+fn C.ct_kvaser_errcnt(int, &i32, &i32) int
 fn C.ct_kvaser_count() int
 fn C.ct_kvaser_descr(int, &char, int) int
 fn C.ct_kvaser_is_virtual(int) int
@@ -491,6 +492,20 @@ pub fn (mut b KvaserBus) health() BusHealth {
 pub fn (mut b KvaserBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{
 		bus_errors: stdatomic.load_u64(&b.bus_errors)
+	}
+}
+
+// error_counters asks canReadErrorCounters, as health asks canReadStatus: no reader needed.
+pub fn (mut b KvaserBus) error_counters() ErrorCounters {
+	mut tx := i32(0)
+	mut rx := i32(0)
+	if C.ct_kvaser_errcnt(b.handle, &tx, &rx) != 0 {
+		return ErrorCounters{}
+	}
+	return ErrorCounters{
+		tx:    int(tx)
+		rx:    int(rx)
+		known: true
 	}
 }
 

@@ -168,6 +168,10 @@ fn (mut b FakeBus) diagnostics() transport.BusDiagnostics {
 	}
 }
 
+fn (mut b FakeBus) error_counters() transport.ErrorCounters {
+	return transport.ErrorCounters{}
+}
+
 fn (mut b FakeBus) reconcile_silence(_ bool) ! {}
 
 struct FakeOpens {

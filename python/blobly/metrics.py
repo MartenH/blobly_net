@@ -1,5 +1,6 @@
-"""metrics — a channel's bus metrics during a run (Channel.load, Channel.diagnostics), as its bus
-handle counts them: the engine's transport.LoadMeter and the backend's diagnostics counts."""
+"""metrics — a channel's bus metrics during a run (Channel.load, Channel.diagnostics,
+Channel.error_counters), as its bus handle counts them: the engine's transport.LoadMeter, the
+backend's diagnostics counts and its controller's error counters."""
 import ctypes
 from typing import NamedTuple
 
@@ -38,3 +39,18 @@ def diagnostics_of(h: int) -> BusDiagnostics:
     out = _lib.BbDiagnostics()
     _lib.check(_lib.lib().bb_bus_diagnostics(h, ctypes.byref(out)))
     return BusDiagnostics(out.dropped, out.bus_errors, out.decode_errors)
+
+
+class ErrorCounters(NamedTuple):
+    """The controller's transmit and receive error counters as it last reported them: the
+    values the health ladder moves on (warning at 96, error-passive at 128, bus-off at 256)."""
+    tx: int  # the transmit error counter (TEC)
+    rx: int  # the receive error counter (REC)
+
+
+def error_counters_of(h: int) -> ErrorCounters | None:
+    """ErrorCounters of bus handle h, None where the backend cannot say."""
+    tx, rx = ctypes.c_int(), ctypes.c_int()
+    if _lib.check(_lib.lib().bb_bus_error_counters(h, ctypes.byref(tx), ctypes.byref(rx))) == _lib.BB_NONE:
+        return None
+    return ErrorCounters(tx.value, rx.value)

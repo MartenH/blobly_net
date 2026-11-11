@@ -416,3 +416,8 @@ pub fn (mut b PcanBus) diagnostics() BusDiagnostics {
 		dropped: stdatomic.load_u64(&b.overruns)
 	}
 }
+
+// error_counters: CAN_GetStatus carries the ladder, not the counters.
+pub fn (mut b PcanBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}

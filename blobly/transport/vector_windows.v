@@ -106,7 +106,8 @@ mut:
 	// reading a V4 queue with xlReceive decodes the first 48 bytes of a 128-byte event as if they
 	// were a classic one. Set once at open and never written again.
 	fd bool
-	// last chip-state busStatus captured by recv from the event stream (-1 = none yet).
+	// last chip-state event captured by recv from the event stream, packed as vector_chip_word
+	// (busStatus, TEC, REC; -1 = none yet).
 	// health() only REQUESTS a report; the reply rides the queue the reader is already
 	// emptying — the drain-and-hunt alternative lost data frames mid-run (self-review).
 	last_chip int = -1
@@ -731,9 +732,18 @@ pub fn (b &VectorBus) chip_state() !VectorChipState {
 // at the END of a run); mid-run health must never compete with the reader (self-review).
 // .unknown until the first reply arrives, and after that at most one poll interval stale.
 pub fn (mut b VectorBus) health() BusHealth {
-	h := if b.last_chip >= 0 { xl_chipstat_health(u8(b.last_chip)) } else { BusHealth.unknown }
+	st := vector_chip_status(b.last_chip)
+	h := if st >= 0 { xl_chipstat_health(u8(st)) } else { BusHealth.unknown }
 	C.ct_vector_reqchip(b.port, b.mask) // reply lands in recv's capture on a later frame
 	return h
+}
+
+// error_counters: the TEC and REC of the last chip state the receive stream carried, and the next
+// request fired, as health does — so they move only while the port is read.
+pub fn (mut b VectorBus) error_counters() ErrorCounters {
+	c := vector_chip_counters(b.last_chip)
+	C.ct_vector_reqchip(b.port, b.mask)
+	return c
 }
 
 // diagnostics: the error records this port's queue carried (#213), and as `dropped` the times

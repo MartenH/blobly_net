@@ -647,7 +647,7 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   the suite. A frame computed afresh each period is `on_timer` + `bus.send` inside `run()`; there
   is no `on_send` callback, since a Lua function cannot run on the sender's thread.
 
-### Bus metrics — bus.load / bus.diagnostics
+### Bus metrics — bus.load / bus.diagnostics / bus.error_counters
 
 ```lua
 local l = bus.load(channel)
@@ -655,6 +655,8 @@ local l = bus.load(channel)
 --       frames = <counted>, bits = <their bit-times>, nominal = <bit/s they are priced at> }
 local d = bus.diagnostics(channel)
 -- d = { dropped = <n>, bus_errors = <n>, decode_errors = <n> }
+local c = bus.error_counters(channel)
+-- c = { tx = <TEC>, rx = <REC> }, or nil where the backend cannot say
 ```
 
 - Both are of the script's own handle on the channel, since it opened (its first use).
@@ -673,6 +675,11 @@ local d = bus.diagnostics(channel)
   before delivery (the handle's queue full, a driver overrun, a shared ring overwritten; on Vector
   the times the port's receive queue overflowed, not frames),
   `bus_errors` controller error records, `decode_errors` records it could not decode — on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other handles' ring gaps included. The runner prints the non-empty ones at close, as before.
+- `bus.error_counters` is the controller's transmit and receive error counters as it last
+  reported them — what the health ladder moves on, so a counter can be watched climbing while
+  `bus.health` still says `"ok"`. `nil` on the software buses, PCAN and the CAN bridge; Kvaser and
+  CANsub ask the driver; on SocketCAN it is the last error frame that carried them (`CAN_ERR_CNT`,
+  never on vcan) and on Vector the last chip state, both moving only while the channel is read.
 
 ### Interfaces — bus.open_iface / bus.interfaces / vector
 

@@ -635,6 +635,7 @@ def _declare(lib):
         # bus metrics (project.py)
         "bb_bus_load": ([c_int, P(BbBusload)], c_int),
         "bb_bus_diagnostics": ([c_int, P(BbDiagnostics)], c_int),
+        "bb_bus_error_counters": ([c_int, P(c_int), P(c_int)], c_int),
         # generators (generators.py)
         "bb_gen_count": ([], c_int),
         "bb_gen_find": ([c_char_p], c_int),

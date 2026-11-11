@@ -33,6 +33,10 @@ fn (mut b Answers) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
+fn (mut b Answers) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 fn (mut b Answers) reconcile_silence(_ bool) ! {}
 
 fn never() bool {

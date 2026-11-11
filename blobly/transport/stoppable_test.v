@@ -31,6 +31,10 @@ fn (mut b SlowOpenBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
+fn (mut b SlowOpenBus) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
 fn (mut b SlowOpenBus) reconcile_silence(_ bool) ! {}
 
 fn slow_opener(ms int, ctl &SlowOpenCount) fn () !Bus {

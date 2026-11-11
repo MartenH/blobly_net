@@ -165,6 +165,8 @@ mut:
 	first_bus_error string
 	// Records dropped because the receiver was not keeping up — see enqueue.
 	dropped u64
+	// The controller's TEC and REC off the same status poll as `health`.
+	counters ErrorCounters
 }
 
 // open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
@@ -791,8 +793,10 @@ fn (mut b CansubBus) poll_health() {
 		return
 	}
 
+	counters := cansub_counters(body) or { ErrorCounters{} }
 	lock b.stop {
 		b.stop.health = h
+		b.stop.counters = counters
 		b.stop.health_misses = 0
 	}
 }
@@ -891,6 +895,7 @@ fn (mut b CansubBus) health_miss() {
 		b.stop.health_misses++
 		if b.stop.health_misses >= cansub_health_misses {
 			b.stop.health = .unknown
+			b.stop.counters = ErrorCounters{}
 		}
 	}
 }
@@ -1215,6 +1220,13 @@ pub fn (b &CansubBus) diagnostics() BusDiagnostics {
 			bus_errors:    b.stop.bus_errors
 			decode_errors: b.stop.decode_errors
 		}
+	}
+}
+
+// error_counters is the controller's TEC and REC as the health thread last read them.
+pub fn (b &CansubBus) error_counters() ErrorCounters {
+	return rlock b.stop {
+		b.stop.counters
 	}
 }
 
