@@ -48,18 +48,61 @@ fn test_a_released_node_falls_silent_and_announces_at_once_on_a_request() {
 	}
 	mut e := nm_engine()
 	assert nm_frames_at(mut e, 0).len == 1
-	nm_set_request('inproc:NMTX', 'Body', false)
-	assert !nm_requested('inproc:NMTX', 'Body')
-	assert nm_requested('inproc:OTHER', 'Body') // keyed by the bus
-	apply_nm_requests('inproc:NMTX', mut e)
+	nm_set_request('inproc:NMTX', 0, 'Body', false)
+	assert !nm_requested('inproc:NMTX', 0, 'Body')
+	assert nm_requested('inproc:OTHER', 0, 'Body') // keyed by the bus
+	apply_nm_requests('inproc:NMTX', 0, mut e)
 	for t in [200.0, 400, 600] {
 		assert nm_frames_at(mut e, t).len == 0
 	}
-	nm_set_request('inproc:NMTX', 'Body', true)
-	apply_nm_requests('inproc:NMTX', mut e)
+	nm_set_request('inproc:NMTX', 0, 'Body', true)
+	apply_nm_requests('inproc:NMTX', 0, mut e)
 	assert nm_frames_at(mut e, 650).len == 1 // at once, not at the next grid slot
 	assert nm_frames_at(mut e, 750).len == 0
 	assert nm_frames_at(mut e, 850).len == 1
+}
+
+// two rows on one wire each simulating a node named Body: a release on one row silences that
+// row's Body alone, and a request on the other leaves the release standing
+fn test_a_release_is_keyed_by_the_row_so_twin_rows_on_one_wire_stay_apart() {
+	clear_nm_requests()
+	defer {
+		clear_nm_requests()
+	}
+	cfg := nm.Config{
+		lo:       0x500
+		hi:       0x53F
+		cycle_ms: 100
+	}
+	nodes := [project.NodeCfg{
+		name: 'Body'
+		nm:   project.NodeNm{
+			id:  0x511
+			nid: 0x11
+		}
+	}]
+	row_a := FaultTarget{
+		channel: 'A'
+		iface:   'inproc:NMTWIN'
+		nodes:   nodes
+		nm:      cfg
+		row:     2
+	}
+	row_b := FaultTarget{
+		...row_a
+		channel: 'B'
+		row:     5
+	}
+	assert row_a.nm_request(false)! == 1
+	mut a := nm_engine()
+	mut b := nm_engine()
+	apply_nm_requests('inproc:NMTWIN', 2, mut a)
+	apply_nm_requests('inproc:NMTWIN', 5, mut b)
+	assert nm_frames_at(mut a, 0).len == 0
+	assert nm_frames_at(mut b, 0).len == 1
+	assert row_b.nm_request(true)! == 1
+	apply_nm_requests('inproc:NMTWIN', 2, mut a)
+	assert nm_frames_at(mut a, 200).len == 0
 }
 
 fn test_a_script_releases_the_row_announcing_nodes_and_is_refused_where_none_does() {
@@ -88,10 +131,10 @@ fn test_a_script_releases_the_row_announcing_nodes_and_is_refused_where_none_doe
 		nm:      cfg
 	}
 	assert t.nm_request(false)! == 1
-	assert !nm_requested('inproc:NMREQ', 'Body')
-	assert nm_requested('inproc:NMREQ', 'Plain')
+	assert !nm_requested('inproc:NMREQ', 0, 'Body')
+	assert nm_requested('inproc:NMREQ', 0, 'Plain')
 	assert t.nm_request(true)! == 1
-	assert nm_requested('inproc:NMREQ', 'Body')
+	assert nm_requested('inproc:NMREQ', 0, 'Body')
 	quiet := FaultTarget{
 		channel: 'CAN1'
 		iface:   'inproc:NMREQ'
@@ -149,8 +192,8 @@ fn test_the_dbc_message_on_the_announced_id_is_not_sent_beside_the_announcement(
 	assert first[1].data[0] == 0x11
 	assert nm_frames_at(mut e, 100).map(it.id) == [u32(0x300)]
 	// released, the id falls silent: the database's message does not keep it awake
-	nm_set_request('inproc:NMTX', 'Body', false)
-	apply_nm_requests('inproc:NMTX', mut e)
+	nm_set_request('inproc:NMTX', 0, 'Body', false)
+	apply_nm_requests('inproc:NMTX', 0, mut e)
 	for t in [200.0, 300, 400] {
 		assert nm_frames_at(mut e, t).map(it.id) == [u32(0x300)]
 	}

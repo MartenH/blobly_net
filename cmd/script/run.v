@@ -216,6 +216,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			db:        c.db
 			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
 			row_nodes: c.cfg.all_nodes()
+			row:       c.row
 			hosts:     c.cfg.hosts_doip_entity()
 			verify:    c.cfg.verify // what a received frame's E2E is judged by first
 			carrier:   script.carrier_of(c.cfg)

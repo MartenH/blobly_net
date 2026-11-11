@@ -87,8 +87,9 @@ fn (mut e Engine) step_nm(now_ms f64, send fn (f transport.CanFrame) bool) {
 	}
 }
 
-// NmRequests is the process's table of released nodes, by interface and node: written by a
-// script, read by every simulation loop, so held behind a mutex.
+// NmRequests is the process's table of released nodes, by interface, project row and node:
+// written by a script, read by every simulation loop, so held behind a mutex. The row is part of
+// the key because two rows on one wire may each simulate a node of one name.
 pub struct NmRequests {
 mut:
 	mu       sync.Mutex
@@ -97,25 +98,27 @@ mut:
 
 __global nm_requests = &NmRequests{}
 
-fn nm_key(iface string, node string) string {
-	return '${iface}:${node}'
+fn nm_key(iface string, row int, node string) string {
+	return '${iface}#${row}:${node}'
 }
 
-// nm_set_request requests (true) or releases (false) the network for `node` on `iface`.
-pub fn nm_set_request(iface string, node string, request bool) {
+// nm_set_request requests (true) or releases (false) the network for `node` simulated on project
+// row `row` on `iface`.
+pub fn nm_set_request(iface string, row int, node string, request bool) {
 	nm_requests.mu.lock()
 	if request {
-		nm_requests.released.delete(nm_key(iface, node))
+		nm_requests.released.delete(nm_key(iface, row, node))
 	} else {
-		nm_requests.released[nm_key(iface, node)] = true
+		nm_requests.released[nm_key(iface, row, node)] = true
 	}
 	nm_requests.mu.unlock()
 }
 
-// nm_requested: the network is requested for `node` on `iface` (the default, until released).
-pub fn nm_requested(iface string, node string) bool {
+// nm_requested: the network is requested for `node` on row `row` on `iface` (the default, until
+// released).
+pub fn nm_requested(iface string, row int, node string) bool {
 	nm_requests.mu.lock()
-	r := nm_key(iface, node) !in nm_requests.released
+	r := nm_key(iface, row, node) !in nm_requests.released
 	nm_requests.mu.unlock()
 	return r
 }
@@ -127,11 +130,12 @@ pub fn clear_nm_requests() {
 	nm_requests.mu.unlock()
 }
 
-// apply_nm_requests stamps the table onto the engine's announcements on `iface`.
-pub fn apply_nm_requests(iface string, mut e Engine) {
+// apply_nm_requests stamps the table onto the announcements of the engine simulating project row
+// `row` on `iface`.
+pub fn apply_nm_requests(iface string, row int, mut e Engine) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].nm_tx.len; j++ {
-			e.ecus[i].nm_tx[j].released = !nm_requested(iface, e.ecus[i].name)
+			e.ecus[i].nm_tx[j].released = !nm_requested(iface, row, e.ecus[i].name)
 		}
 	}
 }
@@ -170,7 +174,7 @@ pub fn (t FaultTarget) nm_request(request bool) !int {
 		names[a.node] = true
 	}
 	for name, _ in names {
-		nm_set_request(t.iface, name, request)
+		nm_set_request(t.iface, t.row, name, request)
 	}
 	return names.len
 }

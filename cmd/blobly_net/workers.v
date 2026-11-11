@@ -258,7 +258,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 		// serve_pass applies ONE fault source, the module's table — Lua's sim.fault() writes it too.
 		// The panel used to write a map on App that only the panel read, so a script launched
 		// from the Script panel reported success and changed nothing on the bus.
-		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.pch.name)
+		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.proj_idx, sc.pch.name)
 	}
 	bus.close()
 }
@@ -1659,6 +1659,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			sources: sources
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			row_nodes: row_nodes // what nm.release / nm.request act on
+			row:       ch.proj_idx // what their requests are keyed on
 			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)

@@ -49,6 +49,8 @@ pub:
 	// The nodes this row itself simulates, where `nodes` is every node on its wire (the GUI's
 	// faults are keyed by the wire): what nm.release / nm.request act on.
 	row_nodes []project.NodeCfg
+	// the row's index in the project, which those nodes' NM requests are keyed on
+	row int
 	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
 	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
@@ -571,6 +573,7 @@ fn (c ChanInfo) fault_target() sim.FaultTarget {
 		db:       c.db
 		nodes:    c.nodes
 		nm:       c.nm
+		row:      c.row
 	}
 }
 

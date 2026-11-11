@@ -17,6 +17,7 @@ pub:
 	db       candb.Database
 	nodes    []project.NodeCfg // the simulated nodes on it
 	nm       ?nm.Config        // its wire's NM cluster, which says who announces (nm_request)
+	row      int               // the project row's index, which NM requests are keyed on with iface
 }
 
 // fault_kind_of is a fault kind as a script spells it; clear, none and '' are no fault.

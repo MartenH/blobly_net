@@ -472,13 +472,14 @@ pub fn (e &Engine) recv_wait_ms(now_ms f64) int {
 	return if wait < loop_wait_ms { int(wait) } else { loop_wait_ms }
 }
 
-// serve_pass is one turn of a simulation loop started at `t0_ns` (time.sys_mono_now): the
-// injected faults, what is due sent, then a receive bounded by the next due message, answering
-// the request it brings — the one body the GUI's and the headless runner's loops run each pass.
-pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, chan_name string) {
+// serve_pass is one turn of the simulation loop of project row `row`, started at `t0_ns`
+// (time.sys_mono_now): the injected faults, what is due sent, then a receive bounded by the next
+// due message, answering the request it brings — the one body the GUI's and the headless
+// runner's loops run each pass.
+pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, row int, chan_name string) {
 	// re-stamped every pass, so a fault a script injects mid-run takes effect on the next frame
 	apply_injected(iface, mut e)
-	transmit(mut e, mut bus, since_ms(t0_ns), iface, chan_name)
+	transmit(mut e, mut bus, since_ms(t0_ns), iface, row, chan_name)
 	if frame := bus.recv(e.recv_wait_ms(since_ms(t0_ns))) {
 		for resp in e.on_frame(frame) {
 			bus.send(resp) or {}
@@ -486,10 +487,10 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 	}
 }
 
-// transmit sends what is due on `bus` and publishes what a described server's live DIDs read,
-// each pass of serve_pass.
-pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, chan_name string) {
-	apply_nm_requests(iface, mut e)
+// transmit sends what is due on `bus` from the engine of project row `row` and publishes what a
+// described server's live DIDs read, each pass of serve_pass.
+pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, row int, chan_name string) {
+	apply_nm_requests(iface, row, mut e)
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }
 		return true

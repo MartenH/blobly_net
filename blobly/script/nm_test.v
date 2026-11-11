@@ -161,14 +161,14 @@ fn test_nm_release_is_refused_while_the_run_is_stopped() {
 			check.truthy(string.find(tostring(err), "the run is stopped", 1, true), tostring(err))
 		end)
 	')!
-	assert sim.nm_requested('inproc:NMRELEASE', 'Body')
+	assert sim.nm_requested('inproc:NMRELEASE', 0, 'Body')
 	started.on = true
 	env.run_source('
 		test("started, a release silences the node", function()
 			check.equal(nm.release("body"), 1)
 		end)
 	')!
-	assert !sim.nm_requested('inproc:NMRELEASE', 'Body')
+	assert !sim.nm_requested('inproc:NMRELEASE', 0, 'Body')
 	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
 }
 
@@ -212,6 +212,7 @@ fn test_nm_release_acts_on_the_row_own_nodes_only() {
 			nodes:     [body, gw]
 			row_nodes: [gw]
 			nm:        cfg
+			row:       1
 		},
 	]) or { panic(err) }
 	env.on_output = fn (s string) {}
@@ -224,8 +225,8 @@ fn test_nm_release_acts_on_the_row_own_nodes_only() {
 			check.equal(nm.release("rowA"), 1)
 		end)
 	')!
-	assert !sim.nm_requested('inproc:NMROWS', 'Body')
-	assert sim.nm_requested('inproc:NMROWS', 'Gw')
+	assert !sim.nm_requested('inproc:NMROWS', 0, 'Body')
+	assert sim.nm_requested('inproc:NMROWS', 1, 'Gw')
 	assert env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str()
 }
 

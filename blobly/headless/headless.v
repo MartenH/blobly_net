@@ -72,6 +72,8 @@ pub:
 	sources []candb.Database
 	// the row's wire's NM cluster in this run (Run.nm_config): who of its nodes announces
 	nm ?nm.Config
+	// the row's index in the project, which a simulated node's NM request is keyed on
+	row int
 }
 
 // fault_target is this row as sim.FaultTarget.arm judges a fault on it.
@@ -83,6 +85,7 @@ pub fn (c Channel) fault_target() sim.FaultTarget {
 		db:       c.db
 		nodes:    c.cfg.all_nodes()
 		nm:       c.nm
+		row:      c.row
 	}
 }
 
@@ -363,6 +366,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			db:      db
 			sources: row_sources(ch, os.dir(proj_path), db_files)
 			nm:      r.nm_config(ch)
+			row:     ci
 		}
 		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
 		// reached by logical address over TCP. Nothing outside blobly/doip ever started one,
@@ -455,7 +459,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
 			r.counted()
-			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ch.name, db, nodes, anns)
+			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ci, ch.name, db, nodes, anns)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -675,7 +679,7 @@ fn (mut r Run) done() {
 
 // sim_loop runs the channel's simulated ECUs on a dedicated bus handle, sending as the row's own
 // emitter (transport.row_framed).
-fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Database, nodes []project.NodeCfg, anns []nm.Announce) {
+fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_name string, db candb.Database, nodes []project.NodeCfg, anns []nm.Announce) {
 	defer {
 		r.done()
 	}
@@ -687,7 +691,7 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 	engine.attach_announcements(anns)
 	t0 := time.sys_mono_now()
 	for r.ctl.running {
-		sim.serve_pass(mut engine, mut bus, t0, fault_iface, chan_name)
+		sim.serve_pass(mut engine, mut bus, t0, fault_iface, row, chan_name)
 	}
 	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
 	// handle still answers with the wire's totals (codex round 12 on #231).
