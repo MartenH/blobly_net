@@ -65,6 +65,22 @@ fn lane_take(key string, owner u64, now u64, hold_ns u64) bool {
 	return true
 }
 
+// lane_free_at is when `key` is free for `owner` (mono ns): `now` when it is already, else when
+// another owner's claim, or the gap after it, ends.
+fn lane_free_at(key string, owner u64, now u64) u64 {
+	if key == '' {
+		return now
+	}
+	rlock tp_lanes {
+		if l := tp_lanes.by[key] {
+			if l.owner != owner && now < l.until {
+				return l.until
+			}
+		}
+	}
+	return now
+}
+
 // lane_keep refreshes `owner`'s claim of `key` until `hold_ns` from `now`, for a transfer in
 // progress: false once the claim is lost — another owner took it, or it lapsed. '' is always kept.
 fn lane_keep(key string, owner u64, now u64, hold_ns u64) bool {

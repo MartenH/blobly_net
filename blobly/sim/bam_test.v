@@ -365,3 +365,14 @@ fn test_ending_the_connections_aborts_them_and_frees_the_lane() {
 		0x21), data: []u8{len: 16} }, wire, 0)!
 	assert next.take_lane(time.sys_mono_now())
 }
+
+// A BAM's next frame is what the loop waits for, not the next period: a receive is bounded by it.
+fn test_the_next_bam_frame_bounds_the_loop_wait() {
+	mut e := body_engine()
+	e.step(0, fn (f transport.CanFrame) bool {
+		return true
+	})
+	next := e.next_due_ms() or { -1.0 }
+	assert next >= 50 && next < 51, 'the next packet, not the next period: ${next}'
+	assert e.recv_wait_ms(48) == 2
+}

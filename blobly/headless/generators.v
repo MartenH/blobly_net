@@ -4,7 +4,6 @@ import time
 import sync
 import blobly.candb
 import blobly.cyclic
-import blobly.j1939
 import blobly.project
 import blobly.sim
 import blobly.transport
@@ -12,8 +11,10 @@ import blobly.transport
 // generators.v — the run's generators (`senders:`), each an entry of the run's wire to its target
 // (cyclic.Wire): one loop and one send-only handle per wire send every generator and background
 // sender on it, each on its own cycle while it runs and a generator on every fire asked for. A
-// cyclic generator joins its wire with the run; any other at its first fire or start. The control
-// a script has over them is sim.GenControl, which Run answers here.
+// cyclic generator joins its wire with the run; any other at its first fire or start. A long J1939
+// message is a transfer the wire's loop steps (cyclic.Tp), one at a time per generator, so the
+// others on the wire keep their cycles while it runs. The control a script has over them is
+// sim.GenControl, which Run answers here.
 
 // run_stopped is what a fire still queued when its wire stops is answered with.
 const run_stopped = 'the run stopped'
@@ -59,7 +60,7 @@ mut:
 	// the wire's loop's alone: whether it was cyclic at the last pass, whether its cycle sends at
 	// once (started, or started again), why the cycle's last send failed (said once while it
 	// repeats), the note to go back to when it sends again, the grid slot the cycle last sent in
-	// and when that send returned, and the wire's handle as its row
+	// and when that send ended, and the wire's handle as its row
 	was       bool
 	fresh     bool = true
 	failed    string
@@ -67,9 +68,12 @@ mut:
 	slot      u64
 	done      u64
 	framed    ?transport.Bus
-	// a BAM in progress ends at the run's stop: asked through this, built once (stop_fn), since V
-	// never frees a closure
-	stopper fn () bool = unsafe { nil }
+	// the send in progress (a transfer), what it is — the fire it answers, else the cycle's — and
+	// the edits its frame was built after; whether a fire waiting goes before the cycle next
+	tp        cyclic.Tp
+	job_fire  ?&Fire
+	job_edits i64
+	fire_turn bool
 }
 
 // fires_waiting is how many fires may wait for one generator's loop at once.
@@ -170,6 +174,10 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		ctl:     r.ctl
 		run_t0:  r.run_t0
 	}
+	ctl := r.ctl
+	g.tp.stop_by(fn [ctl] () bool {
+		return !ctl.running
+	})
 	r.gens << g
 	// what it is, from its own channel's databases, even where it can send nowhere; what it sends
 	// is resolved below from its target's
@@ -292,6 +300,9 @@ fn (mut g Gen) leaving() bool {
 // frames only, as the GUI's does, so a counter source never skips a value a refused send did not
 // put on the wire.
 fn (mut g Gen) due(now u64) ?u64 {
+	if g.tp.busy() {
+		return g.tp.due(now)
+	}
 	g.mu.lock()
 	cyc := g.cyclic
 	period := u64(g.s.cycle_ms)
@@ -319,48 +330,105 @@ fn (mut g Gen) due(now u64) ?u64 {
 	return sim.next_due(g.slot, period, g.done)
 }
 
-// serve sends g's cyclic frame if it is due, then one fire: however far behind the cycle is, a
-// fire is served, and however full the queue is kept, the cycle is; one taken after a stop began
-// is not sent. What it says is a cyclic send's failure, once while it repeats.
+// serve drives g's transfer in progress, else sends its cyclic frame if it is due, then one fire:
+// however far behind the cycle is, a fire is served, and however full the queue is kept, the
+// cycle is; one taken after a stop began is not sent. A send that begins a transfer ends the pass
+// for g. What it says is a cyclic send's failure, once while it repeats.
 fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 	mut b := g.framed or {
 		f := transport.row_framed(bus, g.open, g.row)
 		g.framed = f
 		f
 	}
+	if g.tp.busy() {
+		of_cycle := g.job_fire == none
+		said := g.progress(not_sent(g.tp.pump(mut b, now)))
+		// a cycle's transfer ended: a fire waiting goes next, so a cycle shorter than its transfer
+		// cannot starve the fires
+		g.fire_turn = of_cycle && !g.tp.busy()
+		return said
+	}
 	g.mu.lock()
 	cyc := g.cyclic
 	period := u64(g.s.cycle_ms)
+	fires := g.queue.len > 0
 	g.mu.unlock()
 	mut said := ''
-	if cyc && (g.fresh || now >= sim.next_due(g.slot, period, g.done)) {
+	turn := g.fire_turn && fires
+	g.fire_turn = false
+	if !turn && cyc && (g.fresh || now >= sim.next_due(g.slot, period, g.done)) {
 		g.slot = if g.fresh { now } else { sim.next_due(g.slot, period, g.done) }
 		g.fresh = false
-		why := g.send(mut b)
-		g.done = time.sys_mono_now() / 1_000_000
-		// its sends follow it until the bus took a frame; up from then on
-		if !g.told {
-			g.told = why == ''
-			g.report(why)
-		}
-		if why != g.failed {
-			g.failed = why
-			g.mu.lock()
-			g.note = if why != '' { why } else { g.base_note }
-			g.mu.unlock()
-			if why != '' {
-				said = 'generator "${g.s.name}": ${why}'
-			}
+		g.job_fire = none
+		said = g.progress(g.send(mut b, now))
+		if g.tp.busy() {
+			return said
 		}
 	}
 	if mut fire := g.next_fire() {
 		if fire.take(time.sys_mono_now()) {
-			fire.reply <- answered(if g.ctl.running { g.send(mut b) } else { run_stopped })
-			// a slot the fire's write covered is skipped too
-			g.done = time.sys_mono_now() / 1_000_000
+			if !g.ctl.running {
+				fire.reply <- answered(run_stopped)
+			} else {
+				g.job_fire = fire
+				g.progress(g.send(mut b, now))
+			}
 		}
 	}
 	return said
+}
+
+// progress is what g makes of where its send stands: up once the bus took a frame of a cyclic
+// send; once it ended, the frame counted, the fire answered or the cycle's outcome noted, and the
+// next slot gridded from then. What it says is a cyclic send's failure, once while it repeats.
+fn (mut g Gen) progress(st cyclic.Step) string {
+	fire := g.job_fire
+	// its sends follow it until the bus took a frame; up from then on
+	if g.job_fire == none && !g.told && g.tp.took_frame() {
+		g.told = true
+		g.report('')
+	}
+	if st.going {
+		return ''
+	}
+	g.done = time.sys_mono_now() / 1_000_000
+	if st.why == '' {
+		g.mu.lock()
+		g.sent++
+		g.sent_edits = g.job_edits
+		g.mu.unlock()
+	}
+	why := st.why
+	if mut f := fire {
+		g.job_fire = none
+		f.reply <- answered(why)
+		return ''
+	}
+	if !g.told {
+		g.report(why)
+	}
+	if why == g.failed {
+		return ''
+	}
+	g.failed = why
+	g.mu.lock()
+	g.note = if why != '' { why } else { g.base_note }
+	g.mu.unlock()
+	return if why != '' { 'generator "${g.s.name}": ${why}' } else { '' }
+}
+
+// quit ends g's transfer in progress at its wire's stop, a fire it was sending answered as the
+// run's stop.
+fn (mut g Gen) quit(mut bus transport.Bus) {
+	if !g.tp.busy() {
+		return
+	}
+	mut b := g.framed or { bus }
+	g.tp.quit(mut b)
+	if mut f := g.job_fire {
+		g.job_fire = none
+		f.reply <- answered(run_stopped)
+	}
 }
 
 // let_go is g's wire letting it go: `failure` its note (the wire could not open), every fire still
@@ -392,21 +460,9 @@ fn (mut g Gen) poke() {
 	}
 }
 
-// stop_fn is the run's stop as a closure, built on first use and kept.
-fn (mut g Gen) stop_fn() fn () bool {
-	if isnil(g.stopper) {
-		ctl := g.ctl
-		g.stopper = fn [ctl] () bool {
-			return !ctl.running
-		}
-	}
-	return g.stopper
-}
-
-// send puts g's frame on the bus once — a J1939 message past eight bytes on a classic row as its
-// BAM, paced (j1939.send_message), the run's stop asked between its frames: '' when the bus took
-// it, else why not.
-fn (mut g Gen) send(mut bus transport.Bus) string {
+// send begins g's frame on the bus — a J1939 message past eight bytes on a classic row as its BAM
+// or its connection (cyclic.Tp), which serve drives from then — its edits noted for when it ends.
+fn (mut g Gen) send(mut bus transport.Bus, now u64) cyclic.Step {
 	g.mu.lock()
 	s := project.Sender{
 		...g.s
@@ -414,22 +470,29 @@ fn (mut g Gen) send(mut bus transport.Bus) string {
 		data:    g.s.data.clone()
 	}
 	n := int(g.sent)
-	edits := g.edits
+	g.job_edits = g.edits
 	g.mu.unlock()
 	el := f64(time.sys_mono_now() - g.run_t0) / 1_000_000_000.0
 	frame := if s.message != '' {
-		sim.sender_message_frame(s, g.dbs, n, el) or { return err.msg() }
+		sim.sender_message_frame(s, g.dbs, n, el) or { return cyclic.Step{
+			why: err.msg()
+		} }
 	} else {
-		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return err.msg() }
+		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return cyclic.Step{
+			why: err.msg()
+		} }
 	}
-	j1939.send_message(mut bus, frame, sim.sender_j1939(s, g.dbs), g.stop_fn()) or {
-		return 'not sent: ${err}'
+	return not_sent(g.tp.begin(mut bus, frame, sim.sender_j1939(s, g.dbs), now))
+}
+
+// not_sent is a send's step with a refusal by the bus said as one.
+fn not_sent(st cyclic.Step) cyclic.Step {
+	if st.going || st.why == '' {
+		return st
 	}
-	g.mu.lock()
-	g.sent++
-	g.sent_edits = edits
-	g.mu.unlock()
-	return ''
+	return cyclic.Step{
+		why: 'not sent: ${st.why}'
+	}
 }
 
 // end marks g let go and answers every fire still queued with `why`.
