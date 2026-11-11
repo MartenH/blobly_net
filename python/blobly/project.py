@@ -248,9 +248,15 @@ class Bus:
         lib = _lib.lib()
         if lib.bb_bus_watch(h) == 0:
             self._watch = h
-        else:
+            return
+        try:
             warnings.warn(f"{self.name}: no newest-frame reader ({_lib.text(lib.bb_last_error())}); "
                           "latest and value answer as of this channel's last read", RuntimeWarning, stacklevel=3)
+        except BaseException:  # the warning raised (an error filter): the handle goes with it
+            if self._h == h:
+                self._h = None
+            lib.bb_bus_close(h)
+            raise
 
     def _run(self):
         """What a wait holds to: nothing for a bus of its own (a Channel: its project's run)."""

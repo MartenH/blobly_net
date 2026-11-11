@@ -2,6 +2,7 @@
 (Channel.value), and net.wait reading every open channel while time passes."""
 import math
 import time
+import warnings
 from unittest import mock
 
 import pytest
@@ -171,6 +172,31 @@ class TestLatest:
         with mock.patch.object(project._lib, "lib", lambda: fake):
             assert bus._receive(20, 1)[0] == blobly.Frame(0x300, b"\x01")
         assert bus._latest == {}
+
+    def test_a_watch_warning_raised_as_an_error_closes_the_handle(self):
+        closed = []
+
+        class NoWatch:
+            def bb_bus_open(self, address):
+                return 7
+
+            def bb_bus_watch(self, h):
+                return -1
+
+            def bb_last_error(self):
+                return b"no reader"
+
+            def bb_bus_close(self, h):
+                closed.append(h)
+                return 0
+
+        fake = NoWatch()
+        with mock.patch.object(project._lib, "lib", lambda: fake), mock.patch.object(project, "_close_orphans", lambda: None):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                with pytest.raises(RuntimeWarning, match="no newest-frame reader"):
+                    blobly.Bus("inproc:PY_NOWATCH")
+        assert closed == [7], "the opened handle outlived the raised warning"
 
 
 class FakeLib:

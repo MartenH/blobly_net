@@ -28,11 +28,9 @@ pub:
 }
 
 struct EchoNote {
-	tok   u64
-	id    u32
-	ext   bool
-	rtr   bool
-	data  []u8
+	tok u64
+	// the frame as sent, and as the wire carries it where the backend changes it (wire_frame)
+	forms []CanFrame
 	at_ns i64
 }
 
@@ -50,6 +48,8 @@ mut:
 	next   u64
 	failed string
 	stop   bool
+	// the wire, as the view's handle was opened on it: what a send becomes on it (wire_frame)
+	iface string
 	// whether the view's handle hears the script handle's sends (echoes_own_sends): where it does
 	// not, a send is not noted, since a note would claim a peer's frame in its place
 	hears_sends bool
@@ -61,9 +61,11 @@ mut:
 	reader thread
 }
 
-// new_newest is a view no reader feeds: the table and its echo rule, for `watch_newest` and tests.
-pub fn new_newest() &NewestView {
+// new_newest is a view of `iface` no reader feeds: the table and its echo rule, for
+// `watch_newest` and tests.
+pub fn new_newest(iface string) &NewestView {
 	return &NewestView{
+		iface:       iface
 		hears_sends: true
 	}
 }
@@ -75,6 +77,7 @@ pub fn watch_newest(bus Bus, iface string) &NewestView {
 	mut b := bus
 	mut v := &NewestView{
 		bus:         b
+		iface:       iface
 		hears_sends: echoes_own_sends(iface)
 	}
 	if f := b.recv(0) {
@@ -100,26 +103,23 @@ fn (mut v NewestView) read() {
 	}
 	mut b := v.bus or { return }
 	for {
-		// a settle asked before this receive began is answered by its timeout; a later one waits
-		// for the next receive
-		before := v.asked_now()
-		f := recv_sliced(mut b, newest_slice_ms, newest_slice_ms, stop) or {
+		if f := recv_sliced(mut b, newest_slice_ms, newest_slice_ms, stop) {
+			v.keep(f, received_now(f), i64(time.sys_mono_now()))
+		} else {
 			if err.code() == sliced_stop_code {
 				return
 			}
-			if err.msg() == 'timeout' {
-				v.answer(before)
-				continue
+			if err.msg() != 'timeout' {
+				v.fail(err.msg())
+				return
 			}
-			v.fail(err.msg())
-			return
 		}
-		v.keep(f, received_now(f), i64(time.sys_mono_now()))
 		asked := v.asked_now()
 		if asked == v.answered_now() {
 			continue
 		}
-		// a settle is waiting: what is queued now read before it is answered
+		// a settle is waiting: what is queued now read by zero looks before it is answered, since a
+		// receive that timed out may have spent its budget with a frame still queued
 		mut drained := false
 		for _ in 0 .. newest_drain_max {
 			g := b.recv(0) or {
@@ -217,19 +217,25 @@ pub fn (mut v NewestView) keep(f CanFrame, t_ns i64, now_ns i64) {
 	}
 }
 
-// echoed_by: the echo carries the id, kind, remote bit and payload sent, an FD one zero-padded up
-// to the length a DLC expresses.
+// echoed_by: the echo carries one of the note's forms.
 fn (n EchoNote) echoed_by(f CanFrame) bool {
-	if f.id != n.id || f.extended != n.ext || f.rtr != n.rtr || f.data.len < n.data.len {
+	return n.forms.any(echo_of(it, f))
+}
+
+// echo_of: `f` carries the id, kind, remote bit and payload of `sent`, an FD one zero-padded up to
+// the length a DLC expresses.
+fn echo_of(sent CanFrame, f CanFrame) bool {
+	if f.id != sent.id || f.extended != sent.extended || f.rtr != sent.rtr
+		|| f.data.len < sent.data.len {
 		return false
 	}
-	if f.data.len != n.data.len && !(f.fd && f.data.len == fd_padded_len(n.data.len)) {
+	if f.data.len != sent.data.len && !(f.fd && f.data.len == fd_padded_len(sent.data.len)) {
 		return false
 	}
-	if f.data[..n.data.len] != n.data {
+	if f.data[..sent.data.len] != sent.data {
 		return false
 	}
-	return f.data[n.data.len..].all(it == 0)
+	return f.data[sent.data.len..].all(it == 0)
 }
 
 // sending notes a frame the script's handle is about to send, at `now_ns`, so its echo is not
@@ -247,12 +253,24 @@ pub fn (mut v NewestView) sending(f CanFrame, now_ns i64) u64 {
 	if v.notes.len >= newest_notes_max {
 		v.notes.delete(0)
 	}
+	given := CanFrame{
+		id:       f.id
+		extended: f.extended
+		rtr:      f.rtr
+		data:     f.data.clone()
+	}
+	mut forms := [given]
+	w := wire_frame(v.iface, f)
+	if w.id != f.id || w.data != f.data {
+		forms << CanFrame{
+			...given
+			id:   w.id
+			data: w.data.clone()
+		}
+	}
 	v.notes << EchoNote{
 		tok:   v.next
-		id:    f.id
-		ext:   f.extended
-		rtr:   f.rtr
-		data:  f.data.clone()
+		forms: forms
 		at_ns: now_ns
 	}
 	return v.next

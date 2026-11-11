@@ -1,5 +1,6 @@
 module transport
 
+import sync
 import time
 
 fn newest_wait(mut v NewestView, id u32, ext ?bool, data []u8) ?NewestFrame {
@@ -64,7 +65,7 @@ fn test_what_the_script_sends_is_not_kept_but_a_peer_frame_after_it_is() {
 }
 
 fn test_an_echo_takes_its_note_once_and_notes_expire() {
-	mut v := new_newest()
+	mut v := new_newest('inproc:T')
 	f := CanFrame{
 		id:   0x10
 		data: [u8(1), 2]
@@ -87,7 +88,7 @@ fn test_an_echo_takes_its_note_once_and_notes_expire() {
 
 fn test_a_failed_send_takes_back_its_note() {
 	mut script := metered(open('inproc:NEWEST_C') or { panic(err) }, 'inproc:NEWEST_C', 500000, 0)
-	mut v := new_newest()
+	mut v := new_newest('inproc:T')
 	script.view = v
 	defer {
 		script.close()
@@ -134,11 +135,11 @@ fn test_a_settle_answers_as_of_the_call() {
 	t0 := time.sys_mono_now()
 	v.settle()
 	assert time.sys_mono_now() - t0 < u64(newest_settle_ms) * u64(time.millisecond)
-	new_newest().settle() // no reader: nothing to wait for
+	new_newest('inproc:T').settle() // no reader: nothing to wait for
 }
 
 fn test_an_echo_is_the_payload_sent_or_its_fd_padding_and_nothing_longer() {
-	mut v := new_newest()
+	mut v := new_newest('inproc:T')
 	empty := CanFrame{
 		id: 0x20
 	}
@@ -176,74 +177,83 @@ fn test_a_send_the_view_handle_will_not_hear_is_not_noted() {
 	assert v.sending(f, 0) == 0
 	v.keep(f, 1, 1)
 	assert v.get(0x30, none) != none, 'a peer frame was taken for the echo of a send nobody hears'
-	assert echoes_own_sends('inproc:X') && new_newest().hears_sends
+	assert echoes_own_sends('inproc:X') && new_newest('inproc:T').hears_sends
 }
 
-// TimeoutBus answers its first receive with a timeout after a settle was asked behind its back,
-// and its second with the frame queued meanwhile, noting how far settles were answered by then.
-struct TimeoutBus {
+// QueuedBus spends every waiting receive's budget and answers it with a timeout, as a backend
+// skipping error records does with a data frame still queued; a zero look takes the frame.
+struct QueuedBus {
 mut:
-	view     &NewestView = unsafe { nil }
-	calls    int
-	asked    u64
-	answered u64
-	seen     bool
+	mu     sync.Mutex
+	queued []CanFrame
 }
 
-fn (mut b TimeoutBus) send(_ CanFrame) ! {}
+fn (mut b QueuedBus) send(f CanFrame) ! {
+	b.mu.lock()
+	b.queued << f
+	b.mu.unlock()
+}
 
-fn (mut b TimeoutBus) recv(_ int) !CanFrame {
-	b.calls++
-	if b.calls == 1 {
-		b.view.mu.lock()
-		b.view.asked++
-		b.asked = b.view.asked
-		b.view.mu.unlock()
+fn (mut b QueuedBus) recv(timeout_ms int) !CanFrame {
+	if timeout_ms > 0 {
+		time.sleep(timeout_ms * time.millisecond)
 		return error('timeout')
 	}
-	if b.calls == 2 {
-		b.answered = b.view.answered_now()
-		b.seen = true
-		return CanFrame{
-			id:   0x40
-			data: [u8(1)]
-		}
+	b.mu.lock()
+	defer {
+		b.mu.unlock()
 	}
-	time.sleep(time.millisecond)
-	return error('timeout')
+	if b.queued.len == 0 {
+		return error('timeout')
+	}
+	f := b.queued[0]
+	b.queued.delete(0)
+	return f
 }
 
-fn (mut b TimeoutBus) close() {}
+fn (mut b QueuedBus) close() {}
 
-fn (mut b TimeoutBus) health() BusHealth {
+fn (mut b QueuedBus) health() BusHealth {
 	return .unknown
 }
 
-fn (mut b TimeoutBus) diagnostics() BusDiagnostics {
+fn (mut b QueuedBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b TimeoutBus) error_counters() ErrorCounters {
+fn (mut b QueuedBus) error_counters() ErrorCounters {
 	return ErrorCounters{}
 }
 
-fn (mut b TimeoutBus) reconcile_silence(_ bool) ! {}
+fn (mut b QueuedBus) reconcile_silence(_ bool) ! {}
 
-fn test_a_timeout_answers_only_the_settles_asked_before_its_receive() {
-	mut tb := &TimeoutBus{}
-	bus := Bus(tb)
-	mut v := &NewestView{
-		bus: bus
-	}
-	tb.view = v
-	v.reader = spawn v.read()
+fn test_a_settle_looks_at_the_queue_after_a_receive_that_timed_out() {
+	mut qb := &QueuedBus{}
+	mut v := watch_newest(Bus(qb), 'inproc:T')
 	defer {
 		v.close()
 	}
-	deadline := time.sys_mono_now() + 2 * time.second
-	for !tb.seen && time.sys_mono_now() < deadline {
-		time.sleep(time.millisecond)
+	for i in 0 .. 20 {
+		qb.send(CanFrame{ id: 0x40, data: [u8(i)] })!
+		v.settle()
+		f := v.get(0x40, false) or { panic('a queued frame was not kept before the settle answered') }
+		assert f.frame.data == [u8(i)]
 	}
-	assert tb.seen
-	assert tb.answered < tb.asked, 'a settle asked after the receive looked was answered by its timeout'
+}
+
+fn test_an_echo_is_also_the_frame_as_the_backend_clamps_it() {
+	mut v := new_newest('vcan0')
+	twelve := CanFrame{
+		id:   0x810
+		data: []u8{len: 12, init: u8(index)}
+	}
+	v.sending(twelve, 0)
+	v.keep(CanFrame{ id: 0x010, data: twelve.data[..8].clone() }, 1, 1)
+	assert v.get(0x010, false) == none, 'the clamped echo of a send was kept'
+	v.keep(CanFrame{ id: 0x010, data: twelve.data[..8].clone() }, 2, 2)
+	assert v.get(0x010, false) != none, 'a peer frame after the echo was not kept'
+	mut sw := new_newest('inproc:T')
+	sw.sending(twelve, 0)
+	sw.keep(CanFrame{ id: 0x010, data: twelve.data[..8].clone() }, 1, 1)
+	assert sw.get(0x010, false) != none, 'a software bus carries the frame as given'
 }
