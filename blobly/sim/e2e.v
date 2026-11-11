@@ -146,7 +146,7 @@ pub fn declared_problem(m candb.Message, e E2e) string {
 			return 'its crc "${name}" is ${sig[0].length} bits, and every profile produces 8'
 		}
 	}
-	if why := p01_problem(m, e) {
+	if why := e2e_problem(m, e) {
 		return why
 	}
 	return ''
@@ -198,7 +198,7 @@ pub fn past_payload(m candb.Message, name string) ?string {
 }
 
 // p01_problem says why `e` cannot be stamped or checked as AUTOSAR Profile 1 on `msg`, if it
-// cannot — the ONE rule the protect: and verify: validation both ask.
+// cannot — asked through e2e_problem, the one rule.
 pub fn p01_problem(msg candb.Message, e E2e) ?string {
 	if e.profile != p01 {
 		return none
@@ -222,6 +222,21 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 		}
 	}
 	return none
+}
+
+// e2e_problem says why `e` cannot be stamped or checked on `msg`, if it cannot — the ONE rule
+// the protect: and verify: validation, a DBC declaration (declared_problem), protection_for and
+// the verifiers ask: a counter or checksum with no number (candb.Signal.is_scalar), which no
+// stamp writes and no check reads, so it would pass as protected and checked while it is neither;
+// then Profile 1's own (p01_problem).
+pub fn e2e_problem(msg candb.Message, e E2e) ?string {
+	for sig in msg.signals {
+		if sig.name != '' && (sig.name == e.counter || sig.name == e.crc) && !sig.is_scalar() {
+			role := if sig.name == e.crc { 'checksum' } else { 'counter' }
+			return '${role} ${sig.scalar_refusal()}, so nothing stamps or checks it'
+		}
+	}
+	return p01_problem(msg, e)
 }
 
 // p01_modes are the Data ID modes Profile 1 is implemented for ('' is the default, both).

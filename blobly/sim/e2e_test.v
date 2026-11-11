@@ -608,3 +608,107 @@ fn test_validate_cfg_transmitter_rule() {
 	}
 	assert validate_cfg(db, responder).len == 0, '${validate_cfg(db, responder)}'
 }
+
+// wide_e2e_msg is an FD message whose 128-bit Ctr (or, with `crc_wide`, its checksum) carries no
+// number, declared protected with a primitive profile.
+fn wide_e2e_msg(crc_wide bool) candb.Message {
+	return candb.Message{
+		name:    'WideE2e'
+		id:      0x321
+		dlc:     24
+		sender:  'ECU'
+		e2e:     candb.E2eDecl{
+			counter: if crc_wide { '' } else { 'Ctr' }
+			crc:     if crc_wide { 'Ctr' } else { 'Crc' }
+			profile: 'sum8'
+		}
+		signals: [
+			candb.Signal{
+				name:       'Crc'
+				start_bit:  0
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    255
+			},
+			candb.Signal{
+				name:       'Ctr'
+				start_bit:  8
+				length:     128
+				byte_order: .little_endian
+				factor:     1
+			},
+		]
+	}
+}
+
+// a counter or checksum with no number (wider than 64 bits) is refused by the one rule, so a DBC
+// declaration, a protect: entry and a verify: entry naming one are said, never stamped, never
+// verified, and a fault on it is refused
+fn test_a_wide_e2e_field_is_refused_everywhere() {
+	m := wide_e2e_msg(false)
+	db := candb.Database{
+		nodes:    ['ECU']
+		messages: [m]
+	}
+	why := 'counter Ctr is 128 bits wide: a value is encoded into 1 .. 64, so nothing stamps or checks it'
+	e := e2e_of_decl(m.e2e)
+	assert (e2e_problem(m, e) or { '' }) == why
+	// the declaration: not applied, said, not stamped by a script, not judged on receipt
+	assert declared_problem(m, e) == why
+	assert declared_e2e(m) == none
+	bare := project.NodeCfg{
+		name: 'ECU'
+	}
+	assert protection_for(bare, m) == none
+	assert validate_protection(db, bare).any(it.contains('cannot be applied — ${why}'))
+	mut st := E2eStamper{}
+	mut data := []u8{len: 24}
+	mut said := ''
+	st.stamp(m, mut data) or { said = err.msg() }
+	assert said.contains(why)
+	assert data.all(it == 0)
+	assert receive_checks(db, []).by_key.len == 0
+	// a protect: entry: not applied, said, and no verifier built from it
+	entry := project.ProtectCfg{
+		message: 'WideE2e'
+		counter: 'Ctr'
+		crc:     'Crc'
+		profile: 'sum8'
+	}
+	node := project.NodeCfg{
+		name:    'ECU'
+		protect: [entry]
+	}
+	assert protection_for(node, m) == none
+	assert validate_protection(db, node).contains('protect: WideE2e: ${why} — protection not applied')
+	assert verifiers_for(db, [node], []).by_key.len == 0
+	// a verify: entry: unusable and said
+	assert !verify_usable(m, entry)
+	assert validate_verify(db, [entry]).contains('verify: WideE2e: ${why} — entry ignored')
+	// a fault on the field: refused, saying why
+	t := FaultTarget{
+		channel: 'CAN1'
+		iface:   'inproc:WIDE'
+		db:      db
+		nodes:   [node]
+	}
+	said = ''
+	t.arm('ECU', 'WideE2e', 'freeze_counter', 0, '') or { said = err.msg() }
+	assert said == '"WideE2e" on "ECU" has no E2E counter — freeze_counter would change nothing (its protect: entry is not applied: ${why})'
+	assert !injected_fault('inproc:WIDE', 'ECU', 'WideE2e').active()
+	// a wide checksum, declared: bad_crc refused with the declaration's reason
+	mc := wide_e2e_msg(true)
+	tc := FaultTarget{
+		...t
+		db:    candb.Database{
+			nodes:    ['ECU']
+			messages: [mc]
+		}
+		nodes: [bare]
+	}
+	said = ''
+	tc.arm('ECU', 'WideE2e', 'bad_crc', 0, '') or { said = err.msg() }
+	assert said.starts_with('"WideE2e" on "ECU" has no configured checksum — bad_crc would change nothing (its E2E declaration is not applied: ')
+	assert !injected_fault('inproc:WIDE', 'ECU', 'WideE2e').active()
+}

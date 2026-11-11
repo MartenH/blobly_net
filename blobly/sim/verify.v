@@ -475,7 +475,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 					continue
 				}
 				k := vkey(m.id, m.ext)
-				if _ := p01_problem(m, e2e_of(p)) {
+				if _ := e2e_problem(m, e2e_of(p)) {
 					break // not stamped either (from_project); said by validate_protection
 				}
 				if k !in out.by_key {
@@ -510,7 +510,7 @@ pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
 	if p.crc != '' && p.profile !in candb.e2e_profiles {
 		return false
 	}
-	if _ := p01_problem(m, e2e_of(p)) {
+	if _ := e2e_problem(m, e2e_of(p)) {
 		return false
 	}
 	mut have := map[string]candb.Signal{}
@@ -662,7 +662,7 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		if p.counter == '' && p.crc == '' {
 			warns << 'verify: "${p.message}" names neither counter nor crc — nothing is checked'
 		}
-		if why := p01_problem(m, e2e_of(p)) {
+		if why := e2e_problem(m, e2e_of(p)) {
 			warns << 'verify: ${p.message}: ${why} — entry ignored'
 		}
 	}

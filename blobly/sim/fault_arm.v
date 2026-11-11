@@ -78,14 +78,16 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 		}
 		.bad_crc {
 			if prot.crc == '' {
-				return error('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
+				why := t.unapplied(node, m[0])
+				return error('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing${why}')
 			}
 			past_payload_refusal(m, prot.crc, 'bad_crc')!
 		}
 		.freeze_ctr {
 			// the E2E counter is what freezes; a `counter` generator is an ordinary signal
 			if prot.counter == '' {
-				return error('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
+				why := t.unapplied(node, m[0])
+				return error('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing${why}')
 			}
 			past_payload_refusal(m, prot.counter, 'freeze_counter')!
 		}
@@ -169,4 +171,28 @@ pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot E2e, anns []nm.
 		kinds:      kinds
 		oor_signal: oor
 	}
+}
+
+// unapplied says why `node` stamps nothing on `m` although a protect: entry or the DBC's
+// declaration names protection for it (e2e_problem, declared_problem), as a clause a refusal
+// ends with; '' when nothing names any.
+fn (t FaultTarget) unapplied(node string, m candb.Message) string {
+	for n in t.nodes {
+		if n.name != node {
+			continue
+		}
+		for p in n.protect {
+			if p.message == m.name {
+				why := e2e_problem(m, e2e_of(p)) or { return '' }
+				return ' (its protect: entry is not applied: ${why})'
+			}
+		}
+	}
+	if m.e2e.declared() {
+		why := declared_problem(m, e2e_of_decl(m.e2e))
+		if why != '' {
+			return ' (its E2E declaration is not applied: ${why})'
+		}
+	}
+	return ''
 }
