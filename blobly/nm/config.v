@@ -8,6 +8,10 @@ import blobly.sysview
 // (blobly_emb's example value).
 pub const default_timeout_ms = 300
 
+// default_cycle_ms is the NM message cycle of a system bus that states none: blobly_emb's
+// `[bus.*.nm] msg_cycle_ms` default, which a node generated from the model takes.
+pub const default_cycle_ms = 100
+
 // arxml_timeout_ms is the timeout an ARXML-read cluster is given: the system description does not
 // carry CanNm's network timeout, and AUTOSAR clusters commonly run a 2 s timeout over a cycle up
 // to a second — 300 ms would read every gap between two frames as the network asleep.
@@ -56,14 +60,19 @@ pub:
 	source          Source
 	origin          string // what it was read from, for the panel: `system.toml bus body`
 	declared        []Declared
+	// the cycle the simulated nodes announce on (announce.v): the system bus's msg_cycle_ms, else
+	// a row's nm: cycle_ms, else for a system bus default_cycle_ms; 0 for an ARXML or a row's
+	// own range with no cycle stated, and then nothing announces
+	cycle_ms int
 }
 
-// PduAt is where an NM PDU lies in its frame: the byte it starts at, and its length in bytes
-// (0: to the frame's end).
+// PduAt is where an NM PDU lies in its frame: the byte it starts at, its length in bytes (0: to
+// the frame's end), and the frame's own length in bytes (0: not stated).
 pub struct PduAt {
 pub:
-	byte int
-	len  int
+	byte  int
+	len   int
+	frame int
 }
 
 // pdu_of is the NM PDU inside a frame's payload: from its byte to its end, never into padding.
@@ -126,7 +135,7 @@ pub fn (c Config) describe() string {
 
 // key is the configuration's identity: two configurations with one key read a wire alike.
 pub fn (c Config) key() string {
-	mut s := '${c.lo}|${c.hi}|${c.ext}|${c.timeout_ms}|${c.source}|${c.origin}|${c.describe()}'
+	mut s := '${c.lo}|${c.hi}|${c.ext}|${c.timeout_ms}|${c.cycle_ms}|${c.source}|${c.origin}|${c.describe()}'
 	for d in c.declared {
 		s += '|${d.name}/${d.nid}/${d.id}/${d.ext}'
 	}
@@ -142,17 +151,43 @@ fn extended_range(hi u32) bool {
 // configure is the ONE rule for a wire's NM configuration. `rows` are the CAN rows on the wire,
 // `dbs` the databases loaded for it, `sys` the system model (empty when there is none). First
 // the system model, through a bus with an NM range named like one of the rows; else the
-// databases' ARXML NM-PDU frames; else the first row's own `nm:`. With none, the wire has no NM
-// reading: nothing guesses that a frame is NM.
+// databases' ARXML NM-PDU frames; else the first row's own `nm:` range. With none, the wire has
+// no NM reading: nothing guesses that a frame is NM. The cycle is the system bus's msg_cycle_ms,
+// else the first row's `nm:` cycle_ms (a row may state the cycle alone, for a cluster the system
+// model or an ARXML gives), else for a system bus blobly_emb's default (default_cycle_ms).
 pub fn configure(sys &sysview.System, rows []project.Channel, dbs []candb.Database) ?Config {
+	mut row_cycle := 0
+	for r in rows {
+		if own := r.nm {
+			if own.cycle_ms > 0 {
+				row_cycle = own.cycle_ms
+				break
+			}
+		}
+	}
 	if c := from_system(sys, rows) {
-		return c
+		return Config{
+			...c
+			cycle_ms: if c.cycle_ms > 0 {
+				c.cycle_ms
+			} else if row_cycle > 0 {
+				row_cycle
+			} else {
+				default_cycle_ms
+			}
+		}
 	}
 	if c := from_arxml(dbs) {
-		return c
+		return Config{
+			...c
+			cycle_ms: row_cycle
+		}
 	}
 	for r in rows {
 		if own := r.nm {
+			if !own.ranged {
+				continue
+			}
 			return Config{
 				lo:         own.lo
 				hi:         own.hi
@@ -160,6 +195,7 @@ pub fn configure(sys &sysview.System, rows []project.Channel, dbs []candb.Databa
 				timeout_ms: own.timeout_ms
 				source:     .project
 				origin:     'channel ${r.name}'
+				cycle_ms:   row_cycle
 			}
 		}
 	}
@@ -200,6 +236,7 @@ fn from_system(sys &sysview.System, rows []project.Channel) ?Config {
 				source:          .system
 				origin:          'system.toml bus ${b.name}'
 				declared:        decl
+				cycle_ms:        b.nm_cycle_ms
 			}
 		}
 	}
@@ -226,8 +263,9 @@ fn from_arxml(dbs []candb.Database) ?Config {
 				origin = 'ARXML cluster ${db.arxml.name}'
 			}
 			frames[k] = PduAt{
-				byte: f.byte
-				len:  f.len
+				byte:  f.byte
+				len:   f.len
+				frame: f.frame_len
 			}
 			if f.id < lo {
 				lo = f.id

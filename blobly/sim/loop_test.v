@@ -51,7 +51,7 @@ mut:
 fn (mut l LoopRun) run(ms int) {
 	t0 := time.sys_mono_now()
 	for since_ms(t0) < f64(ms) {
-		serve_pass(mut l.engine, mut l.bus, t0, 'inproc:sim_loop_cadence', 'Loop')
+		serve_pass(mut l.engine, mut l.bus, t0, 'inproc:sim_loop_cadence', 0, 'Loop')
 	}
 }
 

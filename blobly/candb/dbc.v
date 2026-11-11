@@ -51,6 +51,8 @@ pub:
 	ecu  string
 	byte int // where the NM-PDU starts in the frame
 	len  int // its declared length in bytes; 0 when not stated (read to the frame's end)
+	// the frame's FRAME-LENGTH in bytes, which a frame sent with the PDU in it keeps
+	frame_len int
 }
 
 // lookup returns the message defined for `id`, if any (exact id match).

@@ -235,6 +235,7 @@ pub mut:
 	name     string
 	messages []SimMessage
 	rules    []ResponseRule
+	nm_tx    []NmTx // its NM announcement, when it announces (nm_tx.v)
 }
 
 // Engine drives a set of ECUs against a logical clock.
@@ -341,13 +342,18 @@ mut:
 }
 
 // step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
-// `send`, which says whether the transport took it: only a frame taken is the message's LAST SENT
-// (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so a frame refused — a
-// listen-only wire, a bus that is down — or dropped by a fault leaves it as it was.
+// `send`, which says whether the transport took it (a message on the id its node announces NM on
+// is that announcement's, nm_tx.v, and is not sent besides it): only a frame taken is the message's
+// LAST SENT (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so
+// a frame refused — a listen-only wire, a bus that is down — or dropped by a fault leaves it as it
+// was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
+			if e.ecus[i].announces(m.msg.id, m.msg.ext) {
+				continue
+			}
 			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev.hold_ms {
 				m.emit(now_ms, send)
 				m.next_ms += f64(m.period_ms)
@@ -358,6 +364,7 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 			m.step_change(now_ms, send)
 		}
 	}
+	e.step_nm(now_ms, send)
 }
 
 // emit builds the message's frame at now_ms and hands it to `send`.
@@ -424,8 +431,9 @@ pub fn since_ms(t0_ns u64) f64 {
 	return f64(time.sys_mono_now() - t0_ns) / 1e6
 }
 
-// next_due_ms is when the engine's next cyclic message, or a change send's next repetition, is
-// due on its clock, or none.
+// next_due_ms is when the engine's next cyclic message, a change send's next repetition or NM
+// announcement is due on its clock, or none. A released announcement is not due: it sends nothing
+// until a request.
 pub fn (e &Engine) next_due_ms() ?f64 {
 	mut next := 0.0
 	mut any := false
@@ -447,6 +455,12 @@ pub fn (e &Engine) next_due_ms() ?f64 {
 				}
 			}
 		}
+		for t in ecu.nm_tx {
+			if !t.released && (!any || t.next_ms < next) {
+				next = t.next_ms
+				any = true
+			}
+		}
 	}
 	if !any {
 		return none
@@ -465,13 +479,14 @@ pub fn (e &Engine) recv_wait_ms(now_ms f64) int {
 	return if wait < loop_wait_ms { int(wait) } else { loop_wait_ms }
 }
 
-// serve_pass is one turn of a simulation loop started at `t0_ns` (time.sys_mono_now): the
-// injected faults, what is due sent, then a receive bounded by the next due message, answering
-// the request it brings — the one body the GUI's and the headless runner's loops run each pass.
-pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, chan_name string) {
+// serve_pass is one turn of the simulation loop of project row `row`, started at `t0_ns`
+// (time.sys_mono_now): the injected faults, what is due sent, then a receive bounded by the next
+// due message, answering the request it brings — the one body the GUI's and the headless
+// runner's loops run each pass.
+pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, row int, chan_name string) {
 	// re-stamped every pass, so a fault a script injects mid-run takes effect on the next frame
 	apply_injected(iface, mut e)
-	transmit(mut e, mut bus, since_ms(t0_ns), iface, chan_name)
+	transmit(mut e, mut bus, since_ms(t0_ns), iface, row, chan_name)
 	if frame := bus.recv(e.recv_wait_ms(since_ms(t0_ns))) {
 		for resp in e.on_frame(frame) {
 			bus.send(resp) or {}
@@ -479,9 +494,10 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 	}
 }
 
-// transmit sends what is due on `bus` and publishes what a described server's live DIDs read,
-// each pass of serve_pass.
-pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, chan_name string) {
+// transmit sends what is due on `bus` from the engine of project row `row` and publishes what a
+// described server's live DIDs read, each pass of serve_pass.
+pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, row int, chan_name string) {
+	apply_nm_requests(iface, row, mut e)
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }
 		return true

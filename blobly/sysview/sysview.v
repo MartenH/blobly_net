@@ -23,9 +23,11 @@ pub mut:
 	dbc     string // as written (relative to the system.toml dir)
 	nm_lo   u32    // NM peers range (0 = none)
 	nm_hi   u32
-	// the cluster's NM timeout and repeat-message time (`nm = { timeout_ms, repeat_ms }`); 0 = not stated
+	// the cluster's NM timeout, repeat-message time and message cycle (`nm = { timeout_ms,
+	// repeat_ms, msg_cycle_ms }`); 0 = not stated
 	nm_timeout_ms int
 	nm_repeat_ms  int
+	nm_cycle_ms   int
 	subnet  string // a someip segment's network, "192.168.77.0/24"; its members give a `host`
 }
 
@@ -164,6 +166,7 @@ pub fn load(path string) !System {
 				}
 				b.nm_timeout_ms = int(tint(nmm, 'timeout_ms'))
 				b.nm_repeat_ms = int(tint(nmm, 'repeat_ms'))
+				b.nm_cycle_ms = int(tint(nmm, 'msg_cycle_ms'))
 			}
 			sys.buses << b
 		}

@@ -734,6 +734,7 @@ def _declare(lib):
         "bb_nm_attach_range": ([c_int, c_int, ctypes.c_int64, ctypes.c_int64, c_int, c_int], c_int),
         "bb_nm_read_view": ([c_int, P(BbNmView)], c_int),
         "bb_nm_node_info": ([c_int, c_int, P(BbNmNode)], c_int),
+        "bb_nm_request": ([c_int, c_int], c_int),
         # LIN (lin.py); a const uint8_t * is declared c_char_p, its length beside it
         "bb_lin_count": ([], c_int),
         "bb_lin_info": ([c_int, P(BbLinBus)], c_int),

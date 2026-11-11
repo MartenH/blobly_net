@@ -308,3 +308,56 @@ fn test_an_interface_override_naming_no_row_refuses_the_load() {
 		assert err.msg().contains('"CAN1"'), err.msg()
 	}
 }
+
+// recv_id is the next frame of `id` on `bus` within `ms`, none when none came.
+fn recv_id(mut bus transport.Bus, id u32, ms int) ?transport.CanFrame {
+	deadline := time.ticks() + ms
+	for time.ticks() < deadline {
+		f := bus.recv(10) or { continue }
+		if f.id == id {
+			return f
+		}
+	}
+	return none
+}
+
+// A simulated node announces its NM PDU on the row's cycle while the run is up, falls silent when
+// a script releases the network for the row, and announces again on a request.
+fn test_a_simulated_node_announces_nm_until_released() {
+	dir := os.join_path(os.temp_dir(), 'blobly_headless_nm_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'nm.blobnet')
+	os.write_file(path, 'project:
+  name: nm
+channels:
+  - name: CAN1
+    interface: inproc:NMHL
+    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 300, cycle_ms: 20 }
+    simulation:
+      - name: Body
+        nm: { id: 0x511, nid: 0x11 }
+')!
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut bus := transport.open('inproc:NMHL')!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+		bus.close()
+	}
+	assert lines.said('Body announces NM on 0x511 (NID 0x11) every 20 ms')
+	f := recv_id(mut bus, 0x511, 1000) or { panic('no NM frame') }
+	assert f.data == [u8(0x11), 0, 0, 0, 0, 0, 0, 0]
+	assert r.chans[0].fault_target().nm_request(false)! == 1
+	time.sleep(60 * time.millisecond)
+	for _ in 0 .. 1000 {
+		bus.recv(0) or { break }
+	}
+	assert recv_id(mut bus, 0x511, 150) == none, 'a released node falls silent'
+	assert r.chans[0].fault_target().nm_request(true)! == 1
+	assert recv_id(mut bus, 0x511, 500) != none, 'a request announces again'
+}

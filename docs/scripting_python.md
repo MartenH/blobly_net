@@ -819,7 +819,7 @@ configured as the panel is, per wire: the system model's bus named like a row on
 range, timeout and node names), else the wire's ARXML NM-PDU frames, else a row's own `nm:`; a
 wire with none raises `blobly.Refused`, since nothing guesses a frame is NM. `ch.nm(lo, hi, *,
 ext=False, timeout_ms=300)` reads the range the script states instead (29-bit where `hi` is past
-0x7FF, or with `ext`), naming no node, as a new reading. It sends nothing.
+0x7FF, or with `ext`), naming no node, as a new reading. The reading sends nothing.
 
 ```python
 import blobly
@@ -845,6 +845,21 @@ with blobly.Project("projects/nm-demo/nm-demo.blobnet") as net:
   saying what the reading was. **`nm.expect_asleep(timeout_ms=1000)`** is
   `expect_state("asleep", timeout_ms)`, and **`nm.expect(predicate, timeout_ms=1000, *,
   what=...)`** waits for any condition on the reading.
+- **`nm.release()`** and **`nm.request()`** act on the simulation, not the reading: the nodes the
+  row simulates that announce NM ([nm.md](nm.md#simulated-nodes-announce)) stop announcing — an
+  AUTOSAR CanNm node releases the network by falling silent — or announce again at once. Each
+  answers how many; `blobly.Refused` where none announces. A start requests the network for every
+  node again.
+
+  ```python
+  with blobly.Project("projects/nm-demo/nm-sim.blobnet") as net:
+      nm = net.channels.body.nm()
+      nm.expect_state("awake", 2000, kept_awake_by=["sysnode", "domain"])
+      nm.release()               # the simulated nodes stop announcing
+      nm.expect_asleep(2000)
+      nm.request()               # they announce again
+  ```
+
 - **`nm.reading(window_ms=0)`** is the `NmReading`, after reading the channel for `window_ms` (0
   reads nothing). `nm.state`, `nm.kept_awake_by`, `nm.woken_by`, `nm.nodes`, `nm.missing` and
   `nm.unknown` are its fields, each a reading of its own.
@@ -2372,6 +2387,7 @@ after `start()`.
 | `nm.expect_state(state, timeout_ms=1000, *, kept_awake_by=None)` | The first reading in `state` (kept awake by exactly those nodes), within one deadline; `Timeout` otherwise. |
 | `nm.expect_asleep(timeout_ms=1000)` | `expect_state("asleep", timeout_ms)`. |
 | `nm.expect(predicate, timeout_ms=1000, *, what="the NM condition")` | The first reading `predicate` holds for, within one deadline; `Timeout` naming `what` otherwise. |
+| `nm.release()`, `nm.request()` | The row's simulated nodes that announce NM stop announcing, or announce again at once; how many. `Refused` where none announces. |
 
 ### `NmReading`, `NmNode`, `NmBits`
 

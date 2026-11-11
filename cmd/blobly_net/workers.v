@@ -174,7 +174,7 @@ fn notify_gen(app &App, gen u64, msg string) {
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
-fn sim_loop(app &App, sc SimCfg, gen u64) {
+fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 	// This loop resolves its tap through open_tap_on, whose bitrate_iface walks app.chans
 	// UNLOCKED — the thing open_tap_phys's comment (bus.v) forbids a worker from doing — so it
 	// holds a census slot like every rx_loop does. (The still-on check further down is under
@@ -252,12 +252,13 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
+			engine.attach_announcements(anns)
 			engine.restore_state(carry)
 		}
 		// serve_pass applies ONE fault source, the module's table — Lua's sim.fault() writes it too.
 		// The panel used to write a map on App that only the panel read, so a script launched
 		// from the Script panel reported success and changed nothing on the bus.
-		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.pch.name)
+		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.proj_idx, sc.pch.name)
 	}
 	bus.close()
 }
@@ -1605,9 +1606,13 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}
+		mut row_nodes := []project.NodeCfg{}
 		for sc in a.sims {
 			if sc.iface == ch.iface {
 				sim_nodes << sc.nodes
+			}
+			if sc.proj_idx == ch.proj_idx {
+				row_nodes << sc.nodes
 			}
 		}
 		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `someip`
@@ -1653,6 +1658,8 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			db:      db
 			sources: sources
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
+			row_nodes: row_nodes // what nm.release / nm.request act on
+			row:       ch.proj_idx // what their requests are keyed on
 			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
@@ -1686,6 +1693,13 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 	env.run_active = fn [a] () bool {
 		mut ap := unsafe { a }
 		return ap.run_holds_wires()
+	}
+	env.run_started = fn [a] () bool {
+		mut ap := unsafe { a }
+		ap.mu.lock()
+		r := ap.running
+		ap.mu.unlock()
+		return r
 	}
 	// the run's LIN buses, by name; a script started while stopped reaches addresses only
 	env.lin_rows = a.lin_rows_fn()

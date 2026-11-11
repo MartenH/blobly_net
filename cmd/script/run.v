@@ -215,6 +215,8 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			key_iface: c.cfg.iface
 			db:        c.db
 			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
+			row_nodes: c.cfg.all_nodes()
+			row:       c.row
 			hosts:     c.cfg.hosts_doip_entity()
 			verify:    c.cfg.verify // what a received frame's E2E is judged by first
 			carrier:   script.carrier_of(c.cfg)
@@ -238,6 +240,9 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	env.cyclic_host = hrun
 	env.run_active = fn () bool {
 		return !headless.released()
+	}
+	env.run_started = fn [mut hrun] () bool {
+		return hrun.started()
 	}
 	env.sys = hrun.sys
 	run_lins := hrun.lin_rows()

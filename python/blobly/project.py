@@ -742,7 +742,8 @@ class Channel(Bus):
         the handle's first frame; Refused where the wire has none, since nothing guesses a frame
         is NM. With `lo` and `hi`, the inclusive id range the script states (29-bit where hi is
         past 0x7FF, or with ext) and its timeout_ms, naming no node, and a new reading from this
-        call. While the project is started. It sends nothing."""
+        call. While the project is started. The reading sends nothing; its release() and
+        request() silence and wake the nodes the row simulates."""
         from .nm import _explicit
         cfg = None
         if lo is not None or hi is not None:

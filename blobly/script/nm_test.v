@@ -3,6 +3,8 @@ module script
 import rand
 import time
 import blobly.nm
+import blobly.project
+import blobly.sim
 import blobly.transport
 
 // NmEv is one read of a model wait: a frame at `t`, or a read that found nothing at `t`.
@@ -119,4 +121,117 @@ fn test_an_nm_wait_offers_every_reading_its_listener_makes() {
 		assert held
 		assert m.offered == m.produced, 'seed ${seed}, timeout ${timeout} ms: ${m.produced.len} readings made, ${m.offered.len} offered'
 	}
+}
+
+// nm.release / nm.request act on a started run only: stopped, nothing simulated sends and the next
+// Start requests the network for every node again, so a release then would be lost.
+fn test_nm_release_is_refused_while_the_run_is_stopped() {
+	sim.clear_nm_requests()
+	defer {
+		sim.clear_nm_requests()
+	}
+	mut env := new_env([
+		ChanInfo{
+			name:  'body'
+			iface: 'inproc:NMRELEASE'
+			row_nodes: [project.NodeCfg{
+				name: 'Body'
+				nm:   project.NodeNm{
+					id:  0x511
+					nid: 0x11
+				}
+			}]
+			nm:        nm.Config{
+				lo:       0x500
+				hi:       0x53F
+				cycle_ms: 100
+			}
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	mut started := &RunFlag{}
+	env.run_started = fn [started] () bool {
+		return started.on
+	}
+	env.run_source('
+		test("stopped, a release is refused", function()
+			local ok, err = pcall(nm.release, "body")
+			check.truthy(not ok, "a release was accepted while stopped")
+			check.truthy(string.find(tostring(err), "the run is stopped", 1, true), tostring(err))
+		end)
+	')!
+	assert sim.nm_requested('inproc:NMRELEASE', 0, 'Body')
+	started.on = true
+	env.run_source('
+		test("started, a release silences the node", function()
+			check.equal(nm.release("body"), 1)
+		end)
+	')!
+	assert !sim.nm_requested('inproc:NMRELEASE', 0, 'Body')
+	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+}
+
+// two rows on one wire, each simulating its own announcing node: a release on one row silences
+// that row's node alone, though the wire's node list (the faults') holds both
+fn test_nm_release_acts_on_the_row_own_nodes_only() {
+	sim.clear_nm_requests()
+	defer {
+		sim.clear_nm_requests()
+	}
+	body := project.NodeCfg{
+		name: 'Body'
+		nm:   project.NodeNm{
+			id:  0x511
+			nid: 0x11
+		}
+	}
+	gw := project.NodeCfg{
+		name: 'Gw'
+		nm:   project.NodeNm{
+			id:  0x512
+			nid: 0x12
+		}
+	}
+	cfg := nm.Config{
+		lo:       0x500
+		hi:       0x53F
+		cycle_ms: 100
+	}
+	mut env := new_env([
+		ChanInfo{
+			name:      'rowA'
+			iface:     'inproc:NMROWS'
+			nodes:     [body, gw]
+			row_nodes: [body]
+			nm:        cfg
+		},
+		ChanInfo{
+			name:      'rowB'
+			iface:     'inproc:NMROWS'
+			nodes:     [body, gw]
+			row_nodes: [gw]
+			nm:        cfg
+			row:       1
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_started = fn () bool {
+		return true
+	}
+	env.run_source('
+		test("a release on rowA", function()
+			check.equal(nm.release("rowA"), 1)
+		end)
+	')!
+	assert !sim.nm_requested('inproc:NMROWS', 0, 'Body')
+	assert sim.nm_requested('inproc:NMROWS', 1, 'Gw')
+	assert env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str()
+}
+
+@[heap]
+struct RunFlag {
+mut:
+	on bool
 }

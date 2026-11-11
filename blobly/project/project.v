@@ -47,7 +47,10 @@ pub fn version_for(p Project) int {
 	// DIDs (`io:`) and memory ranges (`memory:`). An older build drops each on its next
 	// structured save: the built-in server answers again, and 0x2F/0x23/0x3D go unanswered;
 	// and a generator's `format:` (#608), which an older build drops too, and the generator's
-	// frames go out in the row's format again with nothing said.
+	// frames go out in the row's format again with nothing said; and the simulated nodes' NM
+	// announcements: a row's `nm:` `cycle_ms` (or an `nm:` with the cycle alone) and a node's own
+	// `nm:`. An older build refuses the range-less `nm:` and drops the rest on its next structured
+	// save, and the nodes stop announcing.
 	if p.channels.any(it.data_sample_point != 0) {
 		return 13
 	}
@@ -56,6 +59,14 @@ pub fn version_for(p Project) int {
 			return 13
 		}
 		if c.senders.any(it.format != .wire) {
+			return 13
+		}
+		if n := c.nm {
+			if n.cycle_ms > 0 || !n.ranged {
+				return 13
+			}
+		}
+		if c.nodes.any(it.nm != none) {
 			return 13
 		}
 		for n in c.nodes {
@@ -252,6 +263,7 @@ pub mut:
 	responses []ResponseCfg
 	protect   []ProtectCfg
 	uds       ?UdsCfg
+	nm        ?NodeNm // its own NM entry, for what the cluster does not state about it
 }
 
 // UdsCfg is a diagnostic server attached to ONE simulated ECU: its own ISO-TP addresses and
@@ -1302,12 +1314,12 @@ fn parse_channel(c yaml.Any) !Channel {
 	// append, so either — or both — work.
 	if ns := c.value_opt('simulation') {
 		for n in ns.array() {
-			ch.nodes << parse_node(n)
+			ch.nodes << parse_node(n)!
 		}
 	}
 	if ns := c.value_opt('nodes') {
 		for n in ns.array() {
-			ch.nodes << parse_node(n)
+			ch.nodes << parse_node(n)!
 		}
 	}
 	if ss := c.value_opt('senders') {
@@ -1412,7 +1424,7 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 	return out
 }
 
-fn parse_node(n yaml.Any) NodeCfg {
+fn parse_node(n yaml.Any) !NodeCfg {
 	mut nm := n.value('name').default_to('').string()
 	if nm == '' {
 		nm = n.value('node').default_to('').string() // accept `node:` too
@@ -1505,6 +1517,9 @@ fn parse_node(n yaml.Any) NodeCfg {
 	}
 	if ps := n.value_opt('protect') {
 		node.protect << parse_protect_list(ps)
+	}
+	if v := n.value_opt('nm') {
+		node.nm = parse_node_nm(nm, v)!
 	}
 	if rs := n.value_opt('responses') {
 		for r in rs.array() {
@@ -1718,14 +1733,27 @@ fn parse_eid(s string) ![]u8 {
 	return out
 }
 
-// NmCfg is a channel's own NM cluster: the inclusive id range its nodes announce in, and the
-// timeout past which a silent node, or bus, has stopped asking for the network.
+// NmCfg is a channel's own NM cluster: the inclusive id range its nodes announce in, the
+// timeout past which a silent node, or bus, has stopped asking for the network, and the cycle
+// the row's simulated nodes announce on. Without a range (`nm: { cycle_ms: 200 }`) it states the
+// cycle alone, for a cluster a system model or an ARXML gives.
 pub struct NmCfg {
 pub:
 	lo         u32
 	hi         u32
 	ext        bool // 29-bit frames; a range above 0x7FF is 29-bit whether or not it says so
 	timeout_ms int = 300
+	cycle_ms   int  // the simulated nodes' NM message cycle; 0: not stated
+	ranged     bool = true // lo and hi are stated
+}
+
+// NodeNm is a simulated node's own NM entry (`nm: { id: 0x511, nid: 0x11 }`): its NM frame's id
+// and its source node id, for what the cluster's declaration of it does not state.
+pub struct NodeNm {
+pub:
+	id  i64 = -1 // -1: not stated
+	ext bool // `id` is 29-bit; an id above 0x7FF is 29-bit whether or not it says so
+	nid int = -1 // -1: not stated
 }
 
 // parse_nm reads `nm: { lo, hi, ext, timeout_ms }`, checked: a range of CAN ids (29-bit at most, lo
@@ -1742,6 +1770,19 @@ fn nm_id_is_clean(s string) bool {
 fn parse_nm(v yaml.Any) !NmCfg {
 	lo_raw := v.value('lo').default_to('').str()
 	hi_raw := v.value('hi').default_to('').str()
+	mut cycle := i64(0)
+	if c := v.value_opt('cycle_ms') {
+		cycle = checked_int(c.str(), 'nm: cycle_ms', 1, 60000)!
+	}
+	if lo_raw == '' && hi_raw == '' && cycle > 0 {
+		if _ := v.value_opt('timeout_ms') {
+			return error('nm: timeout_ms is the timeout of a range; give lo and hi with it')
+		}
+		return NmCfg{
+			cycle_ms: int(cycle)
+			ranged:   false
+		}
+	}
 	if lo_raw == '' || hi_raw == '' {
 		return error('nm: needs lo and hi, the NM id range')
 	}
@@ -1766,6 +1807,42 @@ fn parse_nm(v yaml.Any) !NmCfg {
 		hi:         u32(hi)
 		ext:        ext
 		timeout_ms: int(timeout)
+		cycle_ms:   int(cycle)
+	}
+}
+
+// parse_node_nm reads a simulated node's `nm: { id, nid, ext }`, checked: a CAN id (29-bit at
+// most), a source node id of one byte, at least one of the two.
+fn parse_node_nm(node string, v yaml.Any) !NodeNm {
+	mut id := i64(-1)
+	mut nid := i64(-1)
+	if r := v.value_opt('id') {
+		if !nm_id_is_clean(r.str()) {
+			return error('${node}: nm: id "${r.str()}" must be a CAN id')
+		}
+		w := parse_id_wide(r.str())
+		if w > 0x1FFFFFFF {
+			return error('${node}: nm: id 0x${w:X} is past 0x1FFFFFFF, the widest CAN id')
+		}
+		id = i64(w)
+	}
+	if r := v.value_opt('nid') {
+		if !nm_id_is_clean(r.str()) {
+			return error('${node}: nm: nid "${r.str()}" must be a number')
+		}
+		w := parse_id_wide(r.str())
+		if w > 0xFF {
+			return error('${node}: nm: nid 0x${w:X} is past 0xFF, a source node id is one byte')
+		}
+		nid = i64(w)
+	}
+	if id < 0 && nid < 0 {
+		return error('${node}: nm: needs id, nid or both')
+	}
+	return NodeNm{
+		id:  id
+		ext: v.value('ext').default_to(false).bool() || id > 0x7FF
+		nid: int(nid)
 	}
 }
 

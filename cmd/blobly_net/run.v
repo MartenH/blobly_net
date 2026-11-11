@@ -1085,6 +1085,9 @@ fn (mut app App) start() {
 	transport.reset_receive_clock() // a new run opens every clock again
 	app.tx_health = map[string]&txhealth.Gate{}
 	app.tx_health_noted = map[string]bool{}
+	// a run starts with every simulated node requesting the network: cleared before the run is
+	// published, so a surviving script's release once it reads the run as started stands
+	sim.clear_nm_requests()
 	app.mu.unlock()
 	app.running = true
 	// the LIN buses, apart from the CAN rows: a worker each, shown in View ▸ LIN
@@ -1189,9 +1192,21 @@ fn (mut app App) start() {
 			continue
 		}
 		if sc.nodes.len > 0 {
+			// the nodes that announce on the wire's NM cluster, published for the run above
+			mut wire_nm := ?nm.Config(none)
+			if c := app.nm_cfg[transport.destination_key_for(sc.pch.adapter, sc.iface)] {
+				wire_nm = c
+			}
+			anns, nm_notes := nm.announcements(wire_nm, sc.nodes)
+			for n in nm_notes {
+				app.notify('${sc.who}: ${n}')
+			}
+			for a in anns {
+				app.notify('${sc.who}: ${a.node} announces NM on 0x${a.id:X} (NID 0x${a.nid:02X}) every ${a.cycle_ms} ms')
+			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker()
-			spawn sim_loop(app, sc, start_gen) // a verify-only channel has nothing to transmit
+			spawn sim_loop(app, sc, start_gen, anns) // a verify-only channel has nothing to transmit
 		}
 	}
 	// Diagnostics are per BUS, decided ONCE. Two channel entries may share an interface, and

@@ -266,3 +266,175 @@ fn test_an_nm_pdu_is_read_to_its_declared_end_never_into_padding() {
 		byte: 4
 	}.pdu_of([u8(1), 2]) == []u8{}
 }
+
+fn node(name string) project.NodeCfg {
+	return project.NodeCfg{
+		name: name
+	}
+}
+
+fn node_nm(name string, id i64, nid int) project.NodeCfg {
+	return project.NodeCfg{
+		name: name
+		nm:   project.NodeNm{
+			id:  id
+			ext: id > 0x7FF
+			nid: nid
+		}
+	}
+}
+
+fn cycled_system() sysview.System {
+	mut sys := system_with_nm()
+	sys.buses[0].nm_cycle_ms = 200
+	return sys
+}
+
+fn test_a_system_model_node_announces_as_declared_on_the_bus_cycle() {
+	sys := cycled_system()
+	c := configure(&sys, [row('body')], []) or { panic('no configuration') }
+	assert c.cycle_ms == 200
+	anns, notes := announcements(c, [node('sysnode'), node('quiet'), node('stranger')])
+	assert notes == []
+	assert anns.len == 1
+	a := anns[0]
+	assert a.node == 'sysnode' && a.id == 0x511 && !a.ext && a.nid == 0x11 && a.cycle_ms == 200
+	assert a.payload() == [u8(0x11), 0, 0, 0, 0, 0, 0, 0]
+	// the PDU parses as a node asking for the network
+	p := parse(a.payload())!
+	assert p.nid == 0x11 && p.phase() == .requesting
+}
+
+fn test_a_row_cycle_applies_where_the_system_bus_states_none() {
+	sys := system_with_nm()
+	r := project.Channel{
+		name: 'body'
+		nm:   project.NmCfg{
+			cycle_ms: 150
+			ranged:   false
+		}
+	}
+	c := configure(&sys, [r], []) or { panic('no configuration') }
+	assert c.source == .system && c.cycle_ms == 150
+	// the bus's own cycle wins over the row's
+	cs := cycled_system()
+	assert (configure(&cs, [r], []) or { panic('') }).cycle_ms == 200
+	// a row stating the cycle alone gives no cluster of its own
+	empty := sysview.System{}
+	assert configure(&empty, [r], []) == none
+}
+
+fn test_a_system_bus_stating_no_cycle_announces_on_the_blobly_emb_default() {
+	sys := system_with_nm()
+	c := configure(&sys, [row('body')], []) or { panic('no configuration') }
+	assert c.cycle_ms == default_cycle_ms
+	anns, notes := announcements(c, [node('sysnode'), node('domain')])
+	assert notes == []
+	assert anns.len == 2 && anns.all(it.cycle_ms == 100)
+}
+
+fn test_without_a_cycle_nothing_announces_and_the_members_are_named() {
+	empty := sysview.System{}
+	c := configure(&empty, [row('Body')], [arxml_db()]) or { panic('no configuration') }
+	assert c.cycle_ms == 0
+	anns, notes := announcements(c, [node_nm('ECU_A', -1, 0x21), node_nm('ECU_B', 0x60F, 0x22),
+		node('stranger')])
+	assert anns.len == 0
+	assert notes.len == 1
+	assert notes[0].starts_with('ECU_A, ECU_B: on the NM cluster'), notes[0]
+}
+
+fn test_an_own_entry_fills_what_the_arxml_does_not_state() {
+	base := arxml_db()
+	db := candb.Database{
+		arxml: candb.ArxmlBus{
+			...base.arxml
+			nm: [candb.ArxmlNmFrame{
+				id:   0x601
+				ecu:  'ECU_A'
+				byte: 1
+				len:  4
+			}, candb.ArxmlNmFrame{
+				id: 0x60F
+			}]
+		}
+	}
+	r := project.Channel{
+		name: 'Body'
+		nm:   project.NmCfg{
+			cycle_ms: 500
+			ranged:   false
+		}
+	}
+	empty := sysview.System{}
+	c := configure(&empty, [r], [db]) or { panic('no configuration') }
+	assert c.source == .arxml && c.cycle_ms == 500
+	// the ARXML gives ECU_A its frame and no NID: the entry's NID completes it
+	anns, notes := announcements(c, [node_nm('ECU_A', -1, 0x21), node('ECU_B')])
+	assert notes == []
+	assert anns.len == 1
+	assert anns[0].id == 0x601 && anns[0].nid == 0x21
+	assert anns[0].payload() == [u8(0), 0x21, 0, 0, 0]
+	// without the entry, the NID is missing and said
+	none_anns, none_notes := announcements(c, [node('ECU_A')])
+	assert none_anns.len == 0
+	assert none_notes.len == 1 && none_notes[0].contains('no NID'), none_notes[0]
+}
+
+// a PDU that ends before its frame does is sent in a frame of the frame's declared length
+fn test_an_announcement_keeps_the_frame_length_the_arxml_declares() {
+	base := arxml_db()
+	db := candb.Database{
+		arxml: candb.ArxmlBus{
+			...base.arxml
+			nm: [candb.ArxmlNmFrame{
+				id:        0x601
+				ecu:       'ECU_A'
+				byte:      4
+				len:       3
+				frame_len: 8
+			}]
+		}
+	}
+	r := project.Channel{
+		name: 'Body'
+		nm:   project.NmCfg{
+			cycle_ms: 500
+			ranged:   false
+		}
+	}
+	empty := sysview.System{}
+	c := configure(&empty, [r], [db]) or { panic('no configuration') }
+	anns, _ := announcements(c, [node_nm('ECU_A', -1, 0x21)])
+	assert anns.len == 1
+	assert anns[0].payload() == [u8(0), 0, 0, 0, 0x21, 0, 0, 0]
+}
+
+fn test_an_own_entry_on_a_range_cluster_and_its_refusals() {
+	r := project.Channel{
+		name: 'CAN1'
+		nm:   project.NmCfg{
+			lo:       0x500
+			hi:       0x53F
+			cycle_ms: 100
+		}
+	}
+	empty := sysview.System{}
+	c := configure(&empty, [r], []) or { panic('no configuration') }
+	anns, notes := announcements(c, [node_nm('Body', 0x511, 0x11), node_nm('Far', 0x611, 0x12),
+		node_nm('Half', 0x512, -1)])
+	assert anns.len == 1 && anns[0].node == 'Body' && anns[0].cycle_ms == 100
+	assert notes.len == 2
+	assert notes[0].starts_with('Far: NM id 0x611 is not one of the cluster'), notes[0]
+	assert notes[1].contains('Half') && notes[1].contains('no NID'), notes[1]
+	// the cluster's declaration wins over a differing entry, and says so
+	sys := cycled_system()
+	cs := configure(&sys, [row('body')], []) or { panic('') }
+	danns, dnotes := announcements(cs, [node_nm('sysnode', 0x522, 0x22)])
+	assert danns.len == 1 && danns[0].id == 0x511 && danns[0].nid == 0x11
+	assert dnotes.len == 1 && dnotes[0].contains('differs'), dnotes[0]
+	// an entry with no cluster on the wire
+	nanns, nnotes := announcements(none, [node_nm('Body', 0x511, 0x11), node('Plain')])
+	assert nanns.len == 0
+	assert nnotes == ['Body: its nm: entry is on a wire with no NM cluster; it announces nothing']
+}

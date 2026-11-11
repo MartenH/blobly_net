@@ -1,6 +1,7 @@
 """nm — CAN network management on a channel, through libblobly (blobly/nm): who reports in on the
 channel's NM cluster and who keeps the network awake, read from the frames the channel's own handle
-reads (Channel.nm). A listener: it sends nothing."""
+reads (Channel.nm). The reading sends nothing; release and request act on the nodes the row
+simulates, which announce in the run."""
 import ctypes
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -161,6 +162,24 @@ class NmListener:
             with _lib.state_lock:
                 self._attach(h)
         return h
+
+    def release(self) -> int:
+        """The nodes simulated on this channel's row that announce NM stop announcing (AUTOSAR
+        CanNm: a node releases the network by falling silent), so the cluster can go to sleep.
+        Answers how many; Refused where none announces (a cluster with a cycle, and a node it
+        declares or one with its own nm: entry). While the project is started; a start requests
+        the network for every node again."""
+        return self._request(False)
+
+    def request(self) -> int:
+        """The nodes release() silenced announce again, at once. Answers how many."""
+        return self._request(True)
+
+    def _request(self, request):
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self.channel._current()
+            return _lib.check(lib.bb_nm_request(self.channel._index, int(request)))
 
     def _view(self, h):
         v = _lib.BbNmView()

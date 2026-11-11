@@ -70,6 +70,10 @@ pub:
 	// each of the row's databases as it was opened, the files `db` merges: what a lookup judging
 	// definitions per file asks (candb.pgn_message_in_catalog)
 	sources []candb.Database
+	// the row's wire's NM cluster in this run (Run.nm_config): who of its nodes announces
+	nm ?nm.Config
+	// the row's index in the project, which a simulated node's NM request is keyed on
+	row int
 }
 
 // fault_target is this row as sim.FaultTarget.arm judges a fault on it.
@@ -80,6 +84,8 @@ pub fn (c Channel) fault_target() sim.FaultTarget {
 		iface:    c.cfg.iface
 		db:       c.db
 		nodes:    c.cfg.all_nodes()
+		nm:       c.nm
+		row:      c.row
 	}
 }
 
@@ -190,6 +196,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	// project load / Start).
 	sim.clear_all()
 	sim.clear_live()
+	sim.clear_nm_requests()
 	transport.reset_receive_clock() // a new run opens every clock again, as the GUI's Start does
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
@@ -358,6 +365,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			cfg:     ch
 			db:      db
 			sources: row_sources(ch, os.dir(proj_path), db_files)
+			nm:      r.nm_config(ch)
+			row:     ci
 		}
 		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
 		// reached by logical address over TCP. Nothing outside blobly/doip ever started one,
@@ -437,12 +446,20 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			}
 		}
 		if nodes.len > 0 {
+			// the nodes that announce on the wire's NM cluster (nm.announcements), said once here
+			anns, nm_notes := nm.announcements(r.nm_config(ch), nodes)
+			for n in nm_notes {
+				o.err('${ch.name}: ${n}')
+			}
+			for a in anns {
+				o.out('channel ${ch.name}: ${a.node} announces NM on 0x${a.id:X} (NID 0x${a.nid:02X}) every ${a.cycle_ms} ms')
+			}
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
 			// Passing only the suffixed form meant sim.apply_injected looked up
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
 			r.counted()
-			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ch.name, db, nodes)
+			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ci, ch.name, db, nodes, anns)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -567,6 +584,14 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 
 // stop ends the run: every loop told, and waited for — BOUNDED, because a loop stuck in a
 // stalled CANsub write cannot re-check the flag until the write returns, and the transport
+// started: no stop has begun, so the run's loops are sending.
+pub fn (mut r Run) started() bool {
+	r.mu.lock()
+	s := !r.stopping
+	r.mu.unlock()
+	return s
+}
+
 // confines a stalled write to its sender on purpose: the run must not inherit its timeout (codex
 // round 6 on #231). Loops still running when the bound expires are left to the exit; what they
 // would have booked is not reported. Returns once the wires have said their piece, so what a
@@ -654,7 +679,7 @@ fn (mut r Run) done() {
 
 // sim_loop runs the channel's simulated ECUs on a dedicated bus handle, sending as the row's own
 // emitter (transport.row_framed).
-fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Database, nodes []project.NodeCfg) {
+fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_name string, db candb.Database, nodes []project.NodeCfg, anns []nm.Announce) {
 	defer {
 		r.done()
 	}
@@ -663,9 +688,10 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 	for n in nodes {
 		engine.ecus << r.build_node(db, n)
 	}
+	engine.attach_announcements(anns)
 	t0 := time.sys_mono_now()
 	for r.ctl.running {
-		sim.serve_pass(mut engine, mut bus, t0, fault_iface, chan_name)
+		sim.serve_pass(mut engine, mut bus, t0, fault_iface, row, chan_name)
 	}
 	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
 	// handle still answers with the wire's totals (codex round 12 on #231).

@@ -46,6 +46,11 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// The nodes this row itself simulates, where `nodes` is every node on its wire (the GUI's
+	// faults are keyed by the wire): what nm.release / nm.request act on.
+	row_nodes []project.NodeCfg
+	// the row's index in the project, which those nodes' NM requests are keyed on
+	row int
 	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
 	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
@@ -191,6 +196,12 @@ pub mut:
 	// measurement, started or still letting go of them. vector.assign is refused while it does
 	// (transport.assign_run_refusal).
 	run_active fn () bool = fn () bool {
+		return false
+	}
+	// Whether the project's run is started, so its simulated nodes are sending: cmd/script's
+	// headless run, or the GUI's measurement. nm.release / nm.request are refused otherwise, since
+	// the next Start requests the network for every node again.
+	run_started fn () bool = fn () bool {
 		return false
 	}
 	// How every bus this engine touches is opened. See BusOpener.
@@ -561,6 +572,17 @@ fn (c ChanInfo) fault_target() sim.FaultTarget {
 		iface:    c.fault_iface()
 		db:       c.db
 		nodes:    c.nodes
+		nm:       c.nm
+		row:      c.row
+	}
+}
+
+// nm_target is this channel as sim.FaultTarget.nm_request releases and requests its nodes: the
+// row's own simulated nodes, never another row's on the same wire.
+fn (c ChanInfo) nm_target() sim.FaultTarget {
+	return sim.FaultTarget{
+		...c.fault_target()
+		nodes: c.row_nodes
 	}
 }
 

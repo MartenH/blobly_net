@@ -5,6 +5,7 @@
 module sim
 
 import blobly.candb
+import blobly.nm
 import blobly.project
 
 // FaultTarget is one channel a fault may be armed on, as the front end that arms it knows it.
@@ -15,6 +16,8 @@ pub:
 	iface    string // the logical interface faults are keyed on (fault_key)
 	db       candb.Database
 	nodes    []project.NodeCfg // the simulated nodes on it
+	nm       ?nm.Config        // its wire's NM cluster, which says who announces (nm_request)
+	row      int               // the project row's index, which NM requests are keyed on with iface
 }
 
 // fault_kind_of is a fault kind as a script spells it; clear, none and '' are no fault.
@@ -51,6 +54,7 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 	if m.len == 0 {
 		return error('"${node}" does not send "${msg}" on ${t.channel}')
 	}
+	t.announced_refusal(node, m[0], k)!
 	prot := t.protection(node, msg)
 	mut sg := signal
 	match k {
@@ -111,4 +115,46 @@ fn (t FaultTarget) protection(node string, msg string) E2e {
 		}
 	}
 	return E2e{}
+}
+
+// FaultOffer is what can be put on one message of one simulated node: the kinds that take effect
+// there, none_ and drop first, and the signal out_of_range forces (empty when it is not offered).
+pub struct FaultOffer {
+pub:
+	kinds      []FaultKind
+	oor_signal string
+}
+
+// fault_offer is the faults that take effect on `node`'s `msg`, `prot` what it stamps there (the
+// protection the engine attaches to its messages of that name, protections) and `anns` the
+// announcements of its wire: bad_crc where it stamps a checksum the payload holds, freeze_counter
+// where it stamps an E2E counter, out_of_range where a signal has a value outside its range — and on
+// a frame it announces NM on, drop alone, since the announcement goes out in its place.
+pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot E2e, anns []nm.Announce) FaultOffer {
+	mut kinds := [FaultKind.none_, .drop]
+	if announced_frame(anns, node.name, msg) {
+		return FaultOffer{
+			kinds: kinds
+		}
+	}
+	if prot.crc != '' && past_payload(msg, prot.crc) == none {
+		kinds << .bad_crc
+	}
+	if prot.counter != '' && past_payload(msg, prot.counter) == none {
+		kinds << .freeze_ctr
+	}
+	mut oor := ''
+	for sg in msg.signals {
+		if can_force_out_of_range(msg, sg.name, prot) {
+			oor = sg.name
+			break
+		}
+	}
+	if oor != '' {
+		kinds << .out_of_range
+	}
+	return FaultOffer{
+		kinds:      kinds
+		oor_signal: oor
+	}
 }
