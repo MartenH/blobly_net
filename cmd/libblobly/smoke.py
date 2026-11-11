@@ -57,6 +57,7 @@ def bind(lib):
     lib.bb_version.restype = ctypes.c_char_p
     lib.bb_last_error.restype = ctypes.c_char_p
     lib.bb_load.argtypes = [ctypes.c_char_p]
+    lib.bb_load_with.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
     lib.bb_channel_name.argtypes = [ctypes.c_int]
     lib.bb_channel_name.restype = ctypes.c_char_p
     lib.bb_channel_iface.argtypes = [ctypes.c_int]
@@ -194,6 +195,12 @@ def main(path, project):
     assert 0 < len(raw) <= BB_ERROR_MAX, len(raw)
     raw.decode("utf-8")  # strict: a cut inside a character raises here
     print(f"ok   a {len(raw)}-byte error, cut at a character boundary")
+    # a row's interface overridden at load; a name no row has refuses the load, naming the rows
+    assert lib.bb_load_with(project.encode(), b"CAN1=inproc:CAN1_moved\n") == 0, f"load_with: {err(lib)}"
+    n = lib.bb_channel_count()
+    assert b"inproc:CAN1_moved" in [lib.bb_channel_iface(i) for i in range(n)], "the override did not move CAN1"
+    assert lib.bb_load_with(project.encode(), b"CAN9=inproc:x") == BB_ERR and '"CAN1"' in err(lib), err(lib)
+    print("ok   an interface override moves a row; one naming no row is refused")
     assert lib.bb_load(project.encode()) == 0, f"load: {err(lib)}"
     n = lib.bb_channel_count()
     assert n >= 2, f"channels: {n}"

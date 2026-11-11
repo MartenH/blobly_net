@@ -171,6 +171,18 @@ with an interface, its databases and the ECUs simulated on it.
 - `blobly.Project(path)` names the file. `load()` reads it, `start()` brings it up, and `stop()`
   ends the run. `with blobly.Project(path) as net:` loads and starts it, and stops it when the
   block ends.
+- **A row attached elsewhere than the file says**: `blobly.Project(path, interfaces={"BusA":
+  "inproc:BusA", "BusB": "pcan:PCAN_USBBUS2"})`, by row name, an interface string without its rate
+  or mode (`pcan:PCAN_USBBUS2`, where `ch.iface` reads `pcan:PCAN_USBBUS2@500000`). One suite then runs on in-process buses and on benches whose adapters or channel
+  numbers differ, from one file. Applied at every load, before anything is checked or opened, so
+  the simulated ECUs, the generators and the listen-only policy follow the row. The row keeps its
+  bitrate, CAN-FD framing and `listen_only`, so an interface carrying a rate (`@500000`, or a LIN
+  serial address's `@19200`) or a mode (`,silent`) is refused; so is a name no row has (the error names the rows: a typo must not leave
+  a row on its bench adapter), a name two rows share, and an interface of another kind than the
+  row's (a CAN row onto `doip:`). A generator follows the rows it transmitted to: one whose
+  `bus:` named the row by its old interface, or named a wire every row on it left (an interface
+  alias rows share, or a spelling with a rate), is rewritten to name where they went, and refused
+  when they went two ways; a `bus:` naming a wire no row is on stays where the file says.
 - **What `start()` brings up**, for every enabled row: the simulated ECUs (`simulation:`) and
   their UDS servers, the cyclic generators (`senders:` with `trigger: cyclic`; every generator is
   then the script's to drive, [Generators](#generators)), and a DoIP
@@ -1759,6 +1771,18 @@ entry points, loads it the same way an installed package does.
 value. Write it with `=`: pytest reads a separate `PATH` as a test path before the plugin has
 added the option.
 
+Rows attached elsewhere than the project says (`blobly.Project`'s `interfaces`, [Projects](#3-projects))
+are the ini value `blobly_interfaces`, one `NAME=IFACE` a line, or `--blobly-interface=NAME=IFACE`
+on the command line, repeatable, which replaces the ini's for that row. pytest's header names them.
+
+```ini
+[pytest]
+blobly_project = projects/bench.blobnet
+blobly_interfaces =
+    BusA=inproc:BusA
+    BusB=inproc:BusB
+```
+
 | fixture | what |
 |---|---|
 | `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own; with `blobly_run = session` it is the session's (below). Each test's setup reads away what the CAN channels' handles hold queued, opening a handle that is not open, and lets go of the channels' UDS clients: the test hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued (nor its newest frames: `latest` and `value` answer from what the test reads), while the channel stays on the bus. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
@@ -2184,8 +2208,11 @@ the end of the block.
 
 ### `Project`
 
-`blobly.Project(path)`: a `.blobnet` project. `path` is a `str`, `bytes` or path-like; a NUL in it
-raises `ValueError`. It is also an `EventLoop`.
+`blobly.Project(path, interfaces=None)`: a `.blobnet` project. `path` is a `str`, `bytes` or
+path-like; a NUL in it raises `ValueError`. `interfaces` maps row names to the interfaces they are
+attached to instead of the file's ([Projects](#3-projects)); a name with `=`, or a NUL or line
+break in either, raises `ValueError`, and the engine refuses the rest at `load()`. It is also an
+`EventLoop`.
 
 | member | what |
 |---|---|
@@ -2195,6 +2222,7 @@ raises `ValueError`. It is also an `EventLoop`.
 | `with net:` | `start()` on entry, `stop()` on exit; warns (`RuntimeWarning`) when the stop returned `False`. |
 | `net.channels` | The enabled rows, a `Channels`. `BloblyError` before `load()`. |
 | `net.path` | The project file's absolute path (bytes when given bytes). |
+| `net.interfaces` | The interface overrides by row name, a `dict` (empty for none); every load applies them. |
 | `net.started` | Whether this project is running. |
 | `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)`, `net.wait(duration_ms)` | The event loop: see `EventLoop`. |
 | `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |

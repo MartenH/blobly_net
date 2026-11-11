@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The headless Lua runner's exit statuses and --report file, end to end: a passing, a failing, an
-# erroring and three hanging suites (tests/runner/), a refused project and bad arguments.
+# erroring and three hanging suites (tests/runner/), a row moved by --interface, a refused project
+# and bad arguments.
 #   scripts/runner_report_test.sh            (RUN=<built cmd/script> to skip the build)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -78,6 +79,19 @@ expect order 4 "
 assert r['timeout']['script'] == 'tests/runner/hang.lua'
 assert all(t['script'] != 'tests/runner/fail.lua' for t in r['tests'])" \
   -- --timeout 2 tests/runner/hang.lua tests/runner/fail.lua
+
+# a row attached elsewhere by --interface; an override naming no row or no pair is refused
+expect iface 0 "
+assert r['status'] == 'passed' and r['counts']['passed'] == 1" \
+  -- --interface CAN1=inproc:RUNNER_CAN1 tests/runner/iface.lua
+
+expect iface_norow 2 "
+assert r['status'] == 'refused' and 'no row named \"CAN9\"' in r['message'] and '\"CAN1\"' in r['message']" \
+  -- --interface CAN9=inproc:x tests/runner/pass.lua
+
+expect iface_nopair 2 "
+assert r['status'] == 'refused' and 'not NAME=IFACE' in r['message']" \
+  -- --interface CAN1 tests/runner/pass.lua
 
 expect refused 2 "
 assert r['status'] == 'refused' and 'cannot load project' in r['message']" \

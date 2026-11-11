@@ -45,6 +45,9 @@ pub:
 	// host the DoIP entities on the ports the project states, rather than moving them onto ports
 	// this process can bind (#411) — the headless runner's --project-ports
 	project_ports bool
+	// rows attached elsewhere than their file says, by row name, applied by `load` before anything
+	// is checked or opened (project.Project.override_interfaces) — the runner's --interface
+	interfaces []project.IfaceOverride
 	// progress and warnings: what the runner printed on stdout and stderr. Called from the run's
 	// worker threads as well as from `start` — a sink must take that — and never after `stop`
 	// has returned, which waits for a report in flight. So a sink MUST NOT call `stop`: the
@@ -151,10 +154,17 @@ pub mut:
 
 // load reads the project a run starts from, its notes said — the pre-v4 `bus:` migration says
 // what it converted, as the database reader's notes are (#97). Apart from `start` so a caller
-// can tell a project that cannot be read from a run that was refused.
+// can tell a project that cannot be read from a run that was refused. `o.interfaces` are applied
+// here, so every check and open after it sees the rows where they were attached.
 pub fn load(proj_path string, o Options) !project.Project {
-	proj := project.load(proj_path) or { return error('cannot load project ${proj_path}: ${err}') }
+	mut proj := project.load(proj_path) or {
+		return error('cannot load project ${proj_path}: ${err}')
+	}
+	proj.override_interfaces(o.interfaces) or { return error('${proj_path}: ${err}') }
 	o.out('project: ${proj.name}  (${proj_path})')
+	for ov in o.interfaces {
+		o.out('  ${ov.name}: ${ov.iface} (overridden)')
+	}
 	for n in proj.notes {
 		o.err('${proj_path}: ${n}')
 	}

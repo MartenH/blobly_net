@@ -11,6 +11,9 @@ not asked for it.
 The project is the ini value `blobly_project` (relative to the ini file), or the command line's
 `--blobly-project=PATH` (relative to the working directory), which overrides it. Write that with
 `=`: pytest reads a separate PATH as a test path before a conftest's plugin has added the option.
+A row is attached elsewhere than the project file says by the ini value `blobly_interfaces`, one
+NAME=IFACE a line, or `--blobly-interface=NAME=IFACE` (repeatable), which replaces the ini's for
+that name: blobly.Project's `interfaces`.
 
 The ini value `blobly_run` is how long a run lasts: `module` (the default), or `session` for one
 run the whole session long; `--blobly-run=session` (or `=module`) overrides it. The ini value
@@ -63,6 +66,7 @@ _NAMES = pytest.StashKey[list]()  # its enabled channels' names
 RUNS = ("module", "session")  # blobly_run's values, the default first
 CHANNELS = ("lazy", "required")  # blobly_channels' values, the default first
 DRAIN_MS = 200  # how long a test's setup reads a channel's queue away at most
+_IFACES = pytest.StashKey[dict]()  # the rows' interface overrides
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -76,6 +80,31 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addini("blobly_run", "how long a run of the project lasts: module (the default) or session")
     parser.addini("blobly_channels", "a row that does not open at a test's start: lazy (the default, "
                                      "warned once per run) or required (the test's setup errors)")
+    parser.addoption("--blobly-interface", metavar="NAME=IFACE", action="append", default=[],
+                     help="attach the project's row NAME to the interface IFACE (repeatable; overrides "
+                          "the blobly_interfaces ini value for that row)")
+    parser.addini("blobly_interfaces", "rows attached elsewhere than the project says: one NAME=IFACE a line",
+                  type="linelist")
+
+
+def interface_overrides(config: pytest.Config) -> dict[str, str]:
+    """The rows' interface overrides: the ini's, then --blobly-interface's over them by name. A
+    pair is split at its first "=" only to lay one over the other; the engine reads the rest. A
+    pair without one, or a name given twice in one place, is refused here, since a mapping cannot
+    carry either to the engine."""
+    out: dict[str, str] = {}
+    for source, pairs in (("blobly_interfaces in the ini file", config.getini("blobly_interfaces")),
+                          ("--blobly-interface", config.getoption("blobly_interface"))):
+        given: dict[str, str] = {}
+        for pair in pairs:
+            name, eq, iface = pair.partition("=")
+            if not eq:
+                raise pytest.UsageError(f"{pair!r} (from {source}) is not NAME=IFACE")
+            if name.strip() in given:
+                raise pytest.UsageError(f"row {name.strip()!r} is given twice (from {source})")
+            given[name.strip()] = iface.strip()
+        out.update(given)
+    return out
 
 
 def project_path(config: pytest.Config) -> str | None:
@@ -136,9 +165,11 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[_PATH] = path
     run_scope(config)  # refused here rather than at the first test
     channels_rule(config)
+    config.stash[_IFACES] = interfaces = interface_overrides(config)
     try:
         init()  # pytest configures on the main thread, where bb.h requires the library be loaded
-        config.stash[_NAMES] = [ch.name for ch in Project(path).load().channels]  # loading transmits nothing
+        # loading transmits nothing
+        config.stash[_NAMES] = [ch.name for ch in Project(path, interfaces).load().channels]
     except (BloblyError, OSError) as e:  # OSError: a library that is there and will not load
         raise pytest.UsageError(f"{path}: {e}") from None
 
@@ -178,7 +209,8 @@ def _channel_fixture(fname: str, channel_name: str):
 
 
 def pytest_report_header(config: pytest.Config) -> str:
-    return f"blobly {__version__}, engine {version()}, project {config.stash[_PATH]}"
+    moved = "".join(f", {name} on {iface}" for name, iface in config.stash[_IFACES].items())
+    return f"blobly {__version__}, engine {version()}, project {config.stash[_PATH]}{moved}"
 
 
 class _Run:
@@ -197,7 +229,7 @@ def _run_scope(fixture_name: str, config: pytest.Config) -> str:
 @pytest.fixture(scope=_run_scope)
 def _blobly_run(request: pytest.FixtureRequest) -> Iterator[_Run]:
     """The module's run of the suite's project, or the session's (blobly_run)."""
-    with Project(request.config.stash[_PATH]) as net:
+    with Project(request.config.stash[_PATH], request.config.stash[_IFACES]) as net:
         yield _Run(net)
 
 

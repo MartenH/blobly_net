@@ -258,6 +258,30 @@ class TestLoads:
         with pytest.raises(ValueError):
             blobly.Project(os.fsencode(SIM_DEMO) + b"\0trailing")
 
+    def test_a_row_attached_elsewhere_runs_there(self):
+        with blobly.Project(SIM_DEMO, interfaces={"CAN1": "inproc:PY_CAN1_MOVED"}) as net:
+            can1 = net.channels.CAN1
+            assert can1.iface == "inproc:PY_CAN1_MOVED"
+            with blobly.open("inproc:PY_CAN1_MOVED") as bus:
+                assert bus.recv(2000) is not None, "the simulated ECUs did not move with the row"
+            net.stop()
+            net.start()  # a reload keeps the overrides
+            assert net.channels.CAN1.iface == "inproc:PY_CAN1_MOVED"
+
+    def test_an_override_naming_no_row_or_another_kind_refuses_the_load(self):
+        with pytest.raises(blobly.BloblyError, match=r'no row named "CAN9" \(its rows: "CAN1"'):
+            blobly.Project(SIM_DEMO, interfaces={"CAN9": "inproc:x"}).load()
+        with pytest.raises(blobly.BloblyError, match="is a CAN bus; \"doip:1.2.3.4\" is a DoIP interface"):
+            blobly.Project(SIM_DEMO, interfaces={"CAN1": "doip:1.2.3.4"}).load()
+        with pytest.raises(ValueError):
+            blobly.Project(SIM_DEMO, interfaces={"CAN1": "inproc:a\nCAN2=inproc:b"})
+        with pytest.raises(TypeError):
+            blobly.Project(SIM_DEMO, interfaces={"CAN1": 5})  # type: ignore[dict-item]
+        net = blobly.Project(SIM_DEMO, interfaces={"CAN1": "inproc:a"})
+        net.interfaces["CAN1"] = "inproc:a\0CAN2=inproc:b"  # changed after construction: checked at load
+        with pytest.raises(ValueError):
+            net.load()
+
     def test_a_bytes_path_loads(self):
         net = blobly.Project(os.fsencode(SIM_DEMO)).load()
         assert "CAN1" in net.channels.keys()

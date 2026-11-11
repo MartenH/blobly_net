@@ -51,8 +51,8 @@ statuses and its `--report` file are [below](#exit-status-and-the-run-report).
 ### Usage
 
 ```sh
-scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--report <file.json>]
-                    [--timeout <s>] <script.lua> [more.lua ...]
+scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--interface <NAME=IFACE>]...
+                    [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]
 ```
 
 - `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
@@ -70,6 +70,16 @@ scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--report <file
   address. `doip.listen` without `from` still listens on 13400, which no moved entity announces
   to: name the channel (`{ from = "DoIP1" }`). `--project-ports` keeps the project's ports, for
   a tool outside the run that dials the entity where the project says it is.
+- `--interface <NAME=IFACE>` — attach the row named NAME to the interface IFACE for this run
+  instead of the file's (`--interface CAN1=vcan0`, `--interface BusB=pcan:PCAN_USBBUS2`);
+  repeatable, one row each. One suite then runs on in-process buses and on benches whose adapters
+  differ, from one project file. Applied before anything is checked or opened, so the simulated
+  ECUs, the generators and the listen-only policy follow the row; the row keeps its bitrate, CAN-FD
+  framing and `listen_only`, so an interface carrying a rate (`@500000`, or a LIN serial address's `@19200`) or a
+  mode (`,silent`) is refused. A generator follows the rows it transmitted to (a `bus:` naming a
+  wire no row is on stays). So is a name no row has (the refusal names the rows), a name two rows share or given
+  twice, and an interface of another kind than the row's (a CAN row onto `doip:`). The runner
+  prints each (`  CAN1: vcan0 (overridden)`).
 - `--report <file.json>` — write the run's result as JSON ([below](#exit-status-and-the-run-report)).
 - `--timeout <s>` — end the run this many seconds after its scripts start (exit 4); up to 1000000.
 - One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every

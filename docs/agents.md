@@ -251,7 +251,9 @@ names the project. The rules are in
   says what was expected and what came instead.
 - Run it as `pytest tests/ --blobly-project=path/to/project.blobnet --junitxml=report.xml`. The
   exit status is 0 when every test passed and 1 when one failed, and the report carries each
-  failure's message.
+  failure's message. To run the same suite where the rows are attached elsewhere (in-process buses
+  here, a bench adapter there), add `--blobly-interface=CAN1=inproc:CAN1` per row rather than
+  copying the project file; a name no row has is refused.
 
 ## Examples
 
