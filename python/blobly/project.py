@@ -111,6 +111,11 @@ def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
                  _lib.ms_of(f.t_ns) if received else None, status_of(f.e2e) if received else None)
 
 
+# an enum bb_format as a stated format: BB_FORMAT_WIRE (0) states none
+_FORMAT_NAMES: dict[int, FrameFormat] = {_lib.FORMATS["classic"]: "classic", _lib.FORMATS["fd"]: "fd",
+                                          _lib.FORMATS["fd_brs"]: "fd_brs"}
+
+
 def _format(who, format):
     """bb_frame.format for a stated format: None states nothing, else "classic", "fd" or "fd_brs"."""
     if format is None:
@@ -951,7 +956,8 @@ class Signal:
 
 class Message:
     """A message of a row's databases: `id`, `ext`, `dlc`, `j1939` (the database declares it),
-    `signals`; encode / send by signal name. It belongs to the run that listed it: after a stop
+    `format` (the frame format its database states: "classic", "fd", "fd_brs", or None where it
+    states none), `signals`; encode / send by signal name. It belongs to the run that listed it: after a stop
     and a start it goes on working while its row's database still has it at its position, and
     refuses otherwise."""
     name: str
@@ -959,6 +965,7 @@ class Message:
     ext: bool
     dlc: int
     j1939: bool
+    format: FrameFormat | None
     channel: Channel
 
     def __init__(self, channel: Channel, index: int, name: str) -> None:
@@ -967,6 +974,7 @@ class Message:
 
     def _fill(self, info, run):
         self.id, self.ext, self.dlc, self.j1939 = info.id, bool(info.ext), info.dlc, bool(info.j1939)
+        self.format = _FORMAT_NAMES.get(info.format)
         self._count, self._run, self._signals = info.signals, run, None
 
     def _live(self):
@@ -1010,7 +1018,7 @@ class Message:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
         have is refused; a value past what the signal's width holds is clamped to the nearer end.
-        fd/brs are left unset, so a send takes its channel's declared format. Its E2E is not stamped:
+        fd/brs are left unset, so channel.send takes its channel's declared format. Its E2E is not stamped:
         send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
         return frame_of(self._encoded(signals))
 
@@ -1040,34 +1048,39 @@ class Message:
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
         the Frame sent. A declaration that cannot be applied raises Refused rather than go out
         unprotected; a send that fails after its stamp has used its counter, as a frame lost on
-        the wire does. Its fd/brs are unset, so what goes out takes its channel's declared format,
-        unless `format` states one as Channel.send's does ("classic", "fd", "fd_brs"; a classic
-        frame of more than 8 bytes refused) — the returned Frame's fd/brs are then what was stated.
+        the wire does. It goes out in `format` where given, as Channel.send's states one ("classic",
+        "fd", "fd_brs"; a classic frame of more than 8 bytes refused), else in the format its
+        database states (`self.format`), else in its channel's declared format — the returned
+        Frame's fd/brs are what was stated.
         To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
         channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
         under one hold of the state lock, so a stop and start on another thread cannot put this
         run's encoding on the next run's wire."""
         lib = _lib.lib()
         with _lib.state_lock:
-            f = self._encoded(signals)
-            f.format = _format(f"{self.name}.send", format)
-            if format == "classic" and f.len > 8:  # refused before the stamp uses a counter
+            f = self._encoded(signals)  # its format the declared one (bb_encode)
+            if format is not None:
+                f.format = _format(f"{self.name}.send", format)
+            if f.format == _lib.FORMATS["classic"] and f.len > 8:  # refused before the stamp uses a counter
                 raise _lib.Refused(f"{self.channel.name}: a classic frame carries at most 8 bytes, "
                                    f"{self.name} has {f.len} — choose FD")
-            if format is not None:  # the Frame returned says what was stated
-                f.fd, f.brs = int(format != "classic"), int(format == "fd_brs")
+            if f.format:  # the Frame returned says what was stated
+                f.fd, f.brs = int(f.format != _lib.FORMATS["classic"]), int(f.format == _lib.FORMATS["fd_brs"])
             h = self.channel._handle()  # first: a channel that will not open uses no counter
             _lib.check(lib.bb_e2e_stamp(self.channel._index, self._index, ctypes.byref(f)))
         self.channel._send_on(h, f)
         return frame_of(f)
 
-    def send_cyclic(self, period_ms: int, /, *, e2e: bool = True, **signals: float) -> CyclicSender:
+    def send_cyclic(self, period_ms: int, /, *, e2e: bool = True, format: FrameFormat | None = None,
+                    **signals: float) -> CyclicSender:
         """Sends this message every period_ms in the background, the first at once, encoded from
         the named signals (encode's rule) and its declared E2E stamped on every frame unless `e2e`
         is False — the counter the sender's own, from 0: a CyclicSender, which update(**signals)
-        changes. Until its stop() or the project's; `with` stops it at the end of the block."""
+        changes. In `format` as send() takes it, else the format its database states, else its
+        channel's. Until its stop() or the project's; `with` stops it at the end of the block."""
+        code = _format(f"{self.name}.send_cyclic", format)
         with _lib.state_lock:
-            return _start_message(self, _period(period_ms), e2e, signals)
+            return _start_message(self, _period(period_ms), e2e, signals, code)
 
     def __repr__(self) -> str:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"

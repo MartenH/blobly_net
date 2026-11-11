@@ -351,6 +351,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		}
 		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path), db_files)
 		nodes := ch.all_nodes()
+		for w in project.frame_format_warnings(ch, [db]) {
+			o.err('warning: ${w}')
+		}
 		r.chans << Channel{
 			cfg:     ch
 			db:      db

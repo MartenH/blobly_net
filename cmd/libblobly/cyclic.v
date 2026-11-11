@@ -113,7 +113,7 @@ fn values_of(n i32, signals &&char, values &f64) !map[string]f64 {
 }
 
 @[export: 'bb_cyclic_start_message']
-pub fn bb_cyclic_start_message(row i32, m i32, n i32, signals &&char, values &f64, e2e i32, period_ms i32) i32 {
+pub fn bb_cyclic_start_message(row i32, m i32, n i32, signals &&char, values &f64, e2e i32, format i32, period_ms i32) i32 {
 	// the message and the run it is read from, together: a restart between the two would send
 	// the earlier run's message on this run's bus
 	bb_mu.lock()
@@ -121,11 +121,13 @@ pub fn bb_cyclic_start_message(row i32, m i32, n i32, signals &&char, values &f6
 	bb_mu.unlock()
 	msg := message(row, m) or { return refused(err) }
 	vs := values_of(n, signals, values) or { return fail(bb_err, 'cyclic_start_message: ${err.msg()}') }
+	ff := format_of(int(format)) or { return fail(bb_err, 'cyclic_start_message: ${err.msg()}') }
 	return cyclic_start(row, cyclic.Spec{
 		by_message: true
 		message:    msg
 		values:     vs
 		e2e:        e2e != 0
+		format:     ff
 		period_ms:  int(period_ms)
 	}, read_in)
 }

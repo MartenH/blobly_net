@@ -7,6 +7,7 @@
 module project
 
 import blobly.doip
+import blobly.transport
 import os
 import strings
 
@@ -237,6 +238,9 @@ pub fn (p Project) to_yaml() string {
 				b.writeln('        trigger: ${s.trigger}')
 				if s.trigger == 'cyclic' && s.cycle_ms > 0 {
 					b.writeln('        cycle_ms: ${s.cycle_ms}')
+				}
+				if s.format != .wire {
+					b.writeln('        format: ${transport.frame_format_names[int(s.format)]}')
 				}
 				if s.signals.len > 0 {
 					b.writeln('        signals:')

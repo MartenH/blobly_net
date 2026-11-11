@@ -13,6 +13,7 @@ module sim
 import math
 import time
 import blobly.candb
+import blobly.project
 import blobly.transport
 
 // Gen is a signal value generator. Fields are reused per kind (see constructors).
@@ -146,11 +147,14 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 	// End-to-end protection goes over the finished payload — the counter and checksum have to
 	// reflect what is actually on the wire, including every generator's contribution.
 	m.e2e.apply(m.msg, mut data, m.e2e_value())
-	return transport.CanFrame{
+	f := transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
 		data:     data
 	}
+	// the format its database states for it (#607); none, or one the payload cannot take, leaves
+	// it to the row
+	return project.declared_format(m.msg).stamp(f) or { f }
 }
 
 // ResponseRule: when a frame with id `req_id` arrives, reply with `resp_id`

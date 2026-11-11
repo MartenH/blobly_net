@@ -173,14 +173,16 @@ def _start_raw(channel: "Channel", f: "_lib.BbFrame", period_ms: int) -> CyclicS
     return s
 
 
-def _start_message(message: "Message", period_ms: int, e2e: bool, signals: dict[str, float]) -> CyclicSender:
-    """A sender of `message` (Message.send_cyclic), under _lib.state_lock."""
+def _start_message(message: "Message", period_ms: int, e2e: bool, signals: dict[str, float],
+                   format: int = 0) -> CyclicSender:
+    """A sender of `message` (Message.send_cyclic) in `format` (an enum bb_format, 0 the message's
+    declared one), under _lib.state_lock."""
     lib = _lib.lib()
     channel = message.channel
     n, names, values = _signals(message.name, signals)
     message._live()
     h = _lib.check(lib.bb_cyclic_start_message(channel._index, message._index, n, names, values,
-                                               int(bool(e2e)), period_ms))
+                                               int(bool(e2e)), format, period_ms))
     s = CyclicSender(channel, h, message)
     channel._project._senders.append(s)
     return s

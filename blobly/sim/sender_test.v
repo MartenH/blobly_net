@@ -32,7 +32,55 @@ fn test_sender_message_frame_encodes_and_evaluates_sources() {
 	f := sender_message_frame(s, [db], 3, 0.0) or { panic('M not built') }
 	assert f.id == 256 && !f.extended
 	assert f.data == [u8(7), 13] // the counter at send 3: 10 + 3
-	assert sender_message_frame(project.Sender{ message: 'Nope' }, [db], 0, 0.0) == none
+	if _ := sender_message_frame(project.Sender{ message: 'Nope' }, [db], 0, 0.0) {
+		assert false, 'a message no database defines was built'
+	}
+}
+
+// a generator's frame states its `format:`, else its message's declared one, else none (#607, #608)
+fn test_sender_frames_state_their_format() {
+	mut db := candb.parse_dbc('BO_ 256 M: 2 T
+ SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 257 W: 12 T
+ SG_ B : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+') or { panic(err) }
+	plain := sender_message_frame(project.Sender{ message: 'M' }, [db], 0, 0.0) or { panic(err) }
+	assert !plain.format_stated && !plain.fd
+	db.messages[0].format = .classic
+	cls := sender_message_frame(project.Sender{ message: 'M' }, [db], 0, 0.0) or { panic(err) }
+	assert cls.format_stated && !cls.fd
+	db.messages[0].format = .fd_brs
+	fd := sender_message_frame(project.Sender{ message: 'M' }, [db], 0, 0.0) or { panic(err) }
+	assert fd.format_stated && fd.fd && fd.brs
+	// the generator's own format wins over the declared one
+	own := sender_message_frame(project.Sender{ message: 'M', format: .classic }, [db], 0, 0.0) or {
+		panic(err)
+	}
+	assert own.format_stated && !own.fd
+	// a classic frame of 12 bytes is refused where it is stated
+	if _ := sender_message_frame(project.Sender{ message: 'W', format: .classic }, [db], 0, 0.0) {
+		assert false, 'a 12-byte classic frame was built'
+	}
+	raw := sender_raw_frame(project.Sender{ format: .fd }, 0x10, false, [u8(1)]) or { panic(err) }
+	assert raw.format_stated && raw.fd && !raw.brs
+	assert !(sender_raw_frame(project.Sender{}, 0x10, false, [u8(1)]) or { panic(err) }).format_stated
+}
+
+// a simulated node's frame states its message's declared format (#607)
+fn test_a_simulated_message_states_its_declared_format() {
+	mut db := candb.parse_dbc('BO_ 256 M: 2 T
+ SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+') or { panic(err) }
+	mut m := SimMessage{
+		msg: db.messages[0]
+	}
+	assert !m.build(0).format_stated
+	m.msg.format = .classic
+	f := m.build(0)
+	assert f.format_stated && !f.fd
+	m.msg.format = .fd
+	g := m.build(0)
+	assert g.format_stated && g.fd && !g.brs
 }
 
 // a multiplexed signal is encoded only where the switch selects its branch: a value kept for the

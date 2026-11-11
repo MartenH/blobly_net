@@ -547,3 +547,106 @@ BA_ "E2ETimeout" BO_ 769 soon;
 	_, notes := merge_files_report([path])
 	assert notes == loaded.notes, 'the merge carries the note once'
 }
+
+// VFrameFormat and CANFD_BRS state a message's frame format (#607): read against the file's own
+// enums, per message, either spelling, and BRS by Vector's template default "1" where unsaid.
+fn test_vframeformat_and_canfd_brs_state_the_frame_format() {
+	base := 'BO_ 256 M: 8 Ecu\n SG_ A : 0|8@1+ (1,0) [0|255] "" Tester\n'
+	cases := {
+		'':                                                       candb.MsgFormat.unstated
+		'BA_ "VFrameFormat" BO_ 256 0;\n':                        .classic
+		'BA_ "VFrameFormat" BO_ 256 1;\n':                        .classic
+		'BA_ "VFrameFormat" BO_ 256 3;\n':                        .classic
+		'BA_ "VFrameFormat" BO_ 256 2;\n':                        .unstated // reserved
+		'BA_ "VFrameFormat" BO_ 256 99;\n':                       .unstated
+		'BA_ "VFrameFormat" BO_ 256 14;\n':                       .fd_brs
+		'BA_ "VFrameFormat" BO_ 256 "StandardCAN_FD";\n':         .fd_brs
+		'BA_ "VFrameFormat" BO_ 256 15;\nBA_ "CANFD_BRS" BO_ 256 0;\n': .fd
+		'BA_ "VFrameFormat" BO_ 256 14;\nBA_ "CANFD_BRS" BO_ 256 1;\n': .fd_brs
+		'BA_ "VFrameFormat" BO_ 256 "StandardCAN";\nBA_ "CANFD_BRS" BO_ 256 0;\n': .classic
+	}
+	for extra, want in cases {
+		db := candb.parse_dbc(base + extra) or {
+			assert false, err.msg()
+			return
+		}
+		assert db.messages[0].format == want, '${extra}: ${db.messages[0].format}'
+	}
+	// the file's own orderings decide what an index means
+	own := candb.parse_dbc(base + 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","StandardCAN_FD";\n' +
+		'BA_DEF_ BO_ "CANFD_BRS" ENUM "1","0";\nBA_ "VFrameFormat" BO_ 256 1;\nBA_ "CANFD_BRS" BO_ 256 1;\n') or {
+		assert false, err.msg()
+		return
+	}
+	assert own.messages[0].format == .fd
+	// a record before its BO_ is read too: a DBC does not promise the order of its records
+	early := candb.parse_dbc('BA_ "VFrameFormat" BO_ 256 14;\nBA_ "CANFD_BRS" BO_ 256 0;\n' + base) or {
+		assert false, err.msg()
+		return
+	}
+	assert early.messages[0].format == .fd
+}
+
+// The file-wide defaults are declarations too, and a message's own record beats them.
+fn test_frame_format_defaults_and_overrides() {
+	src := 'BO_ 256 A: 8 Ecu\n SG_ X : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BO_ 257 B: 8 Ecu\n SG_ Y : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BO_ 258 C: 8 Ecu\n SG_ Z : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";\n' +
+		'BA_DEF_ BO_ "CANFD_BRS" ENUM "0","1";\n' +
+		'BA_DEF_DEF_ "VFrameFormat" "StandardCAN_FD";\nBA_DEF_DEF_ "CANFD_BRS" "0";\n' +
+		'BA_ "VFrameFormat" BO_ 257 0;\nBA_ "CANFD_BRS" BO_ 258 1;\n'
+	db := candb.parse_dbc(src) or {
+		assert false, err.msg()
+		return
+	}
+	got := db.messages.map(it.format)
+	assert got == [candb.MsgFormat.fd, .classic, .fd_brs], got.str()
+}
+
+// A stated format survives a Save, and a message stating none gains no statement.
+fn test_frame_format_survives_a_write_and_reparse() {
+	mut db := candb.parse_dbc('BO_ 256 Cls: 8 Ecu\n SG_ A : 0|8@1+ (1,0) [0|255] "" T\n' +
+		'BO_ 2147483905 ClsExt: 8 Ecu\n SG_ B : 0|8@1+ (1,0) [0|255] "" T\n' +
+		'BO_ 258 Fd: 12 Ecu\n SG_ C : 0|8@1+ (1,0) [0|255] "" T\n' +
+		'BO_ 2147483907 FdBrsExt: 64 Ecu\n SG_ D : 0|8@1+ (1,0) [0|255] "" T\n' +
+		'BO_ 260 Plain: 8 Ecu\n SG_ E : 0|8@1+ (1,0) [0|255] "" T\n') or {
+		assert false, err.msg()
+		return
+	}
+	db.messages[0].format = .classic
+	db.messages[1].format = .classic
+	db.messages[2].format = .fd
+	db.messages[3].format = .fd_brs
+	out := db.to_dbc()
+	assert out.count('BA_DEF_ BO_ "CANFD_BRS"') == 1
+	assert out.contains('BA_ "VFrameFormat" BO_ 258 14;')
+	assert out.contains('BA_ "CANFD_BRS" BO_ 258 0;')
+	assert out.contains('BA_ "VFrameFormat" BO_ 2147483907 15;')
+	assert !out.contains('BA_ "VFrameFormat" BO_ 260 '), 'a standard frame stating nothing needs no override'
+	round := candb.parse_dbc(out) or {
+		assert false, 'reparse: ${err.msg()}'
+		return
+	}
+	got := round.messages.map(it.format)
+	// Plain inherits the StandardCAN default the definition now gives every message
+	assert got == [candb.MsgFormat.classic, .classic, .fd, .fd_brs, .classic], got.str()
+	assert candb.parse_dbc(round.to_dbc())!.messages.map(it.format) == got
+}
+
+// The attribute records are read however their whitespace is spelled: CANdb++ writes two spaces
+// after the keyword.
+fn test_frame_format_records_with_candb_spacing() {
+	src := 'BO_ 256 Cls: 8 Ecu\n SG_ X : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BO_ 257 Fd: 12 Ecu\n SG_ Y : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";\n' +
+		'BA_DEF_ BO_  "CANFD_BRS" ENUM  "0","1";\n' +
+		'BA_DEF_DEF_  "VFrameFormat" "StandardCAN";\nBA_DEF_DEF_  "CANFD_BRS" "0";\n' +
+		'BA_ "VFrameFormat" BO_ 257 14;\n'
+	db := candb.parse_dbc(src) or {
+		assert false, err.msg()
+		return
+	}
+	got := db.messages.map(it.format)
+	assert got == [candb.MsgFormat.classic, .fd], got.str()
+}

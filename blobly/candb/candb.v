@@ -106,6 +106,11 @@ pub mut:
 	// merely choosing how to decode a frame it already has may use the fallback and accept the
 	// ambiguity (#95).
 	j1939   bool
+	// The frame format the file STATES for this message: `VFrameFormat` (StandardCAN /
+	// ExtendedCAN / J1939PG classic, StandardCAN_FD / ExtendedCAN_FD CAN-FD) and `CANFD_BRS`, per
+	// message or from the file-wide default; ARXML's CAN-FRAME-TX/RX-BEHAVIOR. `unstated` leaves
+	// the format to the row a frame is sent on (project.message_format is what a send takes).
+	format MsgFormat
 	// The E2E contract the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
 	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"` / `"E2ETimeout"`, docs/dbc_attributes.md) — stated once in the file the whole
 	// bench shares, for its sender to stamp and its receivers to check. The simulation stamps it
@@ -113,6 +118,30 @@ pub mut:
 	// file does not declare one.
 	e2e     E2eDecl
 	signals []Signal
+}
+
+// MsgFormat is the frame format a database states for a message: none, classic CAN, or CAN-FD
+// without or with the bit-rate switch.
+pub enum MsgFormat {
+	unstated
+	classic
+	fd
+	fd_brs
+}
+
+// name is the format as a send states it (transport.parse_frame_format's spelling): '' for none.
+pub fn (f MsgFormat) name() string {
+	return match f {
+		.unstated { '' }
+		.classic { 'classic' }
+		.fd { 'fd' }
+		.fd_brs { 'fd_brs' }
+	}
+}
+
+// is_fd says whether the format is a CAN-FD one.
+pub fn (f MsgFormat) is_fd() bool {
+	return f == .fd || f == .fd_brs
 }
 
 // E2eDecl is a message's declared E2E contract: the counter and CRC SIGNALS (so positions come

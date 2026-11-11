@@ -304,15 +304,9 @@ fn (mut g Gen) send(mut bus transport.Bus, run_t0 u64) string {
 	g.mu.unlock()
 	el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
 	frame := if s.message != '' {
-		sim.sender_message_frame(s, g.dbs, n, el) or {
-			return 'message "${s.message}" is not in the channel databases'
-		}
+		sim.sender_message_frame(s, g.dbs, n, el) or { return err.msg() }
 	} else {
-		transport.CanFrame{
-			id:       s.id
-			extended: s.ext
-			data:     s.data.clone()
-		}
+		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return err.msg() }
 	}
 	bus.send(frame) or { return 'not sent: ${err}' }
 	g.mu.lock()

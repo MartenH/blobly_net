@@ -262,3 +262,46 @@ BO_ 300 X: 2 A
 	assert got.len > 0 && got.all(it.data == [u8(0), 5]), '${got.map(it.data)}'
 	assert s.stop()
 }
+
+// a message sender sends its message's declared format, its own `format` winning (#607, #608)
+fn test_a_message_sender_sends_its_declared_or_stated_format() {
+	mut db := candb.parse_dbc('BO_ 256 M: 12 A\n SG_ S : 0|8@1+ (1,0) [0|255] "" A\n')!
+	db.messages[0].format = .fd
+	m := db.messages[0]
+	mut rx := transport.open('inproc:CYC_FMT')!
+	defer {
+		rx.close()
+	}
+	mut s := start(transport.open('inproc:CYC_FMT')!, Spec{
+		by_message: true
+		message:    m
+		period_ms:  10
+	}, Life{})!
+	got := frames_within(mut rx, 0x100, 40)
+	assert s.stop()
+	assert got.len > 0 && got.all(it.fd && !it.brs)
+	// what the first sender sent while it stopped is still queued: not the second one's
+	for {
+		rx.recv(0) or { break }
+	}
+	mut b := start(transport.open('inproc:CYC_FMT')!, Spec{
+		by_message: true
+		message:    m
+		format:     .fd_brs
+		period_ms:  10
+	}, Life{})!
+	brs := frames_within(mut rx, 0x100, 40)
+	assert b.stop()
+	assert brs.len > 0 && brs.all(it.fd && it.brs)
+	// a 12-byte message stated classic is refused before it starts
+	start(transport.open('inproc:CYC_FMT')!, Spec{
+		by_message: true
+		message:    m
+		format:     .classic
+		period_ms:  10
+	}, Life{}) or {
+		assert err.msg().contains('at most 8 bytes'), err.msg()
+		return
+	}
+	assert false, 'a classic 12-byte message sender started'
+}

@@ -1482,7 +1482,9 @@ fn l_msg_template(l lua.State) i32 {
 	l.push_int(msg.id)
 	l.push_bool(msg.ext)
 	l.push_bytes(msg.template())
-	return 3
+	// the format its database states, which a send takes unless it states its own (#607)
+	l.push_str(transport.frame_format_names[int(project.declared_format(msg))])
+	return 4
 }
 
 fn l_encode_signal(l lua.State) i32 {

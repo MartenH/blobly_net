@@ -618,8 +618,10 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   send an out-of-range value on purpose. `fd`/`brs` are left unset. Its E2E is not stamped.
 - `msg.send(**signals)` encodes, stamps the E2E the message's database declares (its counter and
   CRC: [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)), sends on
-  the message's channel, and returns the `Frame` sent. `msg.send(format="classic", **signals)`
-  states its format as `ch.send`'s `format` does (a signal named `format` cannot be set this way).
+  the message's channel, and returns the `Frame` sent. It goes out in the format its database
+  states (`msg.format`: `VFrameFormat` / `CANFD_BRS`), else the channel's; `msg.send(format="classic",
+  **signals)` states its format as `ch.send`'s `format` does (a signal named `format` cannot be set
+  this way).
 - `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`
   whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
   `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
@@ -699,9 +701,10 @@ the script does something else: waits in an `expect`, blocks in a UDS request, s
 - `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` sends a raw
   frame every `period_ms` (1 .. 3600000), the first at once, and returns a **`CyclicSender`**.
   `fd`/`brs` and `format` are read as `send` reads them.
-- `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` sends a DBC message encoded from the
-  named signals (`encode`'s rule: the rest at raw 0), with the E2E its database declares stamped
-  on every frame — the counter the sender's own, from 0 — unless `e2e=False`.
+- `msg.send_cyclic(period_ms, /, *, e2e=True, format=None, **signals)` sends a DBC message encoded
+  from the named signals (`encode`'s rule: the rest at raw 0), with the E2E its database declares
+  stamped on every frame — the counter the sender's own, from 0 — unless `e2e=False`; in `format`
+  where given, else the format its database states (`msg.format`), else the channel's.
 - `sender.update(data)` replaces a raw sender's payload; `sender.update(**signals)` sets a message
   sender's signals, the others keeping theirs. `sender.period_ms = 50` changes the period. Each
   applies from the next frame.
@@ -2403,11 +2406,12 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.id`, `msg.ext` | Its identifier, and whether it is 29-bit. |
 | `msg.dlc` | The payload length `encode` gives it. |
 | `msg.j1939` | Whether the database declares it J1939. |
+| `msg.format` | The frame format its database states (`VFrameFormat`, `CANFD_BRS`; an ARXML frame's behaviour): `"classic"`, `"fd"`, `"fd_brs"`, or `None` where it states none. `send` and `send_cyclic` send it in that format unless they state another. |
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
 | `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
-| `msg.send(*, format=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s. |
-| `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`: a `CyclicSender`. |
+| `msg.send(*, format=None, **signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. `format` as `ch.send`'s; `None` sends it in `msg.format`, else the channel's. |
+| `msg.send_cyclic(period_ms, /, *, e2e=True, format=None, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`, in `format` as `send` takes it: a `CyclicSender`. |
 
 ### `CyclicSender`, `CyclicStatus`
 
@@ -2727,7 +2731,8 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen are here ([SOME/IP](#12-someip)), and so is `flash.program`
   ([Flashing](#13-flashing)), with a simulated bootloader to rehearse it against.
-- Stating a frame's format is here (`format=` on `ch.send`, `ch.send_cyclic` and `msg.send`;
+- Stating a frame's format is here (`format=` on `ch.send`, `ch.send_cyclic`, `msg.send` and
+  `msg.send_cyclic`, and a message's own format from its database, `msg.format`;
   [Raw frames](#5-raw-frames)).
 - Generator control is here ([Generators](#generators)): fire, start, stop, the cycle, a signal's
   value or source.
