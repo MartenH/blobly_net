@@ -89,17 +89,17 @@ fn lin_address_rate(address string) int {
 // override_interfaces attaches each named row to its override's interface, before anything is
 // checked or opened. Refused whole, changing nothing, for a name no row has (naming the rows),
 // a name two rows share, a name given twice, or an interface iface_override_refusal refuses.
-// A generator follows its rows: one whose `bus:` named a row by an interface the override
-// respelled, or named a wire (shared by several rows, or not a row's spelling of it) that every
-// CAN row on it left, is rewritten to name where they went; an override to the wire a row is
-// already on moves no wire's generators.
+// A generator follows its rows: one whose `bus:` named one row by its interface and no longer
+// names that row alone (the row respelled, or another row moved onto the interface), or named a
+// wire (shared by several rows, or not a row's spelling of it) that every CAN row on it left, is
+// rewritten to name where they went; an override to the wire a row is already on moves no wire's
+// generators.
 pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 	if overrides.len == 0 {
 		return
 	}
 	mut chs := p.channels.clone()
 	mut moved := map[int]bool{}
-	mut respelled := map[int]bool{}
 	mut given := map[string]bool{}
 	for o in overrides {
 		if o.name in given {
@@ -131,9 +131,6 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 		chs[i].adapter = adapter
 		chs[i].address = address
 		chs[i].iface = compose_iface(adapter, address)
-		if chs[i].iface != p.channels[i].iface {
-			respelled[i] = true
-		}
 		if conflict_wire_key(chs[i]) != was_wire {
 			moved[i] = true
 		}
@@ -141,7 +138,8 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 	for ci, own in p.channels {
 		for si, s in own.senders {
 			was := resolve_sender_bus(s.bus, own, p.channels)
-			to := followed_rows(was, p.channels, respelled, moved)
+			now := resolve_sender_bus(s.bus, chs[ci], chs)
+			to := followed_rows(was, now, p.channels, moved)
 			if to.len == 0 {
 				continue
 			}
@@ -156,13 +154,14 @@ pub fn (mut p Project) override_interfaces(overrides []IfaceOverride) ! {
 	p.channels = chs
 }
 
-// followed_rows is the rows of `chs` (the project before the move) a generator's resolved `bus:`
-// follows: the row an interface named when its interface was respelled, or every CAN row on the
-// wire an ambiguous or bare value reaches when all of them left it; none when the generator
-// stays where it is.
-fn followed_rows(was SenderBus, chs []Channel, respelled map[int]bool, moved map[int]bool) []int {
+// followed_rows is the rows of `chs` (the project before the move) a generator's `bus:` follows,
+// given what it resolved to before (`was`) and after (`now`): the one row an interface named when
+// the value no longer names that row, or every CAN row on the wire an ambiguous or bare value
+// reaches when all of them left it; none when the generator stays where it is.
+fn followed_rows(was SenderBus, now SenderBus, chs []Channel, moved map[int]bool) []int {
 	if was.kind == .iface {
-		return if was.row in respelled { [was.row] } else { []int{} }
+		same := now.kind in [.iface, .named] && now.row == was.row
+		return if same { []int{} } else { [was.row] }
 	}
 	if was.kind !in [.ambiguous, .bare] || was.iface == '' {
 		return []int{}

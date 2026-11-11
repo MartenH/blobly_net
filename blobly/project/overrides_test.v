@@ -273,3 +273,31 @@ fn test_a_generator_naming_a_row_by_a_respelled_interface_follows_it() {
 	assert s.bus == 'A'
 	assert resolve_sender_bus(s.bus, row(p, 'B'), p.channels).chan == 'A'
 }
+
+const joined_yaml = '
+project:
+  name: joined
+  version: 4
+buses:
+  - name: A
+    interface: inproc:A
+    protocol: canfd
+    bitrate: 500000
+    data_bitrate: 2000000
+    senders:
+      - name: fd
+        bus: inproc:A
+        trigger: manual
+  - name: B
+    interface: inproc:B
+'
+
+fn test_a_generator_naming_a_row_keeps_it_when_another_row_joins_its_interface() {
+	mut p := parse(joined_yaml) or { panic(err) }
+	assert resolve_sender_bus('inproc:A', row(p, 'A'), p.channels).kind == .iface
+	p.override_interfaces([IfaceOverride{'B', 'inproc:A'}])!
+	s := sender_of(p, 'A', 'fd')
+	r := resolve_sender_bus(s.bus, row(p, 'A'), p.channels)
+	assert r.kind in [.named, .own]
+	assert r.chan == 'A'
+}
