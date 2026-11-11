@@ -220,10 +220,12 @@ fn (db &Db) ref(n flatxml.Node) ?flatxml.Node {
 	return db.ids['${path}\n${n.attr('ID-REF')}'] or { none }
 }
 
-// Resolve is one variant's resolution in progress: its layers, nearest first, and what it found.
+// Resolve is one variant's resolution in progress: its layers in inheritance precedence (`order`),
+// and what it found.
 struct Resolve {
 mut:
 	chain []flatxml.Node
+	depth []int // per layer of the chain, the fewest PARENT-REFs it is reached by
 	// per layer of the chain, the services and the DOPs it does not pass on to the variant
 	comms   []map[string]bool
 	dops    []map[string]bool
@@ -238,6 +240,7 @@ pub fn (db &Db) variant(name string) !Variant {
 	}
 	mut r := Resolve{}
 	db.walk_layers(top, map[string]bool{}, map[string]bool{}, mut r, 0)
+	r.order()
 	// the services, nearest layer first: a SHORT-NAME seen is overridden further up
 	mut seen := map[string]bool{}
 	mut found := map[u16]Did{}
@@ -310,9 +313,9 @@ const read_dds_children = ['DATA-OBJECT-PROPS', 'STRUCTURES', 'DTC-DOPS', 'UNIT-
 	'SDGS']
 
 // walk_layers appends `layer` and then its parents (PARENT-REFS), depth first, each once, with the
-// services and DOPs it does not pass on: those a PARENT-REF on the way to it leaves out, and for a
-// layer reached on several ways only those every way leaves out (it is walked again when one more
-// way narrows them).
+// fewest PARENT-REFs it is reached by and the services and DOPs it does not pass on: those a
+// PARENT-REF on the way to it leaves out, and for a layer reached on several ways only those every
+// way leaves out (it is walked again when one more way narrows them or reaches it nearer).
 fn (db &Db) walk_layers(layer flatxml.Node, comms map[string]bool, dops map[string]bool, mut r Resolve, depth int) {
 	if depth > 16 {
 		return
@@ -328,12 +331,17 @@ fn (db &Db) walk_layers(layer flatxml.Node, comms map[string]bool, dops map[stri
 	mut here_dops := dops.clone()
 	if k < 0 {
 		r.chain << layer
+		r.depth << depth
 		r.comms << comms.clone()
 		r.dops << dops.clone()
 	} else {
+		nearer := depth < r.depth[k]
+		if nearer {
+			r.depth[k] = depth
+		}
 		here_comms = common(r.comms[k], comms)
 		here_dops = common(r.dops[k], dops)
-		if here_comms.len == r.comms[k].len && here_dops.len == r.dops[k].len {
+		if !nearer && here_comms.len == r.comms[k].len && here_dops.len == r.dops[k].len {
 			return
 		}
 		r.comms[k] = here_comms.clone()
@@ -356,6 +364,40 @@ fn (db &Db) walk_layers(layer flatxml.Node, comms map[string]bool, dops map[stri
 		}
 		db.walk_layers(parent, pc, pd, mut r, depth + 1)
 	}
+}
+
+// layer_rank is a layer kind's place in ODX's inheritance precedence: an ECU variant before a base
+// variant, a functional group, a protocol and ECU shared data.
+fn layer_rank(tag string) int {
+	return match tag {
+		'ECU-VARIANT' { 0 }
+		'BASE-VARIANT' { 1 }
+		'FUNCTIONAL-GROUP' { 2 }
+		'PROTOCOL' { 3 }
+		'ECU-SHARED-DATA' { 4 }
+		else { 5 }
+	}
+}
+
+// order puts the chain in inheritance precedence: by layer kind, then nearer before farther, then
+// in the order the PARENT-REFS name them; what a layer passes on travels with it.
+fn (mut r Resolve) order() {
+	ranks := r.chain.map(layer_rank(it.name()))
+	depths := r.depth.clone()
+	mut idx := []int{len: r.chain.len, init: index}
+	idx.sort_with_compare(fn [ranks, depths] (a &int, b &int) int {
+		if ranks[*a] != ranks[*b] {
+			return ranks[*a] - ranks[*b]
+		}
+		if depths[*a] != depths[*b] {
+			return depths[*a] - depths[*b]
+		}
+		return *a - *b
+	})
+	r.chain = idx.map(r.chain[it])
+	r.depth = idx.map(r.depth[it])
+	r.comms = idx.map(r.comms[it])
+	r.dops = idx.map(r.dops[it])
 }
 
 // common is the names in both `a` and `b`.
@@ -398,6 +440,10 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
 		r.notes << 'service ${sn} (0x${sid:02X}): no single 16-bit DID at byte 1 (a TABLE-KEY, or several DIDs); not read'
 		return
 	}
+	if sid == 0x22 && params.len != 2 {
+		r.notes << 'service ${sn} (0x22 0x${id:04X}): its request carries ${params.len - 2} parameter(s) past the DID (several DIDs, or more than a DID); not read'
+		return
+	}
 	mut values := []flatxml.Node{}
 	if sid == 0x22 {
 		resp := db.ref(svc.child('POS-RESPONSE-REFS').child('POS-RESPONSE-REF')) or {
@@ -421,12 +467,24 @@ fn (db &Db) service(svc flatxml.Node, mut r Resolve, mut found map[u16]Did) {
 	}
 	parts := if lay.why.len == 0 { lay.parts.clone() } else { []Part{} }
 	if prev := found[u16(id)] {
+		// the value is laid out as the first 0x22 service read reads it, whichever came first; a
+		// write is kept only where every service lays it out alike
 		same := prev.size == lay.size && prev.parts == parts
-		mut d := Did{
-			...prev
-			name:     if prev.name == '' { vname } else { prev.name }
-			readable: prev.readable || sid == 0x22
-			writable: prev.writable || sid == 0x2E
+		mut d := if sid == 0x22 && !prev.readable {
+			Did{
+				...prev
+				name:     vname
+				readable: true
+				size:     lay.size
+				parts:    parts
+			}
+		} else {
+			Did{
+				...prev
+				name:     if prev.name == '' { vname } else { prev.name }
+				readable: prev.readable || sid == 0x22
+				writable: prev.writable || sid == 0x2E
+			}
 		}
 		if !same {
 			r.notes << 'DID 0x${id:04X}: ${sn} lays its value out unlike the service read before it; not written'

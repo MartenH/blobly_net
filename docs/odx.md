@@ -26,14 +26,17 @@ enabled row's entry read before a disabled row's.
 
 ## What is read
 
-The reader (`blobly/odx`) takes the variant, then its parents (`PARENT-REFS`), nearest first: a
-service or `DTC-DOP` a nearer layer names again overrides, and a `NOT-INHERITED-DIAG-COMM` or
+The reader (`blobly/odx`) takes the variant, then its parents (`PARENT-REFS`) in ODX's
+inheritance precedence — ECU variant, base variant, functional group, protocol, ECU shared data,
+and nearer before farther within one kind: a service or `DTC-DOP` a layer earlier in that order
+names again overrides, and a `NOT-INHERITED-DIAG-COMM` or
 `NOT-INHERITED-DOP` is left out of everything that parent passes on — what it inherited itself
 included. A layer reached on two ways passes on what either way passes on.
 
-- **DIDs** — every `DIAG-SERVICE` whose request is `0x22` or `0x2E` with one 16-bit DID at byte 1.
-  The value is laid out from the read service's positive response (else the write service's
-  request), from byte 3: each `VALUE` parameter's `DATA-OBJECT-PROP` (a `STANDARD-LENGTH-TYPE`
+- **DIDs** — every `DIAG-SERVICE` whose request is `0x22` or `0x2E` with one 16-bit DID at byte 1
+  (a `0x22` request carrying anything past that DID — several DIDs — is said and not read).
+  The value is laid out from the read service's positive response, whatever order the services
+  come in (else the write service's request; a write laid out otherwise is not written), from byte 3: each `VALUE` parameter's `DATA-OBJECT-PROP` (a `STANDARD-LENGTH-TYPE`
   of whole bytes, `COMPU-METHOD` `IDENTICAL`) or `STRUCTURE` of them. An `A_UINT32` / `A_INT32`
   of 1, 2 or 4 bytes is an integer field, an `A_ASCIISTRING` a text, an `A_BYTEFIELD` bytes. The
   DID's name is its one value parameter's `SHORT-NAME`, else the service's.

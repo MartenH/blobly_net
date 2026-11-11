@@ -255,3 +255,77 @@ fn test_an_id_is_its_documents_and_a_docref_names_another() {
 	assert db.variant('B_Ecu')!.dids.map(it.id) == [u16(0x20)]
 	assert db.variant('B_Ecu2')!.dids.map(it.id) == [u16(0x10)]
 }
+
+fn test_a_nearer_parent_overrides_an_ancestor_another_parent_shares() {
+	// Ecu -> BaseA -> Proto and Ecu -> BaseB -> Proto: BaseB's Faults overrides Proto's, though
+	// the walk reaches Proto through BaseA first
+	p := layer('PROTOCOL', 'P', 'Proto', [], dtc_dop('Faults', [0x10101]), '')
+	a := layer('BASE-VARIANT', 'BA', 'BaseA', [], '', parent_ref('P', '', [], [], ''))
+	b := layer('BASE-VARIANT', 'BB', 'BaseB', [], dtc_dop('Faults', [0x20202]), parent_ref('P',
+		'', [], [], ''))
+	ev := layer('ECU-VARIANT', 'EV', 'Ecu', [], '', parent_ref('BA', '', [], [], '') +
+		parent_ref('BB', '', [], [], ''))
+	db := load_docs('prec', {
+		'a.odx-d': odx_doc('DLC', p + a + b + ev)
+	})!
+	assert db.variant('Ecu')!.dtcs.map(it.code) == [u32(0x20202)]
+}
+
+// coded_param is a CODED-CONST parameter of `bits` at `pos` holding `value`.
+fn coded_param(name string, pos int, value int, bits int) string {
+	return '<PARAM xsi:type="CODED-CONST"><SHORT-NAME>${name}</SHORT-NAME><BYTE-POSITION>${pos}</BYTE-POSITION><CODED-VALUE>${value}</CODED-VALUE><DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>${bits}</BIT-LENGTH></DIAG-CODED-TYPE></PARAM>'
+}
+
+// raw_layer is a base variant `name` with U8 and U16 DOPs and the services, requests and
+// responses given.
+fn raw_layer(name string, comms string, reqs string, resps string) string {
+	u := '<COMPU-METHOD><CATEGORY>IDENTICAL</CATEGORY></COMPU-METHOD>'
+	return '<BASE-VARIANT ID="${name}"><SHORT-NAME>${name}</SHORT-NAME><DIAG-DATA-DICTIONARY-SPEC><DATA-OBJECT-PROPS><DATA-OBJECT-PROP ID="u8"><SHORT-NAME>U8</SHORT-NAME>${u}<DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>8</BIT-LENGTH></DIAG-CODED-TYPE></DATA-OBJECT-PROP><DATA-OBJECT-PROP ID="u16"><SHORT-NAME>U16</SHORT-NAME>${u}<DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32"><BIT-LENGTH>16</BIT-LENGTH></DIAG-CODED-TYPE></DATA-OBJECT-PROP></DATA-OBJECT-PROPS></DIAG-DATA-DICTIONARY-SPEC><DIAG-COMMS>${comms}</DIAG-COMMS><REQUESTS>${reqs}</REQUESTS><POS-RESPONSES>${resps}</POS-RESPONSES></BASE-VARIANT>'
+}
+
+fn service_xml(name string, req string, resp string) string {
+	r := if resp == '' {
+		''
+	} else {
+		'<POS-RESPONSE-REFS><POS-RESPONSE-REF ID-REF="${resp}"/></POS-RESPONSE-REFS>'
+	}
+	return '<DIAG-SERVICE ID="s_${name}"><SHORT-NAME>${name}</SHORT-NAME><REQUEST-REF ID-REF="${req}"/>${r}</DIAG-SERVICE>'
+}
+
+fn value_param(name string, dop string) string {
+	return '<PARAM xsi:type="VALUE"><SHORT-NAME>${name}</SHORT-NAME><BYTE-POSITION>3</BYTE-POSITION><DOP-REF ID-REF="${dop}"/></PARAM>'
+}
+
+fn test_a_did_is_laid_out_as_read_whatever_the_service_order() {
+	// the 0x2E service (two bytes) comes before the 0x22 service (one byte)
+	comms := service_xml('Write_5', 'qw', '') + service_xml('Read_5', 'qr', 'rr')
+	reqs := '<REQUEST ID="qw"><SHORT-NAME>QW</SHORT-NAME><PARAMS>' + coded_param('SID', 0,
+		0x2E, 8) + coded_param('DID', 1, 5, 16) + value_param('Wide', 'u16') +
+		'</PARAMS></REQUEST><REQUEST ID="qr"><SHORT-NAME>QR</SHORT-NAME><PARAMS>' +
+		coded_param('SID', 0, 0x22, 8) + coded_param('DID', 1, 5, 16) + '</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="rr"><SHORT-NAME>RR</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID', 1, 5, 16) + value_param('Narrow', 'u8') +
+		'</PARAMS></POS-RESPONSE>'
+	db := load_docs('order', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	d := did_of(db.variant('Base')!, 5)
+	assert d.readable && !d.writable
+	assert d.size == 1 && d.name == 'Narrow'
+	assert d.parts.map(it.name) == ['Narrow']
+}
+
+fn test_a_read_of_several_dids_is_refused_not_read_as_the_first() {
+	comms := service_xml('Read_Both', 'q', 'r')
+	reqs := '<REQUEST ID="q"><SHORT-NAME>Q</SHORT-NAME><PARAMS>' + coded_param('SID', 0, 0x22,
+		8) + coded_param('DID1', 1, 5, 16) + coded_param('DID2', 3, 6, 16) + '</PARAMS></REQUEST>'
+	resps := '<POS-RESPONSE ID="r"><SHORT-NAME>R</SHORT-NAME><PARAMS>' + coded_param('SID',
+		0, 0x62, 8) + coded_param('DID1', 1, 5, 16) + value_param('A', 'u8') +
+		coded_param('DID2', 4, 6, 16) + '</PARAMS></POS-RESPONSE>'
+	db := load_docs('multi', {
+		'a.odx-d': odx_doc('DLC', raw_layer('Base', comms, reqs, resps))
+	})!
+	v := db.variant('Base')!
+	assert v.dids.len == 0
+	assert v.notes.any(it.contains('Read_Both') && it.contains('not read'))
+}
