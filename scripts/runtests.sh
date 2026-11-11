@@ -31,7 +31,7 @@ for a in "$@"; do
   esac
   case "$a" in
     --project|-p) next=path; args+=("$a") ;;
-    --timeout)    next=value; args+=("$a") ;;
+    --timeout|--interface) next=value; args+=("$a") ;;
     --report)     next=report ;;
     --project-ports) args+=("$a") ;;
     -*)           named=1; args+=("$a") ;;  # one invocation, which refuses it

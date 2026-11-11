@@ -8,7 +8,7 @@ import os
 import sys
 import warnings
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeAlias, TypeVar
 
 from . import _lib
@@ -1092,15 +1092,28 @@ class Project(EventLoop[Channel | str], Faults, Replays):
     a channel is used from one thread at a time.
     Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose; `generators` fires and
     cycles its generators; replay and record play a recording onto its channels and record them to a
-    file."""
+    file.
+    `interfaces` attaches rows elsewhere than the file says, by row name — {"BusA": "inproc:BusA"},
+    an interface string as `Channel.iface` reads it, without a rate or a mode: the row keeps its
+    bitrate, framing and listen_only. Applied at every load before anything is checked or opened;
+    a name no row has, or an interface of another kind than the row's, refuses the load."""
     path: str | bytes
     started: bool
+    interfaces: dict[str, str]
 
-    def __init__(self, path: "str | bytes | os.PathLike[str] | os.PathLike[bytes]") -> None:
+    def __init__(self, path: "str | bytes | os.PathLike[str] | os.PathLike[bytes]",
+                 interfaces: Mapping[str, str] | None = None) -> None:
         super().__init__()
         p = os.fspath(path)
         if (b"\0" if isinstance(p, bytes) else "\0") in p:
             raise ValueError("a project path cannot carry a NUL: C would read it cut short")
+        self.interfaces = dict(interfaces or {})
+        for name, iface in self.interfaces.items():
+            if not isinstance(name, str) or not isinstance(iface, str):
+                raise TypeError(f"interfaces: {name!r}: {iface!r} is not a row name and an interface string")
+            if "=" in name or any(c in name + iface for c in "\0\r\n"):
+                raise ValueError(f"interfaces: {name!r}: {iface!r}: a row name cannot carry '=', and neither "
+                                 "can carry a NUL or a line break")
         self.path = os.path.abspath(path)
         self.started = False
         self._channels = None
@@ -1124,7 +1137,9 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         """load, answering the rows whose handlers it dropped."""
         lib = _lib.lib()
         with _lib.state_lock:
-            _lib.check(lib.bb_load(os.fsencode(self.path)))  # the filesystem's bytes, not UTF-8
+            pairs = "".join(f"{name}={iface}\n" for name, iface in self.interfaces.items())
+            # the path in the filesystem's bytes, not UTF-8
+            _lib.check(lib.bb_load_with(os.fsencode(self.path), pairs.encode()))
             old = list(self._channels) if self._channels is not None else []
             for c in old:
                 try:

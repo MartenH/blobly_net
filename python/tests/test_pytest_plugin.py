@@ -6,8 +6,8 @@ stopped the run leaves it started for the next, that the run ends with its modul
 session, by blobly_run), that a channel's handle is kept from test to test and what it held read
 away, its E2E counter check begun again at each test, that a row which does not open is warned of once or, by blobly_channels, fails each test's
 setup, that a failed expectation is a clean failure in pytest's output and in its --junitxml report,
-that `diag` takes a node of the system model by its name, and that a run from the repository's root
-collects."""
+that `diag` takes a node of the system model by its name, that a row is attached elsewhere by
+blobly_interfaces or --blobly-interface, and that a run from the repository's root collects."""
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -377,6 +377,24 @@ class TestPlugin:
         assert r.returncode == 1, out
         assert "1 error, 2 passed" in out or "2 passed, 1 error" in out, out
         assert "the nodes: zone_a" in out
+
+    def test_a_row_attached_elsewhere_by_the_ini_or_the_command_line(self, tmp_path):
+        write_all(tmp_path, {
+            "conftest.py": CONFTEST, "suite.blobnet": PROJECT,
+            "pytest.ini": "[pytest]\nblobly_project = suite.blobnet\nblobly_interfaces =\n    CAN1=inproc:PY_IFACE_INI\n",
+            "test_iface.py": "import os\n\ndef test_where(can1):\n    assert can1.iface == os.environ['WANT']\n"
+                             "    can1.send(0x101, b'\\x05')\n    assert can1.expect(0x102, timeout_ms=2000).data[0] == 6\n"})
+        r = pytest_run(tmp_path, WANT="inproc:PY_IFACE_INI")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "CAN1 on inproc:PY_IFACE_INI" in r.stdout
+        r = pytest_run(tmp_path, "--blobly-interface=CAN1=inproc:PY_IFACE_CLI", WANT="inproc:PY_IFACE_CLI")
+        assert r.returncode == 0, r.stdout + r.stderr
+        r = pytest_run(tmp_path, "--blobly-interface=CAN9=inproc:x", WANT="")
+        assert r.returncode == 4, r.stdout + r.stderr  # a usage error naming the rows
+        assert 'the project has no row named "CAN9" (its rows: "CAN1")' in r.stdout + r.stderr
+        r = pytest_run(tmp_path, "--blobly-interface=CAN1", WANT="")
+        assert r.returncode == 4, r.stdout + r.stderr
+        assert "'CAN1' (from --blobly-interface) is not NAME=IFACE" in r.stdout + r.stderr
 
     def test_a_run_from_the_repository_root_leaves_the_examples_suite_out(self):
         # its conftest's pytest_plugins is refused below a run's root, so python/conftest.py

@@ -512,6 +512,7 @@ def _declare(lib):
         "bb_thread_detach": ([], c_int),
         "bb_now_ns": ([], ctypes.c_int64),
         "bb_load": ([c_char_p], c_int),
+        "bb_load_with": ([c_char_p, c_char_p], c_int),
         "bb_start": ([], c_int),
         "bb_stop": ([], c_int),
         "bb_wait_released": ([c_int], c_int),

@@ -4,6 +4,7 @@ import os
 import net
 import sync
 import time
+import blobly.project
 import blobly.transport
 import blobly.isotp
 
@@ -269,4 +270,41 @@ buses:
 	}
 	ch.close()
 	r.stop()
+}
+
+// A row's interface overridden at load is where the run opens it: sim-demo's CAN1 moved onto
+// another in-process bus carries its simulated ECUs there, at the row's own rate.
+fn test_an_interface_override_moves_the_row_for_the_run() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := Options{
+		...lines.options()
+		interfaces: [project.IfaceOverride{'CAN1', 'inproc:CAN1_moved'}]
+	}
+	proj := load(path, o)!
+	assert lines.said('CAN1: inproc:CAN1_moved (overridden)')
+	mut bus := transport.open('inproc:CAN1_moved')!
+	mut r := start(proj, path, o)!
+	can1 := r.chans.filter(it.cfg.name == 'CAN1')[0]
+	assert can1.cfg.iface == 'inproc:CAN1_moved'
+	frame := bus.recv(1000)!
+	assert frame.data.len > 0
+	bus.close()
+	r.stop()
+}
+
+// An override naming no row refuses the load, naming the rows.
+fn test_an_interface_override_naming_no_row_refuses_the_load() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	if _ := load(path, Options{
+		...lines.options()
+		interfaces: [project.IfaceOverride{'CAN9', 'inproc:x'}]
+	})
+	{
+		assert false
+	} else {
+		assert err.msg().contains('no row named "CAN9"'), err.msg()
+		assert err.msg().contains('"CAN1"'), err.msg()
+	}
 }

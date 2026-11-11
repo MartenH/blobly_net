@@ -667,8 +667,21 @@ pub fn bb_last_error() &char {
 
 @[export: 'bb_load']
 pub fn bb_load(path &char) i32 {
+	return bb_load_with(path, unsafe { nil })
+}
+
+// bb_load_with is bb_load with interface overrides, one NAME=IFACE a line (headless.Options.interfaces).
+@[export: 'bb_load_with']
+pub fn bb_load_with(path &char, interfaces &char) i32 {
 	if isnil(path) {
 		return fail(bb_err, 'load: no path')
+	}
+	overrides := if isnil(interfaces) {
+		[]project.IfaceOverride{}
+	} else {
+		project.parse_iface_overrides(unsafe { cstring_to_vstring(interfaces) }) or {
+			return fail(bb_err, 'load: ${err}')
+		}
 	}
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'a run is active; stop it before loading another project')
@@ -678,7 +691,9 @@ pub fn bb_load(path &char) i32 {
 		return fail(bb_err_state, 'a previous run is still releasing its wires, under its own wire policy; wait until it has (bb_wait_released)')
 	}
 	p := unsafe { cstring_to_vstring(path) }
-	proj := headless.load(p, headless.Options{}) or { return fail(bb_err, err.msg()) }
+	proj := headless.load(p, headless.Options{ interfaces: overrides }) or {
+		return fail(bb_err, err.msg())
+	}
 	// a name or an interface the host would receive cut at its first NUL names another row, or
 	// another bus (an inproc name is free text)
 	for ch in proj.channels {

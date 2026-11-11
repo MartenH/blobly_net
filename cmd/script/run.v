@@ -5,7 +5,8 @@
 // agent read; docs/scripting.md states both.
 //
 //   v -enable-globals run cmd/script/run.v \
-//       --project projects/sim-demo.blobnet [--report run.json] [--timeout 60] tests/diag_basic.lua
+//       --project projects/sim-demo.blobnet [--interface CAN1=vcan0] [--report run.json] [--timeout 60] \
+//       tests/diag_basic.lua
 //
 // -enable-globals is required for the in-process bus (transport/inproc.v).
 module main
@@ -23,7 +24,7 @@ import blobly.script
 import blobly.transport
 import blobly.udsconn
 
-const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
+const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--interface <NAME=IFACE>]... [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
 
 // how long after its deadline a run that has not ended is exited by the watchdog: past the
 // longest host call the deadline does not cut, a DoIP connection being opened
@@ -95,11 +96,13 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut explicit := '' // --project as given, distinct from the default above
 	mut project_ports := false // --project-ports: host DoIP entities on the ports the project states
+	mut interfaces := []project.IfaceOverride{} // --interface NAME=IFACE: a row attached elsewhere
 	// found first, so a refusal of any other argument is reported too
 	mut report_path := ''
 	mut report_given := false
 	for k := 1; k < os.args.len; k++ {
-		if os.args[k] in ['--project', '-p', '--report', '--timeout'] && k + 1 < os.args.len {
+		if os.args[k] in ['--project', '-p', '--report', '--timeout', '--interface']
+			&& k + 1 < os.args.len {
 			if os.args[k] == '--report' {
 				report_path = os.args[k + 1]
 				report_given = true
@@ -117,7 +120,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	for i < os.args.len {
 		a := os.args[i]
 		match a {
-			'--project', '-p', '--report', '--timeout' {
+			'--project', '-p', '--report', '--timeout', '--interface' {
 				i++
 				if i >= os.args.len {
 					o.refused = '${a} needs a value\n${usage}'
@@ -132,6 +135,11 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 						return report_path
 					}
 					o.timeout_s = timeout_s
+				} else if a == '--interface' {
+					interfaces << project.parse_iface_override(v) or {
+						o.refused = '--interface ${v}: ${err.msg()}'
+						return report_path
+					}
 				} else if a != '--report' {
 					explicit = v
 					proj_path = explicit
@@ -184,7 +192,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		eprintln('listening for CAN bridges on ${bridge_at}')
 	}
 
-	proj := headless.load(proj_path, headless.Options{}) or {
+	proj := headless.load(proj_path, headless.Options{ interfaces: interfaces }) or {
 		o.refused = err.msg()
 		return report_path
 	}

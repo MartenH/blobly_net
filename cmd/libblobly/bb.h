@@ -551,6 +551,12 @@ int64_t     bb_now_ns(void);       /* the host's monotonic clock, in ns: a recei
  * loops send under their own. Before the first load nothing is published, and a bus sends as its
  * backend has it. */
 int bb_load(const char *project_path);
+/* bb_load with rows attached elsewhere than the file says: `interfaces` is one NAME=IFACE a line
+ * (an interface string as bb_channel_iface reads it, without a rate or a mode), applied before
+ * anything is checked or opened; the row keeps its bitrate, framing and listen-only flag. Refused
+ * (BB_ERR) for a name no row has, naming the rows, a name two rows share or given twice, or an
+ * interface of another kind than the row's. NULL or "" is bb_load. */
+int bb_load_with(const char *project_path, const char *interfaces);
 int bb_start(void);
 int bb_stop(void);
 int bb_wait_released(int timeout_ms);  /* 0: free for a start; BB_RELEASING: not within the
