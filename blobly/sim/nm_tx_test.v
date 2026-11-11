@@ -41,6 +41,15 @@ fn test_an_announcing_node_sends_its_pdu_on_the_cycle() {
 	assert nm_frames_at(mut e, 850).len == 1
 }
 
+fn test_a_loop_wakes_for_the_next_announcement_and_not_for_a_released_one() {
+	mut e := nm_engine()
+	assert nm_frames_at(mut e, 0).len == 1
+	assert e.next_due_ms() or { -1.0 } == 200.0
+	assert e.recv_wait_ms(198.5) == 2
+	e.ecus[0].nm_tx[0].released = true
+	assert e.next_due_ms() == none
+}
+
 fn test_a_released_node_falls_silent_and_announces_at_once_on_a_request() {
 	clear_nm_requests()
 	defer {
