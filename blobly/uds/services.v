@@ -104,7 +104,12 @@ pub fn (mut c Client) routine(rid u16, option []u8, control u8) ![]u8 {
 // state and enable mask, and returns the answer after the echoed DID and parameter: the state.
 pub fn (mut c Client) io_control(did u16, parameter u8, state []u8, mask []u8) ![]u8 {
 	resp := c.raw(io_control_request(did, parameter, state, mask)!)!
-	// 6F <did> <parameter> <state>: the echo is the exchange's to have checked
+	// 6F <did> <parameter> <state>: the DID's echo is the exchange's, the parameter's this one's
+	if resp.len < 4 || resp[3] != parameter {
+		return UndecodableAnswer{
+			why: 'I/O control answer ${resp.hex()} does not echo parameter 0x${parameter:02X}'
+		}
+	}
 	return resp[4..].clone()
 }
 

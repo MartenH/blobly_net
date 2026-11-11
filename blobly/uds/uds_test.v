@@ -188,9 +188,8 @@ fn test_answer_to_names_the_request_it_answers() {
 	assert answer_to([u8(0x36), 0x02, 0xAA], [u8(0x76), 0x01]) == .stale // the previous block
 	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x01, 0x03]) == .stale // another DID
 	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x00, 0x03]) == .positive
-	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x00], [u8(0x6F), 0xF1, 0x00, 0x03, 0x7F]) == .stale // another parameter
-	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x00], [u8(0x6F), 0xF1, 0x00]) == .malformed
-	assert answer_to([u8(0x2F), 0xF1, 0x00], [u8(0x6F), 0xF1, 0x00]) == .positive // no parameter to echo
+	// no control parameter: byte 3 is control state, which the answer need not repeat
+	assert answer_to([u8(0x2F), 0x01, 0x01, 0x7F], [u8(0x6F), 0x01, 0x01, 0x20]) == .positive
 }
 
 // a duplicated answer to the previous request, still queued, is not taken for this one's
@@ -604,20 +603,29 @@ fn test_the_new_helpers_refuse_what_iso_has_no_request_for() {
 }
 
 // 0x2F: state and mask after the parameter; the answer after the echoed parameter, which an
-// answer must carry — one naming another parameter of the DID is a late answer and skipped
+// answer must carry
 fn test_io_control_returns_the_state_after_the_echoed_parameter() {
 	mut c, m := client_with([[u8(0x6F), 0x01, 0x01, 0x03, 0x7F]])
 	state := c.io_control(0x0101, io_short_term_adjustment, [u8(0x7F)], [u8(0xFF)]) or { panic(err) }
 	assert m.last_req == [u8(0x2F), 0x01, 0x01, 0x03, 0x7F, 0xFF]
 	assert state == [u8(0x7F)]
-	mut d, _ := client_with([[u8(0x6F), 0x01, 0x01]])
-	short := d.io_control(0x0101, io_return_control, [], []) or {
-		assert err is UndecodableAnswer, err.msg()
-		[u8(0xEE)]
+	for resp in [[u8(0x6F), 0x01, 0x01], [u8(0x6F), 0x01, 0x01, 0x02, 0x7F]] {
+		mut d, _ := client_with([resp])
+		d.io_control(0x0101, io_return_control, [], []) or {
+			assert err is UndecodableAnswer, err.msg()
+			continue
+		}
+		assert false, '${resp} taken'
 	}
-	assert short == [u8(0xEE)], 'a short answer taken'
-	mut e, _ := client_with([[u8(0x6F), 0x01, 0x01, 0x03, 0x7F], [u8(0x6F), 0x01, 0x01, 0x00, 0x20]])
-	assert e.io_control(0x0101, io_return_control, [], []) or { panic(err) } == [u8(0x20)]
+}
+
+// a raw 0x2F on a DID whose control record carries no control parameter: byte 3 is control state,
+// and an answer with another status is this request's, not a late one
+fn test_raw_io_control_without_a_parameter_takes_its_answer() {
+	mut c, m := client_with([[u8(0x6F), 0x01, 0x01, 0x20]])
+	resp := c.raw([u8(0x2F), 0x01, 0x01, 0x7F]) or { panic(err) }
+	assert m.last_req == [u8(0x2F), 0x01, 0x01, 0x7F]
+	assert resp == [u8(0x6F), 0x01, 0x01, 0x20]
 }
 
 // 0x23 / 0x3D: the format byte names both widths, the address and size are big-endian in them;
