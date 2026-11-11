@@ -1,32 +1,36 @@
 module headless
 
 import blobly.cyclic
-import blobly.transport
 
-// start_cyclic starts a background sender (cyclic.Sender) on `bus` as one of the run's loops:
-// counted, so the run's stop waits for it within its bound, and ended by that stop. Refused once
-// the run is stopping, the bus closed.
-pub fn (mut r Run) start_cyclic(bus transport.Bus, spec cyclic.Spec) !&cyclic.Sender {
+// RunStopped is start_cyclic's refusal once the run is stopping: nothing was started.
+pub struct RunStopped {
+	Error
+}
+
+pub fn (e RunStopped) msg() string {
+	return 'the run is stopped: nothing is sent'
+}
+
+// start_cyclic starts a background sender (cyclic.Sender) to `to` on the run's wire there, which
+// sends it beside the generators and other senders on that wire and ends with the run's stop;
+// returned once the wire's handle is open. Refused once the run is stopping, or when the wire
+// cannot be opened.
+pub fn (mut r Run) start_cyclic(to cyclic.Target, spec cyclic.Spec) !&cyclic.Sender {
+	mut s := cyclic.new_sender(spec, to.iface, to.row)!
 	r.mu.lock()
 	if r.stopping {
 		r.mu.unlock()
-		mut b := bus
-		b.close()
-		return error('the run is stopped: nothing is sent')
+		return RunStopped{}
 	}
-	r.counted()
-	r.mu.unlock()
-	ctl := r.ctl
-	return cyclic.start(bus, spec, cyclic.Life{
-		running: fn [ctl] () bool {
-			return ctl.running
-		}
-		ended:   fn [r] () {
-			mut rr := unsafe { r }
-			rr.done()
-		}
-	}) or {
-		r.done()
+	mut w := r.wire_for(to.iface)
+	s.join(mut w) or {
+		r.mu.unlock()
 		return err
 	}
+	r.mu.unlock()
+	w.wait_opened() or {
+		s.ask_stop()
+		return if r.is_stopping() { IError(RunStopped{}) } else { err }
+	}
+	return s
 }

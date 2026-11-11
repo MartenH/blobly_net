@@ -12,6 +12,7 @@ module headless
 import os
 import time
 import blobly.candb
+import blobly.cyclic
 import blobly.project
 import blobly.transport
 import blobly.isotp
@@ -136,7 +137,10 @@ mut:
 	// the run's generators, every CAN row's in project order (generators.v); filled by start
 	gens   []&Gen
 	run_t0 u64 // the ONE epoch every generator's time-based source runs from
-	// how a generator's loop opens its bus: transport.open; a test stalls it
+	// one sending loop and send-only handle per target wire (by transport.destination_key), for
+	// every generator and background sender on it; under `mu`
+	wires map[string]&cyclic.Wire
+	// how a wire's loop opens its handle: transport.open; a test stalls it
 	gen_opener fn (string) !transport.Bus = transport.open
 	// the LIN rows, each held by a counted loop (lin.v)
 	lins []&lin.Row
@@ -576,7 +580,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			}
 		} else {
 			g.cyclic = true
-			r.spawn_gen(mut g, run_t0)
+			r.spawn_gen(mut g)
 			o.out('channel ${g.channel}: cyclic generator "${g.s.name}" every ${g.s.cycle_ms} ms on ${g.open}')
 		}
 	}
@@ -624,6 +628,9 @@ pub fn (mut r Run) stop() {
 	// close one socket
 	for mut e in r.entities {
 		e.close()
+	}
+	for _, mut w in r.wires {
+		w.ask_stop()
 	}
 	r.mu.unlock()
 	wait_until := time.ticks() + 2000

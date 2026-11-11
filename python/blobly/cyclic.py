@@ -1,7 +1,7 @@
 """cyclic — frames sent on a period in the background (Channel.send_cyclic, Message.send_cyclic),
-while the script does something else: blocks in a UDS request, waits in an expect. Each sender is
-one of the run's loops in the engine (blobly/cyclic), on a bus handle of its own that only sends,
-so the channel's own handle is never used from a second thread."""
+while the script does something else: blocks in a UDS request, waits in an expect. The run sends
+every sender on a wire, beside its generators, from one loop in the engine (blobly/cyclic) on one
+handle that only sends, so the channel's own handle is never used from a second thread."""
 import ctypes
 import numbers
 from dataclasses import dataclass

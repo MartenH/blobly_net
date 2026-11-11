@@ -224,9 +224,9 @@ what the Generators panel lets a person do.
 - `net.generators["Heartbeat pulse"]` is one by name, or by `"channel/name"` (a name two
   generators answer to raises `KeyError` naming the forms that tell them apart);
   `net.generators[0]` by position, which reaches any of them.
-- `g.fire(timeout_ms=5000)` sends its current frame once and returns once the bus took it. A
-  cyclic one's bus is opened as the run starts, any other's at its first fire or start, which a
-  first `fire` waits for; `Timeout` when the bus did not take it within `timeout_ms` (at most
+- `g.fire(timeout_ms=5000)` sends its current frame once and returns once the bus took it. The
+  run sends every generator on a wire through one handle, opened as the run starts where a cyclic
+  generator sends, else at the first fire or start there, which a first `fire` waits for; `Timeout` when the bus did not take it within `timeout_ms` (at most
   5000, from the call), saying whether the frame went out — one the generator had not taken up
   by then is never sent. A stop that overtakes it raises `BloblyError` (code -3). Ctrl-C ends
   the wait within 100 ms, and the fire then ends on its own, within its deadline.
@@ -760,7 +760,8 @@ the script does something else: waits in an `expect`, blocks in a UDS request, s
   Otherwise it runs until the **project stops**, which ends it within the stop's bound as it ends
   the generators; the pytest plugin stops a test's senders after the test.
 
-A sender sends on a **bus handle of its own**, opened for it and only sent on, so the channel's own
+A sender is sent by the run's **sending loop for its wire**, on a handle that only sends — one loop
+and one handle per wire, whatever the count of senders and generators on it — so the channel's own
 handle is never used from a second thread ([Threads](#16-threads)). The channel's handle therefore
 hears the sender's frames as it hears another node's, and `ch.load()` counts them only as frames it
 received. A frame grid that a stall puts a whole period behind starts again from now, rather than
@@ -2002,8 +2003,9 @@ plugin makes the fixtures at run time, so annotate a test's parameters (`can1: C
   (Kvaser's canlib), and others keep state that a receive updates and a send or a health check
   reads (SocketCAN). Give each thread its own channel. A Python `Channel` is one handle.
 - **`run()` runs on the thread that calls it**, and its handlers run there too.
-- **A background sender and a keep-alive have threads of their own** in the engine. A sender
-  sends on a bus handle of its own ([Sending in the background](#sending-in-the-background)); a
+- **A background sender and a keep-alive run on threads of the engine's**. The senders
+  and generators on a wire share one sending thread and one handle that only sends ([Sending in
+  the background](#sending-in-the-background)); a
   keep-alive waits for the client's call in progress and sends between calls.
 
 ```python
