@@ -155,10 +155,10 @@ fn test_a_broken_zip_is_refused() {
 		'a.odx': '<ODX/>'.bytes()
 		'b.odx': '<ODX/>'.bytes()
 	})
-	assert read_zip(good)!.len == 2
+	assert read_zip(good, is_odx_name)!.entries.len == 2
 	mut bad := good.clone()
 	bad[bad.len - 22 - 2 * (46 + 5) - 1] ^= 0xFF // the deflated entry's last byte
-	read_zip(bad) or { return }
+	read_zip(bad, is_odx_name) or { return }
 	assert false, 'a corrupted entry was read'
 }
 
@@ -170,11 +170,58 @@ fn test_a_zip_entry_is_inflated_no_further_than_its_stated_size() {
 	// the deflated entry's directory record says 10 bytes; its stream inflates to 4 MB
 	cd := int(binary.little_endian_u32_at(z, z.len - 22 + 16))
 	binary.little_endian_put_u32_at(mut z, 10, cd + 46 + 5 + 24)
-	read_zip(z) or {
+	read_zip(z, is_odx_name) or {
 		assert err.msg().contains('b.odx: inflates past the 10 bytes')
 		return
 	}
 	assert false, 'an entry was inflated past its stated size'
+}
+
+fn test_a_zip_entry_not_kept_is_never_inflated() {
+	mut z := zip_of({
+		'a.odx':   '<ODX/>'.bytes()
+		'big.bin': []u8{len: 4 << 20}
+	})
+	// the attachment's directory record says 10 bytes; inflated, it would be refused
+	cd := int(binary.little_endian_u32_at(z, z.len - 22 + 16))
+	binary.little_endian_put_u32_at(mut z, 10, cd + 46 + 5 + 24)
+	got := read_zip(z, is_odx_name)!
+	assert got.entries.map(it.name) == ['a.odx']
+	assert got.skipped == ['big.bin']
+}
+
+fn test_a_zip_local_header_named_twice_is_refused() {
+	mut z := zip_of({
+		'a.odx': '<ODX/>'.bytes()
+		'b.odx': '<ODX/>'.bytes()
+	})
+	// the second record points at the first entry's local header
+	cd := int(binary.little_endian_u32_at(z, z.len - 22 + 16))
+	binary.little_endian_put_u32_at(mut z, 0, cd + 46 + 5 + 42)
+	read_zip(z, is_odx_name) or {
+		assert err.msg().contains("b.odx: its local header is also a.odx's")
+		return
+	}
+	assert false, 'two records shared a local header'
+}
+
+fn test_zip_entries_kept_are_bounded_together() {
+	mut z := zip_of({
+		'a.odx': '<ODX/>'.bytes()
+		'b.odx': '<ODX/>'.bytes()
+		'c.odx': '<ODX/>'.bytes()
+	})
+	// every record states 200 MB: each within one entry's bound, past the archive's in all
+	mut at := int(binary.little_endian_u32_at(z, z.len - 22 + 16))
+	for _ in 0 .. 3 {
+		binary.little_endian_put_u32_at(mut z, 200 << 20, at + 24)
+		at += 46 + 5
+	}
+	read_zip(z, is_odx_name) or {
+		assert err.msg().contains('by c.odx, past the ${max_zip_total} read here in all')
+		return
+	}
+	assert false, 'the kept entries were not bounded together'
 }
 
 // layer is a diagnostic layer `tag` with an 8-bit 0x22 DID per entry of `dids` (service Read_<n>),

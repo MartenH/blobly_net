@@ -43,7 +43,9 @@ included. A layer reached on two ways passes on what either way passes on.
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
   DTC records then carry that name as their `fault`.
 - **Files** — a `.pdx` is a ZIP (stored or deflated entries, a deflated one refused as soon as it inflates past the size the archive states for it; ZIP64 and encryption are refused), of
-  which every `.odx` / `.odx-*` entry is read. An ID is its document's: a reference resolves in
+  which every `.odx` / `.odx-*` entry is read — the rest (its index, attachments) are never
+  inflated, and the archive is refused when the entries read state more than 512 MB together or
+  two directory records name one entry. An ID is its document's: a reference resolves in
   its own document, or in the one its `DOCREF` names (by its container's `SHORT-NAME`).
 
 ## What is not read, and how it is said
