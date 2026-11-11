@@ -76,3 +76,29 @@ fn test_snapshot_and_extended_data_helpers() {
 	assert env.total() == 1
 	assert env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str()
 }
+
+// a stated snapshot DID or extended record size is held to what one answer on the carrier holds,
+// the C ABI's rule: past 4095 bytes on CAN, since a 32-bit First Frame carries it
+fn test_a_stated_size_is_held_to_the_carrier() {
+	mut env := new_env([ChanInfo{
+		name:  'CAN1'
+		iface: 'inproc:RECSIZE'
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source('
+		local diag = uds.open("CAN1")
+		test("sizes past 4095 bytes", function()
+		  diag:did_size(0xF1A0, 5000)
+		  diag:ext_record_size(0x10, 5000)
+		  local ok, err = pcall(function() diag:did_size(0xF1A0, 65526) end)
+		  check.truthy(not ok and tostring(err):find("not a DID size"), tostring(err))
+		  ok, err = pcall(function() diag:ext_record_size(0x10, 65529) end)
+		  check.truthy(not ok and tostring(err):find("not a record size"), tostring(err))
+		  diag:did_size(0xF1A0, 65525)
+		  diag:ext_record_size(0x10, 65528)
+		end)
+	')!
+	assert env.total() == 1
+	assert env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str()
+}

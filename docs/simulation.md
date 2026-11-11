@@ -786,8 +786,9 @@ discovery, configure a sequence long enough to still be running when the script 
 apart), use `doip.discover()`: asking is what a tester that arrived late has to do anyway. **IPv4 is the verified path**; see the IPv6 caveat in [doip.md](doip.md). `doip.discover(channel)` remains the
 ask-and-answer half.
 
-Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
-DID too large for one ISO-TP transfer is served here and reported there.
+Payload limits follow the carrier, not the ECU: a DoIP diagnostic message is capped at 64 KiB of
+payload, its logical addresses included, so a DID is at most 65529 bytes here — three fewer than
+one ISO-TP transfer carries on CAN (65532). A longer one is served on a CAN row and reported here.
 
 > **A real socket.** ▶ Start in the GUI hosts the entity and binds the project's port (13400
 > in the demos) while it runs; `scripts/runtests.sh` headless binds a free port in 30000..31999
