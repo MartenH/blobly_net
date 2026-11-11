@@ -40,7 +40,8 @@ class NmNode:
     where not known; `last_heard_ms` on the host's monotonic clock (blobly.now_ms), None for a
     missing node; `cadence_ms` the mean interval between its frames within the timeout (a longer
     gap is the network asleep, not its cycle), None before two; `bits` its latest control bits,
-    None for a missing node; `pn` the partial-network mask its latest frame requests, None where
+    None for a missing node and for one whose latest frame carried none (a 1-byte PDU, the node id
+    alone); `pn` the partial-network mask its latest frame requests, None where
     it requests none. `live`: heard within the timeout; `keeps_awake`: live and asking for the
     network; `unknown`: it reports and the configuration declares its members and not it."""
     name: str
@@ -106,7 +107,7 @@ def _ms_or_none(ns):
 def _node(n):
     missing = bool(n.missing)
     cbv = n.cbv
-    bits = None if missing else NmBits(cbv, bool(cbv & 0x01), bool(cbv & 0x08), bool(cbv & 0x10), bool(cbv & 0x40))
+    bits = None if missing or not n.has_cbv else NmBits(cbv, bool(cbv & 0x01), bool(cbv & 0x08), bool(cbv & 0x10), bool(cbv & 0x40))
     return NmNode(_lib.text(n.name), n.nid if n.nid >= 0 else None, n.id if n.has_id else None, bool(n.ext),
                   missing, bool(n.unknown), bool(n.live), n.keeper >= 0, n.count, _ms_or_none(n.last_ns),
                   n.cadence_ms or None, n.last_interval_ms or None, bits, n.pn if n.has_pn else None)

@@ -778,7 +778,9 @@ with blobly.Project("projects/nm-demo/nm-demo.blobnet") as net:
   `last_heard_ms`, `cadence_ms` (the mean interval within the timeout), `last_interval_ms`, `bits`
   and `pn` (the partial-network mask its latest frame requests, else `None`). **`NmBits`** names
   the control bit vector: `raw`, `repeat_request`, `ready_to_sleep`, `active_wakeup`, `pn_info`,
-  and `wants_network`. A missing node has no `bits`, `nid` or `last_heard_ms` it did not state.
+  and `wants_network`. A missing node has no `bits`, `nid` or `last_heard_ms` it did not state,
+  and a node whose latest frame was its node id alone (a 1-byte PDU, no control bit vector) has no
+  `bits`.
 - Times are when the frames were received, on `blobly.now_ms()`'s clock. A stop and a start of the
   project, or `ch.close()`, begin a new reading.
 

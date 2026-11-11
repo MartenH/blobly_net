@@ -16,8 +16,9 @@ pub:
 	count      u64
 	mean_ms    f64
 	last_iv_ms f64 // the latest interval
-	bits       []string
-	cbv        u8 // its latest control bit vector; 0 for a missing node
+	bits       []string // empty for a missing node and for one whose latest frame carried no CBV
+	cbv        u8       // its latest control bit vector; 0 when it has none
+	has_cbv    bool
 	pn         u64
 	has_pn     bool
 	timeline   []Phase
@@ -63,8 +64,9 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 			count:      n.count
 			mean_ms:    n.mean_ms()
 			last_iv_ms: n.last_iv_ms
-			bits:       bit_words(n.cbv)
+			bits:       if n.has_cbv { bit_words(n.cbv) } else { []string{} }
 			cbv:        n.cbv
+			has_cbv:    n.has_cbv
 			pn:         n.pn
 			has_pn:     n.has_pn && n.pn != 0
 			timeline:   t.strip(i, now, cols)

@@ -1439,6 +1439,8 @@ typedef struct bb_nm_node {
 	uint8_t  cbv;              /* its latest control bit vector: 0x01 repeat-message request, 0x08
 	                              ready to sleep, 0x10 active wake-up, 0x40 PN info */
 	uint8_t  has_pn;           /* its latest frame requests partial networks: pn is the mask */
+	uint8_t  has_cbv;          /* its latest frame carried a control bit vector (a 1-byte PDU, the
+	                              node id alone, carries none: cbv is 0); 0 for a missing node */
 	uint64_t pn;
 	uint64_t count;            /* its frames read */
 	int64_t  last_ns;          /* when it was last heard, 0 missing */

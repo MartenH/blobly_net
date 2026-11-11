@@ -9,6 +9,10 @@
 //              (the sender has released the network), bit 4 active wake-up, bit 6 PN info
 //   bytes 2..7 the partial-network request mask, little-endian, meaningful only with PN info
 //
+// A cluster may configure the CBV off (CanNmPduCbvPosition = CANNM_PDU_OFF): with no user data its
+// PDU is the node id alone, read as a node heard with no bits — requesting the network, as an
+// AUTOSAR node is until it falls silent, and never saying active wake-up.
+//
 // Bit 3 is read as blobly_emb sends it: a node that has released the network says so and goes
 // on announcing. In AUTOSAR CanNm that bit is the coordinator's sleep-ready bit, and a node
 // releases by falling silent — which reads here as silence past the timeout, so an AUTOSAR
@@ -27,24 +31,31 @@ pub const cbv_pn_info = u8(0x40)
 // Pdu is one decoded NM PDU.
 pub struct Pdu {
 pub:
-	nid    u8
-	cbv    u8
-	pn     u64 // the partial-network request mask (bytes 2..7); 0 unless has_pn
-	has_pn bool
+	nid     u8
+	cbv     u8 // 0 unless has_cbv
+	has_cbv bool
+	pn      u64 // the partial-network request mask (bytes 2..7); 0 unless has_pn
+	has_pn  bool
 }
 
-// parse decodes an NM PDU. A frame shorter than 2 bytes carries no CBV and is refused, and so
+// parse decodes an NM PDU. One byte is the node id with no CBV; an empty PDU is refused, and so
 // is one whose CBV says PN info with no mask byte after it. The mask is read from the bytes
 // present, up to byte 7.
 pub fn parse(data []u8) !Pdu {
-	if data.len < 2 {
-		return error('${data.len}-byte NM PDU: the node id and the control bit vector need 2')
+	if data.len == 0 {
+		return error('empty NM PDU: no node id')
+	}
+	if data.len == 1 {
+		return Pdu{
+			nid: data[0]
+		}
 	}
 	cbv := data[1]
 	if cbv & cbv_pn_info == 0 {
 		return Pdu{
-			nid: data[0]
-			cbv: cbv
+			nid:     data[0]
+			cbv:     cbv
+			has_cbv: true
 		}
 	}
 	if data.len < 3 {
@@ -56,10 +67,11 @@ pub fn parse(data []u8) !Pdu {
 		pn |= u64(data[i]) << (8 * u64(i - 2))
 	}
 	return Pdu{
-		nid:    data[0]
-		cbv:    cbv
-		pn:     pn
-		has_pn: true
+		nid:     data[0]
+		cbv:     cbv
+		has_cbv: true
+		pn:      pn
+		has_pn:  true
 	}
 }
 

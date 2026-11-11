@@ -219,6 +219,7 @@ pub fn bb_nm_node_info(h i32, k i32, out &C.bb_nm_node) i32 {
 		out.repeater = u8(int(k) in v.repeater_rows)
 		out.cbv = r.cbv
 		out.has_pn = u8(r.has_pn)
+		out.has_cbv = u8(r.has_cbv)
 		out.pn = r.pn
 		out.count = r.count
 		out.last_ns = if r.missing { 0 } else { ns_of(at - r.ago_ms) }

@@ -29,7 +29,7 @@ mut:
 fn nm_key(v nm.View) string {
 	mut s := '${v.state}|${v.keepers}|${v.woke}|${v.woke_active}|${v.repeaters}|${v.heard}|${v.frames}|${v.malformed}|${v.dropped}'
 	for r in v.rows {
-		s += '|${r.name}/${r.missing}/${r.unknown}/${r.stale}/${r.cbv}/${r.count}/${r.has_pn}/${r.pn}'
+		s += '|${r.name}/${r.missing}/${r.unknown}/${r.stale}/${r.cbv}/${r.has_cbv}/${r.count}/${r.has_pn}/${r.pn}'
 	}
 	return s
 }
@@ -49,8 +49,10 @@ fn nm_events(n int) []NmEv {
 		}
 		id := ids[rand.intn(ids.len) or { 0 }]
 		mut data := [u8(id & 0xFF), cbvs[rand.intn(cbvs.len) or { 0 }], u8(rand.intn(8) or { 0 })]
-		if rand.intn(10) or { 0 } == 0 {
-			data = [u8(id & 0xFF)] // malformed
+		match rand.intn(20) or { 0 } {
+			0 { data = [u8(id & 0xFF)] } // the node id alone, no CBV
+			1 { data = []u8{} } // malformed
+			else {}
 		}
 		out << NmEv{
 			t:     t

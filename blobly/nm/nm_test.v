@@ -42,14 +42,20 @@ fn test_parse_reads_nid_cbv_and_the_pn_mask_only_when_said() {
 	assert part.pn == 0x0201
 }
 
+fn test_parse_reads_one_byte_as_a_node_with_no_cbv() {
+	p := parse([u8(0x12)]) or { panic(err) }
+	assert p.nid == 0x12
+	assert !p.has_cbv
+	assert p.phase() == .requesting, 'with no CBV a node asks for the network until it falls silent'
+	with := parse([u8(0x12), 0x00]) or { panic(err) }
+	assert with.has_cbv
+}
+
 fn test_parse_refuses_what_cannot_be_read() {
-	if _ := parse([u8(0x12)]) {
-		assert false, 'one byte has no control bit vector'
-	} else {
-		assert err.msg().contains('need 2')
-	}
 	if _ := parse([]u8{}) {
-		assert false
+		assert false, 'an empty PDU has no node id'
+	} else {
+		assert err.msg().contains('empty')
 	}
 	if _ := parse([u8(0x12), 0x40]) {
 		assert false, 'PN info with no mask byte'
@@ -76,11 +82,44 @@ fn test_frames_outside_the_range_or_kind_are_not_taken() {
 
 fn test_a_malformed_frame_in_range_is_counted_not_a_node() {
 	mut t := new_tracker(cfg_declaring())
-	assert t.note(0x511, false, [u8(0x11)], 10)
+	assert t.note(0x511, false, []u8{}, 10)
 	assert t.malformed == 1
 	assert t.last_error.contains('0x511')
 	assert t.nodes.len == 0
 	assert t.state(10) == .asleep
+}
+
+fn test_a_cluster_without_cbv_wakes_keeps_awake_and_sleeps_by_silence() {
+	mut t := new_tracker(cfg_declaring())
+	t.note(0x511, false, [u8(0x11)], 1000)
+	assert t.malformed == 0
+	assert t.woke == none, 'the first frame says no active wake-up'
+	t.note(0x513, false, [u8(0x13)], 1050)
+	assert t.state(1100) == .awake
+	assert t.keepers(1100).map(t.name_of(it)) == ['sysnode', 'domain']
+	assert t.with_bit(1100, cbv_active_wakeup).len == 0
+	v := t.view(1100, 10)
+	assert v.rows[0].name == 'sysnode' && !v.rows[0].has_cbv && v.rows[0].bits.len == 0
+	assert t.missing().map(t.cfg.declared[it].name) == ['zone_a']
+	assert t.state(1050 + 301) == .asleep
+	// after the silence the next frame is the wake, and not an active one
+	t.note(0x513, false, [u8(0x13)], 2000)
+	w := t.woke or { panic('no wake') }
+	assert t.name_of(w.node) == 'domain'
+	assert !w.active
+	// the NM-PDU an ARXML declares 1 byte long is read from an 8-byte frame
+	mut a := new_tracker(Config{
+		timeout_ms: 300
+		source:     .arxml
+		frames:     {
+			frame_key(0x511, false): PduAt{
+				len: 1
+			}
+		}
+	})
+	assert a.note(0x511, false, frame(0x11, 0xFF), 0)
+	assert a.malformed == 0 && a.nodes.len == 1 && !a.nodes[0].has_cbv
+	assert a.state(10) == .awake
 }
 
 fn test_bus_state_awake_releasing_asleep() {

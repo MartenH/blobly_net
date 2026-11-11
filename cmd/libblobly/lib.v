@@ -447,6 +447,7 @@ pub mut:
 	repeater         u8
 	cbv              u8
 	has_pn           u8
+	has_cbv          u8
 	pn               u64
 	count            u64
 	last_ns          i64

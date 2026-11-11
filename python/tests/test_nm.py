@@ -79,3 +79,19 @@ def test_a_wait_of_zero_reads_one_frame(net):
         while body.look()[0] is not None:
             left += 1
     assert left == 2, "a wait of 0 is one look"
+
+
+def test_a_pdu_of_the_node_id_alone_is_a_node_with_no_bits(net):
+    body = net.channels.body
+    nm = body.nm()
+    with blobly.open("inproc:NM") as peer:
+        # a frame heard, then a silence past the timeout: the next frame is what woke the bus
+        peer.send(0x513, bytes([0x13, 0x00]))
+        nm.expect_asleep(2000)
+        malformed = nm.reading().malformed
+        peer.send(0x513, bytes([0x13]))
+        r = nm.expect_state("awake", 1000, kept_awake_by=["domain"])
+    domain = r.node("domain")
+    assert domain.bits is None and domain.keeps_awake
+    assert r.woken_by == "domain" and not r.woken_active
+    assert r.malformed == malformed
