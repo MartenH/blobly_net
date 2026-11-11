@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class IsoTp:
-    """A raw ISO-TP channel on a CAN channel (Channel.isotp): messages of 1 .. 4095 bytes sent on CAN
+    """A raw ISO-TP channel on a CAN channel (Channel.isotp): messages of 1 .. 65535 bytes sent on CAN
     id `tx` and received on `rx`, 29-bit when `ext` (either id past 0x7FF), sent in 8-byte frames
     (FD on a row the project declares CAN-FD) unless `tx_dl` says longer, and received in frames of
     any length a sender chose: a CAN-FD peer's Single Frame of up to 62 bytes, or its First Frame of
@@ -127,7 +127,7 @@ class IsoTp:
             pass
 
     def send(self, data: ByteData) -> None:
-        """Sends `data`, one whole message (1 .. 4095 bytes), and returns once it is on the wire."""
+        """Sends `data`, one whole message (1 .. 65535 bytes; past 4095 its First Frame gives the 32-bit length), and returns once it is on the wire."""
         d = _data("data", data)
         with self._lock:
             _lib.check(_lib.lib().bb_isotp_send(self._handle(), d, len(d)))

@@ -219,7 +219,7 @@ fn test_oversized_did_and_bad_dtc_status_are_rejected() {
 	assert built[0].server.dids.len == 1, 'the oversized DID must not be installed'
 	assert built[0].server.dtcs.len == 1, 'a non-byte status must not wrap into a valid one'
 	w := validate_uds([cfg])
-	assert w.any(it.contains('over the 4092-byte'))
+	assert w.any(it.contains('over the ${max_did_bytes}-byte'))
 	assert w.any(it.contains('status 265 is not a byte'))
 }
 
@@ -243,7 +243,7 @@ channels:
 	assert validate_uds(nodes).any(it.contains('exceeds the 29-bit'))
 }
 
-// 0x19 sub 0x02 carries 3 header bytes + 4 per fault against ISO-TP's 4095, so a long table
+// 0x19 sub 0x02 carries 3 header bytes + 4 per fault against ISO-TP's max_pdu, so a long table
 // cannot be transmitted at all — and the send error is discarded.
 fn test_oversized_dtc_table_is_capped_and_reported() {
 	mut many := []project.DtcCfg{}

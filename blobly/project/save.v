@@ -180,6 +180,9 @@ pub fn (p Project) to_yaml() string {
 					if u.session != 1 {
 						b.writeln('          session: ${u.session}')
 					}
+					if u.tx_dl != 0 {
+						b.writeln('          tx_dl: ${u.tx_dl}')
+					}
 					if u.dids.len > 0 {
 						b.writeln('          dids:')
 						for d in u.dids {

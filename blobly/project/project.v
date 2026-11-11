@@ -42,9 +42,20 @@ pub const schema_version = 14
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
 	// v14 — a stated fill for the bits no signal covers (`fill:`, on a row or a generator, #671),
-	// which an older build drops on its next structured save, and the bits go out as 0 again
+	// which an older build drops on its next structured save, and the bits go out as 0 again; and a
+	// simulated ECU answering in frames longer than 8 bytes (a node's `uds:` `tx_dl`, #679), which
+	// an older build drops too, and the ECU answers in 8-byte frames
 	if p.channels.any(it.fill != none || it.senders.any(it.fill != none)) {
 		return 14
+	}
+	for c in p.channels {
+		for n in c.nodes {
+			if u := n.uds {
+				if u.tx_dl != 0 {
+					return 14
+				}
+			}
+		}
 	}
 	// v13 — a CAN-FD data phase's own sample point (`data_sample_point`), which an older build
 	// drops on its next structured save, and the data phase samples where the arbitration does;
@@ -314,6 +325,9 @@ pub mut:
 	// IO DIDs it controls through 0x2F, and memory ranges 0x23/0x3D read and write (v13)
 	io     []IoCfg
 	memory []MemCfg
+	// The length of the frames it answers a long message in (isotp.tx_dls; above 8 CAN-FD, v14),
+	// 0 = not stated: 8. Wide like `session`, so validation sees a value that is not one.
+	tx_dl u32
 }
 
 // IoCfg is one IO DID a simulated ECU controls (0x2F), zeros of `size` bytes at start. Both wide,
@@ -1581,6 +1595,7 @@ fn parse_node(n yaml.Any) !NodeCfg {
 			functional: if f := u.value_opt('functional') { parse_id_wide(f.str()) } else { u64(0) }
 			malformed: bad_ids(idfields)
 			session:   clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
+			tx_dl:     clamp_i64_u32(u.value('tx_dl').default_to(i64(0)).i64())
 		}
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {

@@ -222,9 +222,9 @@ class TestUnreadable:
         diag.ext_record_size(0x10, 0)
         assert diag.extended(0x123456).records == {0x10: b""}
         with pytest.raises(blobly.Refused):
-            diag.ext_record_size(0x10, 4089)  # no ISO-TP answer could carry it
+            diag.ext_record_size(0x10, 65529)  # no ISO-TP answer could carry it
         with pytest.raises(blobly.Refused):
-            diag.did_size(0xF190, 4086)
+            diag.did_size(0xF190, 65526)
 
     def test_a_stated_size_holds_on_the_next_connection(self, net, ch, diag):
         diag.ext_record_size(0x10, 0)

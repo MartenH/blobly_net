@@ -473,7 +473,7 @@ fn consumer_expected(mut app App, iface string, gen u64) {
 	app.mu.unlock()
 }
 
-fn uds_node_loop(app &App, pi int, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, gen u64) {
+fn uds_node_loop(app &App, pi int, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, settings isotp.Settings, gen u64) {
 	// A RUN WORKER LIKE ANY OTHER. It resolves its tap with open_tap_on, whose bitrate_iface
 	// walks app.chans unlocked — the exact thing open_tap_phys's comment (bus.v) forbids a
 	// worker from doing — so a rebuild after Stop could replace that array under it.
@@ -544,6 +544,7 @@ fn uds_node_loop(app &App, pi int, pch project.Channel, iface string, name strin
 				time.sleep(200 * time.millisecond)
 				continue
 			}
+			ch.settings = settings // sim.UdsNode.isotp_settings, checked against the row
 			// a run worker: a Stop abandons an answer still being segmented (#347)
 			ch.stop_requested = fn [a, gen] () bool {
 				return !a.running || a.run_gen != gen

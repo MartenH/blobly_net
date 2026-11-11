@@ -1246,7 +1246,8 @@ int bb_record_stop(int h, bb_record_report *out);
  * gets them. Normal addressing, sent in 8-byte frames padded with 0x00 (FD on a row the project
  * declares CAN-FD) unless its settings say a longer TX_DL (below), and received in frames of any
  * length the sender chose (a CAN-FD Single Frame behind the escape length, a First Frame of up to 64
- * bytes and Consecutive Frames as long): a message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control
+ * bytes and Consecutive Frames as long): a message is 1 .. 65535 bytes, past 4095 its First Frame giving the
+ * 32-bit length (ISO 15765-2:2016), sent and received. As a receiver it asks for no pacing (Flow Control
  * CTS, block size 0, STmin 0) unless its settings say otherwise (below); as a sender it honours the
  * receiver's.
  * Handles as a UDS handle's: one thread uses one at a time, bb_isotp_close may come from another and
@@ -1255,8 +1256,8 @@ int bb_record_stop(int h, bb_record_report *out);
  * answer a First Frame with a Flow Control of their own.
  *
  * bb_isotp_send returns once the message is on the wire: a Single Frame at once, a longer one after
- * the receiver's Flow Control, each awaited for 1000 ms (N_Bs) and the transfer 120 s in all —
- * BB_ERR_TIMEOUT when none came, BB_ERR for a message it cannot carry (empty, past 4095 bytes) or a
+ * the receiver's Flow Control, each awaited for 1000 ms (N_Bs) and the transfer 120 s for every 4095 bytes —
+ * BB_ERR_TIMEOUT when none came, BB_ERR for a message it cannot carry (empty, past 65535 bytes) or a
  * listen-only row, BB_ERR_CARRIER for the bus or the transfer failing (the receiver's overflow, too
  * many waits). bb_isotp_recv waits at most timeout_ms (0: one look at what is queued; less than 0 is
  * refused) for the next whole message on rx and answers its length, its bytes into the buffer as

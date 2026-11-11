@@ -303,7 +303,7 @@ The returned object has:
 | `diag:snapshot_ids()` | `0x19 03` reportDTCSnapshotIdentification | array of `{code, name, record}` |
 | `diag:snapshot(dtc[, record])` | `0x19 04` reportDTCSnapshotRecordByDTCNumber — `dtc` a name or its code, `record` default `0xFF` (all). A snapshot DID whose size the tester does not know is read once (`0x22`) to learn it | `{code, name, status, <status bits>, records = { {number, dids = { {id, data} } } } }` |
 | `diag:extended(dtc[, record])` | `0x19 06` reportDTCExtDataRecordByDTCNumber, sized by blobly_emb's records (`0x01` occurrences 2 B, `0x02` aging, `0x03` failed cycles) | `{code, name, status, <status bits>, occurrence, aging, failed_cycles, records = {[n] = bytes}}` |
-| `diag:did_size(did, n)` / `diag:ext_record_size(record, n)` | the sizes a `0x19 04` / `06` answer does not carry: a snapshot DID the tester cannot read (or whose size varies), an extended data record other than blobly_emb's | — |
+| `diag:did_size(did, n)` / `diag:ext_record_size(record, n)` | the sizes a `0x19 04` / `06` answer does not carry: a snapshot DID the tester cannot read (or whose size varies), an extended data record other than blobly_emb's; at most what one answer on the connection holds (an ISO-TP message of 65535 bytes, or a DoIP diagnostic message), less the record's header | — |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
 | `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
@@ -453,7 +453,8 @@ tp:close()
 Whole messages on a CAN channel's id pair, segmented and reassembled by the ISO-TP a `uds.open`
 connection rides, with no UDS on top: a protocol of your own over ISO-TP, or a malformed UDS request
 and the bytes that come back. Both ids are needed (there is no default pair), and either past
-0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes, sent in
+0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 65535 bytes (past 4095 its First Frame gives the 32-bit length
+of ISO 15765-2:2016, sent and received), sent in
 8-byte frames (FD on a channel the project declares CAN-FD) unless `opts.tx_dl` says longer, and
 received in frames of any length the sender chose (a CAN-FD Single Frame behind the escape length, a
 First Frame of up to 64 bytes and Consecutive Frames as long). `tp:send(data)` returns once the message is on the wire, a long one after the

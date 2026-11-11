@@ -221,7 +221,7 @@ fn test_fd_frames_are_received_with_no_setting() {
 
 // A frame no CAN-FD sender produces is refused: a Single Frame past 8 bytes without the escape, a
 // Consecutive Frame longer than its First Frame or short with more to come, a First Frame whose
-// length fits a Single Frame of its size, and one with the 32-bit length.
+// length fits a Single Frame of its size, and one whose 32-bit length is one the 12 bits give.
 fn test_malformed_fd_frames_are_refused() {
 	mut peer := transport.open('inproc:isotp-fd-bad') or { panic(err) }
 	mut ch := open_software('inproc:isotp-fd-bad', 0x7E0, 0x7E8, false) or { panic(err) }
@@ -238,9 +238,9 @@ fn test_malformed_fd_frames_are_refused() {
 	mut ffsf := [u8(0x10), 62]
 	ffsf << bytes_from(62, 0)
 	refused(mut peer, mut ch, [ffsf], 'must be a Single Frame')
-	mut ff32 := [u8(0x10), 0]
-	ff32 << bytes_from(62, 0)
-	refused(mut peer, mut ch, [ff32], '32-bit length')
+	mut ff32 := [u8(0x10), 0, 0, 0, 0x0F, 0xFF]
+	ff32 << bytes_from(58, 0)
+	refused(mut peer, mut ch, [ff32], 'the 12-bit form states')
 	ch.close()
 	peer.close()
 }
@@ -274,4 +274,73 @@ fn test_a_long_tx_dl_round_trip() {
 	assert r.got == want
 	rx.close()
 	tx.close()
+}
+
+// A message past 4095 bytes in classic frames: a First Frame of 10 00 and the 32-bit length with
+// two bytes of the message, then Consecutive Frames of 7.
+fn test_a_message_past_4095_bytes_in_classic_frames() {
+	mut tap := transport.open('inproc:isotp-ff32') or { panic(err) }
+	mut rx := open_software('inproc:isotp-ff32', 0x7E8, 0x7E0, false) or { panic(err) }
+	mut tx := open_software('inproc:isotp-ff32', 0x7E0, 0x7E8, false) or { panic(err) }
+	want := []u8{len: 5000, init: u8(index * 3)}
+	mut r := &FdReceived{
+		ch: rx
+	}
+	t := spawn r.run()
+	tx.send(want)!
+	t.wait()
+	assert r.err == ''
+	assert r.got == want
+	ff := on_id(mut tap, 0x7E0, 1000) or { panic('no First Frame') }
+	assert ff.data == [u8(0x10), 0, 0, 0, 0x13, 0x88, want[0], want[1]]
+	cf := on_id(mut tap, 0x7E0, 1000) or { panic('no Consecutive Frame') }
+	assert cf.data[0] == 0x21 && cf.data[1..] == want[2..9]
+	rx.close()
+	tx.close()
+	tap.close()
+}
+
+// The longest message in 64-byte frames, the First Frame carrying 58 bytes behind the escape.
+fn test_a_maximum_message_in_fd_frames() {
+	mut tap := transport.open('inproc:isotp-ff32-fd') or { panic(err) }
+	mut rx := open_software('inproc:isotp-ff32-fd', 0x7E8, 0x7E0, false) or { panic(err) }
+	mut tx := open_software('inproc:isotp-ff32-fd', 0x7E0, 0x7E8, false) or { panic(err) }
+	tx.settings = settings_with(0, 0, 0, 64, .fd)!
+	want := []u8{len: max_pdu, init: u8(index * 5)}
+	mut r := &FdReceived{
+		ch: rx
+	}
+	t := spawn r.run()
+	tx.send(want)!
+	t.wait()
+	assert r.err == ''
+	assert r.got == want
+	ff := on_id(mut tap, 0x7E0, 1000) or { panic('no First Frame') }
+	assert ff.data.len == 64 && ff.data[..6] == [u8(0x10), 0, 0, 0, 0xFF, 0xFF]
+	assert ff.data[6..] == want[..58]
+	rx.close()
+	tx.close()
+	tap.close()
+}
+
+// A First Frame declaring more than max_pdu is answered with Flow Control OVERFLOW, and the
+// sender hears the refusal.
+fn test_a_message_past_max_pdu_is_answered_with_overflow() {
+	mut peer := transport.open('inproc:isotp-ff32-ovf') or { panic(err) }
+	mut ch := open_software('inproc:isotp-ff32-ovf', 0x7E0, 0x7E8, false) or { panic(err) }
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 0, 0, 1, 0, 0, 1, 2] })!
+	if got := ch.recv(200) {
+		assert false, 'taken: ${got.len} bytes'
+	} else {
+		assert err.msg().contains('OVERFLOW'), err.msg()
+	}
+	fc := on_id(mut peer, 0x7E0, 1000) or { panic('no Flow Control') }
+	assert fc.data[..3] == [u8(0x32), 0, 0]
+	ch.close()
+	peer.close()
+	if _ := ch.send([]u8{len: max_pdu + 1}) {
+		assert false, 'past max_pdu sent'
+	} else {
+		assert err is transport.NotWritten
+	}
 }

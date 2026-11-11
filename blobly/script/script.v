@@ -1444,7 +1444,10 @@ fn l_uds_did_size(l lua.State) i32 {
 	mut env := env_of(l)
 	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:did_size: ${err}') }
 	id := did_id_arg(l, 2) or { return l.fail('diag:did_size: ${err}') }
-	n := int_arg(l, 3, 'the size', 0, 4095) or { return l.fail('diag:did_size: ${err}') }
+	n := int_arg(l, 3, 'the size', 0, max_i32) or { return l.fail('diag:did_size: ${err}') }
+	if why := udsconn.did_size_refusal(n, c.ch is doip.DoipClient) {
+		return l.fail('diag:did_size: ${why}')
+	}
 	c.cli.set_did_size(id, int(n))
 	return 0
 }
@@ -1454,7 +1457,10 @@ fn l_uds_ext_size(l lua.State) i32 {
 	mut env := env_of(l)
 	mut c, _ := env.conn_arg(l, 1) or { return l.fail('diag:ext_record_size: ${err}') }
 	rec := byte_arg(l, 2, 'the record number') or { return l.fail('diag:ext_record_size: ${err}') }
-	n := int_arg(l, 3, 'the size', 0, 4095) or { return l.fail('diag:ext_record_size: ${err}') }
+	n := int_arg(l, 3, 'the size', 0, max_i32) or { return l.fail('diag:ext_record_size: ${err}') }
+	if why := udsconn.ext_size_refusal(n, c.ch is doip.DoipClient) {
+		return l.fail('diag:ext_record_size: ${why}')
+	}
 	c.cli.set_ext_record_size(rec, int(n))
 	return 0
 }

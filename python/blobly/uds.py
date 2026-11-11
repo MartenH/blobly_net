@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 # how many key_fn callbacks this thread is inside: each runs holding its client's lock
 _callbacks = threading.local()
 
-# a whole ISO-TP PDU (4095 bytes) fits, so an answer comes back in one call
+# most answers fit, so they come back in one call; a longer one is fetched again whole
 _CAP = 4096
 
 

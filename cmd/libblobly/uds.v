@@ -1034,25 +1034,13 @@ pub fn bb_uds_extended_record(u i32, k i32, number &u8, buf &u8, cap i32) i32 {
 	})
 }
 
-// max_answer is the longest answer the handle's carrier brings: an ISO-TP PDU, or a DoIP diagnostic
-// message's user data (its payload less the two logical addresses)
-fn (hd &UdsHandle) max_answer() int {
-	return if hd.doip { int(doip.max_payload_len) - 4 } else { isotp.max_pdu }
-}
-
-// the largest a snapshot DID's value and an extended record can be in one answer: the header (59
-// sub DTC status, 6 bytes), then a record's number and DID count and the DID (4 more), or the
-// record's number (1)
-const snapshot_did_overhead = 10
-const ext_record_overhead = 7
-
 // bb_uds_did_size states a snapshot DID's size, for one the client cannot learn by reading it.
 @[export: 'bb_uds_did_size']
 pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 	return with_uds(u, fn [did, n] (mut hd UdsHandle) !i32 {
 		id := did_arg(did)!
-		if n < 0 || n > hd.max_answer() - snapshot_did_overhead {
-			return error('did_size: ${n} bytes is not a DID size')
+		if why := udsconn.did_size_refusal(n, hd.doip) {
+			return error('did_size: ${why}')
 		}
 		hd.conn.cli.set_did_size(id, int(n))
 		return ok()
@@ -1064,8 +1052,8 @@ pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 pub fn bb_uds_ext_record_size(u i32, record i32, n i32) i32 {
 	return with_uds(u, fn [record, n] (mut hd UdsHandle) !i32 {
 		r := byte_arg('extended data record', record)!
-		if n < 0 || n > hd.max_answer() - ext_record_overhead {
-			return error('ext_record_size: ${n} bytes is not a record size')
+		if why := udsconn.ext_size_refusal(n, hd.doip) {
+			return error('ext_record_size: ${why}')
 		}
 		hd.conn.cli.set_ext_record_size(r, int(n))
 		return ok()

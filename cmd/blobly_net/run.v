@@ -1315,10 +1315,14 @@ fn (mut app App) start() {
 			} else {
 				sc.proj_idx
 			}
+			settings, why := u.isotp_settings(own)
+			if why != '' {
+				app.notify('${own.name}: ${why}')
+			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker() // released by the loop's own defer
 			spawn uds_node_loop(app, own_row, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.functional,
-				u.fext, u.server, start_gen)
+				u.fext, u.server, settings, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
 				iface: sc.iface
