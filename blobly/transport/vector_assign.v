@@ -37,3 +37,30 @@ pub fn vector_assign_checked(app int, hw_type int, hw_index int, hw_channel int,
 	vector_assign(app, hw)!
 	return hw
 }
+
+// vector_release_checked clears application channel `app` (vector:<app>) so it points at no
+// hardware, the registration kept (Vector Hardware Manager then shows it "Not assigned"): under the
+// interprocess borrow lock, its slot read inside it, refused while `running` (assign_run_refusal),
+// where the driver cannot be used, or where the slot is unreadable or absent (release_refusal).
+// Returns whether a mapping was cleared; false, nothing written, when it pointed at nothing already.
+pub fn vector_release_checked(app int, running bool) !bool {
+	if e := assign_run_refusal(running) {
+		return e
+	}
+	if why := vector_driver_refusal() {
+		return error(why)
+	}
+	vector_borrow_lock_now()!
+	defer {
+		vector_borrow_unlock()
+	}
+	slot := vector_app_slot(app)
+	if why := release_refusal(app, slot) {
+		return error(why)
+	}
+	if slot == .empty {
+		return false
+	}
+	vector_unassign(app)!
+	return true
+}

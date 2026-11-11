@@ -15,6 +15,7 @@ fn (mut env Env) register_ifaces() {
 	env.st.register('__vector_assignments', l_vector_assignments)
 	env.st.register('__vector_slot', l_vector_slot)
 	env.st.register('__vector_assign', l_vector_assign)
+	env.st.register('__vector_release', l_vector_release)
 }
 
 // rates_for is what a bus on `address` is priced at: the rates of a CAN channel of the script on
@@ -188,4 +189,15 @@ fn l_vector_assign(l lua.State) i32 {
 		return l.fail('vector.assign: ${err.msg()}')
 	}
 	return 0
+}
+
+// __vector_release(app) -> true when a mapping was cleared, false when it pointed at nothing
+fn l_vector_release(l lua.State) i32 {
+	env := env_of(l)
+	app := int_arg(l, 1, 'app', min_i32, max_i32) or { return l.fail('vector.release: ${err}') }
+	cleared := transport.vector_release_checked(int(app), env.run_active()) or {
+		return l.fail('vector.release: ${err.msg()}')
+	}
+	l.push_bool(cleared)
+	return 1
 }

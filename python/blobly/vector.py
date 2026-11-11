@@ -1,18 +1,19 @@
 """vector — Vector XL application channels (docs/scripting_python.md, "Vector channel assignment"):
 the XL library opens APPLICATION channels (`vector:<n>`), which must be mapped to a physical
 channel first, as Vector Hardware Manager or the GUI's Discover dialog does. These are that
-dialog's reads and its Assign, with its refusals. Windows only: elsewhere driver() says why,
-assignments() is [] and slot() and assign() are refused.
+dialog's reads and its Assign, with its refusals, and release() to clear a mapping. Windows only:
+elsewhere driver() says why, assignments() is [] and slot(), assign() and release() are refused.
 
     from blobly import vector
     hw = next(h for h in vector.assignments() if h.can and h.app == 0)
-    vector.assign(1, hw)             # vector:1 now reaches it"""
+    vector.assign(1, hw)             # vector:1 now reaches it
+    vector.release(1)                # and points at nothing again"""
 import ctypes
 from dataclasses import dataclass
 
 from . import _lib
 
-__all__ = ["VectorHardware", "assign", "assignments", "driver", "slot"]
+__all__ = ["VectorHardware", "assign", "assignments", "driver", "release", "slot"]
 
 # enum bb_vector_slot
 SLOTS = {0: "unreadable", 1: "absent", 2: "empty", 3: "taken"}
@@ -96,3 +97,13 @@ def assign(app: int, hw: VectorHardware, *, create: bool = False) -> None:
     if not isinstance(hw, VectorHardware):
         raise TypeError(f"assign: hw is a VectorHardware from vector.assignments(), not {hw!r}")
     _lib.check(_lib.lib().bb_vector_assign(_app(app), hw.hw_type, hw.hw_index, hw.hw_channel, int(bool(create))))
+
+
+def release(app: int) -> bool:
+    """Clears application channel `app` (1..64, vector:<app>) so it points at no hardware; the
+    channel stays registered ("Not assigned" in Vector Hardware Manager, slot() "empty"). True when
+    a mapping was cleared, False when it pointed at nothing already (nothing written). Refused
+    (Refused, nothing written) where the driver cannot be used, or `app` is "unreadable" or
+    "absent" — clearing an unregistered channel would register it. While a project is started it
+    raises BloblyError with code BB_ERR_STATE (-3), nothing written, as assign does."""
+    return _lib.check(_lib.lib().bb_vector_release(_app(app))) == 1

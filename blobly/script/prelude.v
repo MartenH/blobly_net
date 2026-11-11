@@ -973,7 +973,8 @@ end
 -- vector.assignments() the physical channels with the application channel (app, 0 none) pointing
 -- at each; vector.slot(app) "taken", "empty", "absent" or "unreadable"; vector.assign(app, hw,
 -- { create = true }) points vector:<app> at a row of assignments(), as the Discover dialog does,
--- an absent (unregistered) app refused unless create says creating it is meant.
+-- an absent (unregistered) app refused unless create says creating it is meant; vector.release(app)
+-- clears vector:<app> (true, or false when it pointed at nothing), unreadable or absent refused.
 vector = {}
 function vector.driver()
   local why = __vector_driver()
@@ -990,6 +991,10 @@ function vector.assign(app, hw, opts)
   end
   if math.type(app) ~= "integer" then error("vector.assign: app is an integer 1..64", 2) end
   __vector_assign(app, hw.hw_type, hw.hw_index, hw.hw_channel, (opts and opts.create) or false)
+end
+function vector.release(app)
+  if math.type(app) ~= "integer" then error("vector.release: app is an integer 1..64", 2) end
+  return __vector_release(app)
 end
 
 -- ============================ J1939 ============================

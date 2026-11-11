@@ -91,6 +91,7 @@ typedef int (*node_info_fn)(int, bb_node *);
 typedef int (*str_out_fn)(char *, int);
 static int_fn bb_node_count_p;
 static vector_assign_fn bb_vector_assign_p;
+static int_int_fn bb_vector_release_p;
 static node_info_fn bb_node_info_p;
 static str_out_fn bb_system_path_p;
 typedef int (*gen_find_fn)(const char *);
@@ -837,7 +838,7 @@ int main(int argc, char **argv) {
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop); SYM(bb_cyclic_free);
-	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path); SYM(bb_vector_assign);
+	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path); SYM(bb_vector_assign); SYM(bb_vector_release);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present); SYM(bb_uds_cancel);
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
 	SYM(bb_replay_defaults); SYM(bb_replay_start); SYM(bb_replay_wait); SYM(bb_replay_status); SYM(bb_replay_stop);
@@ -903,6 +904,9 @@ int main(int argc, char **argv) {
 	/* the driver's persistent mapping is not rewritten under a started run, on any platform */
 	if (bb_vector_assign_p(1, 57, 0, 0, 1) != BB_ERR_STATE || !strstr(bb_last_error_p(), "not while a run is started")) {
 		fprintf(stderr, "FAIL a Vector assignment while started must refuse as BB_ERR_STATE: %s\n", bb_last_error_p()); return 1;
+	}
+	if (bb_vector_release_p(1) != BB_ERR_STATE || !strstr(bb_last_error_p(), "not while a run is started")) {
+		fprintf(stderr, "FAIL a Vector release while started must refuse as BB_ERR_STATE: %s\n", bb_last_error_p()); return 1;
 	}
 
 	if (exchange("main thread", 20)) return 1;

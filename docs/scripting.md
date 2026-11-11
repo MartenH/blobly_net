@@ -717,7 +717,10 @@ local found, note = bus.discover_cansub(700) -- the CANsub channels an mDNS brow
   `"absent"` (unregistered) channel only when `create` says creating it is meant, and never while a
   run is started (`cmd/script`'s run, for the whole script, or the GUI's measurement) — the mapping
   is the driver's, under ports the run may hold open. The mapping persists across reboots.
-  `tests/interfaces.lua` is the suite.
+  `vector.release(app)` clears `vector:<app>` so it points at no hardware — `true`, or `false` when
+  it pointed at nothing already — the channel staying registered (*Not assigned* in Vector Hardware
+  Manager, `vector.slot` then `"empty"`); `"unreadable"` and `"absent"` are refused, and so is a
+  started run, as for `assign`. `tests/interfaces.lua` is the suite.
 
 ### The DBC catalog
 

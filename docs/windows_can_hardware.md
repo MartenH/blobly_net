@@ -473,6 +473,13 @@ on one physical channel ([#167](https://github.com/MartenH/blobly_net/issues/167
 Writes go under the application name `blobly_net` only; another application's assignments (CANoe,
 CANalyzer) are never touched, and the mapping is stored by the driver and survives a reboot.
 
+**From a script**, with only the bundle or the `blobly` wheel installed: Lua's `vector.assign` /
+`vector.release` and Python's `blobly.vector.assign` / `blobly.vector.release` (and the C ABI's
+`bb_vector_assign` / `bb_vector_release`) make the same checks as the Discover dialog. A release
+clears the mapping and keeps the row registered (*Not assigned*), refusing a channel the driver
+would not describe or does not have, and nothing changes while a run is started
+([scripting_python.md](scripting_python.md#vector-channel-assignment)).
+
 **From the CLI**, when there is no GUI or you want it scripted. `cmd/vectorcheck` is a **source-tree
 tool and is not in the release bundle** — that ships `blobly_net` only — so build it from a checkout
 first, or use the Discover dialog above, which does the same job and checks more before it writes:
