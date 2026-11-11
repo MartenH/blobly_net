@@ -115,3 +115,45 @@ fn (t FaultTarget) protection(node string, msg string) E2e {
 	}
 	return E2e{}
 }
+
+// FaultOffer is what can be put on one message of one simulated node: the kinds that take effect
+// there, none_ and drop first, and the signal out_of_range forces (empty when it is not offered).
+pub struct FaultOffer {
+pub:
+	kinds      []FaultKind
+	oor_signal string
+}
+
+// fault_offer is the faults that take effect on `node`'s `msg`, `prot` what it stamps there (the
+// protection the engine attaches to its messages of that name, protections) and `anns` the
+// announcements of its wire: bad_crc where it stamps a checksum the payload holds, freeze_counter
+// where it stamps an E2E counter, out_of_range where a signal has a value outside its range — and on
+// a frame it announces NM on, drop alone, since the announcement goes out in its place.
+pub fn fault_offer(node project.NodeCfg, msg candb.Message, prot E2e, anns []nm.Announce) FaultOffer {
+	mut kinds := [FaultKind.none_, .drop]
+	if announced_frame(anns, node.name, msg) {
+		return FaultOffer{
+			kinds: kinds
+		}
+	}
+	if prot.crc != '' && past_payload(msg, prot.crc) == none {
+		kinds << .bad_crc
+	}
+	if prot.counter != '' && past_payload(msg, prot.counter) == none {
+		kinds << .freeze_ctr
+	}
+	mut oor := ''
+	for sg in msg.signals {
+		if can_force_out_of_range(msg, sg.name, prot) {
+			oor = sg.name
+			break
+		}
+	}
+	if oor != '' {
+		kinds << .out_of_range
+	}
+	return FaultOffer{
+		kinds:      kinds
+		oor_signal: oor
+	}
+}

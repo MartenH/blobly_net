@@ -239,3 +239,64 @@ fn test_a_fault_other_than_drop_on_the_announced_message_is_refused() {
 	}
 	assert false, 'out_of_range on the announced frame was armed'
 }
+
+// what the Simulation panel offers on the announced frame is drop alone, the rule arm refuses by;
+// the same message on a frame nobody announces on offers what its protection allows
+fn test_the_fault_offer_on_the_announced_frame_is_drop_alone() {
+	msg := candb.Message{
+		name:    'NM_Body'
+		id:      0x511
+		dlc:     8
+		sender:  'Body'
+		signals: [
+			candb.Signal{
+				name:       'Ctr'
+				start_bit:  0
+				length:     4
+				byte_order: .little_endian
+				factor:     1
+				maximum:    14
+			},
+			candb.Signal{
+				name:       'Crc'
+				start_bit:  8
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    255
+			},
+			candb.Signal{
+				name:       'Level'
+				start_bit:  16
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    100
+			},
+		]
+	}
+	node := project.NodeCfg{
+		name:    'Body'
+		protect: [project.ProtectCfg{
+			message: 'NM_Body'
+			counter: 'Ctr'
+			crc:     'Crc'
+			profile: 'sum8'
+		}]
+	}
+	ann := nm.Announce{
+		node:     'Body'
+		id:       0x511
+		nid:      0x11
+		cycle_ms: 100
+	}
+	prot := protection_for(node, msg) or { panic('no protection') }
+	open := fault_offer(node, msg, prot, [])
+	assert open.kinds == [FaultKind.none_, .drop, .bad_crc, .freeze_ctr, .out_of_range]
+	assert open.oor_signal == 'Level'
+	announced := fault_offer(node, msg, prot, [ann])
+	assert announced.kinds == [FaultKind.none_, .drop]
+	assert announced.oor_signal == ''
+	assert fault_offer(node, msg, prot, [nm.Announce{ ...ann, node: 'Gw' }]).kinds == open.kinds
+	assert fault_offer(node, msg, prot, [nm.Announce{ ...ann, ext: true }]).kinds == open.kinds
+}

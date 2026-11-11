@@ -136,17 +136,21 @@ pub fn apply_nm_requests(iface string, mut e Engine) {
 	}
 }
 
+// announced_frame: `msg` is the frame `node` announces NM on, by `anns` (nm.announcements of its
+// wire), so the announcement goes out in its place and only a drop reaches the wire.
+pub fn announced_frame(anns []nm.Announce, node string, msg candb.Message) bool {
+	return anns.any(it.node == node && it.id == msg.id && it.ext == msg.ext)
+}
+
 // announced_refusal refuses a fault `kind` other than drop on `msg`, a frame `node` announces NM
-// on: the announcement goes out in its place, so only a drop reaches the wire.
+// on.
 fn (t FaultTarget) announced_refusal(node string, msg candb.Message, kind FaultKind) ! {
 	if kind == .drop {
 		return
 	}
 	anns, _ := nm.announcements(t.nm, t.nodes)
-	for a in anns {
-		if a.node == node && a.id == msg.id && a.ext == msg.ext {
-			return error('"${msg.name}" is the frame "${node}" announces NM on, sent as its NM PDU — only drop applies to it')
-		}
+	if announced_frame(anns, node, msg) {
+		return error('"${msg.name}" is the frame "${node}" announces NM on, sent as its NM PDU — only drop applies to it')
 	}
 }
 

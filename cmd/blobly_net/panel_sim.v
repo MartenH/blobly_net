@@ -1,6 +1,8 @@
 module main
 
+import blobly.nm
 import blobly.sim
+import blobly.transport
 import vgui
 
 // draw_sim lists the in-process simulation workload: each channel's simulated ECUs,
@@ -30,6 +32,15 @@ fn draw_sim(mut app App) {
 		if !vgui.tree_node('${hdr_bus}   (${sc.nodes.len})###simbus_${sc.proj_idx}|${sc.pch.name}|${sc.iface}') {
 			continue
 		}
+		// the nodes announcing on the wire's NM cluster, as the run (or the next Start) reads it:
+		// on an announced frame only a drop takes effect
+		mut wire_nm := ?nm.Config(none)
+		app.mu.lock()
+		if c := app.nm_cfg[transport.destination_key_for(sc.pch.adapter, sc.iface)] {
+			wire_nm = c
+		}
+		app.mu.unlock()
+		anns, _ := nm.announcements(wire_nm, sc.nodes)
 		for node in sc.nodes {
 			// sim_key, not '<iface>:<node>': the panel writes what the CAN loop and the DoIP
 			// supervisor read, so all three move together or a tick lands on a key nobody
@@ -102,38 +113,18 @@ fn draw_sim(mut app App) {
 						.out_of_range { 'OUT OF RANGE' }
 					}
 
-					// Only offer what can take effect on THIS message. bad_crc without a
-					// configured checksum changes no bits, and out_of_range needs a signal with
-					// an illegal value — offering either would show a fault the bus never sees.
-					// what THIS node stamps on it — the protection the simulation attaches to its
-					// messages of this name
-					mprot := nprot[m.name] or { sim.E2e{} }
-					has_crc := mprot.crc != '' && sim.past_payload(m, mprot.crc) == none
-					has_ctr := mprot.counter != '' && sim.past_payload(m, mprot.counter) == none
-					mut oor_sig := ''
-					for sg in m.signals {
-						if sim.can_force_out_of_range(m, sg.name, mprot) {
-							oor_sig = sg.name
-							break
-						}
-					}
-					mut kinds := ['normal', 'drop']
-					mut kind_of := [sim.FaultKind.none_, .drop]
-					// Independently: a counter-only entry can be frozen but has no checksum to
-					// corrupt, and a crc-only entry the reverse. Gating both on the checksum
-					// offered one fault that changes nothing and hid one that works.
-					if has_crc {
-						kinds << 'bad crc'
-						kind_of << .bad_crc
-					}
-					if has_ctr {
-						kinds << 'freeze counter'
-						kind_of << .freeze_ctr
-					}
-					if oor_sig != '' {
-						kinds << 'out of range (${oor_sig})'
-						kind_of << .out_of_range
-					}
+					// only what takes effect on THIS message, by the rule a script's arm keeps:
+					// a fault that changes no bit on the wire would read as active and do nothing
+					offer := sim.fault_offer(node, m, nprot[m.name] or { sim.E2e{} }, anns)
+					kind_of := offer.kinds
+					oor_sig := offer.oor_signal
+					kinds := kind_of.map(match it {
+						.none_ { 'normal' }
+						.drop { 'drop' }
+						.bad_crc { 'bad crc' }
+						.freeze_ctr { 'freeze counter' }
+						.out_of_range { 'out of range (${oor_sig})' }
+					})
 					mut sel := 0
 					for ki, kk in kind_of {
 						if kk == cur.kind {

@@ -749,7 +749,9 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   stamped (so the receiver reaches its range handling instead of rejecting a CRC error) and
   `bad_crc` after. One process-wide table (`sim.inject`), keyed by interface+node+message, so
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly, by
-  ONE rule for both scripting languages (`sim.FaultTarget.arm`, `fault_arm.v`).
+  ONE rule for both scripting languages (`sim.FaultTarget.arm`, `fault_arm.v`), and the panel
+  offers only the kinds `sim.fault_offer` says take effect (drop alone on a frame a node announces
+  NM on, `sim.announced_frame`, the predicate `arm` refuses by).
 - **A signal held at a value** (`blobly/sim/setsignal.v`, #612): one signal of a simulated node's
   message kept at a physical value until changed or cleared — `sim.set` / `sim.clear` in Lua,
   `net.set_signal` / `clear_signal` in Python, `bb_sim_set` / `bb_sim_clear` in C. A second
