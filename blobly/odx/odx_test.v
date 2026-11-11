@@ -108,13 +108,13 @@ fn test_a_compu_method_not_held_is_bytes_and_said() {
 fn test_gates_are_the_state_chart_preconditions() {
 	v := load(fixture)!.variant('BodyController_Base')!
 	// extended session and the level a 0x27 02 sendKey unlocks
-	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 1}
-	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0}
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 1, []}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
 	// no precondition: no gate
 	lamp := did_of(v, 0x0110)
 	assert lamp.writable && lamp.write_gate == Gate{}
 	// the start state of the session chart is the default session
-	assert did_of(v, 0xF18C).read_gate == Gate{true, [u8(0x01), 0x03], 0}
+	assert did_of(v, 0xF18C).read_gate == Gate{true, [u8(0x01), 0x03], 0, []}
 	assert did_of(v, 0x0130).read_gate == Gate{}
 }
 
@@ -122,9 +122,17 @@ fn test_a_state_no_service_enters_is_said_and_left_out() {
 	v := variant_with('noenter', fn (s string) string {
 		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_ToExtended" />', '')
 	})!
-	assert did_of(v, 0x0120).write_gate == Gate{true, []u8{}, 0}
+	assert did_of(v, 0x0120).write_gate == Gate{true, []u8{}, 0, ['Extended']}
 	assert v.notes.any(it.contains('TrimOffset_Write')
 		&& it.contains('session state Extended is entered by no 0x10 service'))
+}
+
+fn test_an_unresolved_security_state_leaves_the_level_unknown() {
+	v := variant_with('nokey', fn (s string) string {
+		return s.replace('<STATE-TRANSITION-REF ID-REF="ST_Unlock1" />', '')
+	})!
+	assert did_of(v, 0xF190).write_gate == Gate{true, [u8(0x03)], 0, ['Level1']}
+	assert did_of(v, 0x0120).write_gate == Gate{true, [u8(0x03)], 0, []}
 }
 
 fn test_ecu_variant_inherits_but_what_it_excludes() {

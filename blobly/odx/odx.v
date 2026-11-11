@@ -68,12 +68,15 @@ pub:
 
 // Gate is what a service's PRE-CONDITION-STATE-REFS ask for: the sessions it is served in, as 0x10
 // sub-functions (none = any), and the security level it needs (0 = none). `declared` false: the
-// service names no precondition.
+// service names no precondition. `unresolved`: the session or security states it needs that no
+// service gives a meaning, where no other state of that kind is named — what the gate asks is
+// then not known, never `any`.
 pub struct Gate {
 pub:
-	declared bool
-	sessions []u8
-	level    int
+	declared   bool
+	sessions   []u8
+	level      int
+	unresolved []string
 }
 
 // Did is one data identifier the variant's 0x22 and 0x2E services name.
@@ -665,7 +668,8 @@ fn state_named(chart flatxml.Node, name string) ?flatxml.Node {
 // SECURITY chart the level a 0x27 sendKey transition enters it by (its start state: locked, no
 // level). States of one chart are alternatives: the sessions are each listed, the lowest level is
 // needed. A state it cannot give a meaning, or a precondition on a parameter's value, is said and
-// left out of the gate.
+// left out of the gate; a session or security state left out with no other of its kind beside it
+// is `unresolved`, since leaving it out would open the gate.
 fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Resolve, what string) Gate {
 	refs := kids(svc.child('PRE-CONDITION-STATE-REFS'), 'PRE-CONDITION-STATE-REF')
 	if refs.len == 0 {
@@ -673,6 +677,8 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 	}
 	mut sessions := []u8{}
 	mut levels := []int{}
+	mut lost_sessions := []string{}
+	mut lost_levels := []string{}
 	for ref in refs {
 		if ref.child('VALUE').ok() || ref.child('IN-PARAM-IF-SNREF').ok()
 			|| ref.child('IN-PARAM-PATH-SNREF').ok() {
@@ -694,6 +700,7 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 				u8(0x01)
 			} else {
 				r.notes << '${what}: session state ${short_name(st)} is entered by no 0x10 service; not read'
+				lost_sessions << short_name(st)
 				continue
 			}
 			if s !in sessions {
@@ -706,6 +713,7 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 				0
 			} else {
 				r.notes << '${what}: security state ${short_name(st)} is entered by no 0x27 sendKey; not read'
+				lost_levels << short_name(st)
 				continue
 			}
 			levels << l
@@ -722,10 +730,18 @@ fn (db &Db) gate_of(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 			}
 		}
 	}
+	mut unresolved := []string{}
+	if sessions.len == 0 {
+		unresolved << lost_sessions
+	}
+	if levels.len == 0 {
+		unresolved << lost_levels
+	}
 	return Gate{
-		declared: true
-		sessions: sessions
-		level:    level
+		declared:   true
+		sessions:   sessions
+		level:      level
+		unresolved: unresolved
 	}
 }
 

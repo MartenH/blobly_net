@@ -1,6 +1,7 @@
 module sysview
 
 import os
+import blobly.odx
 import blobly.project
 import blobly.uds
 
@@ -87,6 +88,14 @@ fn test_a_scale_linear_value_reads_through_its_segment() {
 	assert volts.read_texts([u8(100)])! == ['10']
 	assert volts.read_texts([u8(101)])! == ['10.5']
 	assert volts.encode(['30'])! == [u8(140)]
+	// between the segments' values (10 and 10.5): the nearer one
+	assert volts.encode(['10.2'])! == [u8(100)]
+	assert volts.encode(['10.3'])! == [u8(101)]
+	if _ := volts.encode(['86']) {
+		assert false
+	} else {
+		assert err.msg().contains('86 is outside 0..85 V')
+	}
 	// 251..255 are in no segment: refused, never read as a number
 	volts.read_texts([u8(255)]) or {
 		assert err.msg().contains('raw 255 is in no scale')
@@ -124,6 +133,31 @@ fn test_a_gate_plans_the_write_it_asks_for() {
 	assert serial.read_gate.sessions == ['default', 'extended'] && serial.read == 'default/extended'
 	lamp := body_did('LampConfig')
 	assert lamp.write == 'open' && lamp.write_gate.declared && lamp.write_gate.sessions.len == 0
+}
+
+fn test_a_session_with_no_name_is_planned_by_its_sub_function() {
+	x := DidDesc{
+		id:         0x0120
+		write_gate: Gate{
+			declared: true
+			sessions: ['extended', '0x40']
+		}
+	}
+	assert x.write_sessions()! == [u8(0x03), 0x40]
+	assert x.plan_write(uds.ConnState{ session: 0x03 }, true).refusal == ''
+	assert x.plan_write(uds.ConnState{ session: 0x40 }, true).session == 0
+}
+
+fn test_an_unresolved_gate_plans_no_write() {
+	x := DidDesc{
+		id:         0x0120
+		write_gate: odx_gate(odx.Gate{
+			declared:   true
+			unresolved: ['Extended']
+		}, true)
+	}
+	assert x.write_gate.words() == 'unresolved Extended'
+	assert x.write_refusal() or { '' } == 'not writable: its write gate needs Extended, which the description gives no meaning'
 }
 
 fn test_an_odx_node_on_two_rows_is_one_node_and_a_clash_is_refused() {

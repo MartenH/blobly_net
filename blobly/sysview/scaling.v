@@ -69,7 +69,8 @@ fn (s Scaling) text(raw i64, lim Range) !string {
 }
 
 // raw is a text's raw value: a number through the first segment that holds it, rounded to the
-// nearest raw value, or a label's value (a decimal integer stands for itself where it is no label).
+// nearest raw value — one between two segments' values to the nearer of them —, or a label's value
+// (a decimal integer stands for itself where it is no label).
 fn (s Scaling) raw(text string, lim Range) !i64 {
 	t := text.trim_space()
 	if s.segments.len == 0 {
@@ -96,35 +97,59 @@ fn (s Scaling) raw(text string, lim Range) !i64 {
 	if t == '' || math.is_nan(p) || math.is_inf(p, 0) {
 		return error('"${t}" is not a number')
 	}
+	mut best := i64(0)
+	mut best_d := math.inf(1)
 	for g in s.segments {
+		a, b := g.within(lim) or { continue }
 		r := (p * g.d - g.v0) / g.v1
-		if math.abs(r) > 9.0e18 {
-			continue
+		if math.abs(r) <= 9.0e18 {
+			raw := i64(math.round(r))
+			if raw >= a && raw <= b {
+				return raw
+			}
 		}
-		raw := i64(math.round(r))
-		if raw >= g.lo && raw <= g.hi && raw >= lim.min && raw <= lim.max {
-			return raw
+		// the segment's raw value nearest the text: its end on the side the text lies
+		near := if r < f64(a) { a } else { b }
+		d := math.abs(g.physical(near) - p)
+		if d < best_d {
+			best, best_d = near, d
 		}
+	}
+	lo, hi := s.bounds(lim)
+	if p >= lo && p <= hi {
+		return best
 	}
 	return error('${t} is outside ${s.span(lim)}')
 }
 
-// span is the physical values the segments give over `lim`, lowest first, with the unit.
-fn (s Scaling) span(lim Range) string {
+// within is the segment's raw values that also lie in `lim`, none when none do.
+fn (g Linear) within(lim Range) ?(i64, i64) {
+	a := if g.lo > lim.min { g.lo } else { lim.min }
+	b := if g.hi < lim.max { g.hi } else { lim.max }
+	if a > b {
+		return none
+	}
+	return a, b
+}
+
+// bounds is the lowest and highest physical value the segments give over `lim` (lo > hi: none).
+fn (s Scaling) bounds(lim Range) (f64, f64) {
 	mut lo := math.inf(1)
 	mut hi := math.inf(-1)
 	for g in s.segments {
-		a := if g.lo > lim.min { g.lo } else { lim.min }
-		b := if g.hi < lim.max { g.hi } else { lim.max }
-		if a > b {
-			continue
-		}
+		a, b := g.within(lim) or { continue }
 		for r in [a, b] {
 			p := g.physical(r)
 			lo = math.min(lo, p)
 			hi = math.max(hi, p)
 		}
 	}
+	return lo, hi
+}
+
+// span is the physical values the segments give over `lim`, lowest first, with the unit.
+fn (s Scaling) span(lim Range) string {
+	lo, hi := s.bounds(lim)
 	if lo > hi {
 		return 'no value'
 	}

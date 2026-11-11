@@ -155,9 +155,10 @@ fn odx_desc(v odx.Variant) EcuDesc {
 // odx_gate is a service's preconditions as a gate: its sessions by name, as an ecu.toml writes them.
 fn odx_gate(g odx.Gate, declared bool) Gate {
 	return Gate{
-		declared: declared
-		sessions: g.sessions.map(uds.session_name(it))
-		level:    g.level
+		declared:   declared
+		sessions:   g.sessions.map(uds.session_name(it))
+		level:      g.level
+		unresolved: g.unresolved.join('/')
 	}
 }
 

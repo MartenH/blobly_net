@@ -85,12 +85,15 @@ pub:
 // Gate is a `read`/`write` table: the sessions the service is served in (none listed = any) and
 // the security LEVEL it needs (1..max_security_level, as blobly_emb's ecu.toml numbers them —
 // level L is unlocked with 0x27 requestSeed 2L-1 and sendKey 2L; 0 = none). `declared` false is
-// no gate at all — for `write`, not writable.
+// no gate at all — for `write`, not writable. `unresolved`: what the description asks that it
+// gives no meaning (an ODX state no service enters) — the gate is then not known, and no write
+// is planned by it.
 pub struct Gate {
 pub:
-	declared bool
-	sessions []string // `default`, `programming`, `extended`, as the ecu.toml writes them
-	level    int
+	declared   bool
+	sessions   []string // `default`, `programming`, `extended`, as the ecu.toml writes them
+	level      int
+	unresolved string
 }
 
 // words is the gate as the description reads (`extended, level 1`), `open` for one asking nothing.
@@ -102,6 +105,9 @@ pub fn (g Gate) words() string {
 	if g.level != 0 {
 		parts << 'level ${g.level}'
 	}
+	if g.unresolved != '' {
+		parts << 'unresolved ${g.unresolved}'
+	}
 	return if parts.len == 0 { 'open' } else { parts.join(', ') }
 }
 
@@ -110,6 +116,21 @@ pub struct Range {
 pub:
 	min i64
 	max i64
+}
+
+// gate_session is a gate's session as a 0x10 sub-function: a name (session_id), or the `0xNN`
+// uds.session_name gives one it has no name for.
+pub fn gate_session(name string) ?u8 {
+	if id := session_id(name) {
+		return id
+	}
+	if name.len == 4 && name.starts_with('0x') && name.is_hex() {
+		sub := u8(name[2..].parse_uint(16, 8) or { return none })
+		if sub >= 0x01 && sub <= 0x7F {
+			return sub
+		}
+	}
+	return none
 }
 
 // session_id is a gate's session name as a DiagnosticSessionControl (0x10) sub-function.

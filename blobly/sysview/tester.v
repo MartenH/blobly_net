@@ -344,12 +344,15 @@ pub fn (x DidDesc) label() string {
 	return if x.name == '' { '0x${x.id:04X}' } else { '0x${x.id:04X} ${x.name}' }
 }
 
-// write_sessions is the write gate's sessions as 0x10 sub-functions (session_id); refused for one
-// no tester here knows.
+// write_sessions is the write gate's sessions as 0x10 sub-functions (gate_session); refused for
+// one no tester here knows, or a gate the description leaves unresolved.
 pub fn (x DidDesc) write_sessions() ![]u8 {
+	if x.write_gate.unresolved != '' {
+		return error('its write gate needs ${x.write_gate.unresolved}, which the description gives no meaning')
+	}
 	mut out := []u8{}
 	for s in x.write_gate.sessions {
-		out << session_id(s) or { return error('written in the "${s}" session, which no tester here knows') }
+		out << gate_session(s) or { return error('written in the "${s}" session, which no tester here knows') }
 	}
 	return out
 }

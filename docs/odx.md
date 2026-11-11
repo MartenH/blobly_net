@@ -47,7 +47,8 @@ included. A layer reached on two ways passes on what either way passes on.
   raw values in its limits (no `UPPER-LIMIT`: the lower one alone), the `COMPU-DEFAULT-VALUE` naming
   the rest. A limit's `INTERVAL-TYPE` is read (`OPEN` excludes it, `INFINITE` is unbounded). A
   number is written through the inverse — the first scale whose limits hold the result, rounded to
-  the nearest raw value — and a raw value in no scale is refused, never shown as a number; a
+  the nearest raw value; one between two scales' values to the nearer of them — and a raw value in
+  no scale is refused, never shown as a number; a
   label is written as its `COMPU-INVERSE-VALUE`, else its lower limit, and a decimal integer that is
   no label as itself (a raw value no label names reads as the default's label, else as its
   number). `COMPU-PHYS-TO-INTERNAL`,
@@ -58,7 +59,8 @@ included. A layer reached on two ways passes on what either way passes on.
   sub-function of a `0x10` service whose `STATE-TRANSITION-REFS` enter it (its chart's start state:
   the default session); one of a `SECURITY` chart is the level of a `0x27` sendKey (sub-function 2L)
   whose transitions enter it (its start state: locked). States of one chart are alternatives: each
-  session is listed, the lowest level is needed. A write is then refused until the connection has
+  session is listed (one ISO does not name by its sub-function, `0x40`), the lowest level is
+  needed. A write is then refused until the connection has
   switched and unlocked as the gate asks (`WriteGated` in Python, the error's words in Lua); no
   precondition is no gate (a write service's: written in any session).
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
@@ -87,7 +89,9 @@ headless runner's stderr, the Script panel in the GUI):
   `not read: 2 x DIAG-SERVICE 0x10, 1 x DIAG-SERVICE 0x11`;
 - a precondition it cannot give a meaning — a state no `0x10` / `0x27` transition enters and that
   is not its chart's start state, a chart whose `SEMANTIC` is neither, a precondition on a
-  parameter's value — is said and left out of the gate;
+  parameter's value — is said and left out of the gate; where a session or security state left
+  out has no other of its chart beside it, the gate is **unresolved** (its words say which state),
+  and no write is planned by it rather than one sent as if the gate were open;
 - a value that is not a number where one belongs (a `BYTE-POSITION`, a `TROUBLE-CODE`) is named
   with its text, and that DID's layout or that DTC is not read;
 - a source that cannot be read, or a variant it does not have, still adds the node, its problem
