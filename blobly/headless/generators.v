@@ -4,6 +4,7 @@ import time
 import sync
 import blobly.candb
 import blobly.cyclic
+import blobly.j1939
 import blobly.project
 import blobly.sim
 import blobly.transport
@@ -359,7 +360,9 @@ fn (mut g Gen) poke() {
 	}
 }
 
-// send puts g's frame on the bus once: '' when the bus took it, else why not.
+// send puts g's frame on the bus once — a J1939 message past eight bytes on a classic row as its
+// BAM, paced (j1939.send_message), the run's stop asked between its frames: '' when the bus took
+// it, else why not.
 fn (mut g Gen) send(mut bus transport.Bus) string {
 	g.mu.lock()
 	s := project.Sender{
@@ -376,7 +379,14 @@ fn (mut g Gen) send(mut bus transport.Bus) string {
 	} else {
 		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return err.msg() }
 	}
-	bus.send(frame) or { return 'not sent: ${err}' }
+	// a BAM in progress ends at the run's stop
+	ctl := g.ctl
+	stop := fn [ctl] () bool {
+		return !ctl.running
+	}
+	j1939.send_message(mut bus, frame, sim.sender_j1939(s, g.dbs), stop) or {
+		return 'not sent: ${err}'
+	}
 	g.mu.lock()
 	g.sent++
 	g.sent_edits = edits

@@ -1,0 +1,197 @@
+module j1939
+
+import blobly.transport
+
+// long_msg is a message of `n` bytes at `id`, each byte its index.
+fn long_msg(id u32, n int) transport.CanFrame {
+	mut d := []u8{len: n}
+	for i in 0 .. n {
+		d[i] = u8(i * 7 + 3)
+	}
+	return transport.CanFrame{
+		id:       id
+		extended: true
+		data:     d
+	}
+}
+
+// rejoined feeds `frames` to the Reassembler, `gap` ms apart, and returns what it completed and
+// every fault it said.
+fn rejoined(frames []transport.CanFrame, gap f64) ([]Assembled, []Fault) {
+	mut r := Reassembler{}
+	mut done := []Assembled{}
+	mut faults := []Fault{}
+	for k, f in frames {
+		ev := r.feed(f, f64(k) * gap)
+		done << ev.done
+		faults << ev.faults
+	}
+	return done, faults
+}
+
+fn test_a_bam_is_what_the_reassembler_rejoins_at_every_size() {
+	for n in [9, 13, 14, 15, 20, 64, 65, 700, 1784, 1785] {
+		msg := long_msg(compose(6, 0xFF10, addr_global, 0x21), n)
+		frames := bam_frames(msg) or { panic(err) }
+		assert frames.len == packets_for(n) + 1
+		for f in frames {
+			assert tp_shaped(f) && f.format_stated && !f.fd
+			assert decompose(f.id).priority == tp_priority && decompose(f.id).sa == 0x21
+		}
+		done, faults := rejoined(frames, bam_gap_ms)
+		assert faults.len == 0, '${n}: ${faults}'
+		assert done.len == 1
+		assert done[0].bam && done[0].pgn == 0xFF10 && done[0].sa == 0x21 && done[0].da == addr_global
+		assert done[0].data == msg.data
+	}
+}
+
+fn test_the_last_packet_is_padded_with_ff() {
+	msg := long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)
+	frames := bam_frames(msg) or { panic(err) }
+	assert frames[0].data == [cm_bam, 20, 0, 3, 0xFF, 0x10, 0xFF, 0x00]
+	assert frames[3].data[0] == 3
+	assert frames[3].data[1..7] == msg.data[14..20] && frames[3].data[7] == 0xFF
+	assert frames.map(decompose(it.id).pgn()) == [pgn_tp_cm, pgn_tp_dt, pgn_tp_dt, pgn_tp_dt]
+}
+
+fn test_a_pdu1_group_is_broadcast_only_to_the_global_address() {
+	// PGN 0xEF00 (PDU1): to 0xFF a BAM carrying the group with its low byte zero
+	frames := bam_frames(long_msg(compose(6, 0xEF00, addr_global, 0x10), 12)) or { panic(err) }
+	done, _ := rejoined(frames, bam_gap_ms)
+	assert done.len == 1 && done[0].pgn == 0xEF00
+	// to one node it is RTS/CTS, which is not sent
+	if _ := bam_frames(long_msg(compose(6, 0xEF00, 0x05, 0x10), 12)) {
+		assert false
+	} else {
+		assert err.msg().contains('RTS/CTS')
+	}
+}
+
+fn test_message_frames_decides_one_frame_or_a_bam() {
+	msg := long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)
+	assert (message_frames(msg, false, false) or { panic(err) }) == [msg] // not declared J1939
+	assert (message_frames(msg, true, true) or { panic(err) }) == [msg] // goes out CAN-FD
+	short := long_msg(compose(6, 0xFF10, addr_global, 0x21), 8)
+	assert (message_frames(short, true, false) or { panic(err) }) == [short]
+	assert (message_frames(msg, true, false) or { panic(err) }).len == 4
+	if _ := message_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 1786), true, false) {
+		assert false
+	}
+	if _ := message_frames(transport.CanFrame{ id: 0x123, data: []u8{len: 12} }, true,
+		false)
+	{
+		assert false
+	}
+}
+
+fn test_the_pacer_spaces_frames_and_serialises_a_lane() {
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
+	b := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x21), 10)) or { panic(err) }
+	mut p := Pacer{}
+	p.add('w/21', a, 1)
+	p.add('w/21', b, 2)
+	mut out := &Sent{}
+	for t := 0; t <= 600; t += 5 {
+		now := f64(t)
+		p.pump(now, fn [mut out, now] (f transport.CanFrame, tag int) bool {
+			out.frames << f
+			out.at << now
+			out.tags << tag
+			return true
+		})
+	}
+	assert p.pending() == 0
+	assert out.frames.len == a.len + b.len
+	assert out.tags == [1, 1, 1, 1, 2, 2, 2]
+	for k in 1 .. out.at.len {
+		assert out.at[k] - out.at[k - 1] >= bam_gap_ms
+	}
+	mut r := Reassembler{}
+	mut done := []Assembled{}
+	for k, f in out.frames {
+		ev := r.feed(f, out.at[k])
+		assert ev.faults.len == 0
+		done << ev.done
+	}
+	assert done.map(it.pgn) == [u32(0xFF10), 0xFF11]
+}
+
+@[heap]
+struct Sent {
+mut:
+	frames []transport.CanFrame
+	at     []f64
+	tags   []int
+}
+
+fn test_the_pacer_keeps_the_latest_of_a_waiting_message_and_ends_a_refused_transfer() {
+	first := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
+	other := bam_frames(long_msg(compose(6, 0xFF11, addr_global, 0x21), 20)) or { panic(err) }
+	mut p := Pacer{}
+	p.add('l', first, 1)
+	p.add('l', other, 2)
+	p.add('l', other, 3) // replaces the waiting one
+	assert p.pending() == 2
+	// another lane goes alongside
+	p.add('m', bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x22), 9)) or { panic(err) },
+		4)
+	mut out := &Sent{}
+	p.pump(0, fn [mut out] (f transport.CanFrame, tag int) bool {
+		out.tags << tag
+		return tag != 1 // the first transfer's announcement is refused
+	})
+	assert out.tags == [1, 4]
+	assert p.pending() == 2
+	for t := 50; t <= 400; t += 50 {
+		p.pump(f64(t), fn [mut out] (f transport.CanFrame, tag int) bool {
+			out.tags << tag
+			return true
+		})
+	}
+	assert out.tags == [1, 4, 3, 4, 3, 4, 3, 3]
+}
+
+fn test_send_paced_puts_a_bam_on_a_bus() {
+	msg := long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)
+	frames := bam_frames(msg) or { panic(err) }
+	mut rx := transport.open('inproc:bam_paced') or { panic(err) }
+	mut tx := transport.open('inproc:bam_paced') or { panic(err) }
+	send_paced(mut tx, frames, 2, unsafe { nil }) or { panic(err) }
+	mut got := []transport.CanFrame{}
+	for _ in 0 .. frames.len {
+		got << rx.recv(500) or { panic(err) }
+	}
+	done, faults := rejoined(got, 2)
+	assert faults.len == 0 && done.len == 1 && done[0].data == msg.data
+	// a stop ends it between frames
+	send_paced(mut tx, frames, 2, fn () bool {
+		return true
+	}) or {
+		assert err.msg().contains('stopped after 1')
+		tx.close()
+		rx.close()
+		return
+	}
+	assert false
+}
+
+fn test_abandon_drops_a_tags_transfers() {
+	a := bam_frames(long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)) or { panic(err) }
+	mut p := Pacer{}
+	p.add('l', a, 1)
+	p.add('m', a, 2)
+	p.abandon(1)
+	assert p.pending() == 1
+}
+
+fn test_a_j1939_message_stated_classic_keeps_its_length_for_its_bam() {
+	msg := long_msg(compose(6, 0xFF10, addr_global, 0x21), 20)
+	f := stated(.classic, msg, true) or { panic(err) }
+	assert f.format_stated && !f.fd && f.data.len == 20
+	assert (message_frames(f, true, false) or { panic(err) }).len == 4
+	if _ := stated(.classic, msg, false) {
+		assert false, 'any other message stated classic carries 8 bytes'
+	}
+	assert (stated(.fd, msg, true) or { panic(err) }).fd
+}

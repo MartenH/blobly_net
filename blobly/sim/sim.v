@@ -13,6 +13,7 @@ module sim
 import math
 import time
 import blobly.candb
+import blobly.j1939
 import blobly.project
 import blobly.transport
 
@@ -269,6 +270,12 @@ pub mut:
 pub struct Engine {
 pub mut:
 	ecus []SimEcu
+	// the wire and row its frames go out on (transmit sets them), which decide whether a J1939
+	// message's frame goes out classic and so as a BAM
+	iface string
+	row   string
+	// the BAMs in progress, a transfer at a time per source address (j1939.Pacer)
+	tp j1939.Pacer
 }
 
 // Carry is what an engine rebuild carries over, kept by the caller for the whole run: each
@@ -390,22 +397,26 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 				continue
 			}
 			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev.hold_ms {
-				m.emit(now_ms, send)
+				m.emit(now_ms, mut e, send)
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
 				}
 			}
-			m.step_change(now_ms, send)
+			m.step_change(now_ms, mut e, send)
 		}
 	}
 	e.step_nm(now_ms, send)
+	e.tp.pump(now_ms, fn [send] (f transport.CanFrame, _ int) bool {
+		return send(f)
+	})
 }
 
-// emit builds the message's frame at now_ms and hands it to `send`.
-fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
+// emit builds the message's frame at now_ms and hands it to `send` through the engine `e` it
+// belongs to (Engine.emit: one frame, or a J1939 message's BAM on the engine's pacer).
+fn (mut m SimMessage) emit(now_ms f64, mut e Engine, send fn (f transport.CanFrame) bool) {
 	mut f := m.build(now_ms / 1000.0)
-	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
+	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && e.emit(f, m.msg.j1939, send) {
 		m.last_t = now_ms / 1000.0
 		m.last_n = m.send_n
 		m.last_set = m.set
@@ -431,7 +442,7 @@ pub const change_gap_ms = 10
 // send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
 // change_gap_ms apart where the file states neither, none before its start delay. The values when
 // first looked at are where it starts, not a change.
-fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) bool) {
+fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, send fn (f transport.CanFrame) bool) {
 	if !m.msg.on_change() || !m.signals.any(it.gen.follows_time())
 		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
@@ -447,7 +458,7 @@ fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) boo
 	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
 		return
 	}
-	m.emit(now_ms, send)
+	m.emit(now_ms, mut e, send)
 	m.ev.left--
 	mut gap := if m.ev.left > 0 { m.msg.cycle_fast_ms } else { 0 }
 	if gap <= 0 && m.msg.delay_ms <= 0 {
@@ -529,9 +540,25 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 	}
 }
 
+// emit hands a message's frame `f` to `send` as one frame, or — j1939.message_frames: a message
+// `declared` J1939 of more than 8 bytes going out classic — queues its BAM on the engine's pacer,
+// whose frames `step` hands on bam_gap_ms apart. False for a frame refused, or a message neither
+// one frame nor a BAM carries (a J1939 message to one node, which needs RTS/CTS).
+fn (mut e Engine) emit(f transport.CanFrame, declared bool, send fn (f transport.CanFrame) bool) bool {
+	out := transport.framed_for_wire(e.iface, transport.CanFrame{ ...f, row: e.row })
+	frames := j1939.message_frames(f, declared, out.fd) or { return false }
+	if frames.len == 1 {
+		return send(frames[0])
+	}
+	e.tp.add('${j1939.decompose(f.id).sa}', frames, 0)
+	return true
+}
+
 // transmit sends what is due on `bus` from the engine of project row `row` and publishes what a
 // described server's live DIDs read, each pass of serve_pass.
 pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, row int, chan_name string) {
+	e.iface = iface
+	e.row = chan_name
 	apply_nm_requests(iface, row, mut e)
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }

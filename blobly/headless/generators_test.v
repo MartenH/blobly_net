@@ -2,6 +2,7 @@ module headless
 
 import os
 import time
+import blobly.j1939
 import blobly.project
 import blobly.sim
 import blobly.transport
@@ -381,4 +382,46 @@ channels:
 	assert g.sent == 0
 	assert g.note.contains('not a classic CAN frame'), g.note
 	assert said.filter(it.contains('generator "Long"')).len == 1, said.str()
+}
+
+// A generator of a J1939 message past eight bytes sends its BAM, which a listener rejoins whole.
+fn test_a_j1939_generator_sends_its_bam() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_gen_bam_${os.getpid()}')
+	os.mkdir_all(dir)!
+	path := os.join_path(dir, 'bam.blobnet')
+	os.write_file(path, 'project:
+  name: bam
+  version: 8
+channels:
+  - name: J
+    type: can
+    interface: inproc:HGEN_BAM
+    databases:
+      - ${os.join_path(@VMODROOT, 'dbc', 'j1939_demo.dbc')}
+    senders:
+      - name: Body
+        message: BodyStatus
+        trigger: manual
+        signals:
+          - { name: Tail, value: 66 }
+')!
+	mut r := start(load(path, Options{})!, path, Options{})!
+	mut bus := transport.open('inproc:HGEN_BAM')!
+	defer {
+		bus.close()
+		r.stop()
+	}
+	r.gen_fire(0, 0)!
+	mut rj := j1939.Reassembler{}
+	mut done := []j1939.Assembled{}
+	t0 := time.ticks()
+	for done.len == 0 && time.ticks() - t0 < 1000 {
+		f := bus.recv(20) or { continue }
+		ev := rj.feed(f, f64(time.ticks() - t0))
+		assert ev.faults.len == 0
+		done << ev.done
+	}
+	assert done.len == 1 && done[0].pgn == 0xFF10 && done[0].sa == 0x21
+	assert done[0].data.len == 20 && done[0].data[19] == 66
+	assert r.generators()[0].sent == 1
 }

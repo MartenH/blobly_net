@@ -694,6 +694,12 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   the channel's declaration decides (`type: canfd` frames as FD) — the CHANNEL's, so on a wire an
   enabled `canfd` row and an enabled `can` row share, each row's frames go out in its own format. It is how a classic frame
   reaches a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
+- **A J1939 message longer than 8 bytes** (its DBC declares `VFrameFormat` `J1939PG`) whose frame
+  goes out classic is sent by `bus.send_message` as the transport protocol's broadcast: one TP.CM
+  BAM and its TP.DT packets from the message's source address, 50 ms apart, the last padded with
+  0xFF ([j1939.md](j1939.md#sending-a-message-longer-than-8-bytes)); the call returns once the last
+  packet is out. `format = "classic"` sends it so on an FD row too, and `bus.send_message_cyclic`
+  sends one BAM a period.
 - **Background senders.** `bus.send_cyclic` sends a frame every `period_ms` (1 .. 3600000),
   the first at once, and `bus.send_message_cyclic` a DBC message encoded from `sigs`, its declared
   E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — in the

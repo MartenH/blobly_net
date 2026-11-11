@@ -2,6 +2,7 @@ module cyclic
 
 import time
 import blobly.candb
+import blobly.j1939
 import blobly.transport
 
 // frames_within is what `rx` hears of id `id` for `ms`.
@@ -415,4 +416,36 @@ fn test_a_stop_during_a_send_starts_no_further_send() {
 	w.run(transport.open)!
 	assert first.served == 1
 	assert second.served == 0, 'an entry was sent after the stop'
+}
+
+// A J1939 message past eight bytes is a BAM each period, which the listener rejoins whole; on a
+// SocketCAN-clamped or vendor wire one 20-byte frame would have been cut or refused.
+fn test_a_j1939_message_sender_sends_a_bam_each_period() {
+	db := candb.load_dbc_file(@VMODROOT + '/dbc/j1939_demo.dbc')!
+	msg := db.message_named('BodyStatus') or { panic('no BodyStatus') }
+	mut rx := transport.open('inproc:CYC_BAM')!
+	defer {
+		rx.close()
+	}
+	mut s := start(transport.open('inproc:CYC_BAM')!, Spec{
+		by_message: true
+		message:    msg
+		values:     {
+			'Tail': 0x5A
+		}
+		period_ms:  1000
+	}, Life{})!
+	mut r := j1939.Reassembler{}
+	mut done := []j1939.Assembled{}
+	t0 := time.ticks()
+	for done.len == 0 && time.ticks() - t0 < 1000 {
+		f := rx.recv(10) or { continue }
+		ev := r.feed(f, f64(time.ticks() - t0))
+		assert ev.faults.len == 0
+		done << ev.done
+	}
+	assert done.len == 1 && done[0].pgn == 0xFF10 && done[0].sa == 0x21
+	assert done[0].data.len == 20 && done[0].data[19] == 0x5A
+	assert s.stop()
+	assert s.info().sent == 1 && s.info().failed == 0
 }

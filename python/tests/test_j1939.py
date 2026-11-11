@@ -76,6 +76,22 @@ def test_a_bam_is_one_message_decoded_by_pgn(rows):
     assert j.j1939().faults() == []
 
 
+def test_message_send_sends_a_j1939_message_past_eight_bytes_as_a_bam(rows):
+    j, peer, _ = rows
+    body = j.messages.BodyStatus
+    assert body.j1939 and body.dlc == 20
+    sent = body.send(Counter=7, Odometer=12345.6, CabTemp=25, DoorState=1, Tail=0x2A)
+    assert len(sent.data) == 20 and sent.data[19] == 0x2A
+    m = peer.j1939().expect_pgn(0xFF10, 1000)
+    assert (m.pgn, m.sa, m.da, m.bam, m.priority, m.packets) == (0xFF10, 0x21, 0xFF, True, 7, 3)
+    assert m.data == sent.data
+    assert peer.j1939().faults() == []
+    # stated classic it is the same BAM; encode() gives the whole message
+    assert len(body.encode(Tail=1).data) == 20
+    body.send(format="classic", Tail=1)
+    assert peer.j1939().expect_pgn(0xFF10, 1000).data[19] == 1
+
+
 def test_an_rts_cts_connection_played_from_both_sides(rows):
     j, peer, other = rows
     payload = bytes([3]) + (1000).to_bytes(2, "little") + bytes(12) + b"\x99"

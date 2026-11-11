@@ -164,6 +164,12 @@ class BbFrame(ctypes.Structure):
                 ("format", ctypes.c_uint8), ("t_ns", ctypes.c_int64)]
 
 
+class BbPayload(ctypes.Structure):
+    """bb_payload, field for field: a message of up to BB_J1939_MAX bytes."""
+    _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("format", ctypes.c_uint8),
+                ("len", ctypes.c_uint16), ("data", ctypes.c_uint8 * 1785)]
+
+
 class BbMessage(ctypes.Structure):
     """bb_message, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
@@ -733,6 +739,10 @@ def _declare(lib):
         "bb_e2e_group_verdict": ([c_int, c_int], c_int),
         "bb_framing_attach": ([c_int, c_int], c_int),
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
+        # a message sent whole: one frame, or a J1939 message's BAM (project.py)
+        "bb_encode_payload": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbPayload)], c_int),
+        "bb_e2e_stamp_payload": ([c_int, c_int, P(BbPayload)], c_int),
+        "bb_message_send": ([c_int, c_int, c_int, P(BbPayload)], c_int),
         # background senders (cyclic.py) and the keep-alive (uds.py)
         "bb_cyclic_start": ([c_int, P(BbFrame), c_int], c_int),
         "bb_cyclic_start_message": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), c_int, c_int, c_int],

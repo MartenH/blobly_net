@@ -15,6 +15,7 @@ module cyclic
 import sync
 import time
 import blobly.candb
+import blobly.j1939
 import blobly.project
 import blobly.sim
 import blobly.transport
@@ -53,14 +54,18 @@ pub:
 }
 
 // check refuses a spec no sender could send: a period outside 1 ms .. an hour, a payload past 64
-// bytes or past its stated format, a signal its message does not have, a declared E2E that cannot
+// bytes (a J1939 message's past 1785) or past its stated format, a signal its message does not have, a declared E2E that cannot
 // be applied.
 pub fn (s Spec) check() ! {
 	check_period(s.period_ms)!
 	if s.by_message {
 		check_values(s.message, s.values)!
-		if s.message.payload_len() > 64 {
+		// a J1939 message goes out as a BAM (j1939.message_frames), of up to 1785 bytes
+		if s.message.payload_len() > 64 && !s.message.j1939 {
 			return error('${s.message.name}: a payload of ${s.message.payload_len()} bytes is past what a CAN frame carries (64)')
+		}
+		if s.message.payload_len() > j1939.tp_max_size {
+			return error('${s.message.name}: a payload of ${s.message.payload_len()} bytes is past what the J1939 transport protocol carries (${j1939.tp_max_size})')
 		}
 		if why := transport.frame_send_refusal(transport.CanFrame{
 			id:       s.message.id
@@ -282,13 +287,27 @@ fn (mut s Sender) send_once(mut bus transport.Bus) {
 			return
 		}
 	}
-	bus.send(frame) or {
+	// a J1939 message past eight bytes on a classic row is a BAM, paced, ended by a stop
+	stop := fn [s] () bool {
+		mut me := unsafe { s }
+		return me.stopping()
+	}
+	j1939.send_message(mut bus, frame, sp.by_message && sp.message.j1939, stop) or {
 		s.note_failure(err.msg())
 		return
 	}
 	s.mu.lock()
 	s.sent++
 	s.mu.unlock()
+}
+
+// stopping is whether the loop is to end: a stop asked, or its owner's end.
+fn (mut s Sender) stopping() bool {
+	s.mu.lock()
+	asked := s.asked
+	mut w := s.wire
+	s.mu.unlock()
+	return asked || (!isnil(w) && w.stopping())
 }
 
 // encoded is the frame `sp` sends, its E2E not stamped yet.

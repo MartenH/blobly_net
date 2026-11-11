@@ -2,6 +2,7 @@ module sim
 
 import math
 import blobly.candb
+import blobly.j1939
 import blobly.project
 import blobly.transport
 
@@ -204,8 +205,15 @@ fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, cap int, signal s
 	if m.signals.filter(it.name == signal).len > 1 {
 		return gen_error(.refused, '${m.name} has ${m.signals.filter(it.name == signal).len} signals named "${signal}": a generator cannot tell them apart')
 	}
-	// what a frame on the generator's wire carries of the message
-	n := if m.payload_len() > cap { cap } else { m.payload_len() }
+	// what a frame on the generator's wire carries of the message; a J1939 message where a frame
+	// carries 8 goes out whole, as a BAM (j1939.message_frames)
+	n := if m.j1939 && cap == 8 && m.payload_len() <= j1939.tp_max_size {
+		m.payload_len()
+	} else if m.payload_len() > cap {
+		cap
+	} else {
+		m.payload_len()
+	}
 	if !m.holds(sig, n) {
 		return gen_error(.refused, '${m.name} sends ${n} bytes, which do not hold ${signal}: it is never sent')
 	}

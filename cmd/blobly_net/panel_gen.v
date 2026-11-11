@@ -4,6 +4,7 @@ import math
 import genhome
 import blobly.project
 import blobly.sim
+import blobly.j1939
 import time
 import blobly.transport
 import blobly.candb
@@ -986,6 +987,34 @@ fn (mut app App) fire_index(i int) {
 			app.notify('generator ${s.name}: ${err.msg()}')
 			return
 		}
+	}
+	// a J1939 message past eight bytes on a classic row is a BAM, paced by gen_loop
+	declared := s.message != '' && sim.sender_j1939(s, app.dbs_for(tgt))
+	frames := j1939.message_frames(frame, declared, transport.framed_for_wire(tgt, transport.CanFrame{
+		...frame
+		row: own
+	}).fd) or {
+		app.notify('generator ${s.name}: ${err.msg()}')
+		return
+	}
+	if frames.len > 1 {
+		app.mu.lock()
+		dest := GenTpDest{
+			row:   own_row
+			chan:  own
+			iface: tgt
+		}
+		mut tag := app.gen_tp_dests.index(dest)
+		if tag < 0 {
+			tag = app.gen_tp_dests.len
+			app.gen_tp_dests << dest
+		}
+		app.gen_tp.add('${tgt}/${j1939.decompose(frame.id).sa}', frames, tag)
+		if app.gen_state_epoch == epoch {
+			app.gen_send_n[uid] = n + 1
+		}
+		app.mu.unlock()
+		return
 	}
 	if app.tx_on_chan(own_row, own, tgt, frame) {
 		// delivered frames only — a fire refused while the tap is still opening put nothing on

@@ -419,6 +419,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_tester_present', l_uds_tester_present)
 	env.st.register('__uds_raw', l_uds_raw)
 	env.st.register('__bus_send', l_bus_send)
+	env.st.register('__bus_send_message', l_bus_send_message)
 	env.st.register('__bus_recv', l_bus_recv)
 	env.st.register('__msg_template', l_msg_template)
 	env.st.register('__encode_signal', l_encode_signal)
@@ -1534,6 +1535,33 @@ fn l_bus_send(l lua.State) i32 {
 		data:     l.arg_bytes(4)
 	}) or { return l.fail('${name}: ${err}') }
 	bus.send(frame) or { return l.fail('send failed on ${name}: ${err}') }
+	return 0
+}
+
+// __bus_send_message(channel, message, data, format): message's encoded `data` sent as bus.send
+// sends a frame — or, a J1939 message past eight bytes going out classic, as its BAM
+// (j1939.send_message), the call returning once its last frame is out, or at the run's deadline.
+fn l_bus_send_message(l lua.State) i32 {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	msg := env.chans[ci].db.message_named(l.arg_str(2)) or {
+		return l.fail('unknown message "${l.arg_str(2)}"')
+	}
+	bus := env.bus_for(name) or { return l.fail(err.msg()) }
+	ff := transport.parse_frame_format(l.arg_str(4)) or { return l.fail(err.msg()) }
+	frame := j1939.stated(ff, transport.CanFrame{
+		id:       msg.id
+		extended: msg.ext
+		data:     l.arg_bytes(3)
+	}, msg.j1939) or { return l.fail('${name}: ${err}') }
+	mut b := transport.Bus(bus)
+	stop := fn [env] () bool {
+		return env.expired()
+	}
+	j1939.send_message(mut b, frame, msg.j1939, stop) or {
+		return l.fail('send failed on ${name}: ${err}')
+	}
 	return 0
 }
 

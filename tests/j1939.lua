@@ -66,6 +66,18 @@ test("a BAM is one message, decoded by PGN", function()
   check.equal(j1939.dropped("J1939"), 0)
 end)
 
+test("bus.send_message sends a J1939 message past 8 bytes as a BAM", function()
+  drain("Peer")
+  bus.send_message("J1939", "BodyStatus", { Counter = 7, Odometer = 12345.6, CabTemp = 25, DoorState = 1,
+    Tail = 0x2A })
+  local m = j1939.expect("Peer", 0xFF10, 1000)
+  check.equal(m.sa, 0x21)
+  check.equal(m.bam, true)
+  check.equal(m.packets, 3)
+  check.equal(m.data, BODY)
+  check.equal(#j1939.faults("Peer"), 0)
+end)
+
 test("an RTS/CTS connection, played from both sides", function()
   drain("J1939")
   local payload = string.char(3) .. string.pack("<I2", 1000) .. string.rep("\0", 12) .. string.char(0x99)

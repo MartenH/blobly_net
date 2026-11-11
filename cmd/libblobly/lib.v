@@ -403,6 +403,16 @@ pub mut:
 	note       [256]char
 }
 
+// a message's payload of any length up to a J1939 transport-protocol message (message.v)
+pub struct C.bb_payload {
+pub mut:
+	id     u32
+	ext    u8
+	format u8
+	len    u16
+	data   [1785]u8
+}
+
 pub struct C.bb_j1939_fault {
 pub mut:
 	kind      i32
@@ -1325,24 +1335,9 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 	}
 	msg := message(row, m) or { return refused(err) }
 	if msg.dlc > 64 {
-		return fail(bb_err, 'encode: ${msg.name} has a DLC of ${msg.dlc}, past what bb_frame carries (64)')
+		return fail(bb_err, 'encode: ${msg.name} has a DLC of ${msg.dlc}, past what bb_frame carries (64): bb_encode_payload carries it')
 	}
-	mut data := msg.template()
-	for i in 0 .. int(n) {
-		p := unsafe { signals[i] }
-		if isnil(p) {
-			return fail(bb_err, 'encode: signal name ${i} is NULL')
-		}
-		name := unsafe { cstring_to_vstring(p) }
-		sig := msg.signal_named(name) or {
-			return fail(bb_err, 'unknown signal "${name}" in ${msg.name}')
-		}
-		why := sig.scalar_refusal()
-		if why != '' {
-			return fail(bb_err, why)
-		}
-		sig.encode(mut data, unsafe { values[i] })
-	}
+	data := encode_values(msg, n, signals, values) or { return fail(bb_err, err.msg()) }
 	unsafe {
 		out.id = msg.id
 		out.len = u8(data.len)
@@ -1420,6 +1415,25 @@ pub fn bb_decode_bytes(row i32, f &C.bb_frame, m i32, s i32, buf &u8, cap i32) i
 	}
 	got := sig.bytes_value(data) or { return fail(bb_err, err.msg()) }
 	return put_bytes(got, buf, cap)
+}
+
+// encode_values is message msg's template with the host's n signals encoded onto it, by name.
+fn encode_values(msg candb.Message, n i32, signals &&char, values &f64) ![]u8 {
+	mut data := msg.template()
+	for i in 0 .. int(n) {
+		p := unsafe { signals[i] }
+		if isnil(p) {
+			return error('encode: signal name ${i} is NULL')
+		}
+		name := unsafe { cstring_to_vstring(p) }
+		sig := msg.signal_named(name) or { return error('unknown signal "${name}" in ${msg.name}') }
+		why := sig.scalar_refusal()
+		if why != '' {
+			return error(why)
+		}
+		sig.encode(mut data, unsafe { values[i] })
+	}
+	return data
 }
 
 // bb_decode is the Lua prelude's decode: the message by Database.frame_index (lookup_frame's

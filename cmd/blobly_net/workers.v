@@ -246,7 +246,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			}
 			a.mu.unlock()
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
-			engine = sim.Engine{}
+			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
+			engine = sim.Engine{
+				tp: engine.tp
+			}
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
@@ -282,6 +285,9 @@ fn gen_loop(app &App) {
 	}
 	mut a := unsafe { app }
 	mut slots := map[u64]GenSlot{} // by SenderRT.uid
+	a.mu.lock()
+	a.gen_tp = j1939.Pacer{} // nothing of an earlier run's transfers
+	a.mu.unlock()
 	for a.running {
 		now := time.sys_mono_now() / 1_000_000
 		mut next_at := now + gen_poll_ms // the earliest a cyclic sender is due next
@@ -363,6 +369,7 @@ fn gen_loop(app &App) {
 				}
 			}
 		}
+		a.send_gen_tp(f64(time.ticks()))
 		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
 		// emission or the next received frame, so on a bus that falls silent — a disconnected
 		// bench, the very case the mark is for — the last rows stayed unresolved forever.
@@ -371,6 +378,43 @@ fn gen_loop(app &App) {
 		a.mu.unlock()
 		// until the next cyclic sender is due, on the monotonic clock
 		time.sleep(i64(sim.wait_until(next_at, time.sys_mono_now() / 1_000_000, gen_poll_ms)) * time.millisecond)
+	}
+}
+
+// GenTpDest is where a generator's BAM goes: its row, channel and wire, as tx_on_chan takes them.
+struct GenTpDest {
+	row   int
+	chan  string
+	iface string
+}
+
+// TpDue collects the BAM frames due in one pass, from inside a closure.
+@[heap]
+struct TpDue {
+mut:
+	frames []transport.CanFrame
+	tags   []int
+}
+
+// send_gen_tp sends the generators' BAM frames due by `now_ms`, taken under app.mu and sent
+// outside it; a frame its tap refuses ends the transfers to that destination.
+fn (mut app App) send_gen_tp(now_ms f64) {
+	mut due := &TpDue{}
+	app.mu.lock()
+	app.gen_tp.pump(now_ms, fn [mut due] (f transport.CanFrame, tag int) bool {
+		due.frames << f
+		due.tags << tag
+		return true
+	})
+	dests := app.gen_tp_dests.clone()
+	app.mu.unlock()
+	for k, f in due.frames {
+		d := dests[due.tags[k]]
+		if !app.tx_on_chan(d.row, d.chan, d.iface, f) {
+			app.mu.lock()
+			app.gen_tp.abandon(due.tags[k])
+			app.mu.unlock()
+		}
 	}
 }
 
