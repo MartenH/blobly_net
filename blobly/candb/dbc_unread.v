@@ -2,8 +2,9 @@
 // of a file it did not use (`SIG_VALTYPE_ × 3`, `attribute "GenSigSendType" × 40`). What reaches
 // `see` is every line no reader took; what is not a record of the file's content is left out:
 // the VERSION label, the NS_ symbol list and the BS_ line, an attribute's definition (BA_DEF_,
-// BA_DEF_REL_ — it states nothing about an object), the network comment (`CM_ "…";`, which the
-// writer itself emits) and the inside of a string running over several lines.
+// BA_DEF_REL_ — it states nothing about an object), every comment (CM_ — on the network, a
+// node, a message, a signal or an env var: none changes a decode or the simulation) and the
+// inside of a string running over several lines.
 module candb
 
 // Unread is the tally while a file is read.
@@ -49,16 +50,10 @@ fn (mut u Unread) see(line string) {
 		u.in_ns = true
 		return
 	}
-	if kw in ['VERSION', 'BS_', 'BA_DEF_', 'BA_DEF_REL_'] || !is_keyword(kw) {
+	if kw in ['VERSION', 'BS_', 'BA_DEF_', 'BA_DEF_REL_', 'CM_'] || !is_keyword(kw) {
 		return
 	}
 	kind := match kw {
-		'CM_' {
-			if f.len < 2 || f[1].starts_with('"') {
-				return
-			}
-			'CM_ ${f[1]}'
-		}
 		'BA_', 'BA_REL_', 'BA_DEF_DEF_', 'BA_DEF_DEF_REL_' {
 			if f.len < 2 {
 				kw

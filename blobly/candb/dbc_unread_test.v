@@ -24,6 +24,8 @@ CM_ "a network comment";
 CM_ BO_ 256 "the door
 over two lines";
 CM_ SG_ 256 Speed "read";
+CM_ BU_ Body "a node";
+CM_ EV_ Ignition "an env var";
 BA_DEF_ SG_  "GenSigSendType" ENUM "Cyclic","OnWrite";
 BA_DEF_ "BusType" STRING ;
 BA_DEF_DEF_  "GenSigSendType" "Cyclic";
@@ -40,9 +42,15 @@ SG_MUL_VAL_ 256 A Mode 1-1;
 
 fn test_unread_records_are_counted_by_kind_in_file_order() {
 	db := parse_dbc(unread_dbc)!
-	assert db.unread == ['VAL_TABLE_ × 1', 'CM_ BO_ × 1', 'attribute "GenSigSendType" × 3',
+	assert db.unread == ['VAL_TABLE_ × 1', 'attribute "GenSigSendType" × 3',
 		'attribute "BusType" × 2', 'SIG_VALTYPE_ × 2', 'SG_MUL_VAL_ × 1'], '${db.unread}'
 	assert db.messages[0].signals[0].desc == 'read'
+}
+
+// A file whose records the reader takes, comments on its messages and nodes besides, has none unread.
+fn test_comments_are_not_unread() {
+	db := parse_dbc(os.read_file(os.join_path(@VMODROOT, 'dbc', 'trace.dbc'))!)!
+	assert db.unread == [], '${db.unread}'
 }
 
 fn test_open_database_says_the_unread_records_in_one_note() {
@@ -54,7 +62,7 @@ fn test_open_database_says_the_unread_records_in_one_note() {
 	path := os.join_path(dir, 'u.dbc')
 	os.write_file(path, unread_dbc)!
 	l := open_database(path)!
-	assert l.unread == ['u.dbc: not read: VAL_TABLE_ × 1, CM_ BO_ × 1, attribute "GenSigSendType" × 3, attribute "BusType" × 2, SIG_VALTYPE_ × 2, SG_MUL_VAL_ × 1']
+	assert l.unread == ['u.dbc: not read: VAL_TABLE_ × 1, attribute "GenSigSendType" × 3, attribute "BusType" × 2, SIG_VALTYPE_ × 2, SG_MUL_VAL_ × 1']
 	assert l.unread[0] in l.notes
 	// and a Save from the editor says it drops them, once
 	assert l.db.save_drops().any(it.starts_with('not read, so not saved: VAL_TABLE_ × 1'))

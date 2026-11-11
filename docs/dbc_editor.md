@@ -43,9 +43,10 @@ tested (`dbc_write_test.v`):
 
 What the parser does not read is therefore not written, and the load says what that is: every
 other record is counted by kind (`dbc_unread.v`) into one load note per file, `u.dbc: not read:
-SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40, CM_ BO_ × 5` — left out are only the `VERSION`
-label, the `NS_` list, `BS_`, an attribute's definition (`BA_DEF_`) and the network comment
-(`CM_ "…"`, which the writer emits itself). A Save says it drops them (`save_drops`), and a strict
+SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40` — left out are only the `VERSION`
+label, the `NS_` list, `BS_`, an attribute's definition (`BA_DEF_`) and the comments (`CM_` on
+the network, a node, a message or an env var, which change neither a decode nor the simulation;
+a signal's is read). A Save says it drops them (`save_drops`), and a strict
 load refuses a project whose databases have any.
 
 Embedded double quotes in units/comments/labels are sanitized to single
