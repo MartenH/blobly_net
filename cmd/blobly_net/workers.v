@@ -246,7 +246,8 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			}
 			a.mu.unlock()
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
-			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
+			// a transfer in progress goes on (a BAM, a connection sent or answered), so a rebuild
+			// does not cut it short on the wire
 			engine = engine.carried()
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {

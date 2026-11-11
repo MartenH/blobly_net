@@ -1,8 +1,10 @@
 // Listener is the reading of one handle's frames for a script: the transport protocol rejoined
 // (Reassembler) and the address directory (Directory), fed with every frame the handle reads, so a
 // frame is still consumed once by whoever reads it and the script's own sends are never in it.
-// Completed messages and faults wait in bounded queues until the script takes them. Like the rest
-// of this module it sends nothing: no CTS, no acknowledgement, no address claim.
+// Completed messages and faults wait in bounded queues until the script takes them. It sends nothing
+// of its own accord — no address claim — but where `answer` names an address the handle holds, an
+// RTS aimed at it is answered (Responder): the frames to send wait in `take_outgoing` for the
+// reader, which sends them on the handle.
 module j1939
 
 import blobly.transport
@@ -15,9 +17,12 @@ pub struct Listener {
 pub mut:
 	tp  Reassembler
 	dir Directory
+	// the RTS/CTS connections answered for the address set by `answer`
+	answers Responder
 mut:
-	done   Queue[Assembled]
-	faults Queue[Fault]
+	done     Queue[Assembled]
+	faults   Queue[Fault]
+	outgoing []transport.CanFrame
 pub mut:
 	// messages and faults dropped untaken because the queue was full
 	dropped int
@@ -82,6 +87,8 @@ pub fn (mut l Listener) feed(f transport.CanFrame, t_ms f64) {
 	if claim_frame(f, id) {
 		l.dir.observe(id.sa, f.data, t_ms) or {}
 	}
+	l.outgoing << l.answers.poll(t_ms)
+	l.outgoing << l.answers.feed(f, t_ms)
 	ev := l.tp.feed(f, t_ms)
 	for a in ev.done {
 		if l.done.push(a) {
@@ -96,12 +103,41 @@ pub fn (mut l Listener) feed(f transport.CanFrame, t_ms f64) {
 // idle expires the sessions stalled at `t_ms`, for a reader that found nothing queued: a sender
 // that stopped mid-transfer is said even when no further frame comes.
 pub fn (mut l Listener) idle(t_ms f64) {
+	l.outgoing << l.answers.poll(t_ms)
 	if l.tp.open() == 0 {
 		return
 	}
 	for fl in l.tp.expire(t_ms) {
 		l.push_fault(fl)
 	}
+}
+
+// answer makes the listener answer RTS/CTS connections aimed at `address` (0..0xFD), as the node
+// holding it: none (-1) answers nothing. A connection being answered for another address ends
+// unanswered; the same address again changes nothing.
+pub fn (mut l Listener) answer(address int) ! {
+	if address < -1 || address > 0xFD {
+		return error('an address a node holds is 0x00..0xFD, not ${address}')
+	}
+	if address == l.answering() {
+		return
+	}
+	l.answers = Responder{
+		addresses: if address < 0 { []u8{} } else { [u8(address)] }
+	}
+}
+
+// answering is the address the listener answers for, -1 none.
+pub fn (l Listener) answering() int {
+	return if l.answers.addresses.len > 0 { int(l.answers.addresses[0]) } else { -1 }
+}
+
+// take_outgoing is what the listener has to send since it was last asked: the answers to the
+// connections aimed at its address, for the reader to send on its handle in order.
+pub fn (mut l Listener) take_outgoing() []transport.CanFrame {
+	out := l.outgoing
+	l.outgoing = []
+	return out
 }
 
 fn (mut l Listener) push_fault(f Fault) {

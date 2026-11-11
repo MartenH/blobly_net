@@ -2,7 +2,8 @@
 // channel's j1939.Listener — the transport protocol rejoined and the address directory — where the
 // wire reads as J1939 (a row on it ticked `j1939:`, a database declaring it) or the script asked
 // (any j1939.* call). Completed messages decode by candb.pgn_message_in, the trace's rule, over the
-// row's database files, mapped into its merged catalog (pgn_message_in_catalog). Nothing is sent.
+// row's database files, mapped into its merged catalog (pgn_message_in_catalog). Nothing is sent
+// but the answers to an RTS aimed at the address j1939.answer names, on the script's handle.
 module script
 
 import time
@@ -17,6 +18,30 @@ fn (mut env Env) register_j1939() {
 	env.st.register('__j1939_faults', l_j1939_faults)
 	env.st.register('__j1939_addresses', l_j1939_addresses)
 	env.st.register('__j1939_dropped', l_j1939_dropped)
+	env.st.register('__j1939_answer', l_j1939_answer)
+}
+
+// __j1939_answer(channel, address): the channel's listener answers RTS/CTS connections aimed at
+// `address` (-1 none), as the channel is read
+fn l_j1939_answer(l lua.State) i32 {
+	mut env := env_of(l)
+	address := int_arg(l, 2, 'the address', -1, 0xFD) or { return l.fail('j1939.answer: ${err}') }
+	mut lis := env.j1939_of(l.arg_str(1)) or { return l.fail(err.msg()) }
+	lis.answer(int(address)) or { return l.fail('j1939.answer: ${err}') }
+	return 0
+}
+
+// j1939_answers sends what `name`'s listener has to send in answer to a connection, on the
+// script's handle there.
+fn (mut env Env) j1939_answers(name string, mut lis j1939.Listener) {
+	out := lis.take_outgoing()
+	if out.len == 0 {
+		return
+	}
+	mut bus := env.bus_for(name) or { return }
+	for f in out {
+		bus.send(f) or {}
+	}
 }
 
 // __j1939_dropped(channel) -> the messages and faults dropped untaken, the queues being full
@@ -55,12 +80,14 @@ fn (mut env Env) j1939_saw(name string, f transport.CanFrame) {
 		l
 	}
 	l.feed(f, f64(time.sys_mono_now()) / 1_000_000.0)
+	env.j1939_answers(name, mut l)
 }
 
 // j1939_idle times the stalled transfers of `name`'s listener out: its handle had nothing queued.
 fn (mut env Env) j1939_idle(name string) {
 	if mut l := env.j1939_rx[name] {
 		l.idle(f64(time.sys_mono_now()) / 1_000_000.0)
+		env.j1939_answers(name, mut l)
 	}
 }
 

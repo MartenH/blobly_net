@@ -198,9 +198,12 @@ a wire-visible feature, the matching host support usually lands here in the same
   message by PGN — the placeholder
   source address in a J1939 DBC's ids had made every frame of the SUT "unknown" and replayed it
   back at itself. Gated PER WIRE by what its databases declare, with the Trace panel's tri-state
-  tick as the override, because a 29-bit id alone does not say what protocol it belongs to. Nothing is answered or claimed;
-  composing playback with nodes that react (Request, RTS/CTS aimed at a recorded node) is the
-  follow-on the issue's thread describes.
+  tick as the override, because a 29-bit id alone does not say what protocol it belongs to. Nothing is claimed
+  and no Request answered; the transport protocol is SENT since — a BAM (#619), and an RTS/CTS
+  connection both ways (#620: a message to one node sent by a script, a background sender or a
+  simulated node, and an RTS answered by a simulated node for its own addresses or by a script for
+  the one it names). Composing playback with nodes that react (a Request, an RTS aimed at a node
+  only the recording has) is the follow-on the issue's thread describes.
 - ✅ **Vector (XL family) CAN backend** — `vector:<channel>[@<bitrate>][,silent]` on Windows,
   addressed by APPLICATION channel as Vector Hardware Manager numbers them. `vxlapi64.dll` is
   loaded at runtime and found in the XL Driver Library's own install directory, because it does

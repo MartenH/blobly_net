@@ -1,7 +1,9 @@
 """J1939 from Python: Channel.j1939 against projects/j1939-script.blobnet, three rows on one
-in-process wire. The engine answers nothing on J1939, so the tests play every node themselves:
-Peer (SA 0x21) and Other (SA 0x00) send, J1939 (its database declares J1939) listens."""
+in-process wire. The tests play every node themselves: Peer (SA 0x21) and Other (SA 0x00) send,
+J1939 (its database declares J1939) listens — but on the Conn wire the simulated Engine (SA 0x00)
+answers an RTS/CTS connection aimed at it."""
 import os
+import threading
 
 import pytest
 
@@ -103,6 +105,42 @@ def test_an_rts_cts_connection_played_from_both_sides(rows):
     assert (m.bam, m.da, m.data) == (False, 0x00, payload)
     assert m.message.name == "PropA_Cfg"
     assert m.signals == {"Mode": 3, "Setpoint": 500, "Last": 0x99}
+
+
+def test_message_send_to_one_node_is_a_connection_the_simulated_node_answers(net, rows):
+    conn, peer = net.channels.Conn, net.channels.ConnPeer
+    cfg = conn.messages.PropA_Cfg
+    sent = cfg.send(Mode=2, Setpoint=100.0, Last=0x77, timeout_ms=3000)
+    assert len(sent.data) == 16
+    m = peer.j1939().expect_pgn(0xEF00, 1000, sa=0x21)
+    assert (m.bam, m.da, m.data) == (False, 0x00, sent.data)
+    assert peer.j1939().faults() == []
+
+
+def test_a_connection_nobody_answers_raises_timeout(rows):
+    j, _, _ = rows
+    with pytest.raises(blobly.Timeout, match="no CTS from 0x00"):
+        j.messages.PropA_Cfg.send(Mode=1, timeout_ms=100)
+    with pytest.raises(ValueError):
+        j.messages.PropA_Cfg.send(timeout_ms=0)
+
+
+def test_a_listener_answers_a_connection_aimed_at_its_address(rows):
+    j, _, other = rows
+    lis = other.j1939(address=0x00)
+    assert lis.answering == 0x00
+    got = []
+    reader = threading.Thread(target=lambda: got.append(lis.expect_pgn(0xEF00, 3000, sa=0x21)))
+    reader.start()
+    try:
+        sent = j.messages.PropA_Cfg.send(Mode=4, Setpoint=12.5, timeout_ms=3000)
+    finally:
+        reader.join()
+        lis.answer(None)
+    assert got and (got[0].bam, got[0].da, got[0].data) == (False, 0x00, sent.data)
+    assert lis.answering is None
+    with pytest.raises(ValueError):
+        lis.answer(0xFE)
 
 
 def test_a_sequence_gap_is_a_fault_and_no_message(rows):

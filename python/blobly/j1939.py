@@ -1,7 +1,7 @@
 """j1939 — SAE J1939 on a CAN channel, through libblobly (blobly/j1939): multi-packet messages
 rejoined from the transport protocol (BAM and RTS/CTS), their faults, and the address directory,
-read from the frames the channel's own handle reads (Channel.j1939). A listener: it sends nothing,
-no CTS, no acknowledgement, no address claim."""
+read from the frames the channel's own handle reads (Channel.j1939). A listener, which claims no
+address; told an address (answer), it answers the RTS/CTS connections aimed at it."""
 import collections
 import ctypes
 from dataclasses import dataclass, field
@@ -119,16 +119,42 @@ class J1939Listener:
         self._faults: collections.deque[J1939Fault] = collections.deque(maxlen=_QUEUE)
         self._lost = 0
         self._h = None
+        self._address = -1  # the address it answers for (answer), -1 none
 
     def _handle(self):
         """The channel's handle, listening; what was kept of another handle's reading let go."""
         h = self.channel._handle()
         if h != self._h:
             _lib.check(_lib.lib().bb_j1939_attach(h, self.channel._index, 1))
+            self._answering(h)
             self._faults.clear()
             self._lost = 0
             self._h = h
         return h
+
+    def _answering(self, h):
+        """Handle h answers for the address this listener was told; under the state lock."""
+        _lib.check(_lib.lib().bb_j1939_answer(h, self._address))
+
+    def answer(self, address: int | None) -> None:
+        """Answers RTS/CTS connections aimed at `address` (0x00..0xFD) as the node holding it — a
+        CTS per window, the end-of-message acknowledgement once the last packet is in, an abort
+        when its packets stop or come out of sequence — while the channel is read (recv, expect,
+        the event loop, the waits here); the message arrives as any other (expect_pgn). None
+        answers nothing. Kept across the channel's handles; a connection being answered for
+        another address ends unanswered."""
+        if address is not None:
+            _int("answer", "an address", address, 0xFD)
+        with _lib.state_lock:
+            self._address = -1 if address is None else address
+            if self.channel._h is not None:
+                self._handle()
+                self._answering(self._h)
+
+    @property
+    def answering(self) -> int | None:
+        """The address it answers RTS/CTS connections for (answer), None for none."""
+        return None if self._address < 0 else self._address
 
     def _pull_faults(self, h):
         lib = _lib.lib()

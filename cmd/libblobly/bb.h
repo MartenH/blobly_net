@@ -1484,7 +1484,12 @@ int bb_uds_keep_alive_failure(int u, char *buf, int cap);
 /* J1939 on a row's frames (cmd/libblobly/j1939.v, blobly/j1939): the transport protocol (BAM and
  * RTS/CTS) rejoined and the address directory, read from the frames a bus handle reads — a frame
  * is still consumed once, by whoever reads it, and what the handle sends is never in it. A
- * LISTENER: nothing is sent, no CTS, no acknowledgement, no address claim.
+ * LISTENER, which claims no address; but after bb_j1939_answer(h, address) it answers RTS/CTS
+ * connections aimed at `address` (0x00..0xFD; -1 none) as the node holding it, from inside
+ * bb_bus_recv on the handle — a CTS per window, the end-of-message acknowledgement once the last
+ * packet is in, an abort when packets stop (T2 1250 ms after a CTS, T1 750 ms between packets) or
+ * come out of sequence — so a connection is answered only while the handle is read. The message
+ * arrives through bb_j1939_take_message as any other. BB_ERR_STATE on a handle not attached.
  *
  * bb_j1939_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start): every
  * frame bb_bus_recv reads on it from then on is fed to the listener, and a receive that finds
@@ -1565,6 +1570,7 @@ int bb_j1939_attach(int h, int row, int force);    /* 1 listening, 0 not (force 
 int bb_j1939_take_message(int h, bb_j1939_message *out, double *values, uint8_t *active, int cap);
 int bb_j1939_take_fault(int h, bb_j1939_fault *out);
 int bb_j1939_dropped(int h);                       /* >= 0 */
+int bb_j1939_answer(int h, int address);
 int bb_j1939_address_count(int h);                 /* >= 0 */
 int bb_j1939_address_info(int h, int k, bb_j1939_address *out);
 int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the length of the global
@@ -1586,8 +1592,16 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
  * bb_message_cancel (from any thread), after which it answers BB_ERR_CANCELLED; a cancel asked before
  * the send began is not its. A BAM waits first for any other sender of this process broadcasting
  * from the same source address on the wire, since J1939-21 lets a node have one in progress. A
- * J1939 message to one node (a PDU1 group whose destination is not 0xFF) takes an RTS/CTS
- * connection, which is not sent: BB_ERR. On the handle's own thread. */
+ * J1939 message to one node (a PDU1 group whose destination is not 0xFF) of 9 .. 1785 bytes going
+ * out classic is an RTS/CTS connection (j1939.send_connection): the RTS, the packets each CTS
+ * clears (a hold of zero packets respected), and the call returns once the node has acknowledged
+ * the message; each answer (a CTS, the acknowledgement) is waited for timeout_ms (0: J1939-21's T3,
+ * 1250 ms; a hold waits T4, 1050 ms, for the next CTS), and an answer that does not come is
+ * BB_ERR_TIMEOUT, the connection aborted; an abort from the node is BB_ERR naming its reason. The
+ * answers are read from a handle of the connection's own on the wire, so h's reader still gets
+ * every frame. A cancel or a close ends it as it ends a BAM, the connection aborted. One connection
+ * from a source address to a destination at a time in this process. timeout_ms past an hour, or
+ * negative, is BB_ERR. On the handle's own thread. */
 typedef struct bb_payload {
 	uint32_t id;
 	uint8_t  ext;
@@ -1599,7 +1613,7 @@ typedef struct bb_payload {
 int bb_encode_payload(int row, int m, int n, const char *const *signals, const double *values,
                       bb_payload *out);
 int bb_e2e_stamp_payload(int row, int m, bb_payload *p);
-int bb_message_send(int h, int row, int m, const bb_payload *p);
+int bb_message_send(int h, int row, int m, const bb_payload *p, int timeout_ms);
 int bb_message_cancel(int h);
 #endif /* BB_FROM_V */
 

@@ -742,7 +742,7 @@ def _declare(lib):
         # a message sent whole: one frame, or a J1939 message's BAM (project.py)
         "bb_encode_payload": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbPayload)], c_int),
         "bb_e2e_stamp_payload": ([c_int, c_int, P(BbPayload)], c_int),
-        "bb_message_send": ([c_int, c_int, c_int, P(BbPayload)], c_int),
+        "bb_message_send": ([c_int, c_int, c_int, P(BbPayload), c_int], c_int),
         "bb_message_cancel": ([c_int], c_int),
         # background senders (cyclic.py) and the keep-alive (uds.py)
         "bb_cyclic_start": ([c_int, P(BbFrame), c_int], c_int),
@@ -764,6 +764,7 @@ def _declare(lib):
                                   c_int),
         "bb_j1939_take_fault": ([c_int, P(BbJ1939Fault)], c_int),
         "bb_j1939_dropped": ([c_int], c_int),
+        "bb_j1939_answer": ([c_int, c_int], c_int),
         "bb_j1939_address_count": ([c_int], c_int),
         "bb_j1939_address_info": ([c_int, c_int, P(BbJ1939Address)], c_int),
         "bb_j1939_function_name": ([c_int, c_char_p, c_int], c_int),

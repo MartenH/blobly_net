@@ -1,7 +1,8 @@
 // The transport protocol (J1939-21), SENT: a parameter group of 9..1785 bytes broadcast as one
 // TP.CM BAM and its TP.DT packets (#619). The one segmenter every send path asks — a simulated
 // node, a generator, a background sender, a script's message send — so they cannot disagree
-// about what a long J1939 message is on the wire. Destination-specific RTS/CTS is not sent here.
+// about what a long J1939 message is on the wire. A message to one node is an RTS/CTS connection
+// (conn.v), which send_message opens.
 module j1939
 
 import time
@@ -17,7 +18,8 @@ pub const tp_priority = u8(7)
 
 // message_frames is what a message's frame `f` goes out as: `f` alone, or — a message its database
 // declares J1939 (`declared`) of more than 8 bytes, going out classic (`fd` false: the frame as its
-// row and wire frame it, transport.frame_out) — its BAM (bam_frames).
+// row and wire frame it, transport.frame_out) — its BAM (bam_frames); refused for one to a single
+// node, which is a connection (needs_connection) and no set of frames of its own.
 pub fn message_frames(f transport.CanFrame, declared bool, fd bool) ![]transport.CanFrame {
 	if !declared || fd || f.data.len < tp_min_size {
 		return [f]
@@ -55,26 +57,31 @@ pub fn bam_frames(f transport.CanFrame) ![]transport.CanFrame {
 	}
 	id := decompose(f.id)
 	if id.da() != addr_global {
-		return error('PGN 0x${id.pgn():04X} to 0x${id.ps:02X}: a message to one node goes by RTS/CTS, which is not sent; a BAM is to the global address (0xFF)')
+		return error('PGN 0x${id.pgn():04X} to 0x${id.ps:02X}: a message to one node goes by an RTS/CTS connection (send_message, a simulated node), not as a BAM, which is to the global address (0xFF)')
 	}
 	group := id.pgn()
 	packets := packets_for(n)
 	mut out := []transport.CanFrame{cap: packets + 1}
 	out << classic(compose(tp_priority, pgn_tp_cm, addr_global, id.sa), [cm_bam, u8(n & 0xFF),
 		u8(n >> 8), u8(packets), 0xFF, u8(group & 0xFF), u8((group >> 8) & 0xFF), u8((group >> 16) & 0xFF)])
-	dt_id := compose(tp_priority, pgn_tp_dt, addr_global, id.sa)
-	for k in 0 .. packets {
-		mut d := []u8{len: 8, init: 0xFF}
-		d[0] = u8(k + 1)
-		for i in 0 .. 7 {
-			at := k * 7 + i
-			if at < n {
-				d[i + 1] = f.data[at]
-			}
-		}
-		out << classic(dt_id, d)
+	for k in 1 .. packets + 1 {
+		out << dt_packet(id.sa, addr_global, f.data, k)
 	}
 	return out
+}
+
+// dt_packet is TP.DT packet `k` (from 1) of `data` from `sa` to `da`: its seven bytes, the last
+// packet padded with 0xFF.
+fn dt_packet(sa u8, da u8, data []u8, k int) transport.CanFrame {
+	mut d := []u8{len: 8, init: 0xFF}
+	d[0] = u8(k)
+	for i in 0 .. 7 {
+		at := (k - 1) * 7 + i
+		if at < data.len {
+			d[i + 1] = data[at]
+		}
+	}
+	return classic(compose(tp_priority, pgn_tp_dt, da, sa), d)
 }
 
 // classic is a transport frame: stated classic, because J1939-21's transport protocol is classic
@@ -89,12 +96,24 @@ fn classic(id u32, data []u8) transport.CanFrame {
 }
 
 // send_message sends a message's frame `f` on `bus`, `declared` whether its database declares it
-// J1939: the one frame, or its BAM paced bam_gap_ms apart (send_paced, `stop` asked between frames)
-// on its source address's lane of the bus's wire (transport.wire_of) — decided by the frame as
-// `bus` puts it on the wire (transport.frame_out). The blocking form of message_frames, for a
-// sender that owns its bus and its thread.
+// J1939: the one frame, its BAM paced bam_gap_ms apart (send_paced, `stop` asked between frames)
+// on its source address's lane of the bus's wire (transport.wire_of), or — a message to one node
+// (needs_connection) — its RTS/CTS connection (send_connection), decided by the frame as `bus`
+// puts it on the wire (transport.frame_out). The blocking form of message_frames, for a sender
+// that owns its bus and its thread.
 pub fn send_message(mut bus transport.Bus, f transport.CanFrame, declared bool, stop fn () bool) ! {
-	frames := message_frames(f, declared, transport.frame_out(bus, f).fd)!
+	send_message_within(mut bus, f, declared, 0, stop)!
+}
+
+// send_message_within is send_message with a connection's answers each waited for `answer_ms`
+// (0: T3, 1250 ms).
+pub fn send_message_within(mut bus transport.Bus, f transport.CanFrame, declared bool, answer_ms int, stop fn () bool) ! {
+	fd := transport.frame_out(bus, f).fd
+	if needs_connection(f, declared, fd) {
+		send_connection(mut bus, f, answer_ms, stop)!
+		return
+	}
+	frames := message_frames(f, declared, fd)!
 	if frames.len == 1 {
 		bus.send(frames[0])!
 		return

@@ -699,7 +699,10 @@ s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
   BAM and its TP.DT packets from the message's source address, 50 ms apart, the last padded with
   0xFF ([j1939.md](j1939.md#sending-a-message-longer-than-8-bytes)); the call returns once the last
   packet is out. `format = "classic"` sends it so on an FD row too, and `bus.send_message_cyclic`
-  sends one BAM a period.
+  sends one BAM a period. One to a single node (a PDU1 group whose destination is not 0xFF) is an
+  RTS/CTS connection ([j1939.md](j1939.md#a-connection-to-one-node-rtscts)): the call returns once
+  the node has acknowledged it, and raises when one of its answers (a CTS, the acknowledgement) does
+  not come within `opts.timeout_ms` (default 1250, J1939-21's T3), the connection aborted.
 - **Background senders.** `bus.send_cyclic` sends a frame every `period_ms` (1 .. 3600000),
   the first at once, and `bus.send_message_cyclic` a DBC message encoded from `sigs`, its declared
   E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — in the
@@ -835,12 +838,14 @@ wrong, and the address directory. The reading is fed by the frames the script re
 own sends are never in it. Nothing decides a bus is J1939, so a channel reads it from its first
 frame where its wire says so (a row of the project on it, a disabled one too, ticked `j1939:`, or with a database declaring J1939 with
 `VFrameFormat` `J1939PG`: the GUI's per-wire reading), and any other CAN channel from its first
-`j1939` call. Nothing is sent: no CTS, no
-acknowledgement, no address claim — a script that is a node on the bench sends those itself.
+`j1939` call. No address claim is sent; after `j1939.answer(channel, address)` the RTS/CTS
+connections aimed at `address` are answered as the channel is read (a CTS per window, the
+end-of-message acknowledgement, an abort when the packets stop), the message arriving as any other.
 
 | Call | Returns |
 |---|---|
 | `j1939.listen(channel)` | nothing: the channel is read as J1939 from now on |
+| `j1939.answer(channel, address)` | nothing: RTS/CTS connections aimed at `address` (0x00..0xFD) are answered as the node holding it while the channel is read; `nil` answers none |
 | `j1939.messages(channel [, timeout_ms])` | every completed message waiting, oldest first; none waiting, the channel is read until one completes or `timeout_ms` (default 0: one look) has passed, `{}` then |
 | `j1939.expect(channel, pgn [, timeout_ms [, sa]])` | the first completed message of `pgn` (from `sa`), waited for at most `timeout_ms` (default 1000); an error naming what came instead otherwise. Messages of other groups ahead of it are consumed, those after it stay queued |
 | `j1939.faults(channel)` | the faults since the last call: `{ kind, sa, da, pgn, detail, text }` each (`pgn` nil where nothing was announced, `text` the line the GUI's Log writes); `kind` is `sequence` (a packet dropped or repeated), `aborted`, `timeout` (T1 750 ms for a BAM, T3 1250 ms for a connection, found once a read finds nothing queued), `malformed`, `orphan`, `restarted`, `overflow`, `padding`, `off_spec` or `truncated` |
@@ -864,8 +869,9 @@ log(m.name, m.packets, m.signals.Odometer)      -- BodyStatus  3  12345.6
 for _, a in ipairs(j1939.addresses("J1939", 200)) do log(a.sa, a.name.function_name) end
 ```
 
-`tests/j1939.lua` is the suite: a BAM, an RTS/CTS connection played from both sides, a sequence
-gap and a stall, address claims and a contested one.
+`tests/j1939.lua` is the suite: a BAM, an RTS/CTS connection played from both sides, sent by name
+to the simulated node that answers it and answered by `j1939.answer`, a sequence gap and a stall,
+address claims and a contested one.
 
 ### Network management — nm.*
 

@@ -277,6 +277,12 @@ pub mut:
 	// the BAMs in progress, a transfer at a time per source address (j1939.Pacer), each tagged
 	// with the frame it carries (tp_sent), which becomes its message's last sent once whole
 	tp j1939.Pacer
+	// the RTS/CTS connections its nodes send (one per source and destination), and the ones it
+	// answers for the addresses its nodes' J1939 messages are sent from
+	conns   []j1939.Originator
+	answers j1939.Responder
+	// the clock of the last step, which on_frame reads
+	now_ms f64
 	// why a message is never sent, said once per message (take_notes), and which were said
 	notes []string
 	said  map[string]bool
@@ -297,18 +303,22 @@ struct LastSent {
 	data []u8
 }
 
-// carried is a new engine, with no ECUs, carrying e's BAMs in progress and what it has said, so a
-// rebuild neither cuts a transfer short on the wire nor says a note again.
+// carried is a new engine, with no ECUs, carrying e's transfers in progress (its BAMs, the
+// connections it sends and answers) and what it has said, so a rebuild neither cuts a transfer
+// short on the wire nor says a note again.
 pub fn (e Engine) carried() Engine {
 	return Engine{
 		tp:      e.tp
 		tp_sent: e.tp_sent
 		tp_next: e.tp_next
+		conns:   e.conns
+		answers: e.answers
 		said:    e.said
 	}
 }
 
-// take_notes is what the engine has to say since it was last asked: a message it never sends.
+// take_notes is what the engine has to say since it was last asked: a message it never sends, a
+// connection that did not complete (once per message and outcome).
 pub fn (mut e Engine) take_notes() []string {
 	out := e.notes
 	e.notes = []
@@ -427,6 +437,7 @@ mut:
 // described server's live DID reads), so a frame refused — a listen-only wire, a bus that is down —
 // or dropped by a fault leaves it as it was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
+	e.now_ms = now_ms
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
@@ -463,6 +474,23 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 				e.tp_sent.delete(tag)
 			}
 		}
+	}
+	// connections past their wait are aborted, and so are the ones it answers whose packets stopped
+	for k := 0; k < e.conns.len; k++ {
+		out := e.conns[k].poll(now_ms)
+		for f in out.frames {
+			send(f)
+		}
+		if out.end != .open {
+			e.conn_ended(e.conns[k], out)
+			e.conns.delete(k)
+			k--
+		} else {
+			e.conns[k].take_lane(time.sys_mono_now())
+		}
+	}
+	for f in e.answers.poll(now_ms) {
+		send(f)
 	}
 }
 
@@ -623,17 +651,17 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 // emit hands message `msg`'s frame `f` to `send` as one frame, or — j1939.message_frames: a
 // message declared J1939 of more than 8 bytes going out classic — queues its BAM on the engine's
 // pacer, whose frames `step` hands on bam_gap_ms apart, `last` becoming the message's last sent
-// once the whole BAM is out (record_sent). True only for the one frame sent; false for a frame
-// refused, a BAM queued, or a message neither one frame nor a BAM carries (a J1939 message to one
-// node, which needs RTS/CTS), which is said once (take_notes).
+// once the whole BAM is out (record_sent), or — to one node — opens its RTS/CTS connection
+// (connect). True for the one frame sent or a connection opened; false for a frame refused, a BAM
+// queued, or a message neither one frame nor the transport protocol carries, which is said once
+// (take_notes).
 fn (mut e Engine) emit(f transport.CanFrame, msg candb.Message, send fn (f transport.CanFrame) bool, last LastSent) bool {
 	out := transport.framed_for_wire(e.iface, transport.CanFrame{ ...f, row: e.row })
+	if j1939.needs_connection(f, msg.j1939, out.fd) {
+		return e.connect(f, msg, send)
+	}
 	frames := j1939.message_frames(f, msg.j1939, out.fd) or {
-		key := '${msg.name}/${msg.id}'
-		if !e.said[key] {
-			e.said[key] = true
-			e.notes << '${msg.name} is never sent: ${err.msg()}'
-		}
+		e.say_once('${msg.name}/${msg.id}', '${msg.name} is never sent: ${err.msg()}')
 		return false
 	}
 	if frames.len == 1 {
@@ -643,6 +671,102 @@ fn (mut e Engine) emit(f transport.CanFrame, msg candb.Message, send fn (f trans
 	e.tp_sent[e.tp_next] = last
 	e.tp.add(e.iface, frames, e.tp_next)
 	return false
+}
+
+// connect opens message `msg`'s RTS/CTS connection for frame `f`: its RTS handed to `send`, the
+// rest driven by the frames on_frame reads and timed by step — or, aimed at an address another of
+// its own nodes answers for, carried through at once (with_local), every frame still handed to
+// `send`. False — the period's message not sent — while a connection between the same two
+// addresses is still going on, here or by another sender in this process (its lane).
+fn (mut e Engine) connect(f transport.CanFrame, msg candb.Message, send fn (f transport.CanFrame) bool) bool {
+	id := j1939.decompose(f.id)
+	if e.conns.any(it.sa == id.sa && it.da == id.da()) {
+		return false
+	}
+	mut o := j1939.connection_for(f, e.iface, 0) or {
+		e.say_once('${msg.name}/${msg.id}', '${msg.name} is never sent: ${err.msg()}')
+		return false
+	}
+	o.tag = msg.name
+	if !o.take_lane(time.sys_mono_now()) {
+		return false
+	}
+	rts := o.start(e.now_ms).frames
+	if !send(rts[0]) {
+		o.free_lane(time.sys_mono_now())
+		return false
+	}
+	e.conns << o
+	for fr in e.with_local(rts)[1..] {
+		send(fr)
+	}
+	return true
+}
+
+// with_local is `frames`, which the engine sends, each followed in turn by what its own
+// connections make of it (j1939_frame): its own frames never come back to it off the wire, so a
+// connection between two of its nodes is carried here, frame by frame in wire order.
+fn (mut e Engine) with_local(frames []transport.CanFrame) []transport.CanFrame {
+	mut q := frames.clone()
+	for i := 0; i < q.len; i++ {
+		q << e.j1939_frame(q[i])
+	}
+	return q
+}
+
+// conn_ended lets a finished connection's lane go and says, once per message and outcome, one
+// that did not complete.
+fn (mut e Engine) conn_ended(o j1939.Originator, out j1939.ConnOut) {
+	o.free_lane(time.sys_mono_now())
+	if out.end != .done {
+		e.say_once('${o.tag}/${o.pgn}/${out.end}', '${o.tag}: ${out.detail}')
+	}
+}
+
+// say_once notes `text` the first time `key` is said.
+fn (mut e Engine) say_once(key string, text string) {
+	if !e.said[key] {
+		e.said[key] = true
+		e.notes << text
+	}
+}
+
+// j1939_frame is what the RTS/CTS connections make of a received frame: the packets a CTS clears
+// for one this engine sends, and the answers to one aimed at an address its nodes send from.
+fn (mut e Engine) j1939_frame(f transport.CanFrame) []transport.CanFrame {
+	if !f.extended || f.rtr {
+		return []
+	}
+	p := j1939.pgn(f.id)
+	if p != j1939.pgn_tp_cm && p != j1939.pgn_tp_dt {
+		return []
+	}
+	mut out := []transport.CanFrame{}
+	for k := 0; k < e.conns.len; k++ {
+		step := e.conns[k].feed(f, e.now_ms)
+		out << step.frames
+		if step.end != .open {
+			e.conn_ended(e.conns[k], step)
+			e.conns.delete(k)
+			k--
+		}
+	}
+	e.answers.addresses = e.j1939_addresses()
+	out << e.answers.feed(f, e.now_ms)
+	return out
+}
+
+// j1939_addresses is every source address its nodes send a J1939 message from.
+fn (e &Engine) j1939_addresses() []u8 {
+	mut out := []u8{}
+	for ecu in e.ecus {
+		for m in ecu.messages {
+			if m.msg.j1939 && m.msg.ext && u8(m.msg.id & 0xFF) !in out {
+				out << u8(m.msg.id & 0xFF)
+			}
+		}
+	}
+	return out
 }
 
 // transmit sends what is due on `bus` from the engine of project row `row` and publishes what a
@@ -676,13 +800,15 @@ pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
 	}
 }
 
-// on_frame returns the response frames triggered by a received frame.
+// on_frame returns the response frames triggered by a received frame: a response rule's, and the
+// transport protocol's (j1939_frame) — a CTS's packets, an answer to an RTS — in that order of
+// making, the J1939 ones first.
 //
 // Takes `mut` because a protected response has to advance its own counter: a request-driven
 // message has period 0, so due_frames never touches it and its send count would otherwise
 // stay at zero forever — a receiver checking the counter would reject every single response.
 pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
-	mut out := []transport.CanFrame{}
+	mut out := e.with_local(e.j1939_frame(f))
 	for i := 0; i < e.ecus.len; i++ {
 		for r in e.ecus[i].rules {
 			if f.id != r.req_id {
