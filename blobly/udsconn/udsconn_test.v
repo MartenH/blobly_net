@@ -248,3 +248,22 @@ fn test_a_raw_isotp_channel_carries_whole_messages() {
 	}
 	assert false, 'opened over a failing opener'
 }
+
+// the settings asked for reach the channel on a CAN row; a DoIP row refuses them
+fn test_isotp_settings_reach_the_channel_and_a_doip_row_refuses_them() {
+	s := isotp.settings_of(isotp.no_padding, 4, 0.2)!
+	a := Ask{
+		what:     'uds.open'
+		settings: s
+	}
+	t := resolve(a, 'CAN1', Carrier{})!
+	assert t.settings == s
+	mut c := open_isotp(t, 'CAN1', 'inproc:UDSCONN-SET', opener)!
+	assert c.settings == s
+	c.close()
+	resolve(a, 'D', Carrier{ kind: .doip }) or {
+		assert err.msg() == doip_settings_refusal('uds.open', 'D')
+		return
+	}
+	assert false, 'settings on a DoIP row resolved'
+}

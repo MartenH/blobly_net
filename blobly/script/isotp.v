@@ -28,8 +28,9 @@ fn (mut env Env) register_isotp() {
 	env.st.register('__uds_target', l_uds_target)
 }
 
-// __isotp_open(channel, tx, rx): a raw ISO-TP channel on the channel named, by udsconn's rule (a
-// CAN channel, both ids given), on the bus the opener gives
+// __isotp_open(channel, tx, rx, padding, block_size, stmin_ms): a raw ISO-TP channel on the
+// channel named, by udsconn's rule (a CAN channel, both ids given), on the bus the opener gives,
+// with the settings asked for (isotp_settings_arg)
 fn l_isotp_open(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
@@ -37,12 +38,14 @@ fn l_isotp_open(l lua.State) i32 {
 	has_rx := !l.arg_is_nil(3)
 	txi := if has_tx { id_arg(l, 2, 'tx', min_i64, max_i64) or { return l.fail('isotp.open("${name}"): ${err}') } } else { 0 }
 	rxi := if has_rx { id_arg(l, 3, 'rx', min_i64, max_i64) or { return l.fail('isotp.open("${name}"): ${err}') } } else { 0 }
+	settings := isotp_settings_arg(l, 4) or { return l.fail('isotp.open("${name}"): ${err}') }
 	ask := udsconn.Ask{
-		what:   'isotp.open'
-		has_tx: has_tx
-		tx:     txi
-		has_rx: has_rx
-		rx:     rxi
+		what:     'isotp.open'
+		has_tx:   has_tx
+		tx:       txi
+		has_rx:   has_rx
+		rx:       rxi
+		settings: settings
 	}
 	udsconn.check_ids(ask, name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }

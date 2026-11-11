@@ -72,26 +72,29 @@ pub fn carrier_of(ch project.Channel) Carrier {
 // Ask is what a caller asked of a connection: the CAN ids it gave, as given (`has_tx` false =
 // omitted: presence is not carried by a sentinel, since 0 is a valid id and a negative one is a
 // mistake to report), and the ids an omitted one defaults to. `what` names the caller in the
-// refusals ('uds.open', 'flash.program').
+// refusals ('uds.open', 'flash.program'). `settings` are the ISO-TP channel's own choices
+// (isotp.settings_of: its padding, the Flow Control it answers with), a CAN row's alone.
 pub struct Ask {
 pub:
-	what   string
-	has_tx bool
-	tx     i64
-	has_rx bool
-	rx     i64
-	dtx    u32 = 0x7E0
-	drx    u32 = 0x7E8
+	what     string
+	has_tx   bool
+	tx       i64
+	has_rx   bool
+	rx       i64
+	dtx      u32 = 0x7E0
+	drx      u32 = 0x7E8
+	settings isotp.Settings
 }
 
 // Target is what a connection is opened on: a DoIP row's connection, or a CAN row's request and
-// response ids and whether they are 29-bit.
+// response ids, whether they are 29-bit, and the ISO-TP channel's settings.
 pub struct Target {
 pub:
-	doip bool
-	tx   u32
-	rx   u32
-	ext  bool
+	doip     bool
+	tx       u32
+	rx       u32
+	ext      bool
+	settings isotp.Settings
 }
 
 // check_ids refuses an id that is not a CAN identifier. Asked by `resolve` too; a caller may ask
@@ -120,6 +123,9 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 			if a.has_tx || a.has_rx {
 				return error('${a.what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
 			}
+			if !a.settings.is_default() {
+				return error(doip_settings_refusal(a.what, name))
+			}
 			return Target{
 				doip: true
 			}
@@ -131,10 +137,16 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 		return error('${a.what}("${name}"): the default ids 0x${a.dtx:X}/0x${a.drx:X} are not CAN identifiers')
 	}
 	return Target{
-		tx:  tx
-		rx:  rx
-		ext: tx > 0x7FF || rx > 0x7FF
+		tx:       tx
+		rx:       rx
+		ext:      tx > 0x7FF || rx > 0x7FF
+		settings: a.settings
 	}
+}
+
+// doip_settings_refusal is why ISO-TP settings are refused on DoIP row `name`.
+pub fn doip_settings_refusal(what string, name string) string {
+	return '${what}("${name}"): a DoIP channel carries no ISO-TP frames; drop padding/block_size/stmin_ms'
 }
 
 // Conn is an opened connection: the channel UDS rides and the client over it.

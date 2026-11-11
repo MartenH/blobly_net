@@ -1184,9 +1184,10 @@ int bb_record_stop(int h, bb_record_report *out);
  * bytes that come back: the engine's software ISO-TP (blobly/isotp), the channel a UDS handle rides,
  * opened by the same rule (blobly/udsconn) on a CAN row of the run (BB_ERR_STATE before bb_start).
  * Both ids are given (no default pair), either past 0x7FF makes both 29-bit, and `out` (unless NULL)
- * gets them. Classic addressing in 8-byte frames (sent FD on a row the project declares CAN-FD): a
- * message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control CTS, block size 0,
- * STmin 0); as a sender it honours the receiver's.
+ * gets them. Classic addressing in 8-byte frames padded with 0x00 (sent FD on a row the project
+ * declares CAN-FD): a message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control
+ * CTS, block size 0, STmin 0) unless its settings say otherwise (below); as a sender it honours the
+ * receiver's.
  * Handles as a UDS handle's: one thread uses one at a time, bb_isotp_close may come from another and
  * ends a send or receive in progress there (BB_ERR_HANDLE) within 20 ms of the wait it is in; a
  * handle outlives bb_stop. Open one handle per id pair: two on one rx (a UDS handle's included) each
@@ -1213,6 +1214,18 @@ int bb_record_stop(int h, bb_record_report *out);
  * wait before it opens a connection to state it on. They hold across the library's own reopen of a lost DoIP connection (P2* only where
  * it loosens the new one's). Every call above is then bounded by them in place of the 1000 / P2* +
  * 1000 / 120 s bb_uds_open states.
+ *
+ * An ISO-TP channel's settings (blobly/isotp Settings) are its own choices on the wire: `padding` the
+ * byte its frames are padded to 8 bytes with (0 .. 255; 0x00 when nothing is stated), or -1 for frames
+ * as long as their content; and the Flow Control it answers a First Frame with as a receiver,
+ * `block_size` Consecutive Frames per block (0 .. 255; 0 the whole remainder at once, else the next
+ * Flow Control after each block) and `stmin_ms` between them (a whole 0 .. 127, or 0.1 .. 0.9 for the
+ * 100 .. 900 µs codes 0xF1 .. 0xF9). bb_isotp_set_settings states all three on a raw handle,
+ * bb_uds_set_isotp on a CAN UDS handle's channel (BB_ERR on a DoIP handle, which has no ISO-TP
+ * frames), each from the next frame on; refused with BB_ERR, nothing changed, outside those ranges.
+ * bb_isotp_check_settings answers the same of no handle (any thread), so a host refuses settings
+ * before it opens a channel to state them on. A handle opened again (after bb_stop) starts from the
+ * defaults.
  *
  * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
  * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
@@ -1246,6 +1259,9 @@ int bb_isotp_close(int h);
 int bb_uds_get_timing(int u, bb_uds_timing *out);
 int bb_uds_set_wait(int u, int which, int ms);
 int bb_uds_check_wait(int which, int ms);
+int bb_isotp_check_settings(int padding, int block_size, double stmin_ms);
+int bb_isotp_set_settings(int h, int padding, int block_size, double stmin_ms);
+int bb_uds_set_isotp(int u, int padding, int block_size, double stmin_ms);
 int bb_uds_retarget(int u, const int64_t *address);
 /* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
  * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read

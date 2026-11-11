@@ -222,6 +222,7 @@ local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
 local diag = uds.open(channel)                                   -- DoIP
 local diag = uds.open(channel, { timeout_ms = 300 })            -- with its waits stated
 local diag = uds.open(channel, { keep_alive_ms = 2000 })        -- its session kept alive
+local diag = uds.open(channel, { padding = 0xCC, block_size = 8, stmin_ms = 5 })  -- its ISO-TP's
 ```
 
 Opens a UDS tester on `channel`. **The carrier follows the channel**, so the same
@@ -347,7 +348,8 @@ local rs = uds.functional("compute", 0x7DF, { dom, gw }, "\x22\xF1\x90" [, windo
 ```
 
 The request goes out **once**, as a Single Frame on the functional id (at most 7 bytes: a
-functional request cannot be segmented). Each ECU answers on its own physical response id, and a
+functional request cannot be segmented), padded as the connections' own requests are
+(`opts.padding`; connections padding differently raise). Each ECU answers on its own physical response id, and a
 multi-frame answer is reassembled on that connection, its Flow Control going to that ECU's physical
 request id. Several ECUs may answer multi-frame to one request; their transfers are reassembled one
 after another, so a second ECU's Flow Control waits for the first transfer to end, which takes
@@ -452,6 +454,11 @@ receiver's Flow Control (1000 ms each, N_Bs; it raises when none came). `tp:recv
 transfer begun is kept for the next `recv`, until 1000 ms pass with no Consecutive Frame, which
 raises. A send on a listen-only channel raises. Open one per id pair: two on one `rx` (a `uds.open`
 connection on it included) each answer a First Frame with a Flow Control of their own.
+`opts.padding` is the byte frames are padded to 8 bytes with (0x00), `false` for frames as long as
+their content; `opts.block_size` (0 .. 255) and `opts.stmin_ms` (a whole 0 .. 127, or 0.1 .. 0.9
+for 100 .. 900 µs) are the Flow Control it answers a First Frame with — 0 and 0 ask for no pacing,
+and above 0 the next Flow Control goes out after each block. `uds.open` takes the same three on a
+CAN channel (a DoIP channel raises). Out of range raises before the channel opens.
 `tests/isotp_timing.lua` is the suite.
 
 ### E2E on what a script reads and sends

@@ -1334,7 +1334,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 ```
 
 **Functional addressing.** `ch.uds_functional(functional_id, clients, request)` sends `request`
-once, a Single Frame (7 bytes at most) on the functional id, and each client answers on its own
+once, a Single Frame (7 bytes at most) on the functional id, padded as the clients' own requests
+are (`padding=`; clients padding differently are refused), and each client answers on its own
 response id, a multi-frame answer included. It returns a `FunctionalReply` per client, in their
 order: `outcome` is `"positive"`, `"negative"`, `"silent"` (nothing within the window, which is
 normal for a functional request: ISO 14229-1 has a server not refuse one with 0x11, 0x12, 0x31,
@@ -1543,9 +1544,16 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 - **Ids.** Both are given: a raw channel has no default pair. Either past 0x7FF makes both 29-bit,
   as for `ch.uds()`. A DoIP or SOME/IP row is refused: ISO-TP is a CAN transport.
-- **What it carries.** Messages of 1 to 4095 bytes in 8-byte frames, sent FD on a row the project
-  declares CAN-FD. As a sender it honours the receiver's Flow Control (block size, STmin, WAIT); as
-  a receiver it asks for no pacing.
+- **What it carries.** Messages of 1 to 4095 bytes in 8-byte frames padded with 0x00, sent FD on a
+  row the project declares CAN-FD. As a sender it honours the receiver's Flow Control (block size,
+  STmin, WAIT); as a receiver it asks for no pacing (block size 0, STmin 0) unless told otherwise.
+- **Padding and Flow Control.** `ch.isotp(tx, rx, padding=0xAA)` pads every frame with that byte,
+  `padding=None` sends each frame as long as its content (a short Single Frame, a 3-byte Flow
+  Control). `block_size` (0 .. 255) and `stmin_ms` (a whole 0 .. 127, or 0.1 .. 0.9 for the
+  100 .. 900 µs codes 0xF1 .. 0xF9) are the Flow Control it answers a First Frame with; above 0 it
+  sends the next Flow Control after each block. `ch.uds()` takes the same three on a CAN row (a
+  DoIP row refuses them). Out of range is refused (`ValueError`, `TypeError`, `Refused`) before the
+  channel opens, and what was asked holds on every handle opened again after a stop and start.
 - **`send(data)`** returns once the message is on the wire. A long one waits for the receiver's
   Flow Control, 1000 ms each (N_Bs) and 120 s for the transfer, and raises `Timeout` when none came.
   It is one call, so Ctrl-C ends it only once it returns.
@@ -1562,6 +1570,14 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   20 ms.
 - **One per id pair.** Two channels on one `rx`, a `UdsClient` on it included, each answer a First
   Frame with a Flow Control of their own.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN1.uds(stmin_ms=5, block_size=8, padding=0xCC) as diag:
+        print(diag.read_did(0xF190))        # its answer in blocks of 8 frames, 5 ms apart
+```
 
 ---
 
@@ -2402,11 +2418,11 @@ after `start()`.
 | `ch.error_counters()` | An `ErrorCounters`: the controller's transmit and receive error counters as it last reported them; `None` where the backend cannot say ([Health](#8-health)). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}` (a byte signal's `bytes`), or `None` for a frame of no message or a remote frame. |
-| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive. |
+| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None, padding=0, block_size=0, stmin_ms=0)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive; `padding`, `block_size` and `stmin_ms` are its ISO-TP channel's on a CAN row ([Raw ISO-TP](#raw-iso-tp)), refused on a DoIP row. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
 | `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
 | `ch.nm(lo=None, hi=None, *, ext=False, timeout_ms=300)` | The row's `NmListener`: who reports in on its NM cluster and who keeps it awake, by its wire's configuration or the range given ([Network management](#network-management)). |
-| `ch.isotp(tx, rx)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top ([Raw ISO-TP](#raw-iso-tp)). |
+| `ch.isotp(tx, rx, *, padding=0, block_size=0, stmin_ms=0)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top, its frames padded with `padding` (None: unpadded) and the Flow Control it answers with `block_size` / `stmin_ms` ([Raw ISO-TP](#raw-iso-tp)). |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
 | `ch.discover(timeout_ms=1200)` | A DoIP row's entity asked who it is: a `DoipAnnouncement`; `Timeout` when none came. |
 | `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |

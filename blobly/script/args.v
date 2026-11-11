@@ -1,6 +1,7 @@
 module script
 
 import math
+import blobly.isotp
 import blobly.lua
 
 // int_arg is argument i as an integer in lo..hi, a whole-number float as its integer; else an
@@ -69,4 +70,30 @@ fn ms_up(l lua.State, i int) i64 {
 		return 0
 	}
 	return i64(math.ceil(math.min(f, f64(max_i32))))
+}
+
+// isotp_settings_arg is arguments i .. i+2 as an ISO-TP channel's settings (isotp.settings_of):
+// padding a byte or false for none, block_size, stmin_ms; nil or absent is the default of each.
+fn isotp_settings_arg(l lua.State, i int) !isotp.Settings {
+	mut padding := i64(0)
+	if l.arg_is_bool(i) && !l.arg_bool(i) {
+		padding = isotp.no_padding
+	} else if !l.arg_absent(i) {
+		padding = read_int(l, i, 'padding', 0, 0xFF, true) or {
+			return error('padding is ${l.arg_given(i)}, not a byte or false')
+		}
+	}
+	block_size := if l.arg_absent(i + 1) {
+		i64(0)
+	} else {
+		int_arg(l, i + 1, 'block_size', min_i64, max_i64)!
+	}
+	mut stmin_ms := 0.0
+	if !l.arg_absent(i + 2) {
+		if !l.arg_is_number(i + 2) {
+			return error('stmin_ms is ${l.arg_given(i + 2)}, not a number')
+		}
+		stmin_ms = l.arg_num(i + 2)
+	}
+	return isotp.settings_of(padding, block_size, stmin_ms)!
 }

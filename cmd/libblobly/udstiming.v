@@ -3,7 +3,9 @@
 // to a node behind its gateway (doip.DoipClient.retarget).
 module main
 
+import blobly.isotp
 import blobly.uds
+import blobly.udsconn
 
 @[export: 'bb_uds_get_timing']
 pub fn bb_uds_get_timing(u i32, out &C.bb_uds_timing) i32 {
@@ -59,6 +61,20 @@ pub fn bb_uds_check_wait(which i32, ms i32) i32 {
 	mut probe := uds.Client{}
 	probe.state(w) or { return fail(bb_err, err.msg()) }
 	return ok()
+}
+
+// bb_uds_set_isotp: a CAN UDS handle's ISO-TP padding and Flow Control (isotp.Settings), from the
+// next frame on; a DoIP handle has no ISO-TP frames.
+@[export: 'bb_uds_set_isotp']
+pub fn bb_uds_set_isotp(u i32, padding i32, block_size i32, stmin_ms f64) i32 {
+	s := settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+	return with_uds(u, fn [s] (mut hd UdsHandle) !i32 {
+		if mut hd.conn.ch is isotp.SoftChannel {
+			hd.conn.ch.settings = s
+			return ok()
+		}
+		return error(udsconn.doip_settings_refusal('set_isotp', hd.row_name))
+	})
 }
 
 // bb_uds_retarget: a DoIP handle's requests, and the answers it takes, to logical address

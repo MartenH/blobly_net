@@ -6,13 +6,16 @@
 // vendor driver that has no kernel ISO-TP. Cross-platform (unsuffixed file). It
 // implements the same `Channel` interface, so UDS rides on it unchanged.
 //
-// Scope: classic addressing, single + multi-frame, 8-byte padded frames. Flow control is
+// Scope: classic addressing, single + multi-frame, frames padded to 8 bytes with 0x00 unless the
+// channel's `settings` say another byte or none (#635). Flow control is
 // HONOURED on the send side — CTS/WAIT/OVERFLOW, block size and STmin (#226) — because
 // `isotp.open` routes here on every non-Linux host, so this is what flash, the shell, scripts
 // and the GUI's diagnostics use against real ECUs on Windows; "fine in-process" stopped being
-// the whole story when that landed. What this channel SENDS as a receiver is still the
-// permissive answer (CTS, block size 0, STmin 0): it asks for no pacing, which is the one thing
-// a receiver may always do, and the read side is bounded by recv's own deadline instead.
+// the whole story when that landed. What this channel SENDS as a receiver is its `settings`'
+// block size and STmin (#636), by default the permissive answer (CTS, block size 0, STmin 0):
+// it asks for no pacing, which is the one thing a receiver may always do, and the read side is
+// bounded by recv's own deadline instead. With a block size, the next Flow Control goes out after
+// each block.
 module isotp
 
 import time
@@ -61,6 +64,10 @@ mut:
 	// on, so the transfer was dropped and this frame is the next message (ISO 15765-2).
 	held []u8
 pub mut:
+	// The padding of the frames this channel sends and the Flow Control it answers a First Frame
+	// with (settings_of); read at each frame, so a change holds from the next one — a block size
+	// from the next Flow Control, since the sender follows the last one until then.
+	settings Settings
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
 	//
@@ -496,7 +503,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				total: total
 				sn:    1
 			}
-			c.tx([u8(0x30), 0, 0]) or { // Flow Control: CTS, block size 0, STmin 0
+			c.send_flow_control() or {
 				c.rx = Reassembly{}
 				return err
 			}
@@ -522,10 +529,29 @@ pub const ncr_note = 'ISO-TP: a First Frame arrived and its Consecutive Frames s
 // assignment (`c.rx = Reassembly{}`), so no field can be left behind.
 struct Reassembly {
 mut:
-	buf     []u8
-	total   int
-	sn      u8
-	idle_ns u64 // time a recv spent blocked with no Consecutive Frame since the last one
+	buf      []u8
+	total    int
+	sn       u8
+	idle_ns  u64 // time a recv spent blocked with no Consecutive Frame since the last one
+	in_block int // Consecutive Frames since the last Flow Control this channel sent
+	// The block size that Flow Control asked for: the sender follows it until the next one, so a
+	// change of settings in between applies from the next Flow Control, not to this block.
+	block u8
+}
+
+// flow_control is the Flow Control this channel answers with as a receiver: clear to send, at the
+// block size and STmin of its settings.
+fn (c &SoftChannel) flow_control() []u8 {
+	return [u8(0x30), c.settings.block_size, c.settings.stmin]
+}
+
+// send_flow_control sends that Flow Control for the transfer in `rx` and starts its block at the
+// block size it asked for.
+fn (mut c SoftChannel) send_flow_control() ! {
+	fc := c.flow_control()
+	c.tx(fc)!
+	c.rx.block = fc[1]
+	c.rx.in_block = 0
 }
 
 // reassemble collects the Consecutive Frames of the transfer in `rx`. The 4-bit sequence number
@@ -614,6 +640,15 @@ fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
 		c.rx.sn = (c.rx.sn + 1) & 0x0F
 		c.rx.buf << cf[1..]
 		c.rx.idle_ns = 0
+		// a block received with more to come: the sender waits for the next Flow Control
+		c.rx.in_block++
+		bs := int(c.rx.block)
+		if bs > 0 && c.rx.in_block >= bs && c.rx.buf.len < c.rx.total {
+			c.send_flow_control() or {
+				c.rx = Reassembly{}
+				return err
+			}
+		}
 	}
 	out := c.rx.buf[..c.rx.total].clone()
 	c.rx = Reassembly{}
@@ -625,11 +660,12 @@ pub fn (mut c SoftChannel) close() {
 	c.bus.close()
 }
 
-// tx pads an ISO-TP payload to 8 bytes (classic CAN) and sends it on tx_id.
+// tx sends an ISO-TP payload on tx_id, padded to 8 bytes (classic CAN) with the settings' byte,
+// or as long as its content when they say no padding.
 fn (mut c SoftChannel) tx(payload []u8) ! {
 	mut data := payload.clone()
-	for data.len < 8 {
-		data << 0
+	for c.settings.padded && data.len < 8 {
+		data << c.settings.pad
 	}
 	c.bus.send(transport.CanFrame{
 		id:       c.tx_id
