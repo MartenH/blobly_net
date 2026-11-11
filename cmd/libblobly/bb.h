@@ -1184,8 +1184,10 @@ int bb_record_stop(int h, bb_record_report *out);
  * bytes that come back: the engine's software ISO-TP (blobly/isotp), the channel a UDS handle rides,
  * opened by the same rule (blobly/udsconn) on a CAN row of the run (BB_ERR_STATE before bb_start).
  * Both ids are given (no default pair), either past 0x7FF makes both 29-bit, and `out` (unless NULL)
- * gets them. Classic addressing in 8-byte frames padded with 0x00 (sent FD on a row the project
- * declares CAN-FD): a message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control
+ * gets them. Normal addressing, sent in 8-byte frames padded with 0x00 (FD on a row the project
+ * declares CAN-FD) unless its settings say a longer TX_DL (below), and received in frames of any
+ * length the sender chose (a CAN-FD Single Frame behind the escape length, a First Frame of up to 64
+ * bytes and Consecutive Frames as long): a message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control
  * CTS, block size 0, STmin 0) unless its settings say otherwise (below); as a sender it honours the
  * receiver's.
  * Handles as a UDS handle's: one thread uses one at a time, bb_isotp_close may come from another and
@@ -1220,12 +1222,18 @@ int bb_record_stop(int h, bb_record_report *out);
  * as long as their content; and the Flow Control it answers a First Frame with as a receiver,
  * `block_size` Consecutive Frames per block (0 .. 255; 0 the whole remainder at once, else the next
  * Flow Control after each block) and `stmin_ms` between them (a whole 0 .. 127, or 0.1 .. 0.9 for the
- * 100 .. 900 µs codes 0xF1 .. 0xF9). bb_isotp_set_settings states all three on a raw handle,
+ * 100 .. 900 µs codes 0xF1 .. 0xF9); `tx_dl` the length of the frames it sends a message in (8,
+ * 12, 16, 20, 24, 32, 48 or 64; 8 when nothing is stated): above 8 a Single Frame carries up to
+ * tx_dl - 2 bytes behind the escape length, a Consecutive Frame tx_dl - 1, and a frame longer than 8
+ * is padded up to the next CAN-FD length (with the padding byte, 0x00 under -1); and `format` an enum
+ * bb_format stated on every frame it sends (BB_FORMAT_WIRE: the row's declared format), a classic one
+ * refused with a tx_dl above 8. bb_isotp_set_settings states all five on a raw handle,
  * bb_uds_set_isotp on a CAN UDS handle's channel (BB_ERR on a DoIP handle, which has no ISO-TP
- * frames), each from the next frame on; refused with BB_ERR, nothing changed, outside those ranges.
- * bb_isotp_check_settings answers the same of no handle (any thread), so a host refuses settings
- * before it opens a channel to state them on. A handle opened again (after bb_stop) starts from the
- * defaults.
+ * frames), each from the next frame on; refused with BB_ERR, nothing changed, outside those ranges,
+ * and for a tx_dl above 8 on a row the project does not declare CAN-FD unless the format is FD.
+ * bb_isotp_check_settings answers the same of no handle and no row (any thread), so a host refuses
+ * settings before it opens a channel to state them on. A handle opened again (after bb_stop) starts
+ * from the defaults.
  *
  * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
  * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
@@ -1259,9 +1267,9 @@ int bb_isotp_close(int h);
 int bb_uds_get_timing(int u, bb_uds_timing *out);
 int bb_uds_set_wait(int u, int which, int ms);
 int bb_uds_check_wait(int which, int ms);
-int bb_isotp_check_settings(int padding, int block_size, double stmin_ms);
-int bb_isotp_set_settings(int h, int padding, int block_size, double stmin_ms);
-int bb_uds_set_isotp(int u, int padding, int block_size, double stmin_ms);
+int bb_isotp_check_settings(int padding, int block_size, double stmin_ms, int tx_dl, int format);
+int bb_isotp_set_settings(int h, int padding, int block_size, double stmin_ms, int tx_dl, int format);
+int bb_uds_set_isotp(int u, int padding, int block_size, double stmin_ms, int tx_dl, int format);
 int bb_uds_retarget(int u, const int64_t *address);
 /* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
  * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read

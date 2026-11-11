@@ -105,24 +105,26 @@ fn isotp_failed(hd &IsotpHandle, err IError, sending bool) i32 {
 	}
 }
 
-// settings_in is an ISO-TP channel's settings as bb.h states them (isotp.settings_of).
-fn settings_in(padding i32, block_size i32, stmin_ms f64) !isotp.Settings {
-	return isotp.settings_of(i64(padding), i64(block_size), stmin_ms)
+// settings_in is an ISO-TP channel's settings as bb.h states them (isotp.settings_with), `format`
+// an enum bb_format.
+fn settings_in(padding i32, block_size i32, stmin_ms f64, tx_dl i32, format i32) !isotp.Settings {
+	return isotp.settings_with(i64(padding), i64(block_size), stmin_ms, i64(tx_dl), format_of(int(format))!)
 }
 
-// bb_isotp_check_settings: whether the settings would be taken, asked of no handle.
+// bb_isotp_check_settings: whether the settings would be taken, asked of no handle and no row.
 @[export: 'bb_isotp_check_settings']
-pub fn bb_isotp_check_settings(padding i32, block_size i32, stmin_ms f64) i32 {
-	settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+pub fn bb_isotp_check_settings(padding i32, block_size i32, stmin_ms f64, tx_dl i32, format i32) i32 {
+	settings_in(padding, block_size, stmin_ms, tx_dl, format) or { return fail(bb_err, err.msg()) }
 	return ok()
 }
 
-// bb_isotp_set_settings: a raw handle's padding and Flow Control, from the next frame on.
+// bb_isotp_set_settings: a raw handle's padding, Flow Control, TX_DL and frame format, from the next
+// frame on; a TX_DL above 8 refused on a classic row unless the format is FD.
 @[export: 'bb_isotp_set_settings']
-pub fn bb_isotp_set_settings(h i32, padding i32, block_size i32, stmin_ms f64) i32 {
-	s := settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+pub fn bb_isotp_set_settings(h i32, padding i32, block_size i32, stmin_ms f64, tx_dl i32, format i32) i32 {
+	s := settings_in(padding, block_size, stmin_ms, tx_dl, format) or { return fail(bb_err, err.msg()) }
 	return with_isotp(h, fn [s] (mut hd IsotpHandle) i32 {
-		hd.ch.settings = s
+		hd.ch.state(s) or { return fail(bb_err, err.msg()) }
 		return ok()
 	})
 }

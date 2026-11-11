@@ -172,6 +172,32 @@ fn test_the_functional_frame_is_padded_as_its_targets_requests_are() {
 	assert false, 'targets padding differently were accepted'
 }
 
+// the one frame takes the targets' format, and targets stating two are refused
+fn test_the_functional_frame_takes_its_targets_format() {
+	bus := 'inproc:FUNCFMT'
+	classic := isotp.settings_with(0, 0, 0, 8, .classic) or { panic(err) }
+	fd := isotp.settings_with(0, 0, 0, 8, .fd) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	mut wire := transport.open(bus) or { panic(err) }
+	t := FunctionalTarget{
+		client: padded_client(bus, 0x7E0, 0x7E8, fd)
+		rsp_id: 0x7E8
+	}
+	functional(mut fch, mut tap, [t], [u8(0x3E), 0x80], 20) or { panic(err) }
+	f := wire.recv(100) or { panic(err) }
+	assert f.id == 0x7DF && f.fd
+	u := FunctionalTarget{
+		client: padded_client(bus, 0x7E1, 0x7E9, classic)
+		rsp_id: 0x7E9
+	}
+	functional(mut fch, mut tap, [t, u], [u8(0x3E), 0x80], 20) or {
+		assert err.msg().contains('state different frame formats (FD, classic)'), err.msg()
+		return
+	}
+	assert false, 'targets stating two formats were accepted'
+}
+
 // A carrier for functional_addressed: what send_to was asked, and the answers recv hands back in
 // order — an error string as `!` followed by the message, a timeout once they run out.
 struct ScriptedCarrier {

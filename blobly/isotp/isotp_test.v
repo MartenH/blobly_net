@@ -624,22 +624,12 @@ fn test_malformed_single_and_first_frames_are_refused() {
 	if _ := ch.recv(100) {
 		assert false, 'an SF_DL of 9 must be refused'
 	} else {
-		assert err.msg().contains('exceeds 7'), err.msg()
+		assert err.msg().contains('escape'), err.msg()
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2] }) or { assert false, err.msg() }
 	time.sleep(20 * time.millisecond)
 	if _ := ch.recv(100) {
 		assert false, 'a four-byte First Frame must be refused'
-	} else {
-		assert err.msg().contains('too short'), err.msg()
-	}
-	// And an FD-sized one is not a classic First Frame either (codex round 18 on #225).
-	peer.send(transport.CanFrame{ id: 0x7E8, data: []u8{len: 12, init: u8(0x10)}, fd: true }) or {
-		assert false, err.msg()
-	}
-	time.sleep(20 * time.millisecond)
-	if _ := ch.recv(100) {
-		assert false, 'a twelve-byte First Frame must be refused'
 	} else {
 		assert err.msg().contains('too short'), err.msg()
 	}
@@ -702,7 +692,7 @@ fn test_open_refuses_an_id_wider_than_declared() {
 	}
 }
 
-// AN OVERSIZED CONSECUTIVE FRAME IS NOT ONE OF OURS on a classic channel (codex round 17 on #225).
+// A CONSECUTIVE FRAME LONGER THAN ITS FIRST FRAME IS NOT ONE OF OURS (codex round 17 on #225).
 fn test_an_oversized_consecutive_frame_is_refused() {
 	mut peer := transport.open('inproc:isotp-fat-cf') or {
 		assert false, 'in-process bus: ${err}'
@@ -720,9 +710,9 @@ fn test_an_oversized_consecutive_frame_is_refused() {
 		assert false, err.msg()
 	}
 	if _ := ch.recv(300) {
-		assert false, 'a 16-byte CF must be refused on a classic channel'
+		assert false, 'a 16-byte CF after an 8-byte First Frame must be refused'
 	} else {
-		assert err.msg().contains('classic channel'), err.msg()
+		assert err.msg().contains('longer than its 8-byte First Frame'), err.msg()
 	}
 	ch.close()
 	peer.close()

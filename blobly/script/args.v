@@ -3,6 +3,7 @@ module script
 import math
 import blobly.isotp
 import blobly.lua
+import blobly.transport
 
 // int_arg is argument i as an integer in lo..hi, a whole-number float as its integer; else an
 // error naming the argument (`what`) and what was given. For an identity or a handle, to which 0
@@ -72,8 +73,9 @@ fn ms_up(l lua.State, i int) i64 {
 	return i64(math.ceil(math.min(f, f64(max_i32))))
 }
 
-// isotp_settings_arg is arguments i .. i+2 as an ISO-TP channel's settings (isotp.settings_of):
-// padding a byte or false for none, block_size, stmin_ms; nil or absent is the default of each.
+// isotp_settings_arg is arguments i .. i+4 as an ISO-TP channel's settings (isotp.settings_with):
+// padding a byte or false for none, block_size, stmin_ms, tx_dl, format ("classic", "fd" or
+// "fd_brs"); nil or absent is the default of each.
 fn isotp_settings_arg(l lua.State, i int) !isotp.Settings {
 	mut padding := i64(0)
 	if l.arg_is_bool(i) && !l.arg_bool(i) {
@@ -95,5 +97,13 @@ fn isotp_settings_arg(l lua.State, i int) !isotp.Settings {
 		}
 		stmin_ms = l.arg_num(i + 2)
 	}
-	return isotp.settings_of(padding, block_size, stmin_ms)!
+	tx_dl := if l.arg_absent(i + 3) { i64(8) } else { int_arg(l, i + 3, 'tx_dl', min_i64, max_i64)! }
+	format := if l.arg_absent(i + 4) {
+		transport.FrameFormat.wire
+	} else if !l.arg_is_string(i + 4) {
+		return error('format is ${l.arg_given(i + 4)}, not "classic", "fd" or "fd_brs"')
+	} else {
+		transport.parse_frame_format(l.arg_str(i + 4))!
+	}
+	return isotp.settings_with(padding, block_size, stmin_ms, tx_dl, format)!
 }

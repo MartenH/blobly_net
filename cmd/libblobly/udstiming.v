@@ -63,14 +63,14 @@ pub fn bb_uds_check_wait(which i32, ms i32) i32 {
 	return ok()
 }
 
-// bb_uds_set_isotp: a CAN UDS handle's ISO-TP padding and Flow Control (isotp.Settings), from the
-// next frame on; a DoIP handle has no ISO-TP frames.
+// bb_uds_set_isotp: a CAN UDS handle's ISO-TP settings (isotp.Settings: padding, Flow Control,
+// TX_DL, frame format), from the next frame on; a DoIP handle has no ISO-TP frames.
 @[export: 'bb_uds_set_isotp']
-pub fn bb_uds_set_isotp(u i32, padding i32, block_size i32, stmin_ms f64) i32 {
-	s := settings_in(padding, block_size, stmin_ms) or { return fail(bb_err, err.msg()) }
+pub fn bb_uds_set_isotp(u i32, padding i32, block_size i32, stmin_ms f64, tx_dl i32, format i32) i32 {
+	s := settings_in(padding, block_size, stmin_ms, tx_dl, format) or { return fail(bb_err, err.msg()) }
 	return with_uds(u, fn [s] (mut hd UdsHandle) !i32 {
 		if mut hd.conn.ch is isotp.SoftChannel {
-			hd.conn.ch.settings = s
+			hd.conn.ch.state(s)!
 			return ok()
 		}
 		return error(udsconn.doip_settings_refusal('set_isotp', hd.row_name))

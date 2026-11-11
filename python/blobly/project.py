@@ -776,7 +776,8 @@ class Channel(Bus):
     def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
             p2_star_ms: int | None = None, margin_ms: int | None = None,
             pending_budget_ms: int | None = None, keep_alive_ms: int | None = None,
-            padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0) -> UdsClient:
+            padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0, tx_dl: int = 8,
+            format: FrameFormat | None = None) -> UdsClient:
         """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
         started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
         None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
@@ -786,20 +787,25 @@ class Channel(Bus):
         (ISO 13400-2: one tester address, one connection) — a second is refused while it is open.
         The timing keywords state the client's waits (UdsClient.timeout_ms ...); None keeps the
         engine's. keep_alive_ms starts its keep-alive (UdsClient.keep_alive). On a CAN row padding,
-        block_size and stmin_ms are its ISO-TP channel's, as isotp's; refused on a DoIP row."""
+        block_size, stmin_ms, tx_dl and format are its ISO-TP channel's, as isotp's; refused on a
+        DoIP row."""
         return UdsClient(self, tx, rx, timeout_ms=timeout_ms, p2_star_ms=p2_star_ms, margin_ms=margin_ms,
                          pending_budget_ms=pending_budget_ms, keep_alive_ms=keep_alive_ms, padding=padding,
-                         block_size=block_size, stmin_ms=stmin_ms)
+                         block_size=block_size, stmin_ms=stmin_ms, tx_dl=tx_dl, format=format)
 
     def isotp(self, tx: int, rx: int, *, padding: int | None = 0, block_size: int = 0,
-              stmin_ms: float = 0) -> IsoTp:
+              stmin_ms: float = 0, tx_dl: int = 8, format: FrameFormat | None = None) -> IsoTp:
         """A raw ISO-TP channel on this CAN row while the project is started: whole messages sent on
         CAN id `tx` and received on `rx`, either past 0x7FF making both 29-bit, with no UDS on top.
         Both ids are given: there is no default pair. Refused on a DoIP or SOME/IP row. padding is
         the byte frames are padded to 8 bytes with (0x00), None for frames as long as their content;
         block_size (0 .. 255) and stmin_ms (a whole 0 .. 127, or 0.1 .. 0.9) the Flow Control it
-        answers a First Frame with — refused out of range before the channel opens."""
-        return IsoTp(self, tx, rx, padding=padding, block_size=block_size, stmin_ms=stmin_ms)
+        answers a First Frame with — refused out of range before the channel opens. tx_dl (8, 12, 16,
+        20, 24, 32, 48 or 64) is the length of the frames it sends in, above 8 CAN-FD (refused on a
+        classic row unless format states fd), and format ("classic", "fd", "fd_brs"; None the row's
+        declared format) is stated on every frame. Frames it receives are read at any length."""
+        return IsoTp(self, tx, rx, padding=padding, block_size=block_size, stmin_ms=stmin_ms, tx_dl=tx_dl,
+                     format=format)
 
     def uds_functional(self, functional_id: int | None, clients: Sequence[UdsClient], request: ByteData,
                        window_ms: int = 1000) -> list[FunctionalReply]:

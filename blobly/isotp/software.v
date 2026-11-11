@@ -6,8 +6,13 @@
 // vendor driver that has no kernel ISO-TP. Cross-platform (unsuffixed file). It
 // implements the same `Channel` interface, so UDS rides on it unchanged.
 //
-// Scope: classic addressing, single + multi-frame, frames padded to 8 bytes with 0x00 unless the
-// channel's `settings` say another byte or none (#635). Flow control is
+// Scope: normal addressing, single + multi-frame, messages up to 4095 bytes (a First Frame's 12-bit
+// length). It sends in 8-byte frames padded with 0x00 unless the channel's `settings` say another
+// byte or none (#635), or a longer TX_DL (12 .. 64, CAN-FD, #637): a Single Frame of up to TX_DL - 2
+// bytes behind the escape length, Consecutive Frames of TX_DL - 1 bytes, a frame longer than 8 padded
+// up to the next CAN-FD length; and in the format they state (#608), else the row's. It RECEIVES
+// either with no setting: a Single Frame behind the escape, and a First Frame of any CAN-FD length,
+// whose length the Consecutive Frames then keep, the last one shorter. Flow control is
 // HONOURED on the send side — CTS/WAIT/OVERFLOW, block size and STmin (#226) — because
 // `isotp.open` routes here on every non-Linux host, so this is what flash, the shell, scripts
 // and the GUI's diagnostics use against real ECUs on Windows; "fine in-process" stopped being
@@ -68,6 +73,9 @@ pub mut:
 	// with (settings_of); read at each frame, so a change holds from the next one — a block size
 	// from the next Flow Control, since the sender follows the last one until then.
 	settings Settings
+	// Whether the row it is opened on declares CAN-FD, which a TX_DL above 8 needs unless the
+	// settings state an FD format (`state`, Settings.row_refusal).
+	row_fd bool
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
 	//
@@ -95,6 +103,15 @@ pub mut:
 	// Unset (the default) the send is never abandoned, which is what flash and the operator's
 	// tools get: Stop does not end them, and must not end a transfer they started.
 	stop_requested fn () bool = unsafe { nil }
+}
+
+// state takes settings a host stated, refused with nothing changed where the channel's row cannot
+// carry them (Settings.row_refusal).
+pub fn (mut c SoftChannel) state(s Settings) ! {
+	if why := s.row_refusal(c.row_fd) {
+		return error(why)
+	}
+	c.settings = s
 }
 
 // stop_poll_ms is how often a stoppable send asks `stop_requested` while it waits: the bound on
@@ -173,12 +190,14 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	if data.len > max_pdu {
 		return transport.not_written('ISO-TP PDU too large: ${data.len} > ${max_pdu}')
 	}
+	dl := int(c.settings.tx_dl)
 	// a channel that sends has moved on from a transfer a recv cut short; its late frames are a
 	// stale tail from here (and the Flow Control wait below would read them away). After the
 	// checks: a send refused before anything went out has moved on from nothing.
 	c.abandon_reception()
-	if data.len <= 7 {
-		mut sf := [u8(data.len)] // SF: PCI 0x0<len>
+	if data.len <= sf_max(dl) {
+		// SF: PCI 0x0<len>, or past 7 bytes the escape 0x00 and the length in the next byte
+		mut sf := if data.len <= 7 { [u8(data.len)] } else { [u8(0x00), u8(data.len)] }
 		sf << data
 		// NO DRAIN ON THIS PATH. A Single Frame leaves the peer with nothing more to say, so
 		// there is no Flow Control conversation to protect — and draining here would block for a
@@ -215,12 +234,12 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	if c.stopping() {
 		return error(abandoned_note)
 	}
-	// First Frame: PCI 0x1<len_hi><len_lo> + first 6 bytes.
+	// First Frame: PCI 0x1<len_hi><len_lo> + the first TX_DL - 2 bytes.
 	mut ff := [u8(0x10 | u8((data.len >> 8) & 0x0F)), u8(data.len & 0xFF)]
-	ff << data[..6]
+	ff << data[..dl - 2]
 	c.tx(ff)!
 	// From here the peer is answering us, so every exit owes the next send a clean slate.
-	c.send_segmented(data) or {
+	c.send_segmented(data, dl) or {
 		c.fc_dirty = true
 		return err
 	}
@@ -229,14 +248,14 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 // send_segmented is everything after the First Frame: the Flow Control conversation and the
 // Consecutive Frames it authorises. Split out so `send` can mark the channel dirty on ANY exit
 // from it — there is no path out of here that leaves the peer with nothing more to say.
-fn (mut c SoftChannel) send_segmented(data []u8) ! {
+fn (mut c SoftChannel) send_segmented(data []u8, dl int) ! {
 	// ONE ALLOWANCE FOR THE WHOLE TRANSFER, spent by every Flow Control this send waits for.
 	// Here and not on the channel because it belongs to the transfer: the next send starts
 	// again, as a peer that stalled one request has not forfeited the next (fc_total_wait_ms).
 	mut budget := new_wait_budget_ms(c.total_wait_ms)
 	mut fc := c.await_flow_control(mut budget)!
 	mut sn := u8(1)
-	mut off := 6
+	mut off := dl - 2
 	// When the last Consecutive Frame went out, in monotonic NANOSECONDS. Zero until the first.
 	//
 	// MEASURED FROM THE FRAME, NOT COUNTED WITHIN A BLOCK. The first cut slept only when it had
@@ -267,7 +286,7 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 			if c.stopping() {
 				return error(abandoned_note)
 			}
-			n := if data.len - off > 7 { 7 } else { data.len - off }
+			n := if data.len - off > dl - 1 { dl - 1 } else { data.len - off }
 			mut cf := [u8(0x20 | (sn & 0x0F))]
 			cf << data[off..off + n]
 			c.tx(cf)!
@@ -482,15 +501,22 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			return payload
 		}
 		if pci == 0x10 {
-			if first.len != 8 {
-				// A First Frame carries exactly six initial payload bytes on a classic channel:
-				// shorter, those bytes would be taken from the Consecutive Frames instead -- a
-				// shifted PDU returned as valid (codex round 14 on #225); longer, an FD-sized frame
-				// on our id could complete a PDU on its own (codex round 18).
-				return error('ISO-TP FF too short')
+			// The First Frame's length is the transfer's RX_DL (ISO 15765-2:2016): 8, or a CAN-FD
+			// length the Consecutive Frames keep. Shorter than 8, its first bytes would be taken from
+			// the Consecutive Frames instead -- a shifted PDU returned as valid (codex round 14 on
+			// #225).
+			dl := first.len
+			if dl < 8 {
+				return error('ISO-TP FF too short: ${dl} bytes, a First Frame has at least 8')
+			}
+			if dl !in transport.fd_lengths {
+				return error('ISO-TP: First Frame of ${dl} bytes, not a CAN-FD frame length')
 			}
 			total := (int(first[0] & 0x0F) << 8) | int(first[1])
-			if total <= 7 {
+			if total == 0 {
+				return error('ISO-TP: First Frame with a 32-bit length: messages past ${max_pdu} bytes are not received')
+			}
+			if total <= sf_max(dl) {
 				// A length that fits a Single Frame must be sent as one (ISO 15765-2); accepted, a
 				// total of 0..6 returned the padding bytes as a PDU and 7 waited for a Consecutive
 				// Frame that never comes (codex round 7 on #225).
@@ -501,6 +527,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			c.rx = Reassembly{
 				buf:   buf
 				total: total
+				dl:    dl
 				sn:    1
 			}
 			c.send_flow_control() or {
@@ -531,6 +558,7 @@ struct Reassembly {
 mut:
 	buf      []u8
 	total    int
+	dl       int // the First Frame's length: every Consecutive Frame but the last is as long
 	sn       u8
 	idle_ns  u64 // time a recv spent blocked with no Consecutive Frame since the last one
 	in_block int // Consecutive Frames since the last Flow Control this channel sent
@@ -623,13 +651,13 @@ fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
 			c.rx = Reassembly{}
 			return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
 		}
-		if cf.len > 8 {
-			// Classic ISO-TP: seven payload bytes per Consecutive Frame; an FD-sized frame on our
-			// id is not one of ours (codex round 17 on #225).
+		if cf.len > c.rx.dl {
+			// No Consecutive Frame is longer than its First Frame (codex round 17 on #225).
+			dl := c.rx.dl
 			c.rx = Reassembly{}
-			return error('ISO-TP: Consecutive Frame of ${cf.len} bytes on a classic channel')
+			return error('ISO-TP: Consecutive Frame of ${cf.len} bytes, longer than its ${dl}-byte First Frame')
 		}
-		if cf.len < 8 && c.rx.buf.len + cf.len - 1 < c.rx.total {
+		if cf.len < c.rx.dl && c.rx.buf.len + cf.len - 1 < c.rx.total {
 			// Only the LAST Consecutive Frame may be short; a short one with more of the PDU
 			// still to come would have its missing bytes filled from the next frame — a shifted
 			// PDU returned as valid (codex round 16 on #225).
@@ -660,18 +688,27 @@ pub fn (mut c SoftChannel) close() {
 	c.bus.close()
 }
 
-// tx sends an ISO-TP payload on tx_id, padded to 8 bytes (classic CAN) with the settings' byte,
-// or as long as its content when they say no padding.
+// tx sends an ISO-TP payload on tx_id in the settings' format: padded with the settings' byte to 8
+// bytes, or kept as long as its content when they say no padding, and past 8 bytes always up to the
+// next CAN-FD length, the only lengths such a frame has.
 fn (mut c SoftChannel) tx(payload []u8) ! {
 	mut data := payload.clone()
-	for c.settings.padded && data.len < 8 {
+	want := if data.len > 8 {
+		transport.fd_padded_len(data.len)
+	} else if c.settings.padded {
+		8
+	} else {
+		data.len
+	}
+	for data.len < want {
 		data << c.settings.pad
 	}
-	c.bus.send(transport.CanFrame{
+	f := c.settings.format.stamp(transport.CanFrame{
 		id:       c.tx_id
 		extended: c.ext
 		data:     data
-	})!
+	}) or { return transport.not_written('isotp send: ${err}') }
+	c.bus.send(f)!
 }
 
 // rx_raw returns the data of the next frame addressed to rx_id within the timeout.

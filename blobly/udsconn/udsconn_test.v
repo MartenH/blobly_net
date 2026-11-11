@@ -76,6 +76,11 @@ fn test_carrier_of_reads_the_row() {
 		name:  'CAN1'
 		iface: 'inproc:CAN1'
 	}) == Carrier{}
+	assert carrier_of(project.Channel{
+		name:  'FD1'
+		iface: 'inproc:FD1'
+		fd:    true
+	}).fd
 	d := carrier_of(project.Channel{
 		name:        'D'
 		typ:         'doip'
@@ -266,4 +271,67 @@ fn test_isotp_settings_reach_the_channel_and_a_doip_row_refuses_them() {
 		return
 	}
 	assert false, 'settings on a DoIP row resolved'
+}
+
+// a TX_DL above 8 is refused on a classic row unless an FD format is stated, and the row's
+// declaration reaches the channel, which judges later settings by it
+fn test_a_long_tx_dl_needs_a_can_fd_row_or_format() {
+	s := isotp.settings_with(0, 0, 0, 64, .wire)!
+	a := Ask{
+		what:     'uds.open'
+		settings: s
+	}
+	resolve(a, 'CAN1', Carrier{}) or {
+		assert err.msg().contains('uds.open("CAN1"): tx_dl 64 on a classic row')
+		t := resolve(a, 'FD1', Carrier{ fd: true })!
+		assert t.fd
+		mut c := open_isotp(t, 'FD1', 'inproc:UDSCONN-FD', opener)!
+		assert c.row_fd && c.settings.tx_dl == 64
+		c.close()
+		stated := resolve(Ask{
+			what:     'uds.open'
+			settings: isotp.settings_with(0, 0, 0, 64, .fd)!
+		}, 'CAN1', Carrier{})!
+		assert !stated.fd
+		return
+	}
+	assert false, 'tx_dl 64 resolved on a classic row'
+}
+
+// on a wire an FD row and a classic row dispute (left undeclared), the FD row's ISO-TP channel
+// sends as the row's emitter: its long frames go out FD, as Carrier.fd promised resolve
+fn test_an_fd_row_on_a_disputed_wire_sends_its_isotp_frames_fd() {
+	rows := [
+		project.Channel{
+			name:  'FD1'
+			iface: 'inproc:UDSCONN-DISPUTE'
+			fd:    true
+		},
+		project.Channel{
+			name:  'C1'
+			iface: 'inproc:UDSCONN-DISPUTE'
+		},
+	]
+	project.apply_listen_only(rows)
+	defer {
+		project.apply_listen_only([]project.Channel{})
+	}
+	car := carrier_of(rows[0])
+	assert car.fd && !carrier_of(rows[1]).fd
+	assert !carrier_of(project.Channel{ ...rows[0], enabled: false }).fd
+	t := resolve(Ask{
+		what:     'uds.open'
+		settings: isotp.settings_with(0, 0, 0, 64, .wire)!
+	}, 'FD1', car)!
+	mut wire := transport.open('inproc:UDSCONN-DISPUTE')!
+	defer {
+		wire.close()
+	}
+	mut c := open_isotp(t, 'FD1', 'inproc:UDSCONN-DISPUTE', opener)!
+	defer {
+		c.close()
+	}
+	c.send([]u8{len: 20, init: u8(index)})!
+	f := wire.recv(1000)!
+	assert f.fd && f.data.len == 24 && f.data[0] == 0x00 && f.data[1] == 20
 }

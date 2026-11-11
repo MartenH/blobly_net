@@ -600,7 +600,7 @@ fn l_uds_open(l lua.State) i32 {
 // flash.program's 0x7B0/0x7B8, cmd/flash's), pushed as a handle. One body for both, so a flash
 // reaches a channel exactly as a diagnostic does: the ISO-TP channel on the bus the opener gives,
 // framed as the wire declares (a CAN-FD channel stamps its frames FD), or the channel's DoIP
-// connection. Arguments 4 .. 6 are the ISO-TP channel's settings (isotp_settings_arg). `what`
+// connection. Arguments 4 .. 8 are the ISO-TP channel's settings (isotp_settings_arg). `what`
 // names the caller in the refusals; `for_flash` marks a CAN connection as flash.program's, and
 // takes one it opened before on the same ids.
 fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
@@ -1181,7 +1181,8 @@ fn l_uds_functional(l lua.State) i32 {
 	defer {
 		tap.close()
 	}
-	mut fch := isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
+	// the request sent as the row's emitter, in the row's format as the targets' requests are
+	mut fch := isotp.Channel(isotp.on_bus(env.row_bus(info.iface, name) or {
 		return l.fail('uds.functional: ${err}')
 	}, info.iface, u32(fid), u32(fid), ext) or { return l.fail('uds.functional: ${err}') })
 	defer {

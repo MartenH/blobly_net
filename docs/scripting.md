@@ -349,7 +349,7 @@ local rs = uds.functional("compute", 0x7DF, { dom, gw }, "\x22\xF1\x90" [, windo
 
 The request goes out **once**, as a Single Frame on the functional id (at most 7 bytes: a
 functional request cannot be segmented), padded as the connections' own requests are
-(`opts.padding`; connections padding differently raise). Each ECU answers on its own physical response id, and a
+(`opts.padding`, `opts.format`; connections padding or framing differently raise). Each ECU answers on its own physical response id, and a
 multi-frame answer is reassembled on that connection, its Flow Control going to that ECU's physical
 request id. Several ECUs may answer multi-frame to one request; their transfers are reassembled one
 after another, so a second ECU's Flow Control waits for the first transfer to end, which takes
@@ -447,8 +447,10 @@ tp:close()
 Whole messages on a CAN channel's id pair, segmented and reassembled by the ISO-TP a `uds.open`
 connection rides, with no UDS on top: a protocol of your own over ISO-TP, or a malformed UDS request
 and the bytes that come back. Both ids are needed (there is no default pair), and either past
-0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes in 8-byte
-frames, sent FD on a channel the project declares CAN-FD. `tp:send(data)` returns once the message is on the wire, a long one after the
+0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes, sent in
+8-byte frames (FD on a channel the project declares CAN-FD) unless `opts.tx_dl` says longer, and
+received in frames of any length the sender chose (a CAN-FD Single Frame behind the escape length, a
+First Frame of up to 64 bytes and Consecutive Frames as long). `tp:send(data)` returns once the message is on the wire, a long one after the
 receiver's Flow Control (1000 ms each, N_Bs; it raises when none came). `tp:recv(timeout_ms)`
 (default 1000; `0` only looks) returns the next whole message, or `nil` when none came in time; a
 transfer begun is kept for the next `recv`, until 1000 ms pass with no Consecutive Frame, which
@@ -457,8 +459,13 @@ connection on it included) each answer a First Frame with a Flow Control of thei
 `opts.padding` is the byte frames are padded to 8 bytes with (0x00), `false` for frames as long as
 their content; `opts.block_size` (0 .. 255) and `opts.stmin_ms` (a whole 0 .. 127, or 0.1 .. 0.9
 for 100 .. 900 µs) are the Flow Control it answers a First Frame with — 0 and 0 ask for no pacing,
-and above 0 the next Flow Control goes out after each block. `uds.open` takes the same three on a
-CAN channel (a DoIP channel raises). Out of range raises before the channel opens.
+and above 0 the next Flow Control goes out after each block. `opts.tx_dl` (8, 12, 16, 20, 24, 32,
+48 or 64; 8) is the length of the frames a message goes out in: a Single Frame of up to `tx_dl - 2`
+bytes behind the escape length, Consecutive Frames of `tx_dl - 1`, a frame longer than 8 padded up to
+the next CAN-FD length; above 8 a classic channel raises unless `opts.format` states FD.
+`opts.format` (`"classic"`, `"fd"` or `"fd_brs"`; nil the declared one) is stated on every frame it
+sends, `"classic"` raising with a `tx_dl` above 8. `uds.open` takes the same five on a CAN channel (a
+DoIP channel raises). Out of range raises before the channel opens.
 `tests/isotp_timing.lua` is the suite.
 
 ### E2E on what a script reads and sends

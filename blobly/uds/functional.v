@@ -117,7 +117,7 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 	if stop_asked(targets) {
 		return error(abandoned_note)
 	}
-	// the one frame padded as the targets' own requests are
+	// the one frame padded, and in the format, as the targets' own requests are
 	if mut fch is isotp.SoftChannel {
 		for t in targets {
 			if p := target_padding(t) {
@@ -125,6 +125,7 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 					...fch.settings
 					padded: p.padded
 					pad:    p.pad
+					format: p.format
 				}
 				break
 			}
@@ -318,6 +319,9 @@ pub fn functional_refusal(targets []FunctionalTarget, req []u8) ?string {
 					if p.padded != q.padded || p.pad != q.pad {
 						return 'UDS: a functional request is one frame, and its targets pad theirs differently (${padding_name(q)}, ${padding_name(p)})'
 					}
+					if p.format != q.format {
+						return 'UDS: a functional request is one frame, and its targets state different frame formats (${q.format.label()}, ${p.format.label()})'
+					}
 				}
 			}
 		}
@@ -325,7 +329,7 @@ pub fn functional_refusal(targets []FunctionalTarget, req []u8) ?string {
 	return none
 }
 
-// target_padding is how a target's own requests are padded, where its client rides a software
+// target_padding is how a target's own requests are padded and framed, where its client rides a software
 // channel: what the functional request's one frame takes too.
 fn target_padding(t FunctionalTarget) ?isotp.Settings {
 	ch := t.client.ch

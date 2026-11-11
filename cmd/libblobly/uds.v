@@ -1252,9 +1252,10 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 	defer {
 		tap.close()
 	}
-	mut fch := isotp.Channel(isotp.on_bus(transport.open_stoppable(opener, any_closing) or {
-		return functional_open_failed(err, hds)
-	}, iface, u32(id), u32(id), u32(id) > 0x7FF) or { return fail(bb_err, 'functional: ${err.msg()}') })
+	// the request sent as the row's emitter, in the row's format as the targets' requests are
+	mut fch := isotp.Channel(isotp.on_bus(transport.row_framed(transport.open_stoppable(opener,
+		any_closing) or { return functional_open_failed(err, hds) }, iface, ch.name), iface,
+		u32(id), u32(id), u32(id) > 0x7FF) or { return fail(bb_err, 'functional: ${err.msg()}') })
 	defer {
 		fch.close()
 	}

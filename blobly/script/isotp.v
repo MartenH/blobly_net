@@ -28,7 +28,7 @@ fn (mut env Env) register_isotp() {
 	env.st.register('__uds_target', l_uds_target)
 }
 
-// __isotp_open(channel, tx, rx, padding, block_size, stmin_ms): a raw ISO-TP channel on the
+// __isotp_open(channel, tx, rx, padding, block_size, stmin_ms, tx_dl, format): a raw ISO-TP channel on the
 // channel named, by udsconn's rule (a CAN channel, both ids given), on the bus the opener gives,
 // with the settings asked for (isotp_settings_arg)
 fn l_isotp_open(l lua.State) i32 {

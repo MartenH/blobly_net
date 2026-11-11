@@ -961,6 +961,17 @@ fn (mut hd BusHandle) leave() {
 // frame_format is the format `f` states (bb.h's enum bb_format, transport.FrameFormat — the
 // Lua bus.send's `format =`), refusing a value bb.h does not name and a flag the statement
 // contradicts, so nothing goes out in a format other than the one the host set.
+fn frame_format(f &C.bb_frame) !transport.FrameFormat {
+	ff := format_of(int(f.format))!
+	if ff == .classic && (f.fd != 0 || f.brs != 0) {
+		return error('a frame stated classic sets neither fd nor brs')
+	}
+	if ff == .fd && f.brs != 0 {
+		return error('a frame stated BB_FORMAT_FD has no bit-rate switch: brs is BB_FORMAT_FD_BRS')
+	}
+	return ff
+}
+
 // format_code is a format as an enum bb_format.
 fn format_code(ff transport.FrameFormat) u8 {
 	return match ff {
@@ -971,7 +982,7 @@ fn format_code(ff transport.FrameFormat) u8 {
 	}
 }
 
-// format_of is an enum bb_format value as a format.
+// format_of is the format an enum bb_format names, refusing a value bb.h does not name.
 fn format_of(v int) !transport.FrameFormat {
 	return if v == int(C.BB_FORMAT_WIRE) {
 		transport.FrameFormat.wire
@@ -984,18 +995,6 @@ fn format_of(v int) !transport.FrameFormat {
 	} else {
 		error('format ${v} is not an enum bb_format')
 	}
-}
-
-fn frame_format(f &C.bb_frame) !transport.FrameFormat {
-	v := int(f.format)
-	ff := format_of(v)!
-	if ff == .classic && (f.fd != 0 || f.brs != 0) {
-		return error('a frame stated classic sets neither fd nor brs')
-	}
-	if ff == .fd && f.brs != 0 {
-		return error('a frame stated BB_FORMAT_FD has no bit-rate switch: brs is BB_FORMAT_FD_BRS')
-	}
-	return ff
 }
 
 @[export: 'bb_bus_send']

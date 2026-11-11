@@ -313,3 +313,94 @@ class TestSettings:
             with pytest.raises(kind):
                 ch.uds(0x700, 0x708, **kw)
         assert not ch._uds, "a refused channel was opened"
+
+
+# one in-process CAN-FD row with a data phase (frames go out FD with the bit-rate switch)
+FD = """project:
+  name: fd
+  version: 8
+channels:
+  - name: F
+    type: canfd
+    interface: inproc:PY_ISOTP_FD
+    bitrate: 500000
+    data_bitrate: 2000000
+"""
+
+
+class TestCanFd:
+    """Frames longer than 8 bytes (#637) and a stated frame format (#608), seen by the test's own peer."""
+
+    @pytest.fixture
+    def net(self, tmp_path):
+        net = blobly.Project(write(tmp_path, "fd.blobnet", FD)).start()
+        yield net
+        net.stop()
+
+    @pytest.fixture
+    def ch(self, net):
+        return net.channels.F
+
+    def test_a_long_tx_dl_sends_long_frames(self, ch):
+        ch.look()
+        with ch.isotp(0x700, 0x708, tx_dl=64, padding=0xCC) as tp:
+            tp.send(bytes(range(20)))  # behind the escape length, padded from 22 up to 24
+            f = ch.expect(0x700, 1000)
+            assert f.fd and f.brs and f.data == b"\x00\x14" + bytes(range(20)) + b"\xcc\xcc"
+            tp.send(b"\x3e\x00")  # up to 7 bytes the classic Single Frame
+            assert ch.expect(0x700, 1000).data == b"\x02\x3e\x00" + b"\xcc" * 5
+
+    def test_fd_frames_are_received_with_no_keyword(self, ch):
+        with ch.isotp(0x700, 0x708) as tp:
+            ch.send(0x708, b"\x00\x14" + bytes(range(20)), fd=True)
+            assert tp.recv(1000) == bytes(range(20))
+            pdu = bytes(i & 0xFF for i in range(100))  # 62 in the First Frame, then 38 in one frame
+            ch.send(0x708, b"\x10\x64" + pdu[:62], fd=True)
+            ch.send(0x708, b"\x21" + pdu[62:], fd=True)
+            assert tp.recv(1000) == pdu
+
+    def test_two_channels_carry_a_long_message_in_long_frames(self, ch):
+        with ch.isotp(0x700, 0x708, tx_dl=32) as a, ch.isotp(0x708, 0x700) as b:
+            want = bytes(i * 7 & 0xFF for i in range(1000))
+            got = []
+            t = threading.Thread(target=lambda: got.append(b.recv(5000)))
+            t.start()
+            a.send(want)
+            t.join(5)
+            assert got == [want]
+
+    def test_a_stated_format_is_on_every_frame(self, ch):
+        ch.look()
+        with ch.isotp(0x700, 0x708, format="classic") as tp:
+            tp.send(b"\x3e\x00")
+            f = ch.expect(0x700, 1000)
+            assert not f.fd and not f.brs
+        with ch.uds(0x700, 0x708, format="fd", timeout_ms=50) as diag:
+            with pytest.raises(blobly.Timeout):
+                diag.raw(b"\x3e\x00")
+            f = ch.expect(0x700, 1000)
+            assert f.fd and not f.brs
+
+    def test_what_cannot_be_framed_is_refused(self, ch, tmp_path):
+        for kw, kind in (({"tx_dl": 9}, blobly.Refused), ({"tx_dl": 128}, blobly.Refused),
+                         ({"tx_dl": 64, "format": "classic"}, blobly.Refused),
+                         ({"format": "can"}, ValueError), ({"tx_dl": "64"}, TypeError)):
+            with pytest.raises(kind):
+                ch.isotp(0x700, 0x708, **kw)
+            with pytest.raises(kind):
+                ch.uds(0x700, 0x708, **kw)
+        assert not ch._uds, "a refused channel was opened"
+
+    def test_a_classic_row_takes_a_long_tx_dl_only_with_an_fd_format(self, net, tmp_path):
+        net.stop()
+        with blobly.Project(write(tmp_path, "bare.blobnet", BARE)) as bare:
+            b = bare.channels.B
+            with pytest.raises(blobly.Refused, match="classic row"):
+                b.isotp(0x700, 0x708, tx_dl=64)
+            with pytest.raises(blobly.Refused, match="classic row"):
+                b.uds(0x700, 0x708, tx_dl=64).raw(b"\x3e\x00")
+            b.look()
+            with b.isotp(0x700, 0x708, tx_dl=64, format="fd") as tp:
+                tp.send(bytes(10))
+                assert b.expect(0x700, 1000).data[:2] == b"\x00\x0a"
+        net.start()
