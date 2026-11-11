@@ -580,7 +580,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 			if k in out.by_key {
 				continue
 			}
-			ws := windows_of(m, mine.filter(!it.window_malformed && shape_problem(m, e2e_of(it)) == none))
+			ws := protection_for(n, m)
 			if ws.len > 0 {
 				out.by_key[k] = new_verifier(m, ws)
 			}

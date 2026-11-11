@@ -258,3 +258,21 @@ fn test_two_windows_of_one_name_are_refused() {
 	v := receive_checks(db, mixed_entries()).by_key[vkey(292, false)] or { panic('not verified') }
 	assert v.windows.len == 1
 }
+
+// an entry protecting nothing is not stamped, so it is not checked either: the window beside it is
+fn test_an_empty_entry_beside_a_window_leaves_the_window_checked() {
+	db := candb.parse_dbc(mixed_dbc) or { panic(err) }
+	mut entries := [project.ProtectCfg{
+		message: 'Mixed'
+	}]
+	entries << mixed_entries()[0]
+	node := project.NodeCfg{
+		name:    'Ecu'
+		protect: entries
+	}
+	assert protection_for(node, db.messages[0]).map(it.crc) == ['A_CRC']
+	v := verifiers_for(db, [node], []).by_key[vkey(292, false)] or { panic('not verified') }
+	assert v.windows.map(it.crc) == ['A_CRC']
+	assert !validate_protection(db, node).any(it.contains('only the first applies')), validate_protection(db,
+		node).str()
+}

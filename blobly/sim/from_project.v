@@ -216,15 +216,16 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		if n < 2 {
 			continue
 		}
-		entries := cfg.protect.filter(it.message == msg)
-		if entries.any(!it.window()) {
+		m := msgs[msg] or { continue }
+		// the entries protection_for stamps from; the rest are said one by one below
+		entries := cfg.protect.filter(it.message == msg && stampable(m, it))
+		if entries.len > 1 && entries.any(!it.window()) {
 			// one window per entry: an entry naming none is the whole payload, which any other overlaps
 			warns << 'protect: "${msg}" appears more than once and not every entry names its window (offset:/length:) — only the first applies; give each its window, or put counter and crc in ONE entry'
 			continue
 		}
-		m := msgs[msg] or { continue }
 		mut kept := []E2e{}
-		for p in entries.filter(stampable(m, it)) {
+		for p in entries {
 			mut e := e2e_of(p)
 			e.group = window_name(m, e)
 			if why := clash_with(kept, m, e) {
