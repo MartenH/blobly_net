@@ -358,11 +358,11 @@ fn protect_inline(pr ProtectCfg) string {
 		parts << 'data_id_mode: ${yaml_flow_scalar(pr.data_id_mode)}'
 	}
 	if pr.window_malformed {
-		if pr.offset_text != '' {
-			parts << 'offset: ${yaml_flow_scalar(pr.offset_text)}'
+		if t := pr.offset_text {
+			parts << 'offset: ${yaml_flow_scalar(t)}'
 		}
-		if pr.length_text != '' {
-			parts << 'length: ${yaml_flow_scalar(pr.length_text)}'
+		if t := pr.length_text {
+			parts << 'length: ${yaml_flow_scalar(t)}'
 		}
 	} else {
 		if off := pr.offset {

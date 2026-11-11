@@ -275,6 +275,12 @@ fn test_receive_checks_take_the_verify_entry_then_the_declaration() {
 	assert brake2.check_at(d, kernel, 0) == .ok
 	brake2.windows[0].apply(brake2.msg, mut d, 1)
 	assert brake2.check_at(d, kernel, 101_000_000) == .timeout, 'the verify: entry lost the message timeout'
+	// a window naming the whole payload by its bytes is the BO_ declaration's window too
+	mut whole := verify[..1].clone()
+	whole[0].offset = 0
+	whole[0].length = 6
+	brake3 := receive_checks(db, whole).by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
+	assert declared_timeout_ms(brake3.msg, brake3.windows[0]) == 100
 	assert receive_checks(candb.Database{}, []).by_key.len == 0
 }
 

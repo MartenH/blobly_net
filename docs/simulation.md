@@ -272,8 +272,9 @@ bytes** — `offset` and `length`, both or neither:
   Profiles 1 and 5 and the primitives all work per window, and one frame may mix them.
 - The CRC and the counter must lie inside the window, and the window inside the payload; an entry
   that breaks either is reported and not applied.
-- A frame's windows must not overlap: an entry whose window overlaps one listed before it is
-  reported and not applied. An entry naming no window is the whole payload, so beside another
+- A frame's windows must not overlap, and each is named apart (by the signal group holding its
+  CRC, else the CRC signal): an entry whose window overlaps one listed before it, or would be
+  named like it, is reported and not applied. An entry naming no window is the whole payload, so beside another
   entry for the message only the first applies, as before windows existed.
 - Every window is stamped on every send with the same counter step, and checked on receive with
   its own counter state; the frame's verdict is the **worst** of its windows' (truncated, then

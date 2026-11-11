@@ -242,3 +242,19 @@ fn test_windows_that_overlap_or_miss_their_fields_are_said() {
 	got := protection_for(nw, db.messages[0])
 	assert got.len == 1 && got[0].length == 0
 }
+
+// two windows whose CRCs one signal group holds would share its name, which a script reads
+// their verdicts and a fault targets them by: the second is refused
+fn test_two_windows_of_one_name_are_refused() {
+	db := candb.parse_dbc(mixed_dbc + 'SIG_GROUP_ 292 Both 1 : A_CRC B_CRC;\n') or { panic(err) }
+	node := project.NodeCfg{
+		name:    'Ecu'
+		protect: mixed_entries()
+	}
+	assert protection_for(node, db.messages[0]).map(it.group) == ['Both']
+	assert validate_protection(db, node).any(it.contains('named Both, as another one is')), validate_protection(db,
+		node).str()
+	assert validate_verify(db, mixed_entries()).any(it.contains('named Both, as another one is'))
+	v := receive_checks(db, mixed_entries()).by_key[vkey(292, false)] or { panic('not verified') }
+	assert v.windows.len == 1
+}

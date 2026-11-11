@@ -223,13 +223,15 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 			continue
 		}
 		m := msgs[msg] or { continue }
-		kept := windows_of(m, entries.filter(stampable(m, it)))
-		for p in entries.filter(it.window() && stampable(m, it)) {
-			e := e2e_of(p)
-			if !kept.any(it.offset == e.offset && it.length == e.length && it.crc == e.crc
-				&& it.counter == e.counter) {
-				warns << 'protect: ${msg}: the window at byte ${e.offset} overlaps another entry of it — not applied'
+		mut kept := []E2e{}
+		for p in entries.filter(stampable(m, it)) {
+			mut e := e2e_of(p)
+			e.group = window_name(m, e)
+			if why := clash_with(kept, m, e) {
+				warns << 'protect: ${msg}: the window at byte ${e.offset}: ${why} — not applied'
+				continue
 			}
+			kept << e
 		}
 	}
 	for p in cfg.protect {

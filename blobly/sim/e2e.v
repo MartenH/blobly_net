@@ -173,14 +173,19 @@ pub fn shape_problem(m candb.Message, e E2e) ?string {
 	return e2e_problem(m, e)
 }
 
-// overlap_with says which window of `kept` shares a byte with `e`'s, if one does: a message's
-// windows are disjoint, or one window's CRC would be covered by another's computed first.
-pub fn overlap_with(kept []E2e, m candb.Message, e E2e) ?string {
+// clash_with says why `e` (its group named) cannot be one of `m`'s windows beside `kept`, if it
+// cannot: a message's windows are disjoint, or one window's CRC would be covered by another's
+// computed first; and each has a name of its own, which a script reads its verdict and a fault
+// targets it by.
+pub fn clash_with(kept []E2e, m candb.Message, e E2e) ?string {
 	a0, a1 := e.bytes(m)
 	for k in kept {
 		b0, b1 := k.bytes(m)
 		if a0 < b1 && b0 < a1 {
 			return 'its window overlaps the one of ${k.label(m)}'
+		}
+		if k.label(m) == e.label(m) {
+			return 'its window is named ${e.label(m)}, as another one is'
 		}
 	}
 	return none
@@ -198,15 +203,15 @@ pub fn window_name(m candb.Message, e E2e) string {
 }
 
 // windows_of is the protection the usable entries for one message describe, one window each: an
-// entry naming no window is the whole payload, and an entry whose window overlaps one taken before
-// it is left out — so of several naming none, the first applies (validate_protection and
+// entry naming no window is the whole payload, and an entry whose window clashes with one taken
+// before it (clash_with) is left out — so of several naming none, the first applies (validate_protection and
 // validate_verify say so).
 pub fn windows_of(m candb.Message, entries []project.ProtectCfg) []E2e {
 	mut out := []E2e{}
 	for p in entries {
 		mut e := e2e_of(p)
 		e.group = window_name(m, e)
-		if overlap_with(out, m, e) != none {
+		if clash_with(out, m, e) != none {
 			continue
 		}
 		out << e
@@ -231,7 +236,7 @@ pub fn declared_e2e(m candb.Message) []E2e {
 }
 
 // declared_set is the windows a message's declarations give, and why each one left out was:
-// it cannot be applied (declared_problem), or its window overlaps one given before it — each
+// it cannot be applied (declared_problem), or its window clashes with one given before it — each
 // reason with its declaration (candb.E2eDecl.where_in).
 pub fn declared_set(m candb.Message) ([]E2e, []DeclRefusal) {
 	mut out := []E2e{}
@@ -246,7 +251,7 @@ pub fn declared_set(m candb.Message) ([]E2e, []DeclRefusal) {
 			continue
 		}
 		e := e2e_of_decl(m, d) or { continue }
-		if o := overlap_with(out, m, e) {
+		if o := clash_with(out, m, e) {
 			refused << DeclRefusal{d, o}
 			continue
 		}

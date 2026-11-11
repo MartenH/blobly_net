@@ -393,10 +393,10 @@ pub mut:
 	offset           ?int
 	length           ?int
 	window_malformed bool // either is not a whole number >= 0 (a length > 0), or only one is given
-	// what a malformed window's keys said, written back as given so a save cannot widen the entry
-	// to the whole payload
-	offset_text string
-	length_text string
+	// what a malformed window's keys said, none for a key not given, written back as given so a
+	// save cannot widen the entry to the whole payload
+	offset_text ?string
+	length_text ?string
 }
 
 // window: the entry names a window of bytes rather than the whole payload.
@@ -1454,8 +1454,8 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 		mut off := ?int(none)
 		mut wlen := ?int(none)
 		mut wbad := false
-		mut off_text := ''
-		mut len_text := ''
+		mut off_text := ?string(none)
+		mut len_text := ?string(none)
 		if v := p.value_opt('offset') {
 			off_text = v.str()
 			if n := window_int(v.str()) {
@@ -1485,8 +1485,8 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			offset:             off
 			length:             wlen
 			window_malformed:   wbad
-			offset_text:        if wbad { off_text } else { '' }
-			length_text:        if wbad { len_text } else { '' }
+			offset_text:        if wbad { off_text } else { none }
+			length_text:        if wbad { len_text } else { none }
 			message:            p.value('message').default_to('').string()
 			id:                 mid
 			extended:           mext

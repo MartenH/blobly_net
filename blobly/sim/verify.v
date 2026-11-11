@@ -239,14 +239,19 @@ fn (mut v Verifier) timed(i int, got Violation, clock string, t_ns i64) Violatio
 }
 
 // declared_timeout_ms is the E2ETimeout a message's file declares for window `e` — the
-// declaration of the same window, at BO_ scope for the whole payload; 0 for none.
+// declaration of a window over the same bytes (BO_ scope being the whole payload); 0 for none.
 pub fn declared_timeout_ms(m candb.Message, e E2e) u32 {
+	a0, a1 := e.bytes(m)
 	for d in m.e2e {
 		if !d.has_timeout {
 			continue
 		}
 		w := m.e2e_window(d) or { continue }
-		if w.offset == e.offset && w.length == e.length {
+		b0, b1 := E2e{
+			offset: w.offset
+			length: w.length
+		}.bytes(m)
+		if a0 == b0 && a1 == b1 {
 			return d.timeout_ms
 		}
 	}
@@ -770,15 +775,13 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		m := msg_by[k] or { continue }
 		mut kept := []E2e{}
 		for p in entries {
-			e := e2e_of(p)
-			if why := overlap_with(kept, m, e) {
+			mut e := e2e_of(p)
+			e.group = window_name(m, e)
+			if why := clash_with(kept, m, e) {
 				warns << 'verify: ${p.message}: the window at byte ${e.offset}: ${why} — entry ignored'
 				continue
 			}
-			kept << E2e{
-				...e
-				group: window_name(m, e)
-			}
+			kept << e
 		}
 	}
 	return warns
