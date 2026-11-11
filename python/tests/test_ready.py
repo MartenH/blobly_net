@@ -1,6 +1,8 @@
 """Project.wait_ready: start() returns before the run's loops have opened their buses; wait_ready
 waits for them and names every one that failed."""
 
+import threading
+
 import pytest
 
 import blobly
@@ -63,3 +65,26 @@ def test_the_loops_that_failed_are_named(tmp_path, capfd):
     assert lines[3].startswith('  Here: generator "Long": ') and "classic CAN frame" in lines[3], lines
     assert "Later" not in str(e.value)  # opens at its first fire: not waited for
     assert "Gone: simulated nodes: cannot open" in capfd.readouterr().err  # and said as it failed
+
+
+def test_the_wait_leaves_the_state_lock_free(monkeypatch):
+    lib = _lib.lib()
+    real = lib.bb_wait_ready
+    free = []
+
+    def spy(part):  # whether another thread could take the state lock while the library waits
+        def probe():
+            took = _lib.state_lock.acquire(blocking=False)
+            free.append(took)
+            if took:
+                _lib.state_lock.release()
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        return real(part)
+
+    net = blobly.Project(SIM_DEMO)
+    with net:
+        monkeypatch.setattr(lib, "bb_wait_ready", spy)
+        assert net.wait_ready(5000) is None
+    assert free and all(free), free

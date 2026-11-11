@@ -626,7 +626,8 @@ int bb_wait_released(int timeout_ms);  /* 0: free for a start; BB_RELEASING: not
  * BB_ERR none is opening and some failed; BB_ERR_TIMEOUT some are still opening when timeout_ms
  * passed (< 0 waits until none is). bb_last_error names each loop not up, a line apiece
  * ("2 of 6 not up:" then "  CAN1: simulated nodes: cannot open ..."). BB_ERR_STATE before
- * bb_start. bb_start returns before the loops have opened. */
+ * bb_start, or when a bb_stop from another thread ended the wait. bb_start returns before the
+ * loops have opened. Reads no state a host serialises: it may wait on any attached thread. */
 int bb_wait_ready(int timeout_ms);
 
 /* The loaded project's ENABLED rows, in project order. */

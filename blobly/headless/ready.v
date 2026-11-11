@@ -61,13 +61,17 @@ pub fn (mut r Run) loops() []LoopReady {
 }
 
 // wait_ready waits at most timeout_ms (negative: until it happens) for no loop to be opening,
-// on the monotonic clock, and returns the loops as they then stand (ready_note reads them).
+// on the monotonic clock, and returns the loops as they then stand (ready_note reads them). A
+// stop ends the wait: a loop the stop overtook in its open never reports it.
 pub fn (mut r Run) wait_ready(timeout_ms int) []LoopReady {
 	until := time.sys_mono_now() + u64(if timeout_ms > 0 { timeout_ms } else { 0 }) * 1_000_000
 	for {
-		ls := r.loops()
+		r.mu.lock()
+		ls := r.ready.clone()
+		stopping := r.stopping
+		r.mu.unlock()
 		now := time.sys_mono_now()
-		if !ls.any(it.state == .opening) || (timeout_ms >= 0 && now >= until) {
+		if stopping || !ls.any(it.state == .opening) || (timeout_ms >= 0 && now >= until) {
 			return ls
 		}
 		mut step := i64(5) * time.millisecond

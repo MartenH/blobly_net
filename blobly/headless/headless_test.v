@@ -451,3 +451,58 @@ fn test_ready_note_names_a_loop_still_opening() {
 	assert ready_note(ls) == '1 of 2 not up:\n  B: UDS server: still opening'
 	assert ready_note([]LoopReady{}) == ''
 }
+
+// A stop ends a wait without a bound, though a loop the stop overtook never reports its open.
+fn test_wait_ready_ends_at_a_stop() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	r.stop()
+	r.opening('A: generator "never told"')
+	ls := r.wait_ready(-1)
+	assert ls.any(it.state == .opening)
+}
+
+// A cyclic generator is up once the bus took a frame, and stays up when a later send is refused.
+fn test_a_generator_stays_up_after_its_first_frame() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_latch_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'latch.blobnet')
+	os.write_file(path, 'project:
+  name: latch
+  version: 8
+channels:
+  - name: Here
+    type: can
+    interface: inproc:HLATCH
+    senders:
+      - name: Ok
+        id: "0x322"
+        data: 01
+        trigger: cyclic
+        cycle_ms: 5
+')!
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		transport.set_listen_only('inproc:HLATCH', false)
+		r.stop()
+	}
+	assert ready_note(r.wait_ready(2000)) == ''
+	transport.set_listen_only('inproc:HLATCH', true)
+	for _ in 0 .. 200 {
+		if lines.said('generator "Ok": not sent') {
+			break
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	assert lines.said('generator "Ok": not sent')
+	assert r.loops().map(it.state) == [LoopState.up]
+}

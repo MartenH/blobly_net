@@ -338,9 +338,9 @@ fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 		g.fresh = false
 		why := g.send(mut b)
 		g.done = time.sys_mono_now() / 1_000_000
-		// up once the bus took its first frame; a refused one, and every change after, reported
-		if !g.told || (g.ready >= 0 && why != g.failed) {
-			g.told = true
+		// its sends follow it until the bus took a frame; up from then on
+		if !g.told {
+			g.told = why == ''
 			g.report(why)
 		}
 		if why != g.failed {
@@ -624,7 +624,8 @@ fn fire_outcome(name string, a Answer, until u64, stopping bool) ! {
 	}
 }
 
-fn (mut r Run) is_stopping() bool {
+// is_stopping is whether the run's stop has begun.
+pub fn (mut r Run) is_stopping() bool {
 	r.mu.lock()
 	defer {
 		r.mu.unlock()

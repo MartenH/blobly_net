@@ -1357,12 +1357,13 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             with _lib.state_lock:
                 if not self.started:
                     raise BloblyError("the project is not started", _lib.BB_ERR_STATE)
-                rc = lib.bb_wait_ready(part)
-                if rc == 0:
-                    return True
-                if rc == _lib.BB_ERR_TIMEOUT and part != 0:
-                    return None
-                e = _lib.error(rc)
+            # the wait outside the lock, as wait_released's: a stop meanwhile ends it as BB_ERR_STATE
+            rc = lib.bb_wait_ready(part)
+            if rc == 0:
+                return True
+            if rc == _lib.BB_ERR_TIMEOUT and part != 0:
+                return None
+            e = _lib.error(rc)
             raise BloblyError(str(e), rc) if rc == _lib.BB_ERR else e
         # a last look once the wait is over, which raises naming what is still opening
         if _sliced(ready, _ms(timeout_ms)) is None:
