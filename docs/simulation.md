@@ -411,7 +411,8 @@ An `io:` DID is zeros of its `size` at start and reads back through `0x22` what 
 freezeCurrentState keeps it, and `00` returnControlToECU and `01` resetToDefault put the start
 value back; every positive answer carries the value as it then stands. Entering the default
 session (`10 01`, or S3 running out on a described server) and an ECU reset (`0x11`) put every
-`io:` DID back to its start value too, as ISO 14229-1 has them end input/output control. `0x23` ReadMemoryByAddress
+`io:` DID back to its start value too, as ISO 14229-1 has them end input/output control. `0xF190`
+(the VIN, which a DoIP entity announces) is refused as an `io:` DID. `0x23` ReadMemoryByAddress
 and `0x3D` WriteMemoryByAddress take the addressAndLengthFormatIdentifier of ISO 14229-1 (high
 nibble the size's bytes, low nibble the address's, 1..8 each) and must lie inside ONE declared
 range; memory is zeros at start, at most 1 MiB a range. An undeclared IO DID or address, an
@@ -570,7 +571,8 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   replace a value or add a readable DID.
 - **`io:` and `memory:` from the `uds:` block** — `0x2F` and `0x23`/`0x3D` as above, gated by
   the `[uds] services` table's rows for them like any other service (a stated table without the
-  row is `0x11`); an IO DID reads in every session. `0xF186` reads the session unless the
+  row is `0x11`); an IO DID reads in every session. A live DID declared under `io:` reads the
+  value `0x2F` holds (`01`..`03`) and its signal again once control is returned. `0xF186` reads the session unless the
   description or `dids:` declares it.
 
 What it serves differently, each said when it starts: `0x28` is `serviceNotSupported` (nothing

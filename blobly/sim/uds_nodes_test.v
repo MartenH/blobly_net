@@ -480,3 +480,26 @@ fn test_io_did_size_is_bounded_by_the_0x2f_header() {
 	assert warns.any(it.contains('IO DID 0x1235 size ${io_max + 1} is not 1..${io_max} bytes'))
 	assert !warns.any(it.contains('IO DID 0x1234'))
 }
+
+// The VIN is not an IO DID: 0x2F would change what 0x22 serves while DoIP discovery goes on
+// announcing the old one.
+fn test_the_vin_is_refused_as_an_io_did() {
+	nodes := [project.NodeCfg{
+		name: 'GW'
+		uds:  project.UdsCfg{
+			rx: 0x7E1
+			tx: 0x7E9
+			io: [project.IoCfg{
+				id:   0xF190
+				size: 17
+			}, project.IoCfg{
+				id:   0x1234
+				size: 1
+			}]
+		}
+	}]
+	assert validate_uds(nodes).any(it.contains('IO DID 0xF190 is the VIN'))
+	assert validate_uds_doip(nodes).any(it.contains('IO DID 0xF190 is the VIN'))
+	assert uds_nodes(nodes)[0].server.io_start.keys() == [u16(0x1234)]
+	assert uds_nodes_doip(nodes)[0].server.io_start.keys() == [u16(0x1234)]
+}

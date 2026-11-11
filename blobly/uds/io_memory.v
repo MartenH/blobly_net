@@ -78,7 +78,8 @@ pub fn (mut s Server) declare_memory(address u64, size int) {
 // io_control answers 0x2F: 00 returnControlToECU and 01 resetToDefault put the start value back,
 // 02 freezeCurrentState keeps the value, 03 shortTermAdjustment sets it; the answer carries the
 // value as it then stands — 0x14 responseTooLong, the value unchanged, where that answer would be
-// longer than the carrier takes.
+// longer than the carrier takes. 01..03 leave the DID held by the tester (io_held), so a live DID
+// reads the held value until 00 returns it to its signal.
 fn (mut s Server) io_control(req []u8) []u8 {
 	if req.len < 4 {
 		return neg(0x2F, 0x13)
@@ -93,6 +94,9 @@ fn (mut s Server) io_control(req []u8) []u8 {
 	if req.len != want {
 		return neg(0x2F, 0x13)
 	}
+	if iocp == 0x02 {
+		s.refresh_io_live(id) // a freeze keeps what the signal reads now
+	}
 	value := match iocp {
 		0x00, 0x01 { start }
 		0x03 { req[4..] }
@@ -103,6 +107,11 @@ fn (mut s Server) io_control(req []u8) []u8 {
 		return neg(0x2F, 0x14)
 	}
 	s.dids[id] = value.clone()
+	if iocp == 0x00 {
+		s.io_held.delete(id)
+	} else {
+		s.io_held[id] = true
+	}
 	mut resp := [u8(0x6F), req[1], req[2], iocp]
 	resp << value
 	return resp
@@ -113,6 +122,18 @@ fn (mut s Server) io_control(req []u8) []u8 {
 fn (mut s Server) return_io_control() {
 	for id, start in s.io_start {
 		s.dids[id] = start.clone()
+	}
+	s.io_held = map[u16]bool{}
+}
+
+// refresh_io_live puts a live IO DID's signal value into the table where no tester holds it.
+fn (mut s Server) refresh_io_live(id u16) {
+	if !s.described || id in s.io_held {
+		return
+	}
+	d := s.did_spec(id) or { return }
+	if d.source == .live {
+		s.refresh_live(d)
 	}
 }
 

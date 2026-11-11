@@ -22,6 +22,9 @@ pub mut:
 	// memory ranges 0x23/0x3D reach (io_memory.v); empty = the service is not supported
 	io_start map[u16][]u8
 	memory   []MemRange
+	// the IO DIDs a tester holds (a 0x2F other than returnControlToECU, not yet returned): a
+	// live one reads the held value rather than its signal
+	io_held map[u16]bool
 	// each DTC's snapshot DID values, captured when the server serves its first request: a freeze
 	// frame is history, so a later 0x2E to one of its DIDs must not rewrite it
 	snap_vals  map[u32]map[u16][]u8

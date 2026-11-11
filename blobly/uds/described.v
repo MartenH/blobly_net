@@ -530,7 +530,7 @@ fn (mut s Server) d_read(req []u8) []u8 {
 			continue
 		}
 		d := s.did_spec(id) or { continue }
-		if d.source == .live {
+		if d.source == .live && id !in s.io_held {
 			s.refresh_live(d)
 		}
 		resp << [u8(id >> 8), u8(id)]

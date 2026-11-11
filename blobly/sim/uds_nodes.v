@@ -159,13 +159,18 @@ fn build_server(cfg project.UdsCfg, cap int, max_dtc int) uds.Server {
 // in memory, and one 0x23 answer carries at most a carrier's transfer of it anyway.
 pub const max_memory_range = 1 << 20
 
+// io_refused_vin is the VIN DID, which no node declares under `io:`: a DoIP entity announces the
+// VIN it serves, and only a 0x2E write keeps the announcement with it (doip_host.v).
+const io_refused_vin = u32(0xF190)
+
 // declare_io_memory gives a server the block's IO DIDs (0x2F) and memory ranges (0x23/0x3D), the
 // ones validate_content does not refuse, for answers of at most `cap` bytes. Shared by the
 // project's servers and the described ones.
 fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 	max_io := uds.io_value_max(cap)
 	for x in cfg.io {
-		if x.id > 0xFFFF || x.size == 0 || x.size > u32(max_io) || u16(x.id) in srv.io_start {
+		if x.id > 0xFFFF || x.id == io_refused_vin || x.size == 0 || x.size > u32(max_io)
+			|| u16(x.id) in srv.io_start {
 			continue // reported by validate_content
 		}
 		srv.declare_io(u16(x.id), int(x.size))
@@ -237,6 +242,8 @@ fn validate_content(name string, cfg project.UdsCfg, cap int, carrier string) []
 	for x in cfg.io {
 		if x.id > 0xFFFF {
 			warns << 'uds on "${name}": IO DID 0x${x.id:X} is above the 16-bit range — ignored'
+		} else if x.id == io_refused_vin {
+			warns << 'uds on "${name}": IO DID 0xF190 is the VIN, which a DoIP entity announces — not IO-controlled, ignored'
 		} else if x.size == 0 || x.size > u32(max_io) {
 			warns << 'uds on "${name}": IO DID 0x${x.id:X} size ${x.size} is not 1..${max_io} bytes — ignored'
 		} else if x.id in seen_io {
