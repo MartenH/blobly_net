@@ -56,6 +56,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.sample_point != 0 {
 			b.writeln('    sample_point: ${num(ch.sample_point)}')
 		}
+		if ch.data_sample_point != 0 {
+			b.writeln('    data_sample_point: ${num(ch.data_sample_point)}')
+		}
 		b.writeln('    mode: ${ch.mode}')
 		if ch.listen_only {
 			b.writeln('    listen_only: true')

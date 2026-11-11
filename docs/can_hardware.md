@@ -96,7 +96,8 @@ Each implements the existing `transport.Bus` interface, so callers don't change.
 `discover_windows.v` enumerates Kvaser, PCAN and Vector channels alongside the software buses.
 The `open()` dispatcher accepts `pcan:`, `kvaser:`, `vector:`, `cansub:` and `bridge:` beside
 `inproc:`/`udp:` — e.g. `kvaser:0`, `pcan:PCAN_USBBUS1@500000`, `vector:1@500000,silent`
-(Vector channels are numbered from 1).
+(Vector channels are numbered from 1; `,sp=75` / `,dsp=70` place a Vector channel's sample
+points, which a project writes from a row's `sample_point` / `data_sample_point`).
 
 **FD note:** `transport.CanFrame` carries CAN-FD (`fd`/`brs`, up to 64 payload bytes), and
 **SocketCAN sends it** — the socket asks for `CAN_RAW_FD_FRAMES` at open and falls back to

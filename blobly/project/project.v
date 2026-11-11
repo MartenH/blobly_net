@@ -26,7 +26,7 @@ import blobly.player
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 12
+pub const schema_version = 13
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -40,6 +40,11 @@ pub const schema_version = 12
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v13 — a CAN-FD data phase's own sample point (`data_sample_point`), which an older build
+	// drops on its next structured save, and the data phase samples where the arbitration does.
+	if p.channels.any(it.data_sample_point != 0) {
+		return 13
+	}
 	// v12 — a LIN bus as a row of `buses:` (`adapter: lin`), which an older build reads as a CAN
 	// channel. (v11's top-level `lin:` list is read into such rows.)
 	if p.channels.any(it.kind() == .lin) {
@@ -487,6 +492,10 @@ pub mut:
 	ldf      string
 	lin_role string
 	schedule string
+
+	// data_sample_point is where a CAN-FD data phase samples; 0 is where the arbitration phase
+	// (`sample_point`) does. Carried to the controller by Vector only (iface_with_bitrate); v13.
+	data_sample_point f64
 }
 
 // iface_scheme_is reports whether an interface string carries EXACTLY this scheme: the bare
@@ -653,10 +662,10 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// reads the mode as "silent@500000" and refuses the whole channel. Appending blindly to a
 	// stored interface that already carried `,silent` did exactly that.
 	mut base := c.iface
-	mut mode := ''
+	mut opts := []string{}
 	if c.adapter == 'vector' && base.contains(',') {
-		mode = ',' + base.all_after_last(',')
-		base = base.all_before_last(',')
+		opts = base.all_after(',').split(',')
+		base = base.all_before(',')
 	}
 	// THE SAME DEFAULT fd_wanted USES, and it has to be the same one. This block used to be
 	// skipped entirely when `bitrate` was 0, so a row with `fd: true` and no nominal rate composed
@@ -688,15 +697,34 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// acknowledges every frame it sees — which is not what the flag says, and on a live vehicle
 	// at the wrong bitrate it is the difference between hearing nothing and emitting error
 	// frames. The XL backend takes `,silent`, so a project that asks for listen-only gets it.
+	// THE SAMPLE POINT REACHES THE CONTROLLER on Vector, as options the wire's identity ignores
+	// (`,sp=`, `,dsp=`), from the row's keys alone (address_config_error refuses them typed into
+	// the address).
+	if c.adapter == 'vector' {
+		if c.sample_point != 0 {
+			opts << 'sp=${num(c.sample_point)}'
+		}
+		if c.data_sample_point != 0 {
+			opts << 'dsp=${num(c.data_sample_point)}'
+		}
+	}
 	if c.adapter == 'vector' && c.listen_only {
 		// THE FLAG WINS over a mode embedded in the address. The address is free text in the
 		// editor, so `1,normal` with `listen_only: true` is a configuration that contradicts
 		// itself — and it used to resolve toward the transceiver acknowledging, with the
 		// application still believing the channel was listening quietly. Of the two readings,
 		// only one can disturb a live bus.
-		mode = ',silent'
+		opts = opts.filter(vector_option_key(it) != 'mode')
+		opts << 'silent'
 	}
-	return base + mode
+	return base + opts.map(',' + it).join('')
+}
+
+// vector_option_key names a Vector address option as parse_vector_spec reads it: the word
+// before `=`, or `mode` for a bare one.
+fn vector_option_key(o string) string {
+	t := o.trim_space().to_lower()
+	return if t.contains('=') { t.all_before('=').trim_space() } else { 'mode' }
 }
 
 // apply_listen_only publishes which wires refuse to transmit, from the rows AS THEY STAND.
@@ -963,6 +991,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		j1939:        c.value('j1939').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
+	ch.data_sample_point = c.value('data_sample_point').default_to(f64(0)).f64()
 	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).
 	mut proto := c.value('protocol').default_to('').string()
 	if proto == '' {
@@ -2256,6 +2285,25 @@ pub fn (c Channel) address_config_error() ?string {
 	// at 75%. Applying the FD default to a classic row refused the sample point that channel
 	// actually has and accepted one it does not (codex round 3 on #217). So each mode is asked
 	// about its own timing.
+	// A SAMPLE POINT IN A VECTOR ADDRESS is a second source beside the row's keys, which the
+	// conflict check reads; refused, as a rate in a CANsub address is.
+	if c.adapter == 'vector' && c.address.contains(',') {
+		for o in c.address.all_after(',').split(',') {
+			if vector_option_key(o) in ['sp', 'dsp'] {
+				return 'the address field holds a sample point (${c.address}) — put it in sample_point / data_sample_point instead'
+			}
+		}
+	}
+	// A DATA-PHASE SAMPLE POINT only Vector carries to the controller, and only on CAN-FD. (On
+	// SocketCAN and the software buses the timing is the link's, as `sample_point`'s is.)
+	if c.data_sample_point != 0 && transport.adapter_configures_bitrate(c.adapter) {
+		if c.adapter != 'vector' {
+			return "data sample point ${num(c.data_sample_point)}% cannot be configured on ${c.adapter} from here — only a Vector channel places the data phase's sample point, so remove the setting or use a different adapter"
+		}
+		if !c.fd {
+			return 'data sample point ${num(c.data_sample_point)}% is for a CAN-FD data phase, and ${c.name} is classic CAN'
+		}
+	}
 	if c.adapter == 'pcan' && c.sample_point != 0 {
 		if c.fd && c.can_carry_fd() {
 			if c.sample_point != f64(transport.pcan_default_sample_point) {
@@ -2419,6 +2467,18 @@ pub fn (c Channel) data_rate() int {
 }
 
 // fd_describe names an fd_wanted value the way an operator would read it back.
+// sample_describe is where a row asks its wire to sample, comparable between rows: the
+// arbitration phase, then a CAN-FD data phase (its own point, else the arbitration one).
+fn sample_describe(c Channel) string {
+	arb := if c.sample_point != 0 { '${num(c.sample_point)}%' } else { 'at the default' }
+	if !c.fd {
+		return arb
+	}
+	dsp := if c.data_sample_point != 0 { c.data_sample_point } else { c.sample_point }
+	dat := if dsp != 0 { '${num(dsp)}%' } else { 'at the default' }
+	return '${arb} (data phase ${dat})'
+}
+
 fn fd_describe(v int) string {
 	return if v == 0 { 'classic CAN' } else { 'CAN-FD with a ${v} bit/s data phase' }
 }
@@ -2439,6 +2499,8 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 	// asking FD at 2 Mbit/s disagrees with a classic row and with an FD row at 4 Mbit/s alike.
 	mut fd_mode := map[string]int{}
 	mut fd_row := map[string]string{}
+	mut sp_of := map[string]string{}
+	mut sp_row := map[string]string{}
 	for c in chs {
 		if !c.enabled {
 			continue
@@ -2491,6 +2553,19 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		} else {
 			fd_mode[k] = fdw
 			fd_row[k] = c.name
+		}
+		// WHERE IT SAMPLES, on the one backend that carries a sample point to the controller: the
+		// ports pin it like the rates (-1014), so two rows disagreeing are answered from the file.
+		if c.adapter == 'vector' {
+			spw := sample_describe(c)
+			if prev := sp_of[k] {
+				if prev != spw {
+					out << '${c.name} and ${sp_row[k]} share ${c.iface} but ask to sample ${spw} and ${prev}'
+				}
+			} else {
+				sp_of[k] = spw
+				sp_row[k] = c.name
+			}
 		}
 	}
 	// DISAGREEMENT IS THE CONFLICT, not "would this row transmit".

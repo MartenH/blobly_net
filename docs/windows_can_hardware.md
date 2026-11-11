@@ -43,7 +43,7 @@ done" is then a fact somebody can check rather than a feeling.
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ❌ the device refuses a PHY PUT on a live channel (measured) |
 | Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ✅ mDNS (#235; bench-verified from Linux/WSL, the Windows half type-checked only) |
-| Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
+| Honours project timing / sample point | partial (BTR) | ❌ ignored | ✅ `sample_point` / `data_sample_point`, classic and FD (#621); `timing{}` not read | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
 | Bench record below | ✅ | ✅ | ✅ | ✅ |
 | A monitor reads its own health | ✅ | ✅ | ✅ | ✅ from the receive counter (#241): the firmware starts every channel at **TEC 129 / error-passive** with nothing on the wire — measured alone and even opened listen-only — and a node that never transmits cannot lower that counter, so `state` alone painted a healthy monitor errP for the life of the run |
@@ -141,6 +141,23 @@ work. (Vector's own virtual channels exist and `cmd/vectorcheck --selftest` uses
 A project `Channel` already carries `bitrate`, `fd`, `data_bitrate`, `sample_point`,
 `timing{brp,tseg1,tseg2,sjw}` and `listen_only`; each backend maps those onto its vendor init
 call — PCAN's `TPCANBaudrate` enum for standard rates, or raw `timing{}` for a custom BTR.
+
+**A sample point on Vector** (#621). `sample_point` (and, for a CAN-FD data phase,
+`data_sample_point`, schema v13; unset it is `sample_point`) reaches the address as
+`,sp=<percent>` / `,dsp=<percent>` — options like `,silent`, so the wire's identity ignores them:
+`vector:1@500000/2000000,sp=75,dsp=70`. `transport.vector_phase_timing` solves each phase on the
+80 MHz clock: the division of the bit whose realised point is nearest the one asked (a tie to the
+finer), refused by name when that is more than 2 points away (PCAN's allowance) — 76% at an
+8 Mbit/s data phase, which has ten quanta a bit, is refused, naming 80%. FD hands the segments to
+`xlCanFdSetConfiguration` as before; a classic channel with a sample point is configured through
+`xlCanSetChannelParams` (without one, `xlCanSetChannelBitrate` and the driver's own timing, as
+before), so its rate must divide the clock too. Unset, an FD phase samples where it always did
+(~80%). The ports pin the segments like the rates (`-1014`, `wire_pin_clash`), two rows on one
+wire that ask for different points are refused from the file (`destination_conflicts`), and a
+point typed into the address field instead of the row's keys is refused. Bench check:
+`vectorcheck --pair 0,2 --fd --dbitrate 2000000 --sp 75 --dsp 70 --verbose` (the segments are in
+the `xlCanFdSetConfiguration` line) and `vectorcheck --pair 0,2 --sp 87.5 --verbose`
+(`xlCanSetChannelParams`).
 
 ## Why a backend per vendor
 
@@ -266,8 +283,9 @@ Quirks. The first one is the worst thing in this file, and everything under it f
   refuses to send on a silenced wire, so no emitter can route around it. Two tiers, and the
   tooltip states both.
 - **An open port PINS the channel** — its mode, its bitrate, and (since CAN-FD) its PROTOCOL and
-  data phase. A second port asking for the other mode is refused (`-1004`), a second bitrate
-  likewise (`-1005`), classic-versus-FD `-1011` and a second data rate `-1012`; no software
+  data phase, and where it samples (#621). A second port asking for the other mode is refused
+  (`-1004`), a second bitrate likewise (`-1005`), classic-versus-FD `-1011`, a second data rate
+  `-1012` and other bit-timing segments `-1014`; no software
   policy can talk the driver out of any of them: the configuration belongs to the ports, not to
   the project. The protocol is the strictest of the four, because it is not merely a setting —
   the XL interface version a port is opened with (V3 classic, V4 FD) decides the layout of the

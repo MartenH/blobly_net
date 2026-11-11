@@ -250,6 +250,17 @@ typedef ct_xlstatus (__stdcall *ct_xlClosePort)(ct_xlport);
  * int used before on Win64, but there is no reason to keep a near-match once the header can be
  * read: XLulong is `unsigned long`, which is 32-bit here and 64-bit almost everywhere else. */
 typedef ct_xlstatus (__stdcall *ct_xlSetBitrate)(ct_xlport, ct_xlaccess, unsigned long);
+/* XLchipParams: a classic channel's bit timing, which the driver divides the clock by. Eight
+ * bytes under any packing (XLulong is 32-bit on Win64). */
+typedef struct {
+	unsigned long bitRate;
+	unsigned char sjw;
+	unsigned char tseg1;
+	unsigned char tseg2;
+	unsigned char sam; /* samples per bit: 1 */
+} ct_xl_chip_params;
+_Static_assert(sizeof(ct_xl_chip_params) == 8, "XLchipParams must be 8 bytes");
+typedef ct_xlstatus (__stdcall *ct_xlSetChannelParams)(ct_xlport, ct_xlaccess, ct_xl_chip_params *);
 typedef ct_xlstatus (__stdcall *ct_xlSetOutput)(ct_xlport, ct_xlaccess, int);
 typedef ct_xlstatus (__stdcall *ct_xlSetChanMode)(ct_xlport, ct_xlaccess, int, int);
 typedef ct_xlstatus (__stdcall *ct_xlActivate)(ct_xlport, ct_xlaccess, unsigned int, unsigned int);
@@ -276,6 +287,7 @@ static ct_xlGetChannelMask ct_xl_chanmask;
 static ct_xlOpenPort       ct_xl_openport;
 static ct_xlClosePort      ct_xl_closeport;
 static ct_xlSetBitrate     ct_xl_setbitrate;
+static ct_xlSetChannelParams ct_xl_setparams; /* optional: only a classic sample point needs it */
 static ct_xlSetOutput      ct_xl_setoutput;
 static ct_xlSetChanMode    ct_xl_setchanmode;
 static ct_xlActivate       ct_xl_activate;
@@ -370,6 +382,10 @@ static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
  * the wire is FD and still disagree about the rate its payload phase runs at. */
 static int ct_vec_cfg_fd[CT_VEC_MAX_CFG];
 static unsigned int ct_vec_cfg_dbr[CT_VEC_MAX_CFG];
+/* The segments each phase was configured with (arbitration tseg1/tseg2/sjw, then data), which
+ * is where it samples: pinned like the rates, a port asking for others refused (-1014). All zero
+ * for a classic channel the driver timed itself. */
+static unsigned int ct_vec_cfg_tim[CT_VEC_MAX_CFG][6];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
 static ct_xlport ct_vec_cfg_owner[CT_VEC_MAX_CFG];
@@ -414,7 +430,7 @@ static int ct_vec_cfg_find(uint64_t mask) {
  * is one whose secondary ports will all be refused, which reads as hardware trouble. With the
  * table sized to the whole accepted range this cannot happen, and saying so costs one branch. */
 static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlport owner,
-                           int fd, unsigned int dbr) {
+                           int fd, unsigned int dbr, const unsigned int *tim) {
 	int i = ct_vec_cfg_find(mask);
 	if (i < 0) {
 		if (ct_vec_cfg_n >= CT_VEC_MAX_CFG) return -1;
@@ -429,6 +445,7 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlpo
 	ct_vec_cfg_owner[i] = owner;
 	ct_vec_cfg_fd[i] = fd;
 	ct_vec_cfg_dbr[i] = dbr;
+	memcpy(ct_vec_cfg_tim[i], tim, sizeof(ct_vec_cfg_tim[i]));
 	/* FRESH AGAIN. A record marked stale when its owner closed keeps that mark until it is
 	 * forgotten, so a later port that DID win initialisation access — and therefore configured
 	 * the channel itself — inherited a record saying nothing about it could be trusted, and
@@ -463,6 +480,7 @@ static void ct_vec_cfg_forget(int i) {
 		 * compare a new channel's request against the departed channel's protocol. */
 		ct_vec_cfg_fd[i]     = ct_vec_cfg_fd[ct_vec_cfg_n];
 		ct_vec_cfg_dbr[i]    = ct_vec_cfg_dbr[ct_vec_cfg_n];
+		memcpy(ct_vec_cfg_tim[i], ct_vec_cfg_tim[ct_vec_cfg_n], sizeof(ct_vec_cfg_tim[i]));
 	}
 }
 
@@ -573,6 +591,7 @@ static int ct_vector_load_locked(void) {
 	ct_xl_openport   = (ct_xlOpenPort)(void *)GetProcAddress(h, "xlOpenPort");
 	ct_xl_closeport  = (ct_xlClosePort)(void *)GetProcAddress(h, "xlClosePort");
 	ct_xl_setbitrate = (ct_xlSetBitrate)(void *)GetProcAddress(h, "xlCanSetChannelBitrate");
+	ct_xl_setparams  = (ct_xlSetChannelParams)(void *)GetProcAddress(h, "xlCanSetChannelParams");
 	ct_xl_setoutput  = (ct_xlSetOutput)(void *)GetProcAddress(h, "xlCanSetChannelOutput");
 	ct_xl_setchanmode = (ct_xlSetChanMode)(void *)GetProcAddress(h, "xlCanSetChannelMode");
 	ct_xl_activate   = (ct_xlActivate)(void *)GetProcAddress(h, "xlActivateChannel");
@@ -706,6 +725,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
 	int why = 0;
+	const unsigned int tim[6] = { a_tseg1, a_tseg2, a_sjw, d_tseg1, d_tseg2, d_sjw };
 	ct_vec_enter();
 	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why, 1);
 	/* AFTER the mask lookup, which is what loads the library — the FD entry points are NULL until
@@ -724,6 +744,11 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (fd && (!ct_xl_fdsetconf || !ct_xl_transmitex || !ct_xl_canreceive)) {
 		ct_vec_leave();
 		return -1010;
+	}
+	/* A classic sample point is segments only xlCanSetChannelParams takes. */
+	if (!fd && a_tseg1 && !ct_xl_setparams) {
+		ct_vec_leave();
+		return -1015;
 	}
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
 	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
@@ -777,6 +802,19 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			CT_VLOG("xlCanFdSetConfiguration(arb=%u [%u/%u/%u] dbr=%u [%u/%u/%u]) -> st=%d\n",
 			        bitrate, a_tseg1, a_tseg2, a_sjw, dbitrate, d_tseg1, d_tseg2, d_sjw, (int)st);
 			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		} else if (a_tseg1) {
+			/* A CHOSEN SAMPLE POINT: the segments, from which the driver derives the prescaler
+			 * as it does for FD. Without one the driver picks the timing from the rate alone. */
+			ct_xl_chip_params cp;
+			memset(&cp, 0, sizeof(cp));
+			cp.bitRate = (unsigned long)bitrate;
+			cp.sjw = (unsigned char)a_sjw;
+			cp.tseg1 = (unsigned char)a_tseg1;
+			cp.tseg2 = (unsigned char)a_tseg2;
+			cp.sam = 1;
+			st = ct_xl_setparams(port, mask, &cp);
+			CT_VLOG("xlCanSetChannelParams(%u [%u/%u/%u]) -> st=%d\n", bitrate, a_tseg1, a_tseg2, a_sjw, (int)st);
+			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		} else {
 			st = ct_xl_setbitrate(port, mask, (unsigned long)bitrate);
 			CT_VLOG("xlCanSetChannelBitrate(%u) -> st=%d\n", bitrate, (int)st);
@@ -799,7 +837,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			 * to refuse in both directions. */
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
-		if (ct_vec_cfg_note(mask, bitrate, silent, port, fd, dbitrate) != 0) {
+		if (ct_vec_cfg_note(mask, bitrate, silent, port, fd, dbitrate, tim) != 0) {
 			ct_xl_closeport(port); ct_vec_leave(); return -1006;
 		}
 		ct_vec_cfg_ref(mask);
@@ -833,6 +871,9 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		 * truncates. Refused rather than joined. */
 		if (fd != ct_vec_cfg_fd[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1011; }
 		if (fd && ct_vec_cfg_dbr[i] != dbitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1012; }
+		/* WHERE IT SAMPLES, the last of what the ports pin: the same rates timed differently are
+		 * still two configurations of one controller. */
+		if (memcmp(ct_vec_cfg_tim[i], tim, sizeof(tim)) != 0) { ct_xl_closeport(port); ct_vec_leave(); return -1014; }
 		ct_vec_cfg_ports[i]++;
 		*out_gen = ct_vec_cfg_gen[i];
 	}
