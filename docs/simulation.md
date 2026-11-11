@@ -280,7 +280,9 @@ Both are named by **signal**, so width, bit position and byte order come from th
   the byte after it. Anything else, a missing Data ID or one wider than 16 bits is reported, and
   a `verify:` entry with one of these problems is ignored.
 - **From ARXML**, a `PROFILE_05` protection is read from its `OFFSET`: the signals at that bit and
-  16 bits on, when they are exactly those two fields and the PDU is the whole frame.
+  16 bits on, when they are exactly those two fields and the PDU is the whole frame (a
+  `PROFILE_05` with no `OFFSET` is refused and said). `cmd/arxml2dbc` leaves it out of the DBC it
+  exports, which blobly_emb builds from and which refuses any profile but Profile 1.
 
 ### On each send (the primitives)
 

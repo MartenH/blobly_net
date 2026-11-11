@@ -74,12 +74,14 @@ Rules both readers follow:
     difference is reported (for example, a wrong Data ID to test a receiver's rejection path).
   - In blobly_emb, `[[frame]].e2e` fields that contradict the DBC are refused unless the table
     says `deviates_from_dbc = true`; a field it leaves out is the DBC's.
-- **Writers emit `"P01"` and `"P05"`.** blobly_net's DBC editor and `cmd/arxml2dbc` write the
-  attributes from the model; neither ever writes `autosar_p01` or `autosar_p05`.
+- **Writers emit `"P01"` and `"P05"`.** blobly_net's DBC editor writes the attributes from the
+  model; it never writes `autosar_p01` or `autosar_p05`. `cmd/arxml2dbc` writes `"P01"` only:
+  its DBC is what blobly_emb builds from, and blobly_emb refuses any other profile.
 - **From ARXML**, `cmd/arxml2dbc` exports the contract when the frame's E2E protection is
   PROFILE_01 with DATA-ID-MODE ALL-16-BIT, and its CRC and counter are signals at the declared
-  offsets — or PROFILE_05, whose 16-bit CRC signal sits at its `OFFSET` and its 8-bit counter
-  signal 16 bits on. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
+  offsets. A PROFILE_05 protection (its 16-bit CRC signal at its `OFFSET`, its 8-bit counter
+  signal 16 bits on) is applied by blobly_net's own reader but not exported, since blobly_emb
+  implements Profile 1 only; the fragment and the export's notes name it. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
   attributes, so they are left out, and the export's notes say so. `E2ETimeout` is not taken
   from an ARXML file: the reader does not take a timeout from the E2E configuration, so the
   export leaves it for the DBC's author to add.
