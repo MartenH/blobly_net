@@ -133,6 +133,8 @@ typedef struct bb_message {
 	uint32_t id;
 	uint8_t  ext;      /* a 29-bit identifier */
 	uint8_t  j1939;    /* the database declares it J1939 (VFrameFormat J1939PG) */
+	uint8_t  format;   /* an enum bb_format: the frame format its database states (VFrameFormat,
+	                      CANFD_BRS; ARXML's frame behaviour), BB_FORMAT_WIRE where it states none */
 	int32_t  dlc;      /* the payload length bb_encode gives it: the DBC's DLC, 0 for a negative
 	                      one (one past 64 bb_encode refuses) */
 	int32_t  signals;  /* how many signals it has: bb_signal_info's s is 0 .. signals - 1 */
@@ -613,8 +615,10 @@ int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
  * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;
  * a value past what the signal's width holds is clamped to the nearer end, NaN encodes as raw 0.
- * out gets the message's id, ext and dlc as len; fd, brs and format are left unset, so a send takes
- * the wire's declared format unless the host states one in `format`. */
+ * out gets the message's id, ext and dlc as len, and in `format` the format its database states
+ * (bb_message.format) — fd and brs unset —, so bb_bus_send sends it in that format; where the
+ * database states none, the row's or wire's declared one. A host sending it in another sets
+ * `format` itself. */
 int bb_encode(int row, int m, int n, const char *const *signals, const double *values,
               bb_frame *out);
 
@@ -1274,7 +1278,9 @@ int bb_vector_release(int app);                     /* >= 0: 1 cleared, 0 it poi
  *
  * bb_cyclic_start sends frame `f` (its fd/brs/format as bb_bus_send reads them) every `period_ms`
  * (1 .. 3600000), the first at once; bb_cyclic_start_message sends message m of the row's
- * databases with signals[i] at values[i] (the rest at raw 0), its E2E stamped unless `e2e` is 0.
+ * databases with signals[i] at values[i] (the rest at raw 0), its E2E stamped unless `e2e` is 0,
+ * in `format` (an enum bb_format) where it is not BB_FORMAT_WIRE, else the format its database
+ * states (bb_message.format), else the row's.
  * bb_cyclic_data replaces a raw sender's payload, bb_cyclic_signals sets a message sender's
  * signals (the rest keep theirs), bb_cyclic_period its period — each from its next frame.
  * bb_cyclic_stop ends it: 0 once its loop is out, BB_RELEASING when it is still inside a send past
@@ -1306,7 +1312,8 @@ typedef struct bb_keep_alive {
 #ifndef BB_FROM_V
 int bb_cyclic_start(int row, const bb_frame *f, int period_ms);           /* >= 0: the handle */
 int bb_cyclic_start_message(int row, int m, int n, const char *const *signals,
-                            const double *values, int e2e, int period_ms); /* >= 0: the handle */
+                            const double *values, int e2e, int format,
+                            int period_ms);                 /* >= 0: the handle */
 int bb_cyclic_data(int c, const uint8_t *data, int len);
 int bb_cyclic_signals(int c, int n, const char *const *signals, const double *values);
 int bb_cyclic_period(int c, int period_ms);

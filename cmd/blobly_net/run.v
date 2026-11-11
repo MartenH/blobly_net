@@ -830,6 +830,17 @@ fn (mut app App) start() {
 			app.notify(w.text)
 		}
 	}
+	// A message whose database states a frame format its row contradicts (#607) — CAN-FD on a
+	// classic row — read from what the rebuild loaded, under the lock that replaces it.
+	app.mu.lock()
+	mut fmt_said := []string{}
+	for row in app.runtime_rows() {
+		fmt_said << project.frame_format_warnings(row, app.loaded_dbs_for(row.databases.map(app.db_ref(it))))
+	}
+	app.mu.unlock()
+	for w in fmt_said {
+		app.notify(w)
+	}
 	// Two listeners on one endpoint, same place and same reason: said before anything binds,
 	// because afterwards both rows are green and the symptom is only missing messages.
 	for w in project.someip_endpoint_warnings(app.runtime_rows()) {

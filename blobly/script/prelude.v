@@ -879,18 +879,20 @@ function bus.recv(channel, timeout_ms)
 end
 -- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
 -- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
--- opts.format as bus.send, else the format of the channel row
+-- opts.format as bus.send, else the format its database states, else the format of the channel row
 function bus.send_message(channel, name, sigs, opts)
   if opts ~= nil and type(opts) ~= "table" then error("bus.send_message: opts is a table", 2) end
   if opts ~= nil and opts.format ~= nil and type(opts.format) ~= "string" then
     error("bus.send_message: format must be a string (classic, fd or fd_brs)", 2)
   end
-  local id, ext, data = __msg_template(channel, name)
+  local id, ext, data, declared = __msg_template(channel, name)
   for k, v in pairs(sigs or {}) do
     data = __encode_signal(channel, name, k, v, data)
   end
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
-  __bus_send(channel, id, ext, data, opts and opts.format)
+  local format = opts and opts.format
+  if format == nil then format = declared end
+  __bus_send(channel, id, ext, data, format)
   return { id = id, ext = ext, data = data }
 end
 -- ============================ background senders ============================
@@ -899,7 +901,7 @@ end
 -- as another node`s frame), until sender:stop(), the script ends or its run stops. opts.ext,
 -- opts.format as bus.send. bus.send_message_cyclic(channel, name, sigs, period_ms, opts): a DBC
 -- message encoded from sigs, its declared E2E stamped on every frame (its own counter from 0)
--- unless opts.e2e = false. A sender: sender:update(data) or sender:update(sigs) from its next
+-- unless opts.e2e = false, in opts.format, else the format its database states. A sender: sender:update(data) or sender:update(sigs) from its next
 -- frame, sender:period(ms), sender:status() -> { sent, failed, error, period_ms, running },
 -- sender:stop() -> true once its loop is out.
 local Sender = {}
@@ -937,11 +939,14 @@ function bus.send_cyclic(channel, id, data, period_ms, opts)
 end
 function bus.send_message_cyclic(channel, name, sigs, period_ms, opts)
   opts = opts or {}
+  if opts.format ~= nil and type(opts.format) ~= "string" then
+    error("bus.send_message_cyclic: format must be a string (classic, fd or fd_brs)", 2)
+  end
   if math.type(period_ms) ~= "integer" then
     error("bus.send_message_cyclic: period_ms is a whole number of ms", 2)
   end
   return setmetatable({ handle = __cyclic_start_msg(channel, name, opts.e2e ~= false, period_ms,
-    table.unpack(flat(sigs))) }, Sender)
+    opts.format or "", table.unpack(flat(sigs))) }, Sender)
 end
 -- decode raw bytes against the channel`s DBC -> { SignalName = value } for each signal the frame
 -- carries: physical values, or with as = "raw" the field bits, or "label" the value table text

@@ -1169,3 +1169,50 @@ class TestStatedFormat:
             with pytest.raises(blobly.Refused, match="at most 8 bytes"):
                 net.channels.A.messages.Long.send(format="classic", Value=1)
             assert net.channels.A.messages.Long.send(Value=1).length == 12, "unstated, it goes out FD"
+
+
+# a database stating each message's frame format (VFrameFormat, CANFD_BRS) (#607)
+FORMAT_DBC = ('VERSION ""\n\nBU_: N\n\n'
+              'BO_ 768 Cls: 8 N\n SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n\n'
+              'BO_ 769 Fd: 12 N\n SG_ B : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n\n'
+              'BO_ 770 Plain: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n\n'
+              'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG",'
+              '"reserved","reserved","reserved","reserved","reserved","reserved","reserved",'
+              '"reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";\n'
+              'BA_DEF_ BO_ "CANFD_BRS" ENUM "0","1";\n'
+              'BA_ "VFrameFormat" BO_ 768 0;\nBA_ "VFrameFormat" BO_ 769 14;\nBA_ "CANFD_BRS" BO_ 769 0;\n')
+
+
+class TestDeclaredFormat:
+    def test_a_message_goes_out_in_the_format_its_database_states(self, tmp_path):
+        dbc = write(tmp_path, "fmt.dbc", FORMAT_DBC)
+        # no BA_DEF_DEF_: Plain states nothing
+        path = write(tmp_path, "fdwire.blobnet", FD_WIRE.replace("DBC", dbc.replace("\\", "/")))
+        with blobly.Project(path) as net:
+            a, b = net.channels.A, net.channels.B
+            msgs, heard = a.messages, b.messages
+            assert (msgs.Cls.format, msgs.Fd.format, msgs.Plain.format) == ("classic", "fd", None)
+            b.recv(0)
+            a.recv(0)
+            sent = msgs.Cls.send(A=1)
+            assert not sent.fd, "the Frame returned says the declared format"
+            assert not b.expect(heard.Cls, 1000).fd, "declared classic on an FD wire"
+            msgs.Fd.send(B=2)
+            got = b.expect(heard.Fd, 1000)
+            assert got.fd and not got.brs, "declared FD without the rate switch"
+            msgs.Plain.send(C=3)
+            got = b.expect(heard.Plain, 1000)
+            assert got.fd and got.brs, "stating nothing, the wire's format"
+            msgs.Cls.send(format="fd")
+            assert b.expect(heard.Cls, 1000).fd, "format= wins"
+            with msgs.Cls.send_cyclic(20, A=4):
+                assert not b.expect(heard.Cls, 1000).fd, "a background sender, declared classic"
+            while b.recv(50) is not None:
+                pass
+            with msgs.Cls.send_cyclic(20, format="fd_brs", A=5):
+                got = b.expect(heard.Cls, 1000)
+                while not got.fd:
+                    got = b.expect(heard.Cls, 1000)
+            assert got.brs, "and one stated FD+BRS"
+            with pytest.raises(ValueError, match="format is"):
+                msgs.Cls.send_cyclic(20, format="CAN")  # type: ignore[arg-type]

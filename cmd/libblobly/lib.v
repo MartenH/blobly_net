@@ -94,6 +94,7 @@ pub mut:
 	id      u32
 	ext     u8
 	j1939   u8
+	format  u8
 	dlc     i32
 	signals i32
 }
@@ -941,9 +942,19 @@ fn (mut hd BusHandle) leave() {
 // frame_format is the format `f` states (bb.h's enum bb_format, transport.FrameFormat — the
 // Lua bus.send's `format =`), refusing a value bb.h does not name and a flag the statement
 // contradicts, so nothing goes out in a format other than the one the host set.
-fn frame_format(f &C.bb_frame) !transport.FrameFormat {
-	v := int(f.format)
-	ff := if v == int(C.BB_FORMAT_WIRE) {
+// format_code is a format as an enum bb_format.
+fn format_code(ff transport.FrameFormat) u8 {
+	return match ff {
+		.wire { u8(C.BB_FORMAT_WIRE) }
+		.classic { u8(C.BB_FORMAT_CLASSIC) }
+		.fd { u8(C.BB_FORMAT_FD) }
+		.fd_brs { u8(C.BB_FORMAT_FD_BRS) }
+	}
+}
+
+// format_of is an enum bb_format value as a format.
+fn format_of(v int) !transport.FrameFormat {
+	return if v == int(C.BB_FORMAT_WIRE) {
 		transport.FrameFormat.wire
 	} else if v == int(C.BB_FORMAT_CLASSIC) {
 		transport.FrameFormat.classic
@@ -952,8 +963,13 @@ fn frame_format(f &C.bb_frame) !transport.FrameFormat {
 	} else if v == int(C.BB_FORMAT_FD_BRS) {
 		transport.FrameFormat.fd_brs
 	} else {
-		return error('format ${v} is not an enum bb_format')
+		error('format ${v} is not an enum bb_format')
 	}
+}
+
+fn frame_format(f &C.bb_frame) !transport.FrameFormat {
+	v := int(f.format)
+	ff := format_of(v)!
 	if ff == .classic && (f.fd != 0 || f.brs != 0) {
 		return error('a frame stated classic sets neither fd nor brs')
 	}
@@ -1177,6 +1193,7 @@ pub fn bb_message_info(row i32, m i32, out &C.bb_message) i32 {
 		out.id = msg.id
 		out.ext = u8(msg.ext)
 		out.j1939 = u8(msg.j1939)
+		out.format = format_code(project.declared_format(msg))
 		out.dlc = i32(msg.payload_len())
 		out.signals = i32(msg.signals.len)
 	}
@@ -1285,7 +1302,7 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 			out.data[i] = if i < data.len { data[i] } else { u8(0) }
 		}
 		out.e2e = 0
-		out.format = 0
+		out.format = format_code(project.declared_format(msg)) // what bb_bus_send sends it in
 		out.t_ns = 0
 	}
 	return ok()

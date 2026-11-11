@@ -257,6 +257,13 @@ fn draw_gen(mut app App) {
 					app.set_cycle(i, cm + 50)
 				}
 			}
+			// the format its frames state (`format:`): as declared — its message's, else the row's
+			cur_fmt := transport.frame_formats.index(s.format)
+			vgui.set_next_item_width(160 * app.prefs.ui_scale)
+			fsel := vgui.combo('format##gfmt${i}', transport.frame_formats.map(it.label()), cur_fmt)
+			if fsel != cur_fmt && fsel >= 0 && fsel < transport.frame_formats.len {
+				app.set_gen_format(i, transport.frame_formats[fsel])
+			}
 			// target bus: which wire this generator transmits on (defaults to its own channel)
 			if app.chans.len > 1 {
 				cur := app.senders[i].target()
@@ -826,6 +833,15 @@ fn (mut app App) set_trigger(i int, t string) {
 	app.mu.unlock()
 }
 
+fn (mut app App) set_gen_format(i int, ff transport.FrameFormat) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.format = ff
+	}
+	app.mu.unlock()
+	app.dirty = true
+}
+
 fn (mut app App) set_cycle(i int, ms int) {
 	app.mu.lock()
 	if i < app.senders.len {
@@ -949,27 +965,25 @@ fn (mut app App) fire_index(i int) {
 	// the same phase instead of one that depends on how long the GUI had been open.
 	el := if wt0 > 0 { f64(time.sys_mono_now() - wt0) / 1_000_000_000.0 } else { 0.0 }
 	mut id := s.id
-	mut ext := s.ext
 	mut data := []u8{}
-	if s.message != '' {
-		// resolved on the generator's own target bus (not globally), by the one builder the
-		// headless runner's cyclic senders use too (sim.sender_message_frame)
-		f := sim.sender_message_frame(s, app.dbs_for(tgt), n, el) or {
-			app.notify('generator: message "${s.message}" not in any DBC')
-			return
-		}
-		id = f.id
-		ext = f.extended
-		data = f.data.clone() // V assigns an array only by clone
-	} else if i < app.gen_bufs.len {
+	if s.message == '' && i < app.gen_bufs.len {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(own_row, own, tgt, transport.CanFrame{
-		id:       id
-		extended: ext
-		data:     data
-	}) {
+	// resolved on the generator's own target bus (not globally), by the builders the headless
+	// runner's cyclic senders use too, which state the generator's format (or its message's)
+	frame := if s.message != '' {
+		sim.sender_message_frame(s, app.dbs_for(tgt), n, el) or {
+			app.notify('generator ${s.name}: ${err.msg()}')
+			return
+		}
+	} else {
+		sim.sender_raw_frame(s, id, s.ext, data) or {
+			app.notify('generator ${s.name}: ${err.msg()}')
+			return
+		}
+	}
+	if app.tx_on_chan(own_row, own, tgt, frame) {
 		// delivered frames only — a fire refused while the tap is still opening put nothing on
 		// the bus, and counting it would make the sequence lie about what was transmitted.
 		// ...and only onto the generator set this fire was snapshotted from: a removal or a new

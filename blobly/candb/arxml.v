@@ -376,6 +376,7 @@ struct FrameAdmission {
 	dlc     int
 	fd      bool
 	either  bool // received in either format (ArxmlFrame.either)
+	stated  bool // a TX or RX behaviour states the format (CAN-20 or CAN-FD; ANY states neither)
 }
 
 // frame_admission validates the identifier and the frame length where they are read: no schema
@@ -457,6 +458,7 @@ fn frame_admission(ft flatxml.MNode, frame flatxml.MNode, fname string) FrameAdm
 		dlc: dlc
 		fd: fd
 		either: rx_b == 'ANY' && tx_b == ''
+		stated: fd || tx_b != '' || (rx_b != '' && rx_b != 'ANY')
 	}
 }
 
@@ -1402,8 +1404,6 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	mut frames := map[string]ArxmlFrame{}
 	mut nodes := []string{}
 	mut taken_names := map[string]bool{} // message names given out in this cluster
-	mut fd_frames := 0
-	mut classic_frames := 0
 	// NAMES FIRST, over every frame this cluster triggers: a unique SHORT-NAME is reserved as
 	// itself before any duplicate is qualified, as allocate_names does for clusters and ECUs.
 	// One pass in document order handed `B_F` to the duplicate /B/F and then renamed the frame
@@ -1474,6 +1474,18 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		mut info := ArxmlFrame{
 			fd:     adm.fd
 			either: adm.either
+		}
+		// the format the behaviours state: CAN-FD switching its bit rate where the cluster's data
+		// rate differs from its arbitration rate (project.origination_framing's rule), CAN-20
+		// classic, neither (no behaviour, or RX ANY) none
+		format := if !adm.stated {
+			MsgFormat.unstated
+		} else if !adm.fd {
+			MsgFormat.classic
+		} else if fd_baud > 0 && fd_baud != baud {
+			MsgFormat.fd_brs
+		} else {
+			MsgFormat.fd
 		}
 
 		// who sends, who listens: the frame ports on the triggering, by direction
@@ -1732,11 +1744,6 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		info.receivers = ports.receivers
-		if info.fd {
-			fd_frames++
-		} else {
-			classic_frames++
-		}
 		// NAMES LAST, over the whole message (round 30): a unique SHORT-NAME is reserved as itself
 		// before any duplicate is qualified — one pass in mapping order gave the duplicate /B/V
 		// the name `B_V` and renamed the signal whose own name is B_V. A signal name is how
@@ -1780,6 +1787,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			sender: ports.sender
 			tx_nodes: ports.tx_nodes
 			cycle_ms: info.cycle_ms
+			format: format
 			signals: sigs
 		}
 		if e := info.e2e {
@@ -1795,12 +1803,6 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		}
 		msgs << msg
 		frames[key] = info
-	}
-	if fd_frames > 0 && classic_frames > 0 {
-		// Message carries no per-frame format, so on the bench the wire's policy decides
-		// ONE format for every frame this cluster simulates; the export's VFrameFormat and
-		// the fragment's per-frame comment are where the distinction survives
-		r.report.notes << '${path}: ${fd_frames} CAN-FD and ${classic_frames} classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction'
 	}
 	// the E2E contract onto the model, as a DBC's attributes put it there (#271): the ONE
 	// predicate the export answers by, so a message carries exactly what the export writes

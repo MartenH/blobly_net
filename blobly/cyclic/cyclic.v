@@ -13,6 +13,7 @@ module cyclic
 import sync
 import time
 import blobly.candb
+import blobly.project
 import blobly.sim
 import blobly.transport
 
@@ -31,7 +32,8 @@ const poll_ms = 20
 // Spec is what a sender sends: a raw frame (`id`, `ext`, `data`; `fd`/`brs` as a C host's flags,
 // unstated, which the wire's declaration may raise; `format` a stated one), or — `by_message` — a
 // DBC message encoded from `values` (physical, by signal name; the rest at raw 0), its declared
-// E2E stamped unless `e2e` is false.
+// E2E stamped unless `e2e` is false, in `format` where stated, else its declared format
+// (project.message_format).
 pub struct Spec {
 pub:
 	id         u32
@@ -63,6 +65,9 @@ pub fn (s Spec) check() ! {
 		}) {
 			return error('${s.message.name}: ${why}')
 		}
+		project.message_format(s.message, s.format).stamp(transport.CanFrame{
+			data: s.message.template()
+		}) or { return error('${s.message.name}: ${err.msg()}') }
 		if s.e2e {
 			mut st := sim.E2eStamper{}
 			mut data := s.message.template()
@@ -266,11 +271,11 @@ fn encoded(sp Spec) !transport.CanFrame {
 			}
 		}
 	}
-	return transport.CanFrame{
+	return project.message_format(sp.message, sp.format).stamp(transport.CanFrame{
 		id:       sp.message.id
 		extended: sp.message.ext
 		data:     data
-	}
+	})!
 }
 
 fn (mut s Sender) note_failure(why string) {

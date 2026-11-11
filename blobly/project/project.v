@@ -45,12 +45,17 @@ pub fn version_for(p Project) int {
 	// drops on its next structured save, and the data phase samples where the arbitration does;
 	// a row turning off the built-in UDS server (`builtin_uds: false`), and a simulated ECU's IO
 	// DIDs (`io:`) and memory ranges (`memory:`). An older build drops each on its next
-	// structured save: the built-in server answers again, and 0x2F/0x23/0x3D go unanswered.
+	// structured save: the built-in server answers again, and 0x2F/0x23/0x3D go unanswered;
+	// and a generator's `format:` (#608), which an older build drops too, and the generator's
+	// frames go out in the row's format again with nothing said.
 	if p.channels.any(it.data_sample_point != 0) {
 		return 13
 	}
 	for c in p.channels {
 		if c.kind() == .can && !c.builtin_uds {
+			return 13
+		}
+		if c.senders.any(it.format != .wire) {
 			return 13
 		}
 		for n in c.nodes {
@@ -399,6 +404,9 @@ pub mut:
 	bus      string
 	trigger  string = 'manual' // manual | key | cyclic
 	cycle_ms int // cyclic period (ms); only used when trigger == cyclic
+	// `format:` — the format its frames state (classic | fd | fd_brs); `wire` (absent) leaves it
+	// to its message's declared format, else the row's (message_format)
+	format transport.FrameFormat
 }
 
 // Channel is one bus the tester attaches to.
@@ -1304,7 +1312,7 @@ fn parse_channel(c yaml.Any) !Channel {
 	}
 	if ss := c.value_opt('senders') {
 		for s in ss.array() {
-			ch.senders << parse_sender(s)
+			ch.senders << parse_sender(s)!
 		}
 	}
 	if v := c.value_opt('nm') {
@@ -1513,7 +1521,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 
 // parse_sender parses one interactive-generator entry: name + key + the frame
 // definition (message name or explicit id/data) + signal values + trigger.
-fn parse_sender(s yaml.Any) Sender {
+fn parse_sender(s yaml.Any) !Sender {
 	mut snd := Sender{
 		name:     s.value('name').default_to('').string()
 		key:      s.value('key').default_to('').string()
@@ -1528,6 +1536,11 @@ fn parse_sender(s yaml.Any) Sender {
 	}
 	if dv := s.value_opt('data') {
 		snd.data = parse_hex_bytes(dv.str())
+	}
+	if fv := s.value_opt('format') {
+		snd.format = transport.parse_frame_format(fv.str()) or {
+			return error('generator ${snd.name}: format: ${err.msg()}')
+		}
 	}
 	if sigs := s.value_opt('signals') {
 		for sg in sigs.array() {

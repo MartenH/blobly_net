@@ -29,14 +29,12 @@ fn test_cluster_and_nodes() {
 	assert c.fd_baudrate == 2000000
 	assert c.db.messages.len == 5
 	assert c.db.nodes == ['ECU_A', 'ECU_B', 'ECU_C']
-	// the file is complete: nothing dangling, and the one partial read is the mixed-format
-	// cluster, which the simulation cannot carry per frame
+	// the file is complete: nothing dangling
 	assert a.report.unresolved == []
 	assert a.report.notes == [
 		'/PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
 		'SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0',
 		'/PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
-		'/Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
 	// and the one PDU kind not extracted is counted, not dropped in silence
 	assert a.report.ignored == {
@@ -1706,9 +1704,9 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	}, a.report)
 	lines := text.split('\n')
 	// the network comment says where the file came from and what the reader dropped
-	// notes=4: the same four the golden list in test_cluster_and_nodes pins — a partial read is
+	// notes=3: the same three the golden list in test_cluster_and_nodes pins — a partial read is
 	// stamped as one, and travels with the DBC
-	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=4";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
+	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=3";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
 	// and, where the read gives one, the fingerprint of everything it depended on
 	with_inputs := c.export_dbc(ArxmlProvenance{
 		source:  'example.arxml'
@@ -1810,7 +1808,6 @@ fn test_report_lines() {
 		'note: /PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
 		'note: SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0',
 		'note: /PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
-		'note: /Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
 }
 
@@ -2507,4 +2504,29 @@ fn test_an_nm_pdu_behind_another_pdu_is_found_with_its_offset_and_length() {
 	assert nm[0].id == 0x511
 	assert nm[0].byte == 4
 	assert nm[0].len == 3
+}
+
+// A frame's TX/RX behaviour states its format on the message (#607): CAN-20 classic, CAN-FD with
+// the bit-rate switch where the cluster's data rate differs, neither (no behaviour, RX ANY) none.
+fn test_frame_behaviour_states_the_message_format() {
+	c := example_arxml().cluster('') or { panic(err) }
+	mut got := map[string]MsgFormat{}
+	for m in c.db.messages {
+		got[m.name] = m.format
+	}
+	assert got['Powertrain'] == .classic, got.str() // CAN-20 both ways
+	for m in c.db.messages {
+		f := c.frame_of(m) or { panic('no frame') }
+		if f.fd {
+			assert m.format == .fd_brs, m.name // 500k arbitration, 2M data
+		}
+	}
+	assert c.db.messages.any(it.format == .unstated) // no behaviour stated
+	// equal rates: no faster phase to switch into
+	short := arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR>') + offset_pdu_xml + arxml_tail
+	same := parse_arxml(short.replace('<BAUDRATE>500000</BAUDRATE>', '<BAUDRATE>500000</BAUDRATE><CAN-FD-BAUDRATE>500000</CAN-FD-BAUDRATE>'))!.cluster('Bus')!
+	assert same.db.messages[0].format == .fd
+	any := parse_arxml(short.replace('CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR', 'CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR'))!.cluster('Bus')!
+	assert any.db.messages[0].format == .unstated
 }

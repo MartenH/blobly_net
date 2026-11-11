@@ -167,7 +167,7 @@ class BbFrame(ctypes.Structure):
 class BbMessage(ctypes.Structure):
     """bb_message, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
-                ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
+                ("format", ctypes.c_uint8), ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
 
 
 class BbSignal(ctypes.Structure):
@@ -696,7 +696,8 @@ def _declare(lib):
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
         # background senders (cyclic.py) and the keep-alive (uds.py)
         "bb_cyclic_start": ([c_int, P(BbFrame), c_int], c_int),
-        "bb_cyclic_start_message": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), c_int, c_int], c_int),
+        "bb_cyclic_start_message": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), c_int, c_int, c_int],
+                                    c_int),
         "bb_cyclic_data": ([c_int, c_char_p, c_int], c_int),
         "bb_cyclic_signals": ([c_int, c_int, P(c_char_p), P(ctypes.c_double)], c_int),
         "bb_cyclic_period": ([c_int, c_int], c_int),

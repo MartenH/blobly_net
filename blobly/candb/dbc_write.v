@@ -283,13 +283,12 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	if cycle.values.len > 0 {
 		attrs << cycle
 	}
-	// VFrameFormat, from the model — so a DBC-editor Save does not silently drop a J1939
-	// declaration the parser now reads and the `verify:` self-sent notice now depends on
-	// (codex on #289). Emitted only for the frames that carry it, like GenMsgCycleTime.
+	// VFrameFormat, from the model — so a DBC-editor Save keeps a J1939 declaration (which the
+	// `verify:` self-sent notice depends on, codex on #289) and a message's stated frame format.
 	//
-	// NOT WHEN THE CALLER SUPPLIES ITS OWN. arxml_export passes a richer VFrameFormat as an
-	// extra — it distinguishes the CAN-FD entries, which this model has no field for — and two
-	// emitters of one attribute would write two BA_DEF_ lines for it.
+	// NOT WHEN THE CALLER SUPPLIES ITS OWN. arxml_export passes its own VFrameFormat as an extra,
+	// stating every frame of a cluster that carries an FD one, and two emitters of one attribute
+	// would write two BA_DEF_ lines for it.
 	if !x.attrs.any(it.name == 'VFrameFormat') {
 		mut fmt := DbcAttr{
 			name:    'VFrameFormat'
@@ -300,19 +299,38 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		// "StandardCAN", so emitting an override for the J1939 frames alone leaves an ordinary
 		// 29-bit message inheriting a format that contradicts its own BO_ id — the ARXML exporter
 		// states a value for every frame for exactly this reason (codex on #289). A standard
-		// frame needs no override: the default is already what it is.
+		// frame stating nothing needs no override: the default is already what it is.
 		for m in msgs {
 			if m.j1939 {
 				fmt.values << DbcAttrValue{m.id, m.ext, '3'} // J1939PG
+			} else if m.format.is_fd() {
+				fmt.values << DbcAttrValue{m.id, m.ext, if m.ext { '15' } else { '14' }} // *CAN_FD
 			} else if m.ext {
 				fmt.values << DbcAttrValue{m.id, m.ext, '1'} // ExtendedCAN
 			}
 		}
-		// Only when something actually needs saying: a purely standard-CAN database has every
-		// frame at the default and gains nothing from the definition.
-		if fmt.values.len > 0 {
+		// Only when something actually needs saying: a database stating no format and holding
+		// standard frames only gains nothing from the definition. A standard frame stated classic
+		// is the definition's default, which then states every frame that has no value — a
+		// message stating nothing beside stated ones reads back as its id's classic format.
+		if fmt.values.len > 0 || msgs.any(it.format != .unstated) {
 			attrs << fmt
 		}
+	}
+	// CANFD_BRS, from the model, for the CAN-FD messages: whether each switches its bit rate.
+	// Not when the caller supplies its own, as above.
+	if !x.attrs.any(it.name == 'CANFD_BRS') && msgs.any(it.format.is_fd()) {
+		mut brs := DbcAttr{
+			name:    'CANFD_BRS'
+			typ:     canfd_brs_enum
+			default: '"1"'
+		}
+		for m in msgs {
+			if m.format.is_fd() {
+				brs.values << DbcAttrValue{m.id, m.ext, if m.format == .fd_brs { '1' } else { '0' }}
+			}
+		}
+		attrs << brs
 	}
 	// The E2E contract, from the model (#271) — so an editor Save keeps what the parser read.
 	// NOT WHEN THE CALLER SUPPLIES ITS OWN, as for VFrameFormat: arxml_export passes them as

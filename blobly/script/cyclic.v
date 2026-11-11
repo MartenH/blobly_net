@@ -85,7 +85,7 @@ fn l_cyclic_start(l lua.State) i32 {
 	return 1
 }
 
-// __cyclic_start_msg(channel, message, e2e, period_ms, name1, value1, ...) -> handle
+// __cyclic_start_msg(channel, message, e2e, period_ms, format, name1, value1, ...) -> handle
 fn l_cyclic_start_msg(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
@@ -93,7 +93,10 @@ fn l_cyclic_start_msg(l lua.State) i32 {
 	msg := env.chans[ci].db.message_named(l.arg_str(2)) or {
 		return l.fail('bus.send_message_cyclic: unknown message "${l.arg_str(2)}"')
 	}
-	vals := pairs_from(l, 5) or { return l.fail('bus.send_message_cyclic: ${err}') }
+	ff := transport.parse_frame_format(l.arg_str(5)) or {
+		return l.fail('bus.send_message_cyclic: ${err}')
+	}
+	vals := pairs_from(l, 6) or { return l.fail('bus.send_message_cyclic: ${err}') }
 	period := int_arg(l, 4, 'period_ms', min_i32, max_i32) or {
 		return l.fail('bus.send_message_cyclic: ${err}')
 	}
@@ -101,6 +104,7 @@ fn l_cyclic_start_msg(l lua.State) i32 {
 		by_message: true
 		message:    msg
 		values:     vals
+		format:     ff
 		e2e:        l.arg_bool(3)
 		period_ms:  int(period)
 	}) or { return l.fail('bus.send_message_cyclic: ${err}') }

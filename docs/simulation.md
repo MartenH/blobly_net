@@ -903,6 +903,27 @@ headless runner alike, from one frame builder: `sim.sender_message_frame`).
 `data:` is parsed as a string of hex bytes (`01 00`, `0102FF`). A YAML sequence such as
 `[0x01, 0x00]` is *not* interpreted as bytes — it is stringified and misread.
 
+`format:` states the frame format of the generator's frames: `classic`, `fd` or `fd_brs` (the
+Generators panel's `format` picker). Left out, a `message:` generator takes the format its
+database states for the message (`VFrameFormat` / `CANFD_BRS`, or the ARXML frame's behaviour),
+and otherwise the row's — on a `canfd` row, FD. It is how a classic message gets out on a CAN-FD
+row; a classic frame of more than 8 bytes is refused at the send, and the Log says so. A project
+that uses it declares `version: 13`.
+
+```yaml
+      - name: Wake
+        message: EngineData
+        trigger: cyclic
+        cycle_ms: 100
+        format: classic        # classic | fd | fd_brs; absent: as declared
+```
+
+**A message's own frame format.** A simulated node sends each message in the format its database
+states for it, the same rule, so a `canfd` row carries its classic messages classic and its FD
+ones FD (with BRS as `CANFD_BRS` says). A message that states nothing goes out in the row's
+format, as before. At Start the Log names a classic row whose database declares messages CAN-FD,
+and messages declared classic with more than 8 bytes, whose statement is not applied.
+
 `bus:` sends on a different bus, and it takes the **channel's name** — `bus: CAN2` (#97). Leave
 it out and the generator sends on the channel it is nested under.
 
