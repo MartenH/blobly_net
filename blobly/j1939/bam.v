@@ -108,18 +108,40 @@ pub fn send_message(mut bus transport.Bus, f transport.CanFrame, declared bool, 
 // send_message_within is send_message with a connection's answers each waited for `answer_ms`
 // (0: T3, 1250 ms).
 pub fn send_message_within(mut bus transport.Bus, f transport.CanFrame, declared bool, answer_ms int, stop fn () bool) ! {
-	fd := transport.frame_out(bus, f).fd
-	if needs_connection(f, declared, fd) {
+	p := plan_message(bus, f, declared)!
+	if p.connection {
 		send_connection(mut bus, f, answer_ms, stop)!
 		return
 	}
-	frames := message_frames(f, declared, fd)!
-	if frames.len == 1 {
-		bus.send(frames[0])!
+	if p.frames.len == 1 {
+		bus.send(p.frames[0])!
 		return
 	}
-	send_paced(mut bus, frames, bam_gap_ms, lane_key(transport.wire_of(bus), sa_of(frames)),
+	send_paced(mut bus, p.frames, bam_gap_ms, lane_key(transport.wire_of(bus), sa_of(p.frames)),
 		stop)!
+}
+
+// Plan is how a message's frame goes out on a bus: its `frames` — the one frame, or its BAM — or,
+// `connection`, an RTS/CTS connection (connection_for), whose frames the connection makes.
+pub struct Plan {
+pub:
+	frames     []transport.CanFrame
+	connection bool
+}
+
+// plan_message is how message frame `f` (`declared` whether its database declares it J1939) goes
+// out on `bus`, decided by the frame as `bus` puts it on the wire (transport.frame_out): the one
+// rule send_message and a loop that cannot block (a generator's wire) both send by.
+pub fn plan_message(bus transport.Bus, f transport.CanFrame, declared bool) !Plan {
+	fd := transport.frame_out(bus, f).fd
+	if needs_connection(f, declared, fd) {
+		return Plan{
+			connection: true
+		}
+	}
+	return Plan{
+		frames: message_frames(f, declared, fd)!
+	}
 }
 
 // send_paced sends `frames` on `bus`, the first once `lane` is free of any other sender's
@@ -301,6 +323,43 @@ pub fn (mut p Pacer) settle(d Due, ok bool, sent_ms f64) bool {
 		return ok
 	}
 	return false
+}
+
+// next_ms is when take next has a frame to hand out, on take's clock at `now_ms`: the earliest
+// of each lane's next transfer's time, gap_ms after its lane's last send and once the lane is free
+// of any other sender's transfer; none while nothing is queued or every lane's frame is out.
+pub fn (p Pacer) next_ms(now_ms f64) ?f64 {
+	mut next := 0.0
+	mut any := false
+	mut seen := map[string]bool{}
+	now_ns := time.sys_mono_now()
+	for t in p.queue {
+		if seen[t.lane] {
+			continue
+		}
+		seen[t.lane] = true
+		if t.flying {
+			continue
+		}
+		mut at := p.ready[t.lane] or { now_ms }
+		if t.next == 0 {
+			free_at := lane_free_at(t.key, p.owner, now_ns)
+			if free_at > now_ns {
+				by := now_ms + f64(free_at - now_ns) / f64(time.millisecond)
+				if by > at {
+					at = by
+				}
+			}
+		}
+		if !any || at < next {
+			next = at
+			any = true
+		}
+	}
+	if !any {
+		return none
+	}
+	return next
 }
 
 // pump hands `send` each frame take gives out, with its transfer's tag, and settles it by what

@@ -164,15 +164,13 @@ mut:
 	sent    u64
 	failed  u64
 	error   string
-	// the loop's alone: the grid slot last sent in and when that send returned (ms on the
-	// monotonic clock), whether nothing was sent yet, and the wire's handle as its row
+	// the loop's alone: the grid slot last sent in and when that send ended (ms on the monotonic
+	// clock), whether nothing was sent yet, the wire's handle as its row, and the send in progress
 	first  bool = true
 	slot   u64
 	done   u64
 	framed ?transport.Bus
-	// a BAM in progress ends at a stop: asked through this, built once (stop_fn), since V never
-	// frees a closure
-	stopper fn () bool = unsafe { nil }
+	tp     Tp
 }
 
 // new_sender is a sender of `spec` on `iface`, sent as row `row`, on no wire yet.
@@ -231,6 +229,9 @@ fn (mut s Sender) leaving() bool {
 }
 
 fn (mut s Sender) due(now u64) ?u64 {
+	if s.tp.busy() {
+		return s.tp.due(now)
+	}
 	s.mu.lock()
 	period := u64(s.spec.period_ms)
 	s.mu.unlock()
@@ -239,20 +240,28 @@ fn (mut s Sender) due(now u64) ?u64 {
 }
 
 fn (mut s Sender) serve(mut bus transport.Bus, now u64) string {
+	mut b := s.framed or {
+		f := transport.row_framed(bus, s.iface, s.row)
+		s.framed = f
+		f
+	}
+	if s.tp.busy() {
+		s.ended(s.tp.pump(mut b, now))
+		return ''
+	}
 	due := s.due(now) or { return '' }
 	if now < due {
 		return ''
 	}
 	s.slot = if s.first { now } else { due }
 	s.first = false
-	mut b := s.framed or {
-		f := transport.row_framed(bus, s.iface, s.row)
-		s.framed = f
-		f
-	}
-	s.send_once(mut b)
-	s.done = time.sys_mono_now() / 1_000_000
+	s.ended(s.send_once(mut b, now))
 	return ''
+}
+
+fn (mut s Sender) quit(mut bus transport.Bus) {
+	mut b := s.framed or { bus }
+	s.tp.quit(mut b)
 }
 
 fn (mut s Sender) let_go(failure string) {
@@ -274,9 +283,9 @@ fn (mut s Sender) poke() {
 	}
 }
 
-// send_once puts the frame on the bus as the spec has it now — a J1939 message past eight bytes on
-// a classic row as its BAM, paced, a stop asked between its frames — counting what became of it.
-fn (mut s Sender) send_once(mut bus transport.Bus) {
+// send_once begins sending the frame as the spec has it now — a J1939 message past eight bytes on
+// a classic row as its BAM or its connection, which serve drives from then (tp.v).
+fn (mut s Sender) send_once(mut bus transport.Bus, now u64) Step {
 	s.mu.lock()
 	sp := s.spec
 	mut frame := transport.CanFrame{
@@ -286,38 +295,26 @@ fn (mut s Sender) send_once(mut bus transport.Bus) {
 	s.mu.unlock()
 	// a message's E2E counter moves on each frame
 	if sp.by_message && sp.e2e {
-		s.stamper.stamp(sp.message, mut frame.data) or {
-			s.note_failure(err.msg())
-			return
-		}
+		s.stamper.stamp(sp.message, mut frame.data) or { return Step{
+			why: err.msg()
+		} }
 	}
-	j1939.send_message(mut bus, frame, sp.by_message && sp.message.j1939, s.stop_fn()) or {
-		s.note_failure(err.msg())
+	return s.tp.begin(mut bus, frame, sp.by_message && sp.message.j1939, now)
+}
+
+// ended counts a send that ended, once it has (`st` not going), and grids the next from now.
+fn (mut s Sender) ended(st Step) {
+	if st.going {
+		return
+	}
+	s.done = time.sys_mono_now() / 1_000_000
+	if st.why != '' {
+		s.note_failure(st.why)
 		return
 	}
 	s.mu.lock()
 	s.sent++
 	s.mu.unlock()
-}
-
-// stop_fn is the sender's stop as a closure (stopping), built on first use and kept.
-fn (mut s Sender) stop_fn() fn () bool {
-	if isnil(s.stopper) {
-		s.stopper = fn [s] () bool {
-			mut me := unsafe { s }
-			return me.stopping()
-		}
-	}
-	return s.stopper
-}
-
-// stopping is whether the loop is to end: a stop asked, or its owner's end.
-fn (mut s Sender) stopping() bool {
-	s.mu.lock()
-	asked := s.asked
-	mut w := s.wire
-	s.mu.unlock()
-	return asked || (!isnil(w) && w.stopping())
 }
 
 // encoded is the frame `sp` sends, its E2E not stamped yet.
