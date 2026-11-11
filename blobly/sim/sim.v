@@ -218,65 +218,34 @@ fn set_value_of(set []SetValue, signal string) ?f64 {
 	return none
 }
 
-// Carried is a signal's raw value in a frame, or that the frame does not carry the signal.
-struct Carried {
-	on  bool
-	raw u64
-}
-
-// raw_under is the raw value signal `name` carries in the next frame at time t (s) under the values
-// set `set`: the value set, else its generator's, else its start value; not carried for a signal
-// the message does not have or a multiplexed one of a page its switch does not select.
-fn (m SimMessage) raw_under(name string, t f64, set []SetValue) Carried {
-	sig := m.msg.signal_named(name) or { return Carried{} }
-	if sig.is_multiplexed && !sig.is_multiplexor {
-		sw := m.msg.multiplexor_index()
-		if sw >= 0 {
-			on := m.raw_under(m.msg.signals[sw].name, t, set)
-			if !on.on || on.raw != u64(sig.multiplexor_value) {
-				return Carried{}
-			}
-		}
-	}
-	if v := set_value_of(set, name) {
-		return Carried{true, sig.raw_from_phys(v)}
-	}
-	for s in m.signals {
-		if s.name == name {
-			return Carried{true, sig.raw_from_phys(s.gen.value(t, m.send_n))}
-		}
-	}
-	return Carried{true, if sig.has_start { sig.start_raw } else { u64(0) }}
-}
-
-// set_moves is whether the values set going from `before` to m.set changes, at time t (s), the raw
-// value of a signal either names that the next frame carries.
+// set_moves is whether the values set going from `before` to m.set changes the payload the next
+// frame carries at time t (s): a value set where the frame carries the signal, at a raw value other
+// than the one it carried.
 fn (m SimMessage) set_moves(before []SetValue, t f64) bool {
-	for v in before {
-		if m.raw_under(v.signal, t, before) != m.raw_under(v.signal, t, m.set) {
-			return true
-		}
+	if before.len == 0 && m.set.len == 0 {
+		return false
 	}
-	for v in m.set {
-		if m.raw_under(v.signal, t, before) != m.raw_under(v.signal, t, m.set) {
-			return true
-		}
-	}
-	return false
+	return m.payload(t, before) != m.payload(t, m.set)
 }
 
-// build encodes the message's signals at time t into a CAN frame (payload_of): its generators'
-// values, then the values a script set on it, so a set switch picks the page and a set value goes
-// over its generator's, under protection so the checksum covers them.
-pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
-	mut vals := []SetValue{cap: m.signals.len + m.set.len}
+// payload is the message's signals at time t (s) (payload_of): its generators' values, then the
+// values `set` holds, so a set switch picks the page and a set value goes over its generator's; the
+// bits no signal covers at the message's fill: what build protects and sends.
+fn (m SimMessage) payload(t f64, set []SetValue) []u8 {
+	mut vals := []SetValue{cap: m.signals.len + set.len}
 	for s in m.signals {
 		vals << SetValue{s.name, s.gen.value(t, m.send_n)}
 	}
-	vals << m.set
+	vals << set
 	mut data := payload_of(m.msg, vals)
-	// the bits no signal covers at the message's fill, under protection too
 	m.msg.fill_unused(mut data)
+	return data
+}
+
+// build encodes the message's payload at time t (s) into a CAN frame, faulted and protected, so
+// the checksum covers the values set and the fill.
+pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
+	mut data := m.payload(t, m.set)
 	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid
 	// checksum and the receiver reaches its range handling instead of rejecting a CRC error.
 	m.fault.apply_pre(m.msg, mut data)

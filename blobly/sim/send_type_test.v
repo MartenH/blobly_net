@@ -321,3 +321,36 @@ fn test_a_value_set_over_a_moving_generator_stops_its_changes() {
 	})
 	assert sent.map(it[0]) == ['100.0', '130.0', '160.0']
 }
+
+fn test_a_value_set_on_a_page_the_switch_does_not_select_is_no_change() {
+	db := candb.parse_dbc('BU_: Body
+BO_ 260 Paged: 2 Body
+ SG_ Page M : 0|4@1+ (1,0) [0|15] "" X
+ SG_ Sub m2M : 4|4@1+ (1,0) [0|15] "" X
+ SG_ Extra m1 : 8|8@1+ (1,0) [0|255] "" X
+BA_DEF_ BO_ "GenMsgSendType" ENUM "cyclic","spontaneous","cyclicAndSpontaneous","NoMsgSendType";
+BA_DEF_DEF_ "GenMsgSendType" "spontaneous";
+BA_ "GenMsgDelayTime" BO_ 260 30;
+BA_ "GenSigStartValue" SG_ 260 Page 1;
+')!
+	mut e := Engine{
+		ecus: [ecu_from_dbc(db, 'Body')]
+	}
+	iface := 'test:set-page'
+	mut sent := []string{}
+	for t in grid(300, 5) {
+		if t == 50 {
+			set_value(iface, 'Body', 'Paged', 'Sub', 5)
+		}
+		if t == 150 {
+			set_value(iface, 'Body', 'Paged', 'Extra', 9)
+		}
+		apply_injected(iface, mut e)
+		for f in e.due_frames(t) {
+			sent << '${t} ${f.data}'
+		}
+	}
+	clear_value(iface, 'Body', 'Paged', '')
+	// Sub sits on page 2, which the frame does not carry; Extra on page 1 is a change
+	assert sent == ['150.0 [1, 9]']
+}
