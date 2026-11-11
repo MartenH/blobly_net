@@ -246,7 +246,8 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 			}
 			a.mu.unlock()
 			engine.save_state(mut carry) // fold the outgoing engine's state in first
-			engine = sim.Engine{}
+			// a BAM in progress goes on, so a rebuild does not cut a transfer short on the wire
+			engine = engine.carried()
 			for n in sc.nodes {
 				if enabled[sim_key(sc.proj_idx, sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
@@ -259,6 +260,9 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 		// The panel used to write a map on App that only the panel read, so a script launched
 		// from the Script panel reported success and changed nothing on the bus.
 		sim.serve_pass(mut engine, mut bus, t0, sc.iface, sc.proj_idx, sc.pch.name)
+		for note in engine.take_notes() {
+			notify_gen(app, gen, '${sc.pch.name}: simulation: ${note}')
+		}
 	}
 	bus.close()
 }
@@ -282,6 +286,10 @@ fn gen_loop(app &App) {
 	}
 	mut a := unsafe { app }
 	mut slots := map[u64]GenSlot{} // by SenderRT.uid
+	a.mu.lock()
+	a.gen_tp = j1939.Pacer{} // nothing of an earlier run's transfers
+	a.gen_tp_xfers = map[int]GenTpXfer{}
+	a.mu.unlock()
 	for a.running {
 		now := time.sys_mono_now() / 1_000_000
 		mut next_at := now + gen_poll_ms // the earliest a cyclic sender is due next
@@ -363,6 +371,7 @@ fn gen_loop(app &App) {
 				}
 			}
 		}
+		a.send_gen_tp(f64(time.ticks()))
 		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
 		// emission or the next received frame, so on a bus that falls silent — a disconnected
 		// bench, the very case the mark is for — the last rows stayed unresolved forever.
@@ -371,6 +380,44 @@ fn gen_loop(app &App) {
 		a.mu.unlock()
 		// until the next cyclic sender is due, on the monotonic clock
 		time.sleep(i64(sim.wait_until(next_at, time.sys_mono_now() / 1_000_000, gen_poll_ms)) * time.millisecond)
+	}
+}
+
+// GenTpXfer is a generator's BAM in progress: where it goes, as tx_on_chan takes it, and the fire it
+// is (the generator set's epoch and its send index), counted once its last frame is out.
+struct GenTpXfer {
+	row   int
+	chan  string
+	iface string
+	epoch u64
+	n     int
+}
+
+// send_gen_tp sends the generators' BAM frames due by `now_ms`, taken under app.mu and sent
+// outside it, each reported back to the pacer once its write returned, so a transfer's lane stays
+// claimed until its last frame is out: a frame its tap refuses ends its transfer, and a transfer
+// whose last frame went out counts its generator's send (gen_send_n), as a one-frame fire counts a
+// delivered frame.
+fn (mut app App) send_gen_tp(now_ms f64) {
+	app.mu.lock()
+	dues := app.gen_tp.take(now_ms)
+	mut xs := []GenTpXfer{cap: dues.len}
+	for d in dues {
+		xs << app.gen_tp_xfers[d.tag] or { GenTpXfer{} }
+	}
+	app.mu.unlock()
+	for k, d in dues {
+		x := xs[k]
+		sent := app.tx_on_chan(x.row, x.chan, x.iface, d.frame)
+		app.mu.lock()
+		whole := app.gen_tp.settle(d, sent, f64(time.ticks()))
+		if !app.gen_tp.has(d.tag) {
+			app.gen_tp_xfers.delete(d.tag)
+		}
+		if whole && app.gen_state_epoch == x.epoch {
+			app.gen_send_n[u64(d.tag)] = x.n + 1
+		}
+		app.mu.unlock()
 	}
 }
 

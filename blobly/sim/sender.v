@@ -98,6 +98,23 @@ pub fn sender_signal_refusals(s project.Sender, dbs []candb.Database) []string {
 	return []
 }
 
+// sender_j1939 says whether the message generator `s` sends is one its first defining database
+// declares J1939 (`VFrameFormat` J1939PG), the message whose frame sender_message_frame builds — so
+// past eight bytes on a classic row it goes out as a BAM (j1939.message_frames).
+pub fn sender_j1939(s project.Sender, dbs []candb.Database) bool {
+	if s.message == '' {
+		return false
+	}
+	for db in dbs {
+		for m in db.messages {
+			if m.name == s.message {
+				return m.j1939
+			}
+		}
+	}
+	return false
+}
+
 // next_due is when a frame on a `period` grid is next due, the last one sent in grid slot `slot`
 // and its write returned at `done` (all in one clock's units): the first slot after `done`, so a
 // write that outlasted a period skips the slots it covered rather than being followed by frames

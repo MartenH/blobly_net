@@ -664,6 +664,13 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   states (`msg.format`: `VFrameFormat` / `CANFD_BRS`), else the channel's; `msg.send(format="classic",
   **signals)` states its format as `ch.send`'s `format` does (a signal named `format` cannot be set
   this way).
+  A J1939 message (`msg.j1939`) longer than 8 bytes whose frame goes out classic is sent as the
+  transport protocol's broadcast — one TP.CM BAM and its TP.DT packets from the message's source
+  address, 50 ms apart, the last padded with 0xFF ([j1939.md](j1939.md#sending-a-message-longer-than-8-bytes))
+  — and the call returns once the last packet is out, 50 ms a packet (Ctrl-C ends it between
+  packets, the rest unsent); `format="classic"` sends it so
+  on an FD row too. `msg.encode()` gives such a message whole, up to 1785 bytes; `msg.send_cyclic`
+  sends one BAM a period.
 - `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`
   whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
   `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
@@ -794,7 +801,8 @@ frame where its wire says so — a row of the project on it (a disabled one too)
 (`VFrameFormat` `J1939PG`, [j1939.md](j1939.md)): the GUI's per-wire reading — and any other CAN
 row from the call on. It sends nothing: no
 CTS, no acknowledgement, no address claim; on a bench where the script is a node, it sends those
-frames itself.
+frames itself. A long message of the row's database needs no hand-built frames: `msg.send` sends it
+as a BAM (above), as the frames below are built by hand.
 
 ```python
 import blobly

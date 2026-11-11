@@ -509,6 +509,12 @@ channels:
     type: can
     interface: inproc:PY_QUIET
 """
+LONG_J1939 = """BO_ 2566852641 Long: 1785 Body
+ SG_ Head : 0|8@1+ (1,0) [0|255] "" X
+
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+"""
 INTERRUPTED = textwrap.dedent("""
     import os, signal, sys, threading, time
     sys.path.insert(0, sys.argv[1])
@@ -547,7 +553,8 @@ INTERRUPTED = textwrap.dedent("""
             {"recv": lambda: q.recv(None), "expect": lambda: q.expect(1, 3_600_000),
              "run": lambda: net.run(3_600_000), "someip": lambda: blobly.someip.listen(3_600_000, port=int(sys.argv[4])),
              "flash": lambda: blobly.flash.program(q, bytes(64), quiet=True),
-             "uds": lambda: client and client.read_did(0xF190)}[sys.argv[3]]()
+             "uds": lambda: client and client.read_did(0xF190),
+             "bam": lambda: q.messages.Long.send()}[sys.argv[3]]()
         except KeyboardInterrupt:
             print(f"interrupted {time.monotonic() - sent[0]:.3f} s after Ctrl-C")
         stop.set()
@@ -557,13 +564,17 @@ INTERRUPTED = textwrap.dedent("""
 
 
 class TestInterrupt:
-    @pytest.mark.parametrize("wait", ["recv", "expect", "run", "someip", "flash", "uds"])
+    @pytest.mark.parametrize("wait", ["recv", "expect", "run", "someip", "flash", "uds", "bam"])
     def test_ctrl_c_ends_a_long_wait(self, tmp_path, wait):
         pkg = os.path.dirname(os.path.dirname(os.path.abspath(blobly.__file__)))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.bind(("127.0.0.1", 0))  # a port for the SOME/IP listen, free now
             port = str(s.getsockname()[1])
-        out = run_python("-I", "-c", INTERRUPTED, pkg, write(tmp_path, "quiet.blobnet", QUIET), wait, port, timeout=60)
+        quiet = QUIET
+        if wait == "bam":  # a 1785-byte J1939 message: its BAM takes 12.75 s
+            write(tmp_path, "long.dbc", LONG_J1939)
+            quiet += "    databases:\n      - long.dbc\n"
+        out = run_python("-I", "-c", INTERRUPTED, pkg, write(tmp_path, "quiet.blobnet", quiet), wait, port, timeout=60)
         late = [float(line.split()[1]) for line in out.stdout.splitlines() if line.startswith("interrupted")]
         assert late, out.stdout + out.stderr
         assert late[0] < 0.5, "Ctrl-C waited for the wait, or a second of run(), to end"

@@ -13,6 +13,7 @@ module sim
 import math
 import time
 import blobly.candb
+import blobly.j1939
 import blobly.project
 import blobly.transport
 
@@ -269,6 +270,49 @@ pub mut:
 pub struct Engine {
 pub mut:
 	ecus []SimEcu
+	// the wire and row its frames go out on (transmit sets them), which decide whether a J1939
+	// message's frame goes out classic and so as a BAM
+	iface string
+	row   string
+	// the BAMs in progress, a transfer at a time per source address (j1939.Pacer), each tagged
+	// with the frame it carries (tp_sent), which becomes its message's last sent once whole
+	tp j1939.Pacer
+	// why a message is never sent, said once per message (take_notes), and which were said
+	notes []string
+	said  map[string]bool
+mut:
+	tp_sent map[int]LastSent
+	tp_next int
+}
+
+// LastSent is a message's frame as step built it: whose, and when (s), its send index, the values
+// set and its payload — what its message's `last_t`/`last_n`/`last_set`/`last_data` become once
+// the frame is on the wire.
+struct LastSent {
+	ecu  string
+	msg  string
+	t    f64
+	n    int
+	set  []SetValue
+	data []u8
+}
+
+// carried is a new engine, with no ECUs, carrying e's BAMs in progress and what it has said, so a
+// rebuild neither cuts a transfer short on the wire nor says a note again.
+pub fn (e Engine) carried() Engine {
+	return Engine{
+		tp:      e.tp
+		tp_sent: e.tp_sent
+		tp_next: e.tp_next
+		said:    e.said
+	}
+}
+
+// take_notes is what the engine has to say since it was last asked: a message it never sends.
+pub fn (mut e Engine) take_notes() []string {
+	out := e.notes
+	e.notes = []
+	return out
 }
 
 // Carry is what an engine rebuild carries over, kept by the caller for the whole run: each
@@ -378,10 +422,10 @@ mut:
 
 // step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
 // `send`, which says whether the transport took it (a message on the id its node announces NM on
-// is that announcement's, nm_tx.v, and is not sent besides it): only a frame taken is the message's
-// LAST SENT (`last_t`/`last_n`/`last_set`/`last_data`, what a described server's live DID reads), so
-// a frame refused — a listen-only wire, a bus that is down — or dropped by a fault leaves it as it
-// was.
+// is that announcement's, nm_tx.v, and is not sent besides it): only a frame taken — for a BAM, its
+// every frame — is the message's LAST SENT (`last_t`/`last_n`/`last_set`/`last_data`, what a
+// described server's live DID reads), so a frame refused — a listen-only wire, a bus that is down —
+// or dropped by a fault leaves it as it was.
 pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
@@ -390,22 +434,69 @@ pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 				continue
 			}
 			if m.period_ms > 0 && now_ms + 1e-6 >= m.next_ms && now_ms + 1e-6 >= m.ev.hold_ms {
-				m.emit(now_ms, send)
+				m.emit(now_ms, mut e, e.ecus[i].name, send)
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
 				}
 			}
-			m.step_change(now_ms, send)
+			m.step_change(now_ms, mut e, e.ecus[i].name, send)
 		}
 	}
 	e.step_nm(now_ms, send)
+	t0 := time.sys_mono_now()
+	for d in e.tp.take(now_ms) {
+		sent := send(d.frame)
+		if e.tp.settle(d, sent, j1939.returned_ms(now_ms, t0)) {
+			if last := e.tp_sent[d.tag] {
+				e.record_sent(last)
+			}
+		}
+		if !e.tp.has(d.tag) {
+			e.tp_sent.delete(d.tag)
+		}
+	}
+	// a transfer replaced while waiting, or dropped, carries no frame any more
+	if e.tp_sent.len > e.tp.pending() {
+		for tag in e.tp_sent.keys() {
+			if !e.tp.has(tag) {
+				e.tp_sent.delete(tag)
+			}
+		}
+	}
 }
 
-// emit builds the message's frame at now_ms and hands it to `send`.
-fn (mut m SimMessage) emit(now_ms f64, send fn (f transport.CanFrame) bool) {
+// record_sent makes `last` its message's last sent, unless a later frame of it already is.
+fn (mut e Engine) record_sent(last LastSent) {
+	for mut ecu in e.ecus {
+		if ecu.name != last.ecu {
+			continue
+		}
+		for mut m in ecu.messages {
+			if m.msg.name == last.msg && last.n > m.last_n {
+				m.last_t = last.t
+				m.last_n = last.n
+				m.last_set = last.set
+				m.last_data = last.data
+				return
+			}
+		}
+	}
+}
+
+// emit builds the message's frame at now_ms and hands it to `send` through the engine `e` it
+// belongs to, as ECU `ecu`'s (Engine.emit: one frame, or a J1939 message's BAM on the engine's
+// pacer, which makes it the last sent once whole).
+fn (mut m SimMessage) emit(now_ms f64, mut e Engine, ecu string, send fn (f transport.CanFrame) bool) {
 	mut f := m.build(now_ms / 1000.0)
-	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
+	if m.fault.apply_post(m.msg, m.e2e, mut f.data) && e.emit(f, m.msg, send, LastSent{
+		ecu:  ecu
+		msg:  m.msg.name
+		t:    now_ms / 1000.0
+		n:    m.send_n
+		set:  m.set
+		data: f.data
+	}) {
 		m.last_t = now_ms / 1000.0
 		m.last_n = m.send_n
 		m.last_set = m.set
@@ -431,7 +522,7 @@ pub const change_gap_ms = 10
 // send of it (a cyclic one of a mixed message included) closer than the delay to the one before,
 // change_gap_ms apart where the file states neither, none before its start delay. The values when
 // first looked at are where it starts, not a change.
-fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) bool) {
+fn (mut m SimMessage) step_change(now_ms f64, mut e Engine, ecu string, send fn (f transport.CanFrame) bool) {
 	if !m.msg.on_change() || !m.signals.any(it.gen.follows_time())
 		|| now_ms + 1e-6 < f64(m.msg.start_delay_ms) {
 		return
@@ -447,7 +538,7 @@ fn (mut m SimMessage) step_change(now_ms f64, send fn (f transport.CanFrame) boo
 	if m.ev.left <= 0 || now_ms + 1e-6 < m.ev.next_ms || now_ms + 1e-6 < m.ev.hold_ms {
 		return
 	}
-	m.emit(now_ms, send)
+	m.emit(now_ms, mut e, ecu, send)
 	m.ev.left--
 	mut gap := if m.ev.left > 0 { m.msg.cycle_fast_ms } else { 0 }
 	if gap <= 0 && m.msg.delay_ms <= 0 {
@@ -529,9 +620,36 @@ pub fn serve_pass(mut e Engine, mut bus transport.Bus, t0_ns u64, iface string, 
 	}
 }
 
+// emit hands message `msg`'s frame `f` to `send` as one frame, or — j1939.message_frames: a
+// message declared J1939 of more than 8 bytes going out classic — queues its BAM on the engine's
+// pacer, whose frames `step` hands on bam_gap_ms apart, `last` becoming the message's last sent
+// once the whole BAM is out (record_sent). True only for the one frame sent; false for a frame
+// refused, a BAM queued, or a message neither one frame nor a BAM carries (a J1939 message to one
+// node, which needs RTS/CTS), which is said once (take_notes).
+fn (mut e Engine) emit(f transport.CanFrame, msg candb.Message, send fn (f transport.CanFrame) bool, last LastSent) bool {
+	out := transport.framed_for_wire(e.iface, transport.CanFrame{ ...f, row: e.row })
+	frames := j1939.message_frames(f, msg.j1939, out.fd) or {
+		key := '${msg.name}/${msg.id}'
+		if !e.said[key] {
+			e.said[key] = true
+			e.notes << '${msg.name} is never sent: ${err.msg()}'
+		}
+		return false
+	}
+	if frames.len == 1 {
+		return send(frames[0])
+	}
+	e.tp_next++
+	e.tp_sent[e.tp_next] = last
+	e.tp.add(e.iface, frames, e.tp_next)
+	return false
+}
+
 // transmit sends what is due on `bus` from the engine of project row `row` and publishes what a
 // described server's live DIDs read, each pass of serve_pass.
 pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, row int, chan_name string) {
+	e.iface = iface
+	e.row = chan_name
 	apply_nm_requests(iface, row, mut e)
 	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
 		bus.send(f) or { return false }

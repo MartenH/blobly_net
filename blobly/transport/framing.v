@@ -263,6 +263,38 @@ pub fn (r &RowFramedBus) sent_frame() CanFrame {
 	return if inner is SentFrame { inner.sent_frame() } else { framed_for_wire(r.iface, r.sent) }
 }
 
+// frame_out is `f` as `b` frames it for its wire, read now: as the row's own emitter where `b`
+// sends as one (RowFramedBus), per its wire where it frames per wire (SilentBus), through a meter
+// to what it meters; as stated on any other bus. What a sender asks before it decides a frame's
+// shape — a J1939 message goes out as a BAM only where its frame goes out classic.
+pub fn frame_out(b Bus, f CanFrame) CanFrame {
+	if b is RowFramedBus {
+		return framed_for_wire(b.iface, b.as_row(f))
+	}
+	if b is MeteredBus {
+		return frame_out(b.inner, f)
+	}
+	if b is SilentBus {
+		return if b.verbatim { f.unstated() } else { framed_for_wire(b.iface, f) }
+	}
+	return f.unstated()
+}
+
+// wire_of is the interface `b` sends on, as frame_out reads it: a row's or a policed bus's, through
+// a meter to what it meters; '' for a bus that does not say.
+pub fn wire_of(b Bus) string {
+	if b is RowFramedBus {
+		return b.iface
+	}
+	if b is MeteredBus {
+		return wire_of(b.inner)
+	}
+	if b is SilentBus {
+		return b.iface
+	}
+	return ''
+}
+
 pub fn (mut r RowFramedBus) recv(timeout_ms int) !CanFrame {
 	return r.inner.recv(timeout_ms)!
 }

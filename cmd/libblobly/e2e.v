@@ -157,16 +157,33 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 	for i in 0 .. n {
 		data[i] = f.data[i]
 	}
+	stamped := e2e_stamp_data(row, m, mut data) or { return refused(err) }
+	if !stamped {
+		ok()
+		return bb_none
+	}
+	unsafe {
+		for i in 0 .. n {
+			f.data[i] = data[i]
+		}
+	}
+	return ok()
+}
+
+// e2e_stamp_data stamps message m's declared E2E onto `data`, m's payload on row `row`, with the
+// run's counter of m's sends by name on the row: false where m declares none.
+fn e2e_stamp_data(row i32, m i32, mut data []u8) !bool {
+	n := data.len
 	// the message, its run and that run's counters under one hold: a stop and start between the
 	// lookup and the stamp would count an old run's message in the new run
 	bb_mu.lock()
 	msg := message_locked(row, m) or {
 		bb_mu.unlock()
-		return refused(err)
+		return err
 	}
 	if n < msg.payload_len() {
 		bb_mu.unlock()
-		return fail(bb_err, 'e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
+		return error('e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
 	}
 	if bb_e2e_gen != bb_run_gen {
 		bb_e2e_stampers = map[int]&sim.E2eStamper{}
@@ -179,17 +196,8 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 	}
 	stamped := st.stamp(msg, mut data) or {
 		bb_mu.unlock()
-		return fail(bb_err, err.msg())
+		return err
 	}
 	bb_mu.unlock()
-	if !stamped {
-		ok()
-		return bb_none
-	}
-	unsafe {
-		for i in 0 .. n {
-			f.data[i] = data[i]
-		}
-	}
-	return ok()
+	return stamped
 }

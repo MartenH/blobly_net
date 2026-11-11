@@ -708,6 +708,9 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, row int, chan_nam
 	t0 := time.sys_mono_now()
 	for r.ctl.running {
 		sim.serve_pass(mut engine, mut bus, t0, fault_iface, row, chan_name)
+		for note in engine.take_notes() {
+			r.say('${chan_name}: simulation: ${note}')
+		}
 	}
 	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
 	// handle still answers with the wire's totals (codex round 12 on #231).

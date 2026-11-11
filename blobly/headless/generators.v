@@ -4,6 +4,7 @@ import time
 import sync
 import blobly.candb
 import blobly.cyclic
+import blobly.j1939
 import blobly.project
 import blobly.sim
 import blobly.transport
@@ -60,6 +61,9 @@ mut:
 	slot      u64
 	done      u64
 	framed    ?transport.Bus
+	// a BAM in progress ends at the run's stop: asked through this, built once (stop_fn), since V
+	// never frees a closure
+	stopper fn () bool = unsafe { nil }
 }
 
 // fires_waiting is how many fires may wait for one generator's loop at once.
@@ -359,7 +363,20 @@ fn (mut g Gen) poke() {
 	}
 }
 
-// send puts g's frame on the bus once: '' when the bus took it, else why not.
+// stop_fn is the run's stop as a closure, built on first use and kept.
+fn (mut g Gen) stop_fn() fn () bool {
+	if isnil(g.stopper) {
+		ctl := g.ctl
+		g.stopper = fn [ctl] () bool {
+			return !ctl.running
+		}
+	}
+	return g.stopper
+}
+
+// send puts g's frame on the bus once — a J1939 message past eight bytes on a classic row as its
+// BAM, paced (j1939.send_message), the run's stop asked between its frames: '' when the bus took
+// it, else why not.
 fn (mut g Gen) send(mut bus transport.Bus) string {
 	g.mu.lock()
 	s := project.Sender{
@@ -376,7 +393,9 @@ fn (mut g Gen) send(mut bus transport.Bus) string {
 	} else {
 		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return err.msg() }
 	}
-	bus.send(frame) or { return 'not sent: ${err}' }
+	j1939.send_message(mut bus, frame, sim.sender_j1939(s, g.dbs), g.stop_fn()) or {
+		return 'not sent: ${err}'
+	}
 	g.mu.lock()
 	g.sent++
 	g.sent_edits = edits
@@ -430,15 +449,18 @@ fn (mut r Run) gen(i int) !&Gen {
 // on a wire SocketCAN clamps takes 8 bytes, any other frame 64 (a vendor backend refuses what its
 // wire cannot carry, a software bus carries it).
 fn payload_cap(iface string, row string) int {
-	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
-	return if transport.clamps_to_classic(iface) && !fd { 8 } else { 64 }
+	return if transport.clamps_to_classic(iface) && !row_fd(iface, row) { 8 } else { 64 }
+}
+
+// row_fd is whether a frame row `row` sends on `iface` goes out CAN-FD.
+fn row_fd(iface string, row string) bool {
+	return transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
 }
 
 // data_cap is the most a raw frame row `row` sends on `iface` carries: 64 bytes where the row or
 // the wire is CAN-FD, else 8 (a classic frame past 8 bytes is refused or clamped by every bus).
 fn data_cap(iface string, row string) int {
-	fd := transport.row_framing(iface, row).fd || transport.wire_framing(iface).fd
-	return if fd { 64 } else { 8 }
+	return if row_fd(iface, row) { 64 } else { 8 }
 }
 
 // sendable is g's refusal when it has nothing to send on.
@@ -638,7 +660,8 @@ pub fn (mut r Run) gen_value(i int, signal string, value f64) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, value)!
+	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open, g.row), row_fd(g.open, g.row), signal,
+		value)!
 	g.edits++
 }
 
@@ -649,7 +672,8 @@ pub fn (mut r Run) gen_source(i int, signal string, w project.GenCfg) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), signal, w)!
+	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open, g.row), row_fd(g.open, g.row), signal,
+		w)!
 	g.edits++
 }
 

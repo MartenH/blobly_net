@@ -146,7 +146,7 @@ typedef struct bb_message {
 	uint8_t  format;   /* an enum bb_format: the frame format its database states (VFrameFormat,
 	                      CANFD_BRS; ARXML's frame behaviour), BB_FORMAT_WIRE where it states none */
 	int32_t  dlc;      /* the payload length bb_encode gives it: the DBC's DLC, 0 for a negative
-	                      one (one past 64 bb_encode refuses) */
+	                      one (one past 64 bb_encode refuses; bb_encode_payload carries it) */
 	int32_t  signals;  /* how many signals it has: bb_signal_info's s is 0 .. signals - 1 */
 	/* when its database says a node sends it, each 0 where the file states none: */
 	int32_t  cycle_ms;       /* GenMsgCycleTime (else its BA_DEF_DEF_) */
@@ -572,7 +572,8 @@ typedef struct bb_write_needs {
                                      write gate needs; bb_write_needs says which */
 #define BB_ERR_CANCELLED    (-14) /* a UDS call ended by bb_uds_cancel from another thread: the
                                      request may have gone out, and its answer is not waited for;
-                                     on DoIP the connection is let go (the next call opens another) */
+                                     on DoIP the connection is let go (the next call opens another);
+                                     a bb_message_send ended by bb_message_cancel */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -1569,6 +1570,37 @@ int bb_j1939_address_info(int h, int k, bb_j1939_address *out);
 int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the length of the global
                                                       function's name; "" for one J1939 names
                                                       per industry, or past the 32 global ones */
+#endif /* BB_FROM_V */
+
+/* A message sent whole (cmd/libblobly/message.v): a bb_payload carries a message of a row's
+ * databases of any length its DBC gives it, up to BB_J1939_MAX, where bb_frame stops at 64.
+ * bb_encode_payload is bb_encode into one (its `format` the one its database states, as bb_encode
+ * sets it), bb_e2e_stamp_payload is bb_e2e_stamp on one.
+ * bb_message_send sends message m of row `row` as payload p on handle h, in the format p states (an
+ * enum bb_format), as bb_bus_send sends a frame — but where the row's databases declare m J1939
+ * (bb_message.j1939) and it is 9 .. 1785 bytes going out classic (the row's or wire's declared
+ * format, or BB_FORMAT_CLASSIC stated), as the transport protocol's broadcast (j1939.message_frames):
+ * one TP.CM BAM and its TP.DT packets from the message's source address, priority 7, 50 ms apart,
+ * the last padded with 0xFF. The call returns once the last is sent — 50 ms a packet, so up to
+ * 12.75 s for 1785 bytes — or a bb_bus_close from another thread ends it, the rest unsent, as does
+ * bb_message_cancel (from any thread), after which it answers BB_ERR_CANCELLED; a cancel asked before
+ * the send began is not its. A BAM waits first for any other sender of this process broadcasting
+ * from the same source address on the wire, since J1939-21 lets a node have one in progress. A
+ * J1939 message to one node (a PDU1 group whose destination is not 0xFF) takes an RTS/CTS
+ * connection, which is not sent: BB_ERR. On the handle's own thread. */
+typedef struct bb_payload {
+	uint32_t id;
+	uint8_t  ext;
+	uint8_t  format;   /* an enum bb_format, on a send; bb_encode_payload's is the declared one */
+	uint16_t len;
+	uint8_t  data[BB_J1939_MAX];
+} bb_payload;
+#ifndef BB_FROM_V
+int bb_encode_payload(int row, int m, int n, const char *const *signals, const double *values,
+                      bb_payload *out);
+int bb_e2e_stamp_payload(int row, int m, bb_payload *p);
+int bb_message_send(int h, int row, int m, const bb_payload *p);
+int bb_message_cancel(int h);
 #endif /* BB_FROM_V */
 
 /* Network management on a row's frames (cmd/libblobly/nm.v, blobly/nm): who reports in on the

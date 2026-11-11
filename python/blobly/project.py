@@ -6,6 +6,7 @@ import math
 import numbers
 import os
 import sys
+import threading
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeAlias, T
 
 from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
-from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
+from .events import SLICE_MS, EventLoop, _finite, _on_thread, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
 from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
 from .faults import Faults
@@ -1099,12 +1100,14 @@ class Message:
         have is refused, and so is a number for a signal wider than 64 bits, which carries none; a
         byte signal (Signal.kind "bytes") takes bytes, length / 8 of them in payload order, and
         only it does; a value past what the signal's width holds is clamped to the nearer end.
-        fd/brs are left unset, so channel.send takes its channel's declared format. Its E2E is not stamped:
-        send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
-        return frame_of(self._encoded(signals))
+        fd/brs are left unset, so a send takes its channel's declared format. Its E2E is not stamped:
+        send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is.
+        A J1939 message may be longer than a CAN frame (up to 1785 bytes): send() sends it as a BAM."""
+        p = self._encoded(signals)
+        return Frame(p.id, bytes(memoryview(p.data)[:p.len]), bool(p.ext))
 
     def _encoded(self, signals):
-        """encode's bb_frame."""
+        """encode's bb_payload."""
         names = []
         values = []
         spans = []  # (name, bytes) for the byte signals
@@ -1119,15 +1122,22 @@ class Message:
                 raise TypeError(f"{self.name}.{k}: a signal's value is a number or bytes, not {v!r}")
             values.append(float(v))
         n = len(names)
-        f = _lib.BbFrame()
+        p = _lib.BbPayload()
         lib = _lib.lib()
         with _lib.state_lock:
             self._live()
-            _lib.check(lib.bb_encode(self.channel._index, self._index, n, (ctypes.c_char_p * n)(*names),
-                                     (ctypes.c_double * n)(*values), ctypes.byref(f)))
-            for k, b in spans:
-                _lib.check(lib.bb_encode_bytes(self.channel._index, self._index, k, b, len(b), ctypes.byref(f)))
-        return f
+            _lib.check(lib.bb_encode_payload(self.channel._index, self._index, n, (ctypes.c_char_p * n)(*names),
+                                             (ctypes.c_double * n)(*values), ctypes.byref(p)))
+            if spans:
+                if p.len > 64:
+                    raise _lib.Refused(f"{self.name}: a byte signal is written into a message of at most "
+                                       f"64 bytes, not {p.len}")
+                f = _lib.BbFrame(id=p.id, ext=p.ext, len=p.len)
+                ctypes.memmove(f.data, p.data, p.len)
+                for k, b in spans:
+                    _lib.check(lib.bb_encode_bytes(self.channel._index, self._index, k, b, len(b), ctypes.byref(f)))
+                ctypes.memmove(p.data, f.data, p.len)
+        return p
 
     def send(self, /, *, format: FrameFormat | None = None, **signals: float | bytes) -> Frame:
         """Encodes this message (encode), stamps the E2E its database declares — the counter its
@@ -1142,21 +1152,33 @@ class Message:
         To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
         channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
         under one hold of the state lock, so a stop and start on another thread cannot put this
-        run's encoding on the next run's wire."""
+        run's encoding on the next run's wire.
+        A J1939 message (`j1939`) longer than 8 bytes going out classic is sent as the transport
+        protocol's broadcast, a TP.CM BAM and its TP.DT packets 50 ms apart from the message's
+        source address, and the call returns once the last is sent (50 ms a packet), after any
+        other BAM this process is sending from that address on the wire; Ctrl-C ends it between
+        packets, the rest unsent. The Frame returned is the message's."""
         lib = _lib.lib()
         with _lib.state_lock:
-            f = self._encoded(signals)  # its format the declared one (bb_encode)
+            p = self._encoded(signals)  # its format the declared one (bb_encode_payload)
             if format is not None:
-                f.format = _format(f"{self.name}.send", format)
-            if f.format == _lib.FORMATS["classic"] and f.len > 8:  # refused before the stamp uses a counter
+                p.format = _format(f"{self.name}.send", format)
+            if p.format == _lib.FORMATS["classic"] and p.len > 8 and not self.j1939:  # before the stamp uses a counter
                 raise _lib.Refused(f"{self.channel.name}: a classic frame carries at most 8 bytes, "
-                                   f"{self.name} has {f.len} — choose FD")
-            if f.format:  # the Frame returned says what was stated
-                f.fd, f.brs = int(f.format != _lib.FORMATS["classic"]), int(f.format == _lib.FORMATS["fd_brs"])
+                                   f"{self.name} has {p.len} — choose FD")
             h = self.channel._handle()  # first: a channel that will not open uses no counter
-            _lib.check(lib.bb_e2e_stamp(self.channel._index, self._index, ctypes.byref(f)))
-        self.channel._send_on(h, f)
-        return frame_of(f)
+            row, m = self.channel._index, self._index
+            _lib.check(lib.bb_e2e_stamp_payload(row, m, ctypes.byref(p)))
+        if self.j1939 and p.len > 8 and threading.current_thread() is threading.main_thread():
+            # a BAM takes up to 12.75 s: on a thread of its own, so Ctrl-C cancels it (events._on_thread)
+            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p))), "blobly-send",
+                       lambda: lib.bb_message_cancel(h))
+        else:
+            _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p)))
+        # the Frame returned says what was stated, or declared
+        fd = p.format not in (0, _lib.FORMATS["classic"])
+        brs = p.format == _lib.FORMATS["fd_brs"]
+        return Frame(p.id, bytes(memoryview(p.data)[:p.len]), bool(p.ext), fd, brs)
 
     def send_cyclic(self, period_ms: int, /, *, e2e: bool = True, format: FrameFormat | None = None,
                     **signals: float) -> CyclicSender:

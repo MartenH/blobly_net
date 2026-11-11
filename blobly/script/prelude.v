@@ -947,7 +947,9 @@ function bus.recv(channel, timeout_ms)
 end
 -- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
 -- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded;
--- opts.format as bus.send, else the format its database states, else the format of the channel row
+-- opts.format as bus.send, else the format its database states, else the format of the channel
+-- row. A J1939 message past 8 bytes going out classic is sent as a BAM (TP.CM, then TP.DT 50 ms
+-- apart), returning after the last
 function bus.send_message(channel, name, sigs, opts)
   if opts ~= nil and type(opts) ~= "table" then error("bus.send_message: opts is a table", 2) end
   if opts ~= nil and opts.format ~= nil and type(opts.format) ~= "string" then
@@ -960,7 +962,7 @@ function bus.send_message(channel, name, sigs, opts)
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
   local format = opts and opts.format
   if format == nil then format = declared end
-  __bus_send(channel, id, ext, data, format)
+  __bus_send_message(channel, name, data, format)
   return { id = id, ext = ext, data = data }
 end
 -- ============================ background senders ============================

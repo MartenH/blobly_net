@@ -269,3 +269,23 @@ fn test_a_suspended_test_is_not_the_timed_out_one() {
 		results:   env2.results
 	}.timeout_test() == 'active'
 }
+
+// the deadline's stop is built once per run and every sender asks that one, since V never frees a
+// closure and a message send asks it each time
+fn test_the_deadline_stop_is_built_once() {
+	mut env := new_env([]) or { panic(err) }
+	defer {
+		env.close()
+	}
+	assert env.at_deadline == unsafe { nil }
+	if _ := env.deadline_stop() {
+		assert false, 'no deadline, no stop'
+	}
+	env.set_deadline(50)
+	a := env.deadline_stop() or { panic('a deadline, a stop') }
+	b := env.deadline_stop() or { panic('a deadline, a stop') }
+	assert voidptr(a) == voidptr(b) && voidptr(a) == voidptr(env.at_deadline)
+	assert !a()
+	time.sleep(60 * time.millisecond)
+	assert a()
+}

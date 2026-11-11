@@ -442,3 +442,42 @@ fn test_each_row_handle_on_a_disputed_wire_sends_its_own_format() {
 	d := rx.recv(500) or { panic(err) }
 	assert d.id == 0x404 && !d.fd, 'the row was published away: asked per send, not at open'
 }
+
+// frame_out answers what a send through each wrapper puts on the wire: the row's format through a
+// row's handle (metered too), the wire's through a plain bus, a stated format kept.
+fn test_frame_out_is_what_each_handle_sends() {
+	clear_listen_only()
+	replace_wire_policy_rows([], map[string]Framing{}, {
+		'inproc:frame_out': {
+			'FD': Framing{
+				fd: true
+			}
+		}
+	})
+	defer {
+		clear_wire_framing()
+	}
+	f := CanFrame{
+		id:   0x10
+		data: []u8{len: 20}
+	}
+	mut fd_tx := row_framed(open('inproc:frame_out') or { panic(err) }, 'inproc:frame_out', 'FD')
+	mut cl_tx := row_framed(open('inproc:frame_out') or { panic(err) }, 'inproc:frame_out', 'CL')
+	mut plain := open('inproc:frame_out') or { panic(err) }
+	defer {
+		fd_tx.close()
+		cl_tx.close()
+		plain.close()
+	}
+	assert frame_out(fd_tx, f).fd
+	assert frame_out(metered(fd_tx, 'inproc:frame_out', 250000, 0), f).fd
+	assert !frame_out(cl_tx, f).fd
+	assert !frame_out(plain, f).fd
+	assert frame_out(plain, CanFrame{ ...f, row: 'FD' }).fd
+	stated := FrameFormat.classic.stamp(CanFrame{ id: 0x10, data: []u8{len: 8} }) or { panic(err) }
+	assert !frame_out(fd_tx, stated).fd
+	// and the wire each sends on, through a meter too
+	assert wire_of(fd_tx) == 'inproc:frame_out'
+	assert wire_of(metered(fd_tx, 'inproc:frame_out', 250000, 0)) == 'inproc:frame_out'
+	assert wire_of(plain) == 'inproc:frame_out'
+}

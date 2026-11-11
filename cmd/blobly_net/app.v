@@ -460,6 +460,11 @@ mut:
 	gen_firing map[u64]bool
 	// the next generator identity to hand out (see SenderRT.uid)
 	gen_next_uid u64
+	// generators' BAMs in progress (a J1939 message past eight bytes on a classic row), paced by
+	// gen_loop, a transfer's tag its generator's uid, keying where it goes in gen_tp_xfers;
+	// guarded by app.mu
+	gen_tp       j1939.Pacer
+	gen_tp_xfers map[int]GenTpXfer
 	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
 	// Start, so a restarted measurement begins at the same phase instead of one that depends on
 	// how long the GUI happened to be open. 0 = never started.
