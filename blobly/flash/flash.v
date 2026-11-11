@@ -323,16 +323,15 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 		sink.note('no auth seed — skipping 0x29 (boot must have no key baked)')
 	}
 
-	mut er := [u8(0x31), 0x01, 0xFF, 0x00]
-	er << be32(opts.base)
-	er << be32(total)
-	err_rsp := ask(mut c, er, 'erase')!
+	mut erase := be32(opts.base)
+	erase << be32(total)
+	result := c.routine(0xFF00, erase, uds.routine_start) or { return step_error('erase', err) }
 	// 71 01 FF 00 <result>: an answer without its result has not said the erase worked
-	if err_rsp.len < 5 {
-		return failed('erase: no routine result in ${err_rsp.hex()}')
+	if result.len < 1 {
+		return failed('erase: no routine result')
 	}
-	if err_rsp[4] != 0 {
-		return failed('erase routine failed (result ${err_rsp[4]})')
+	if result[0] != 0 {
+		return failed('erase routine failed (result ${result[0]})')
 	}
 	sink.note('erased 0x${opts.base.hex()} +${total}')
 
@@ -381,8 +380,8 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 	rep.blocks = done
 	sink.note('transferred ${blob.len} bytes in ${done} blocks')
 
-	cr := ask(mut c, [u8(0x31), 0x01, 0xFF, 0x01], 'check image')!
-	if cr.len < 5 || cr[4] != 0 {
+	cr := c.routine(0xFF01, [], uds.routine_start) or { return step_error('check image', err) }
+	if cr.len < 1 || cr[0] != 0 {
 		return failed('image check FAILED on the ECU — not marked valid')
 	}
 	sink.note('image verified + marked valid')

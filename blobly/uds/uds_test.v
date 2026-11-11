@@ -188,6 +188,8 @@ fn test_answer_to_names_the_request_it_answers() {
 	assert answer_to([u8(0x36), 0x02, 0xAA], [u8(0x76), 0x01]) == .stale // the previous block
 	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x01, 0x03]) == .stale // another DID
 	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x00, 0x03]) == .positive
+	// no control parameter: byte 3 is control state, which the answer need not repeat
+	assert answer_to([u8(0x2F), 0x01, 0x01, 0x7F], [u8(0x6F), 0x01, 0x01, 0x20]) == .positive
 }
 
 // a duplicated answer to the previous request, still queued, is not taken for this one's
@@ -557,4 +559,91 @@ fn test_a_stated_snapshot_size_does_not_correlate_a_read() {
 	c.set_did_size(0xF1A0, 2)
 	resp := c.raw([u8(0x22), 0xF1, 0xA0, 0xF1, 0xA1]) or { panic(err) }
 	assert resp.len == 9
+}
+
+// 0x31: the request by ISO's format, the status record after the echoed control and routine,
+// and an answer about another routine skipped
+fn test_routine_sends_its_control_and_identifier_and_returns_the_status_record() {
+	mut c, m := client_with([[u8(0x71), 0x01, 0xFF, 0x01, 0x00], [u8(0x71), 0x01, 0xFF, 0x00, 0x00, 0x2A]])
+	status := c.routine(0xFF00, [u8(0x08), 0x02], routine_start) or { panic(err) }
+	assert m.last_req == [u8(0x31), 0x01, 0xFF, 0x00, 0x08, 0x02]
+	assert status == [u8(0x00), 0x2A]
+	mut d, n := client_with([[u8(0x71), 0x03, 0x02, 0x03]])
+	assert d.routine(0x0203, [], routine_results) or { panic(err) } == []u8{}
+	assert n.last_req == [u8(0x31), 0x03, 0x02, 0x03]
+}
+
+// every argument outside the format is refused with nothing sent
+fn test_the_new_helpers_refuse_what_iso_has_no_request_for() {
+	mut c, m := client_with([])
+	for ctl in [u8(0x00), 0x04, 0x81] {
+		c.routine(0x0203, [], ctl) or {
+			assert err.msg().contains('routine control'), err.msg()
+			continue
+		}
+		assert false, 'control ${ctl} sent'
+	}
+	c.io_control(0x0101, 0x04, [], []) or { assert err.msg().contains('I/O control parameter') }
+	refusals := [
+		[u64(0x1_0000_0000), 1, 4, 2],
+		[u64(0x1000), 0, 4, 2],
+		[u64(0x1000), 0x10000, 4, 2],
+		[u64(0x1000), 1, 0, 2],
+		[u64(0x1000), 1, 9, 2],
+		[u64(0x1000), 1, 4, 0],
+		[u64(0x1000), 1, 4, 9],
+	]
+	for r in refusals {
+		c.read_memory(r[0], r[1], int(r[2]), int(r[3])) or { continue }
+		assert false, 'read_memory ${r} sent'
+	}
+	c.write_memory(0x1000, [], 4, 2) or { assert err.msg().contains('size of 0') }
+	c.write_memory(0x1000, []u8{len: 256}, 4, 1) or { assert err.msg().contains('does not fit') }
+	assert m.last_req.len == 0, 'something was sent'
+}
+
+// 0x2F: state and mask after the parameter; the answer after the echoed parameter, which an
+// answer must carry
+fn test_io_control_returns_the_state_after_the_echoed_parameter() {
+	mut c, m := client_with([[u8(0x6F), 0x01, 0x01, 0x03, 0x7F]])
+	state := c.io_control(0x0101, io_short_term_adjustment, [u8(0x7F)], [u8(0xFF)]) or { panic(err) }
+	assert m.last_req == [u8(0x2F), 0x01, 0x01, 0x03, 0x7F, 0xFF]
+	assert state == [u8(0x7F)]
+	for resp in [[u8(0x6F), 0x01, 0x01], [u8(0x6F), 0x01, 0x01, 0x02, 0x7F]] {
+		mut d, _ := client_with([resp])
+		d.io_control(0x0101, io_return_control, [], []) or {
+			assert err is UndecodableAnswer, err.msg()
+			continue
+		}
+		assert false, '${resp} taken'
+	}
+}
+
+// a raw 0x2F on a DID whose control record carries no control parameter: byte 3 is control state,
+// and an answer with another status is this request's, not a late one
+fn test_raw_io_control_without_a_parameter_takes_its_answer() {
+	mut c, m := client_with([[u8(0x6F), 0x01, 0x01, 0x20]])
+	resp := c.raw([u8(0x2F), 0x01, 0x01, 0x7F]) or { panic(err) }
+	assert m.last_req == [u8(0x2F), 0x01, 0x01, 0x7F]
+	assert resp == [u8(0x6F), 0x01, 0x01, 0x20]
+}
+
+// 0x23 / 0x3D: the format byte names both widths, the address and size are big-endian in them;
+// a read answers exactly the bytes asked for, and a write answer about another address is not
+// this one's
+fn test_memory_by_address_formats_and_reads_back_exactly_the_size() {
+	mut c, m := client_with([[u8(0x63), 0xDE, 0xAD]])
+	assert c.read_memory(0x2000_1000, 2, 4, 2) or { panic(err) } == [u8(0xDE), 0xAD]
+	assert m.last_req == [u8(0x23), 0x24, 0x20, 0x00, 0x10, 0x00, 0x00, 0x02]
+	mut d, _ := client_with([[u8(0x63), 0xDE]])
+	if _ := d.read_memory(0x10, 2, 1, 1) {
+		assert false, 'a short read taken'
+	} else {
+		assert err is UndecodableAnswer, err.msg()
+	}
+	mut w, n := client_with([[u8(0x7D), 0x12, 0x00, 0x11, 0x01], [u8(0x7D), 0x12, 0x00, 0x10,
+		0x01]])
+	w.write_memory(0x0010, [u8(0x55)], 2, 1) or { panic(err) }
+	assert n.last_req == [u8(0x3D), 0x12, 0x00, 0x10, 0x01, 0x55]
+	assert n.idx == 2, 'the answer about 0x0011 was taken'
 }

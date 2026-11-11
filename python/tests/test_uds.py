@@ -348,7 +348,7 @@ class FakeEcu:
 
 
 class TestFailures:
-    """The failures sim-demo's ECUs never produce."""
+    """The failures sim-demo's ECUs never produce, and the services they do not serve."""
 
     @pytest.fixture
     def net(self, tmp_path):
@@ -414,6 +414,31 @@ class TestFailures:
         with pytest.raises(blobly.PendingExpired):
             diag.raw(b"\x31\x01\x02\x03")
         assert 0.15 <= time.monotonic() - t < 0.8
+
+    def test_routine_io_control_and_memory_by_address(self, ch, diag):
+        ecu = FakeEcu(ch, [[b"\x71\x01\xff\x01\x00", b"\x71\x01\xff\x00\x00"],  # another routine's first
+                           [b"\x6f\x01\x01\x03\x7f"],
+                           [b"\x63\xde\xad"],
+                           [b"\x7d\x12\x00\x10\x01"]])
+        assert diag.routine(0xFF00, b"\x08") == b"\x00"
+        assert diag.io_control(0x0101, 3, b"\x7f", b"\xff") == b"\x7f"
+        assert diag.read_memory(0x2000, 2, address_bytes=2, size_bytes=1) == b"\xde\xad"  # a Single Frame
+        diag.write_memory(0x10, b"\x55", address_bytes=2, size_bytes=1)
+        ecu.thread.join(1)
+        assert ecu.seen == [b"\x31\x01\xff\x00\x08", b"\x2f\x01\x01\x03\x7f\xff",
+                            b"\x23\x12\x20\x00\x02", b"\x3d\x12\x00\x10\x01\x55"]
+        # out of the format: refused with nothing sent
+        for call in (lambda: diag.routine(0x0203, control=4), lambda: diag.io_control(0x0101, 4),
+                     lambda: diag.read_memory(0x1_0000_0000, 1), lambda: diag.read_memory(0, 0),
+                     lambda: diag.write_memory(0, b"", address_bytes=9)):
+            with pytest.raises(blobly.Refused):
+                call()
+        with pytest.raises(ValueError):
+            diag.read_memory(-1, 1)
+        assert diag.last.request == b"\x3d\x12\x00\x10\x01\x55"
+        FakeEcu(ch, [[b"\x63\xde"]])
+        with pytest.raises(blobly.UndecodableAnswer):
+            diag.read_memory(0x10, 2, address_bytes=1, size_bytes=1)
 
     def test_a_late_answer_to_another_request_is_skipped(self, ch, diag):
         FakeEcu(ch, [[b"\x62\xf1\x8cOLD", b"\x62\xf1\x90NEW"]])

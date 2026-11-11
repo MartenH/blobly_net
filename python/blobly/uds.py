@@ -190,6 +190,15 @@ def _int(name: str, v: object, bits: int = 32) -> int:
     return v
 
 
+def _u64(name: str, v: object) -> int:
+    """An unsigned 64-bit argument (a memory address or size), refused before ctypes would wrap it."""
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise TypeError(f"{name} must be an integer, not {v!r}")
+    if not 0 <= v < 1 << 64:
+        raise ValueError(f"{name} {v} is not an unsigned 64-bit integer")
+    return v
+
+
 _data = _lib.byte_data  # the one rule for a byte-string argument
 
 
@@ -606,6 +615,34 @@ class UdsClient:
         """0x14 ClearDiagnosticInformation: one DTC or a group of 24 bits (0xFFFFFF, the default:
         all)."""
         self._call(_lib.lib().bb_uds_clear_dtcs, _int("group", group))
+
+    def routine(self, rid: int, option: ByteData = b"", control: int = 0x01) -> bytes:
+        """0x31 RoutineControl: `control` 1 start, 2 stop, 3 results on routine `rid`, with its
+        option record; returns the answer after the echoed control and identifier — the routine's
+        info and status record."""
+        o = _data("option", option)
+        return self._bytes(_lib.lib().bb_uds_routine, _int("rid", rid), o, len(o), _int("control", control))
+
+    def io_control(self, did: int, parameter: int, state: ByteData = b"", mask: ByteData = b"") -> bytes:
+        """0x2F InputOutputControlByIdentifier: `parameter` 0 return control to the ECU, 1 reset to
+        default, 2 freeze current state, 3 short-term adjustment, then the control state and enable
+        mask; returns the answer after the echoed DID and parameter."""
+        st, mk = _data("state", state), _data("mask", mask)
+        return self._bytes(_lib.lib().bb_uds_io_control, _int("did", did), _int("parameter", parameter),
+                           st, len(st), mk, len(mk))
+
+    def read_memory(self, address: int, size: int, *, address_bytes: int = 4, size_bytes: int = 2) -> bytes:
+        """0x23 ReadMemoryByAddress: `size` bytes at `address`, the two as wide as `address_bytes`
+        and `size_bytes` say (1..8 each); returns exactly the bytes read."""
+        return self._bytes(_lib.lib().bb_uds_read_memory, _u64("address", address), _u64("size", size),
+                           _int("address_bytes", address_bytes), _int("size_bytes", size_bytes))
+
+    def write_memory(self, address: int, data: ByteData, *, address_bytes: int = 4, size_bytes: int = 2) -> None:
+        """0x3D WriteMemoryByAddress: `data` at `address`, the address and the length as wide as
+        read_memory's."""
+        d = _data("data", data)
+        self._call(_lib.lib().bb_uds_write_memory, _u64("address", address), d, len(d),
+                   _int("address_bytes", address_bytes), _int("size_bytes", size_bytes))
 
     def _list(self, fn, *args) -> list[Dtc]:
         """A 0x19 02 / 0A answer: the call, then each DTC it held, under one hold of the lock."""

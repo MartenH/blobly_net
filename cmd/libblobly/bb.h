@@ -710,6 +710,27 @@ int bb_uds_comm_control(int u, int control, int comm_type); /* 0x28 */
 int bb_uds_dtc_setting(int u, int on);                      /* 0x85: on (1) or off (0) */
 int bb_uds_clear_dtcs(int u, int group);                    /* 0x14: a DTC or a group, 24 bits
                                                                (0xFFFFFF: all) */
+int bb_uds_routine(int u, int rid, const uint8_t *option, int n, int control, uint8_t *buf,
+                   int cap);         /* 0x31: control 1 start, 2 stop, 3 results (any other
+                                        refused), option the record after the identifier; the
+                                        answer after the echoed control and identifier — the
+                                        routine's info and status record */
+int bb_uds_io_control(int u, int did, int parameter, const uint8_t *state, int sn,
+                      const uint8_t *mask, int mn, uint8_t *buf, int cap);
+                                     /* 0x2F: parameter 0 return control, 1 reset to default,
+                                        2 freeze, 3 short-term adjustment (any other refused),
+                                        then the control state and enable mask; the answer after
+                                        the echoed DID and parameter (BB_ERR_UNDECODABLE when the
+                                        parameter is not echoed) */
+int bb_uds_read_memory(int u, uint64_t address, uint64_t size, int address_bytes, int size_bytes,
+                       uint8_t *buf, int cap);
+                                     /* 0x23: size bytes at address, the two as wide as
+                                        address_bytes and size_bytes (1..8 each; a value its
+                                        width cannot hold, or a size of 0, refused); the bytes
+                                        read — BB_ERR_UNDECODABLE when the answer is not size
+                                        bytes */
+int bb_uds_write_memory(int u, uint64_t address, const uint8_t *data, int n, int address_bytes,
+                        int size_bytes); /* 0x3D: data at address, as wide as 0x23's */
 int bb_uds_security_seed(int u, int level, uint8_t *unlocked, uint8_t *buf, int cap);
                                        /* 0x27 at an odd level (an even one is refused): the
                                           seed; *unlocked (unless NULL) 1 when it is all zeros,

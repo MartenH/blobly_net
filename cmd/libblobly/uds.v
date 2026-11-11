@@ -608,8 +608,12 @@ fn level_arg(v i32, seed bool) !u8 {
 }
 
 fn did_arg(v i32) !u16 {
+	return u16_arg('DID', v)
+}
+
+fn u16_arg(what string, v i32) !u16 {
 	if v < 0 || v > 0xFFFF {
-		return error('DID ${v} is not a 16-bit identifier')
+		return error('${what} ${v} is not a 16-bit identifier')
 	}
 	return u16(v)
 }
@@ -753,6 +757,58 @@ pub fn bb_uds_clear_dtcs(u i32, group i32) i32 {
 		}
 		mut cl := hd.cli()!
 		cl.clear_dtc(u32(group))!
+		return ok()
+	})
+}
+
+// The four below check their arguments by the engine's request rule before the call that may
+// open a lost connection again.
+
+@[export: 'bb_uds_routine']
+pub fn bb_uds_routine(u i32, rid i32, option &u8, n i32, control i32, buf &u8, cap i32) i32 {
+	return exchange(u, fn [rid, option, n, control, buf, cap] (mut hd UdsHandle) !i32 {
+		id := u16_arg('routine identifier', rid)!
+		opt := bytes_in('routine', option, n)!
+		ctl := byte_arg('routine control', control)!
+		out_buf(buf, cap)!
+		uds.routine_request(id, opt, ctl)!
+		mut cl := hd.cli()!
+		return hd.answer(cl.routine(id, opt, ctl)!, buf, cap)
+	})
+}
+
+@[export: 'bb_uds_io_control']
+pub fn bb_uds_io_control(u i32, did i32, parameter i32, state &u8, sn i32, mask &u8, mn i32, buf &u8, cap i32) i32 {
+	return exchange(u, fn [did, parameter, state, sn, mask, mn, buf, cap] (mut hd UdsHandle) !i32 {
+		id := did_arg(did)!
+		p := byte_arg('I/O control parameter', parameter)!
+		st := bytes_in('io_control state', state, sn)!
+		mk := bytes_in('io_control mask', mask, mn)!
+		out_buf(buf, cap)!
+		uds.io_control_request(id, p, st, mk)!
+		mut cl := hd.cli()!
+		return hd.answer(cl.io_control(id, p, st, mk)!, buf, cap)
+	})
+}
+
+@[export: 'bb_uds_read_memory']
+pub fn bb_uds_read_memory(u i32, address u64, size u64, address_bytes i32, size_bytes i32, buf &u8, cap i32) i32 {
+	return exchange(u, fn [address, size, address_bytes, size_bytes, buf, cap] (mut hd UdsHandle) !i32 {
+		out_buf(buf, cap)!
+		uds.read_memory_request(address, size, int(address_bytes), int(size_bytes))!
+		mut cl := hd.cli()!
+		return hd.answer(cl.read_memory(address, size, int(address_bytes), int(size_bytes))!,
+			buf, cap)
+	})
+}
+
+@[export: 'bb_uds_write_memory']
+pub fn bb_uds_write_memory(u i32, address u64, data &u8, n i32, address_bytes i32, size_bytes i32) i32 {
+	return exchange(u, fn [address, data, n, address_bytes, size_bytes] (mut hd UdsHandle) !i32 {
+		d := bytes_in('write_memory', data, n)!
+		uds.write_memory_request(address, d, int(address_bytes), int(size_bytes))!
+		mut cl := hd.cli()!
+		cl.write_memory(address, d, int(address_bytes), int(size_bytes))!
 		return ok()
 	})
 }

@@ -301,7 +301,9 @@ fn sub_mask(sid u8) u8 {
 // whether the second is a sub-function — a sub-function, a data identifier (a multi-DID read
 // echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
 // or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte), or
-// a 0x19 04 / 06's sub-function and DTC.
+// a 0x19 04 / 06's sub-function and DTC. An I/O control (0x2F) is matched on its DID alone: its
+// control parameter is optional, so the byte after the DID may be control state, and only a
+// caller that knows it sent one (`io_control`) checks its echo.
 // Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
 // 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. A multi-DID 0x22 answer's
 // records and 0x2A's identifiers are correlate's (correlate.v), asked first.
