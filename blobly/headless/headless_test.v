@@ -361,3 +361,93 @@ channels:
 	assert r.chans[0].fault_target().nm_request(true)! == 1
 	assert recv_id(mut bus, 0x511, 500) != none, 'a request announces again'
 }
+
+// Every loop of sim-demo opens, and wait_ready says so: nothing failed, nothing opening.
+fn test_wait_ready_on_a_project_that_opens() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(2000)
+	assert ls.len > 0
+	assert ls.any(it.name == 'CAN1: simulated nodes'), ls.map(it.name).str()
+	assert ready_note(ls) == '', ready_note(ls)
+}
+
+// A row whose interface does not exist: its simulated nodes and its UDS server fail at open and
+// say why; a cyclic generator whose frames the wire refuses fails with the refusal; a manual
+// generator, which opens at its first fire, is not waited for.
+fn test_wait_ready_names_the_loops_that_failed() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_ready_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'ready.blobnet')
+	os.write_file(path, 'project:
+  name: ready
+  version: 8
+channels:
+  - name: Gone
+    type: can
+    interface: nosuchcan631
+    databases:
+      - ${os.join_path(@VMODROOT, 'dbc', 'blobly_net.dbc')}
+    simulation:
+      - name: SUT
+        signals:
+          - { name: EngineSpeed, type: const, value: 1000 }
+  - name: Here
+    type: can
+    interface: inproc:HREADY
+    senders:
+      - name: Long
+        id: "0x321"
+        data: 01 02 03 04 05 06 07 08 09
+        trigger: cyclic
+        cycle_ms: 10
+      - name: Ok
+        id: "0x322"
+        data: 01
+        trigger: cyclic
+        cycle_ms: 10
+      - name: Later
+        id: "0x323"
+        data: 01
+        trigger: manual
+')!
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	defer {
+		r.stop()
+	}
+	ls := r.wait_ready(2000)
+	assert ls.map(it.name) == ['Gone: simulated nodes', 'Gone: UDS server', 'Here: generator "Long"',
+		'Here: generator "Ok"']
+	assert ls.map(it.state) == [LoopState.failed, .failed, .failed, .up]
+	assert ls[0].why.starts_with('cannot open nosuchcan631'), ls[0].why
+	assert ls[2].why.contains('not a classic CAN frame'), ls[2].why
+	note := ready_note(ls)
+	assert note.starts_with('3 of 4 not up:\n  Gone: simulated nodes: cannot open nosuchcan631'), note
+	// the opens that failed in silence before are said
+	assert lines.said('Gone: simulated nodes: cannot open nosuchcan631')
+	assert lines.said('Gone: UDS server: cannot open nosuchcan631')
+}
+
+// A loop still opening when the wait ends is named as such.
+fn test_ready_note_names_a_loop_still_opening() {
+	ls := [LoopReady{
+		name:  'A: simulated nodes'
+		state: .up
+	}, LoopReady{
+		name: 'B: UDS server'
+	}]
+	assert ready_note(ls) == '1 of 2 not up:\n  B: UDS server: still opening'
+	assert ready_note([]LoopReady{}) == ''
+}

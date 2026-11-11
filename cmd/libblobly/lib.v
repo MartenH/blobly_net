@@ -851,6 +851,23 @@ pub fn bb_wait_released(timeout_ms i32) i32 {
 	return ok()
 }
 
+// bb_wait_ready waits at most timeout_ms (< 0: until it happens) for none of the run's loops to be
+// opening its bus: 0 when every one is up, BB_ERR when none is opening and some failed,
+// BB_ERR_TIMEOUT when some are still opening; bb_last_error names each loop not up and why.
+@[export: 'bb_wait_ready']
+pub fn bb_wait_ready(timeout_ms i32) i32 {
+	mut r := bb_run
+	if isnil(r) {
+		return fail(bb_err_state, 'not started')
+	}
+	ls := r.wait_ready(int(timeout_ms))
+	note := headless.ready_note(ls)
+	if note == '' {
+		return ok()
+	}
+	return fail(if ls.any(it.state == .opening) { bb_err_timeout } else { bb_err }, note)
+}
+
 @[export: 'bb_channel_count']
 pub fn bb_channel_count() i32 {
 	if !bb_loaded {

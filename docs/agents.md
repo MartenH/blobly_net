@@ -193,6 +193,9 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
   `msg.send_cyclic(period_ms, **signals)` in a `with` block; it stops at the block's end, or at
   the project's stop. A non-default UDS session is kept with `ch.uds(keep_alive_ms=2000)`; a
   keep-alive that failed is a `blobly.KeepAliveWarning` at the client's next call.
+- **`start()` does not wait for the buses to open.** `net.wait_ready(5000)` does, and raises
+  naming every simulated node, UDS server or cyclic generator whose open failed — on hardware the
+  one place a rest-bus row that nothing reads says so.
 - **One run per process.** A second `start()` raises `BloblyError` with code -3. Use one
   `Project` per process, or stop the first one.
 - **Errors.** The engine's refusals are `blobly.BloblyError`, its message the reason and `.code`

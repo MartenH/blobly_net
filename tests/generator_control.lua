@@ -18,6 +18,10 @@ local function find(name)
   for _, g in ipairs(gen.list()) do if g.name == name then return g end end
 end
 
+test("every loop of the run that opens a bus is up", function()
+  sim.wait_ready(5000)
+end)
+
 test("gen.list names the generators of the run, as the project writes them", function()
   check.equal(#gen.list(), 4)
   local hb, wake = find("Heartbeat pulse"), find("Cyclic wake (0x123)")

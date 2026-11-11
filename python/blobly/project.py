@@ -1344,6 +1344,30 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             self.started = True
         return self
 
+    def wait_ready(self, timeout_ms: float | None = 5000) -> None:
+        """Waits until none of the run's loops that open a bus is still opening: each row's
+        simulated nodes, each UDS node, the default UDS server, and each cyclic generator (up once
+        the bus took its first frame; a generator that opens at its first fire is not waited for).
+        start() returns before they have opened. Raises BloblyError naming every loop that failed
+        when none is still opening, Timeout naming the ones still opening (and those that failed)
+        when timeout_ms passes (None waits for ever). Ctrl-C ends the wait within 100 ms."""
+        lib = _lib.lib()
+
+        def ready(part):  # True when every loop is up, None while some are opening
+            with _lib.state_lock:
+                if not self.started:
+                    raise BloblyError("the project is not started", _lib.BB_ERR_STATE)
+                rc = lib.bb_wait_ready(part)
+                if rc == 0:
+                    return True
+                if rc == _lib.BB_ERR_TIMEOUT and part != 0:
+                    return None
+                e = _lib.error(rc)
+            raise BloblyError(str(e), rc) if rc == _lib.BB_ERR else e
+        # a last look once the wait is over, which raises naming what is still opening
+        if _sliced(ready, _ms(timeout_ms)) is None:
+            ready(0)
+
     def stop(self) -> bool:
         """Ends the run. True when the process is free for the next start; False when a loop
         outlived the stop's bound (a driver call that will not return) — blobly.wait_released

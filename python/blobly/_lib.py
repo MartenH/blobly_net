@@ -542,6 +542,7 @@ def _declare(lib):
         "bb_start": ([], c_int),
         "bb_stop": ([], c_int),
         "bb_wait_released": ([c_int], c_int),
+        "bb_wait_ready": ([c_int], c_int),
         "bb_channel_count": ([], c_int),
         "bb_channel_name": ([c_int], c_char_p),
         "bb_channel_iface": ([c_int], c_char_p),
