@@ -82,3 +82,25 @@ fn test_frame_format_warnings_name_the_contradicted_messages() {
 	assert frame_format_warnings(fd, [db]).len == 1 // the long classic one only
 	assert frame_format_warnings(Channel{ ...classic, enabled: false }, [db]) == []
 }
+
+// a J1939 message past eight bytes is a transport-protocol payload and is not warned about
+fn test_a_long_j1939_message_is_not_a_long_classic_frame() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'BodyStatus'
+				id:     0x18FF1000
+				ext:    true
+				dlc:    20
+				format: .classic
+				j1939:  true
+			},
+		]
+	}
+	ch := Channel{
+		name:    'CAN1'
+		iface:   'inproc:CAN1'
+		enabled: true
+	}
+	assert frame_format_warnings(ch, [db]) == []
+}

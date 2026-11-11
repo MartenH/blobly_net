@@ -922,7 +922,8 @@ that uses it declares `version: 13`.
 states for it, the same rule, so a `canfd` row carries its classic messages classic and its FD
 ones FD (with BRS as `CANFD_BRS` says). A message that states nothing goes out in the row's
 format, as before. At Start the Log names a classic row whose database declares messages CAN-FD,
-and messages declared classic with more than 8 bytes, whose statement is not applied.
+and messages declared classic with more than 8 bytes, whose statement is not applied (a J1939
+message is not one: past 8 bytes it is a transport-protocol payload).
 
 `bus:` sends on a different bus, and it takes the **channel's name** — `bus: CAN2` (#97). Leave
 it out and the generator sends on the channel it is nested under.

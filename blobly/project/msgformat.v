@@ -29,7 +29,7 @@ pub fn message_format(m candb.Message, chosen transport.FrameFormat) transport.F
 // frame_format_warnings says, for an enabled CAN row and the databases it reads, the messages
 // whose stated format the row contradicts: declared CAN-FD on a row that is classic (their frames
 // go out FD, which a classic controller cannot carry), and declared classic with a payload past
-// eight bytes (sent as the row decides). One line per kind, said at Start by both front ends.
+// eight bytes (sent as the row decides) unless it is J1939, whose long messages ride TP.CM/TP.DT. One line per kind, said at Start by both front ends.
 pub fn frame_format_warnings(ch Channel, dbs []candb.Database) []string {
 	if !ch.enabled || ch.kind() != .can {
 		return []
@@ -47,7 +47,8 @@ pub fn frame_format_warnings(ch Channel, dbs []candb.Database) []string {
 			if m.format.is_fd() && !ch.origination_framing().fd {
 				fd << m.name
 			}
-			if m.format == .classic && m.payload_len() > 8 {
+			// a J1939 message past eight bytes is a transport-protocol payload, not a frame
+			if m.format == .classic && m.payload_len() > 8 && !m.j1939 {
 				long << m.name
 			}
 		}

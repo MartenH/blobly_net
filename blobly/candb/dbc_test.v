@@ -633,3 +633,20 @@ fn test_frame_format_survives_a_write_and_reparse() {
 	assert got == [candb.MsgFormat.classic, .classic, .fd, .fd_brs, .classic], got.str()
 	assert candb.parse_dbc(round.to_dbc())!.messages.map(it.format) == got
 }
+
+// The attribute records are read however their whitespace is spelled: CANdb++ writes two spaces
+// after the keyword.
+fn test_frame_format_records_with_candb_spacing() {
+	src := 'BO_ 256 Cls: 8 Ecu\n SG_ X : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BO_ 257 Fd: 12 Ecu\n SG_ Y : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		'BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";\n' +
+		'BA_DEF_ BO_  "CANFD_BRS" ENUM  "0","1";\n' +
+		'BA_DEF_DEF_  "VFrameFormat" "StandardCAN";\nBA_DEF_DEF_  "CANFD_BRS" "0";\n' +
+		'BA_ "VFrameFormat" BO_ 257 14;\n'
+	db := candb.parse_dbc(src) or {
+		assert false, err.msg()
+		return
+	}
+	got := db.messages.map(it.format)
+	assert got == [candb.MsgFormat.classic, .fd], got.str()
+}
