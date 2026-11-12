@@ -1093,8 +1093,9 @@ a send that blocks on one wire, or a long J1939 message going out a packet at a 
 generator on another wire — or on its own. A generator sends the frame it built last until an
 edit changes something it is built from (a signal's value or source, its message, its id or
 payload as typed, its format); a value source builds each frame afresh. **Send now** and a hotkey
-ask that loop for one frame, so the cycle and a fire never overlap, and a fire asked while one is
-waiting or a transfer is going out is not taken. A cyclic generator waits for its row's transmit
+ask that loop for one frame, so the cycle and a fire never overlap: a fire asked while a transfer
+of the generator is going out goes once it has, before the cycle's next frame, and one asked while
+a fire already waits is dropped. A fire between two of the cycle's slots moves none of them. A cyclic generator waits for its row's transmit
 tap, and sends nothing onto a wire whose channels have all left the run (a wire nobody reads is
 still sent to). The panel shows each generator's **sent** frames and **skipped** slots — the
 slots of its cycle it left out because its loop or its last send was late, never sent in a

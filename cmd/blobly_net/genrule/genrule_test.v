@@ -19,14 +19,6 @@ fn test_a_cycle_is_armed_only_cyclic_with_its_tap_up_and_its_target_in_the_run()
 	assert !armed(true, true, true), 'not onto a wire that left the run'
 }
 
-// armed again after it was not, a cycle starts from now; staying armed, or disarmed, it does not
-fn test_a_cycle_restarts_only_on_becoming_armed() {
-	assert restarts(false, true)
-	assert !restarts(true, true)
-	assert !restarts(true, false)
-	assert !restarts(false, false)
-}
-
 // the frame is built again on the first send, after an edit, and every send of one that varies;
 // otherwise the frame built last goes out as it is
 fn test_a_frame_is_built_again_only_when_something_it_is_built_from_changed() {
@@ -36,14 +28,6 @@ fn test_a_frame_is_built_again_only_when_something_it_is_built_from_changed() {
 	assert stale(true, 3, 3, true), 'a value source: the next frame may differ'
 	// edits move one way only, but the comparison is equality: a reset counter is an edit too
 	assert stale(true, 4, 0, false)
-}
-
-// a fire is taken unless one waits already or a transfer of its is going out
-fn test_a_fire_is_not_taken_over_a_fire_waiting_or_a_transfer_going_out() {
-	assert fire_taken(false, false)
-	assert !fire_taken(true, false)
-	assert !fire_taken(false, true)
-	assert !fire_taken(true, true)
 }
 
 // a cycle's failure is said once while it repeats, and again when it changes; a send that went

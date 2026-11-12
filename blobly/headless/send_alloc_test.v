@@ -82,7 +82,7 @@ fn bytes_per_send(mut r Run, gi int, mut sub transport.Bus) !f64 {
 	g.s.cycle_ms = 1
 	g.told = true
 	for _ in 0 .. 50 {
-		g.fresh = true
+		g.grid.restart()
 		g.serve(mut bus, time.sys_mono_now() / 1_000_000)
 	}
 	for {
@@ -92,7 +92,7 @@ fn bytes_per_send(mut r Run, gi int, mut sub transport.Bus) !f64 {
 	sent0 := g.sent
 	before := u64(gc_heap_usage().total_bytes)
 	for _ in 0 .. n {
-		g.fresh = true
+		g.grid.restart()
 		g.serve(mut bus, time.sys_mono_now() / 1_000_000)
 	}
 	after := u64(gc_heap_usage().total_bytes)

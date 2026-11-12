@@ -37,10 +37,8 @@ mut:
 	wire &cyclic.Wire // the wire it is on, which a fire wakes
 	app  &App
 	mu   sync.Mutex
-	// the GUI's side, under mu: a fire waiting for the loop, a transfer of its going out (the
-	// loop's, mirrored so a fire is not taken over it), and whether it was asked to leave
+	// the GUI's side, under mu: a fire waiting for the loop, and whether it was asked to leave
 	fire  bool
-	busy  bool
 	leave bool
 	// the loop's alone from here: its tap framed as its row on its wire, the transfer in progress
 	bus transport.Bus
@@ -52,18 +50,13 @@ mut:
 	seen   u64
 	at     u64
 	hint   int
-	// its grid: armed at the last look, whether its cycle sends at once, the slot the cycle last
-	// sent in and when that send ended
-	was   bool
-	fresh bool = true
-	slot  u64
-	done  u64
+	// its grid (cyclic.Grid, a headless generator's too)
+	grid cyclic.Grid
 	// the send in progress: a fire's (else the cycle's), the send index its frame was built at;
-	// whether a fire waiting goes before the cycle next; the cycle's last outcome ('' sent)
-	job_fire  bool
-	job_n     int
-	fire_turn bool
-	failed    string
+	// the cycle's last outcome ('' sent)
+	job_fire bool
+	job_n    int
+	failed   string
 	// the frame it built last and what it was built after (genrule.stale); its message, found
 	// again only after an edit; the values a message's frame is built from, their storage kept
 	built        transport.CanFrame
@@ -87,20 +80,22 @@ struct GenLook {
 }
 
 // GenTap is the bus a generator's entry sends on: each send is its row's tap send (tap_send),
-// over keys made once. It reads nothing and closes nothing, since the taps are the run's — opened
-// for it at Start, closed by Stop.
+// over keys made once, for the run it was made for alone — a loop still out after a Stop finds the
+// next run's taps under the same keys. It reads nothing and closes nothing, since the taps are the
+// run's — opened for it at Start, closed by Stop.
 struct GenTap {
 	named  string
 	shared string
 	row    int
 	chan   string
 	iface  string
+	gen    u64
 mut:
 	app &App
 }
 
 fn (mut t GenTap) send(f transport.CanFrame) ! {
-	t.app.tap_send(t.named, t.shared, t.row, t.chan, t.iface, f)!
+	t.app.tap_send_in(t.gen, t.named, t.shared, t.row, t.chan, t.iface, f)!
 }
 
 fn (mut t GenTap) recv(_ int) !transport.CanFrame {
@@ -122,34 +117,6 @@ fn (mut t GenTap) error_counters() transport.ErrorCounters {
 }
 
 fn (mut t GenTap) reconcile_silence(_ bool) ! {}
-
-// NoBus is a generators' wire's own handle, which nothing is sent on: every entry sends through
-// its row's tap (GenTap), so the wire's loop opens this, never a bus of its own.
-struct NoBus {}
-
-fn (mut n NoBus) send(_ transport.CanFrame) ! {
-	return error("a generator sends through its row's transmit tap")
-}
-
-fn (mut n NoBus) recv(_ int) !transport.CanFrame {
-	return error("a generators' wire reads nothing")
-}
-
-fn (mut n NoBus) close() {}
-
-fn (mut n NoBus) health() transport.BusHealth {
-	return .unknown
-}
-
-fn (mut n NoBus) diagnostics() transport.BusDiagnostics {
-	return transport.BusDiagnostics{}
-}
-
-fn (mut n NoBus) error_counters() transport.ErrorCounters {
-	return transport.ErrorCounters{}
-}
-
-fn (mut n NoBus) reconcile_silence(_ bool) ! {}
 
 // tap_of_locked is the tap a send from row `row` (named `chan_name`) on `iface` goes through: its
 // named tap `named`, else the wire's `shared` one where taprule.fallback lets it stand in — or
@@ -176,7 +143,17 @@ fn (app &App) tap_of_locked(named string, shared string, row int, chan_name stri
 // for a caller that makes its keys once. The lookup is under app.mu, the send is not: the tap
 // takes its wire's send lock and then app.mu inside note_emit.
 fn (mut app App) tap_send(named string, shared string, row int, chan_name string, iface string, f transport.CanFrame) ! {
+	app.tap_send_in(0, named, shared, row, chan_name, iface, f)!
+}
+
+// tap_send_in is tap_send for run `gen` alone (0: whichever run is on): refused once that run is
+// over.
+fn (mut app App) tap_send_in(gen u64, named string, shared string, row int, chan_name string, iface string, f transport.CanFrame) ! {
 	app.mu.lock()
+	if gen != 0 && (!app.running || app.run_gen != gen) {
+		app.mu.unlock()
+		return error('TX not sent: the run it was sent for is over')
+	}
 	mut b := app.tap_of_locked(named, shared, row, chan_name, iface) or {
 		app.mu.unlock()
 		return err
@@ -244,6 +221,7 @@ fn (mut app App) new_gen_entry(sr SenderRT, w &cyclic.Wire) &GenEntry {
 		row:    sr.chan_idx
 		chan:   sr.chan
 		iface:  sr.tgt
+		gen:    gen
 		app:    app
 	}
 	mut e := &GenEntry{
@@ -343,23 +321,15 @@ fn (mut app App) stop_gen_wires() {
 }
 
 // gen_wire_loop runs generators' wire `w` until Stop: a run worker, its slot reserved by
-// sync_gen_entries. The wire's own handle is a NoBus: every entry sends through its row's tap.
+// sync_gen_entries. The wire's own handle sends nothing (transport.UnopenedBus): every entry
+// sends through its row's tap.
 fn gen_wire_loop(app &App, mut w cyclic.Wire) {
 	defer {
 		release_run_worker(app)
 	}
 	w.run(fn (_ string) !transport.Bus {
-		return NoBus{}
+		return transport.UnopenedBus{}
 	}) or {}
-}
-
-// gen_counts is generator `uid`'s frames sent and slots skipped this run.
-fn (mut app App) gen_counts(uid u64) (int, u64) {
-	app.mu.lock()
-	defer {
-		app.mu.unlock()
-	}
-	return app.gen_send_n[uid] or { 0 }, app.gen_skipped[uid] or { 0 }
 }
 
 // ask_leave asks the entry's wire to let it go before it sends anything more.
@@ -369,14 +339,15 @@ fn (mut e GenEntry) ask_leave() {
 	e.mu.unlock()
 }
 
-// ask_fire asks for one fire, which its wire's loop sends next: false where genrule.fire_taken
-// refuses it. Pokes nothing: the caller does, once its locks are let go.
+// ask_fire asks for one fire, which its wire's loop sends once what it is sending has gone out
+// (a cycle's transfer, then the fire first): false while one already waits, so a key held down
+// queues one and not one per repeat. Pokes nothing: the caller does, once its locks are let go.
 fn (mut e GenEntry) ask_fire() bool {
 	e.mu.lock()
 	defer {
 		e.mu.unlock()
 	}
-	if !genrule.fire_taken(e.fire, e.busy) {
+	if e.fire {
 		return false
 	}
 	e.fire = true
@@ -400,12 +371,6 @@ fn (mut e GenEntry) fire_waiting() bool {
 		e.mu.unlock()
 	}
 	return e.fire
-}
-
-fn (mut e GenEntry) set_busy(b bool) {
-	e.mu.lock()
-	e.busy = b
-	e.mu.unlock()
 }
 
 // say puts `msg` in the Log while its run is on.
@@ -485,52 +450,28 @@ fn (mut e GenEntry) due(now u64) ?u64 {
 	if e.lk.gone {
 		return none
 	}
-	if genrule.restarts(e.was, e.lk.armed) {
-		e.fresh = true
-	}
-	e.was = e.lk.armed
-	if e.fire_waiting() || (e.lk.armed && e.fresh) {
-		return now
-	}
-	if !e.lk.armed {
-		return none
-	}
-	return sim.next_due(e.slot, e.lk.period, e.done)
+	return e.grid.due(e.lk.armed, e.lk.period, e.fire_waiting(), now)
 }
 
 // serve drives its transfer in progress, else sends its cyclic frame if it is due, then a fire
 // waiting: however far behind the cycle is a fire is served, and a cycle's transfer that ended
-// lets a fire waiting go first. A send that begins a transfer ends the pass for it.
+// lets a fire waiting go first (cyclic.Grid). A send that begins a transfer ends the pass for it.
 fn (mut e GenEntry) serve(mut _ transport.Bus, now u64) string {
-	pa := probe_alloc_mark()
-	defer {
-		probe_alloc_note(.gen, pa)
-	}
 	if e.tp.busy() {
 		of_cycle := !e.job_fire
 		e.progress(e.tp.pump(mut e.bus, now))
-		e.fire_turn = of_cycle && !e.tp.busy()
+		e.grid.pumped(of_cycle && !e.tp.busy())
 		return ''
 	}
 	e.refresh(now)
 	if e.lk.gone {
 		return ''
 	}
-	turn := e.fire_turn && e.fire_waiting()
-	e.fire_turn = false
-	if !turn && e.lk.armed
-		&& (e.fresh || now >= sim.next_due(e.slot, e.lk.period, e.done)) {
-		if e.fresh {
-			e.slot = now
-		} else {
-			next := sim.next_due(e.slot, e.lk.period, e.done)
-			left := sim.slots_skipped(e.slot, e.lk.period, next)
-			e.slot = next
-			if left > 0 {
-				e.note_skipped(left)
-			}
+	sends, left := e.grid.cycle(e.lk.armed, e.lk.period, e.fire_waiting(), now)
+	if sends {
+		if left > 0 {
+			e.note_skipped(left)
 		}
-		e.fresh = false
 		e.job_fire = false
 		e.progress(e.send(now))
 		if e.tp.busy() {
@@ -557,6 +498,10 @@ fn (mut e GenEntry) note_skipped(left u64) {
 // send begins its frame as the generator is edited now on its tap — a J1939 message past eight
 // bytes on a classic row as its BAM or its connection (cyclic.Tp), which serve drives from then.
 fn (mut e GenEntry) send(now u64) cyclic.Step {
+	pa := probe_alloc_mark()
+	defer {
+		probe_alloc_note(.gen, pa)
+	}
 	mut a := e.app
 	a.mu.lock()
 	frame := e.frame_locked() or {
@@ -626,11 +571,10 @@ fn (mut e GenEntry) keep(frame transport.CanFrame, edits u64, varies bool) {
 // bus took it (the send index a counter source rides), the next slot gridded from then, a fire's
 // failure said and a cycle's said once while it repeats (genrule.says).
 fn (mut e GenEntry) progress(st cyclic.Step) {
-	e.set_busy(st.going)
 	if st.going {
 		return
 	}
-	e.done = time.sys_mono_now() / 1_000_000
+	e.grid.ended(!e.job_fire, time.sys_mono_now() / 1_000_000)
 	mut a := e.app
 	if st.why == '' {
 		a.mu.lock()
@@ -656,7 +600,6 @@ fn (mut e GenEntry) progress(st cyclic.Step) {
 fn (mut e GenEntry) quit(mut _ transport.Bus) {
 	if e.tp.busy() {
 		e.tp.quit(mut e.bus)
-		e.set_busy(false)
 	}
 }
 

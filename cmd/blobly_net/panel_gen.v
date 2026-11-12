@@ -184,6 +184,18 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	// while running, what each sent and the slots of its cycle it left out because its loop or
+	// its last send was late (cyclic.Grid), read under one take of the lock
+	mut counts := []string{len: app.senders.len}
+	if app.running {
+		app.mu.lock()
+		for i, sr in app.senders {
+			sent := app.gen_send_n[sr.uid] or { 0 }
+			skipped := app.gen_skipped[sr.uid] or { 0 }
+			counts[i] = '   ·   sent ${sent} · skipped ${skipped}'
+		}
+		app.mu.unlock()
+	}
 	// one collapsed tree node per generator; the header summarises name + trigger so the list
 	// stays scannable when everything is folded (start state).
 	mut remove_idx := -1
@@ -203,16 +215,8 @@ fn draw_gen(mut app App) {
 		}
 
 		nm := if s.name != '' { s.name } else { '(unnamed)' }
-		// while running, what it sent and the slots of its cycle it left out because its loop or
-		// its last send was late (sim.slots_skipped)
-		counts := if app.running {
-			sent, skipped := app.gen_counts(sr.uid)
-			'   ·   sent ${sent} · skipped ${skipped}'
-		} else {
-			''
-		}
 		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
-		if vgui.tree_node('${nm}   ·   ${trig}${counts}###gennode${i}') {
+		if vgui.tree_node('${nm}   ·   ${trig}${counts[i]}###gennode${i}') {
 			vgui.set_next_item_width(200 * app.prefs.ui_scale)
 			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
 				app.set_gen_name(i)
@@ -681,8 +685,15 @@ fn (mut app App) set_gen_raw_locked(i int) {
 	if i >= app.senders.len || i >= app.gen_bufs.len || app.senders[i].sender.message != '' {
 		return
 	}
-	app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
-	app.senders[i].sender.data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+	id := u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+	data := parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+	// an edit only where the fields say something new: a Save takes every raw generator through
+	// here, and its frame built last is still right
+	if id == app.senders[i].sender.id && data == app.senders[i].sender.data {
+		return
+	}
+	app.senders[i].sender.id = id
+	app.senders[i].sender.data = data
 	app.senders[i].edits++
 }
 
@@ -963,9 +974,10 @@ fn (mut app App) poll_hotkeys() {
 
 // fire_index sends generator `i`'s frame once, as it is edited now — its signal values, or its
 // raw id and payload — on its wire's loop (gen_wire.v), so the send never blocks the GUI thread,
-// and the cycle and a fire of one generator are served by one loop and cannot overlap. Not while
-// a fire of it waits or its transfer is going out (genrule.fire_taken): its previous frame has
-// not left yet. Its outcome is said in the Log where it fails.
+// and the cycle and a fire of one generator are served by one loop and cannot overlap. A fire
+// asked while a transfer of it is going out waits for it, and goes before the cycle's next; one
+// asked while a fire already waits is dropped, as it was when one was in progress. Its outcome is
+// said in the Log where it fails.
 fn (mut app App) fire_index(i int) {
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {

@@ -115,8 +115,8 @@ enum ProbeSec {
 	rx_recv
 	tick
 	render
-	// a generator's serve on its wire's loop (gen_wire.v): its frame, its send through its tap
-	// (the send section and its parts included) and its count
+	// a generator's send on its wire's loop (GenEntry.send): its frame and its send through its
+	// tap, the send section and its parts included — a transfer's later packets not
 	gen
 }
 
@@ -557,8 +557,9 @@ fn probe_driver(secs int) {
 	// that would not decode, a plan that kept no frames — and its refusal reaches the Log,
 	// not this thread. Zero frames scored is that outcome, and it exits as one (codex on
 	// #299 round 7).
-	// A generator-only project measures its generators' sends instead (sec_gen).
-	if probe_late_n == 0 && probe_sec_n[int(ProbeSec.gen)] == 0 {
+	// A generator-only project measures its generators' sends instead (sec_gen), counted by the
+	// wires' loops with stdatomic.add_u64 and so loaded the same way.
+	if probe_late_n == 0 && stdatomic.load_u64(&probe_sec_n[int(ProbeSec.gen)]) == 0 {
 		eprintln('probe: the run replayed no frames and sent no generator frame in ${probe_run_s:.1f} s; nothing to measure (see the Log)')
 		exit(3)
 	}

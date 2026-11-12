@@ -1,12 +1,12 @@
 module genrule
 
 // WHAT A GUI GENERATOR ASKS BEFORE IT SENDS (#691). The GUI's generators are entries of a
-// cyclic.Wire per destination, as a headless run's are; the grid (sim.next_due), the skipped
-// slots (sim.slots_skipped) and the J1939 transfer (cyclic.Tp) are blobly's and shared. What is
-// left here reads what only the GUI holds — its transmit taps, its rows, its edits — and lived
-// inside gen_loop, untested, until the move: when a cycle may send, when it starts again, when
-// the frame it built last is stale, when a fire from the panel is taken, and when an entry asks
-// the GUI again rather than trusting what it read last.
+// cyclic.Wire per destination, as a headless run's are; the grid — the slots, the ones left out,
+// a fire between two of them (cyclic.Grid) — and the J1939 transfer (cyclic.Tp) are blobly's and
+// shared. What is left here reads what only the GUI holds — its transmit taps, its rows, its
+// edits — and lived inside gen_loop, untested, until the move: when a cycle may send, when the
+// frame it built last is stale, how a failure is said, and when an entry asks the GUI again
+// rather than trusting what it read last.
 
 // look_every_ms bounds how long an entry trusts what it last read of the GUI: every change it
 // reads (a trigger, a cycle, a tap filed or failed, a row retired) moves the GUI's revision and
@@ -27,27 +27,12 @@ pub fn armed(cyclic bool, tap_ready bool, gone_from_run bool) bool {
 	return cyclic && tap_ready && !gone_from_run
 }
 
-// restarts is whether a cycle starts again from now: armed now and not at the last look — turned
-// cyclic, its tap come up — so the slots it was not armed for are neither sent back to back nor
-// counted as skipped.
-pub fn restarts(was bool, now bool) bool {
-	return now && !was
-}
-
 // stale is whether the frame a generator built last must be built afresh: none built yet
 // (`built` false), an edit since (`built_edits` the edits it was built after, `edits` now), or
 // one whose next frame may differ (`varies`: a signal on a value source). Otherwise the frame is
 // sent again as it is, which is what lets a static generator send without garbage.
 pub fn stale(built bool, built_edits u64, edits u64, varies bool) bool {
 	return !built || built_edits != edits || varies
-}
-
-// fire_taken is whether a fire asked from the panel (Send now, a hotkey) is taken: not while one
-// is already waiting for the loop (`waiting`) or a transfer of the generator is going out
-// (`busy`) — its previous frame has not left yet, so there is nothing to overlap, and the cycle
-// and a fire are served by the one loop, so they never overlap either.
-pub fn fire_taken(waiting bool, busy bool) bool {
-	return !waiting && !busy
 }
 
 // says is whether a cycle's send that ended `why` ('' sent) is said: a failure, once while it
