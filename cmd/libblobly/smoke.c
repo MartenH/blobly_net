@@ -592,7 +592,8 @@ static int gen_steps(void) {
 	bb_wave w = {.kind = "counter", .step = 1, .modulo = 256};
 	CHECK(bb_gen_source_p(hb, "Counter", &w) == 0 && bb_gen_start_p(hb, 20) == 0, "a source, then a cycle");
 	bb_generator g;
-	CHECK(bb_gen_info_p(hb, &g) == 0 && g.running && g.cycle_ms == 20 && g.id == 0x700 && g.sent >= 1, "its state");
+	CHECK(bb_gen_info_p(hb, &g) == 0 && g.running && g.cycle_ms == 20 && g.id == 0x700 && g.sent >= 1
+		&& g.skipped >= 0, "its state");
 	CHECK(bb_gen_stop_p(hb) == 0 && bb_gen_info_p(hb, &g) == 0 && !g.running, "stop");
 	int wake = bb_gen_find_p("Cyclic wake (0x123)");
 	CHECK(wake >= 0 && bb_gen_cycle_p(wake, 250) == 0, "a cyclic generator's cycle");

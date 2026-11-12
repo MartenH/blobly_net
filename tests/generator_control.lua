@@ -45,6 +45,7 @@ test("gen.fire sends a manual generator once, with the value gen.set gave it", f
   for _, x in ipairs(f) do if x.data:byte(1) == 42 then ours = ours + 1 end end
   check.equal(ours, 1)
   check.truthy(find("Heartbeat pulse").sent >= 1)
+  check.equal(find("Heartbeat pulse").skipped, 0, "a fire leaves out no slot of a cycle")
 end)
 
 test("gen.source puts a value source on a signal", function()

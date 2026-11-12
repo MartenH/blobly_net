@@ -13,6 +13,7 @@
 // Requires `-enable-globals` (V's idiom for process-global state).
 module transport
 
+import sync
 import sync.stdatomic
 import time
 
@@ -42,6 +43,9 @@ mut:
 	name  string
 	id    u32
 	queue chan CanFrame
+	// posted once per frame queued and once at the close, so a receive waits for a frame with a
+	// timeout without a `select`, which allocates its case arrays on every call
+	ready sync.Semaphore
 	// Frames a sender dropped because THIS subscriber's queue was full -- the in-process bus's
 	// only loss, counted on the sender's thread and read on the subscriber's (#213).
 	dropped u64
@@ -66,6 +70,7 @@ pub fn open_inproc(name string) !&InprocBus {
 		name:  name
 		queue: chan CanFrame{cap: inproc_queue_cap}
 	}
+	bus.ready.init(0)
 	lock inproc_reg {
 		inproc_reg.next_id++
 		bus.id = inproc_reg.next_id
@@ -124,7 +129,9 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 					continue
 				}
 				mut t := unsafe { s }
-				if t.queue.try_push(f) != .success {
+				if t.queue.try_push(f) == .success {
+					t.ready.post()
+				} else {
 					stdatomic.add_u64(&t.dropped, 1)
 				}
 			}
@@ -134,30 +141,34 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 
 // recv returns the next frame from another participant within timeout_ms
 // (timeout_ms < 0 blocks indefinitely), or error('timeout') — or, once the bus is closed and its
-// queue drained, error('bus is closed') at once. A select over a closed channel returns without
-// waiting, so a closed bus answered every retry-on-timeout loop at once: a spin (#401).
+// queue drained, error('bus is closed') at once, so a closed bus never answers a retry-on-timeout
+// loop with a wait it does not do: a spin (#401). A frame queued is taken without waiting; else
+// the wait is on `ready`, every post of which a frame taken, or the close, answers — one posted
+// for a frame another receive already took is a wake-up that finds the queue empty and waits on.
 pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	if timeout_ms < 0 {
 		frame := <-b.queue or { return carrier_gone(inproc_closed) }
+		b.ready.try_wait()
 		return frame
 	}
-	// THE SELECT IS AN EXPRESSION, and its `false` is the closed channel: this V runs the receive
-	// branch of a STATEMENT select on a closed channel, with a zero frame (measured) — a frame
-	// that was never sent, delivered at once, every call.
-	mut got := false
+	deadline := time.sys_mono_now() + u64(timeout_ms) * u64(time.millisecond)
 	mut frame := CanFrame{}
-	chan_open := select {
-		f := <-b.queue {
-			got = true
-			frame = f
+	for {
+		match b.queue.try_pop(mut frame) {
+			.success {
+				b.ready.try_wait()
+				return frame
+			}
+			.closed {
+				return carrier_gone(inproc_closed)
+			}
+			.not_ready {}
 		}
-		(i64(timeout_ms) * time.millisecond) {}
-	}
-	if got {
-		return frame
-	}
-	if !chan_open {
-		return carrier_gone(inproc_closed)
+		now := time.sys_mono_now()
+		if now >= deadline {
+			return error('timeout')
+		}
+		b.ready.timed_wait(i64(deadline - now))
 	}
 	return error('timeout')
 }
@@ -192,4 +203,5 @@ pub fn (mut b InprocBus) close() {
 		}
 	}
 	b.queue.close()
+	b.ready.post()
 }

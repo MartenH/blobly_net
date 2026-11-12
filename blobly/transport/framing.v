@@ -224,6 +224,7 @@ pub struct RowFramedBus {
 	row   string
 mut:
 	inner Bus
+	said  ?SentFrame // `inner` as a bus that says what it handed on (said_by), cast once
 	sent  CanFrame
 }
 
@@ -236,6 +237,7 @@ pub fn row_framed(b Bus, iface string, row string) Bus {
 		iface: iface
 		row:   row
 		inner: b
+		said:  said_by(b)
 	}
 }
 
@@ -259,8 +261,7 @@ pub fn (r &RowFramedBus) as_row(f CanFrame) CanFrame {
 // sent_frame is what the bus beneath handed on, where it says (SentFrame), else the last frame
 // as its wire frames it.
 pub fn (r &RowFramedBus) sent_frame() CanFrame {
-	inner := r.inner
-	return if inner is SentFrame { inner.sent_frame() } else { framed_for_wire(r.iface, r.sent) }
+	return if s := r.said { s.sent_frame() } else { framed_for_wire(r.iface, r.sent) }
 }
 
 // frame_out is `f` as `b` frames it for its wire, read now: as the row's own emitter where `b`

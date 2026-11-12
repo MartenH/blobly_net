@@ -94,7 +94,12 @@ pub fn (r &E2eReader) last_windows() []WindowVerdict {
 @[heap]
 pub struct E2eStamper {
 mut:
-	sent map[string]u64
+	sent map[u64]u64 // by stamp_key
+}
+
+// stamp_key is what a stamper counts a message's sends under: its id and kind.
+fn stamp_key(id u32, ext bool) u64 {
+	return u64(id) | if ext { u64(1) << 32 } else { u64(0) }
 }
 
 // stamp writes `m`'s declared counter and checksum into `data`, its encoded payload, in every
@@ -106,19 +111,47 @@ pub fn (mut s E2eStamper) stamp(m candb.Message, mut data []u8) !bool {
 	if !m.e2e_declared() {
 		return false
 	}
-	if data.len < m.payload_len() {
-		return error('a frame of ${data.len} bytes is shorter than ${m.name} (${m.payload_len()})')
+	short_frame(m, data)!
+	s.apply(m, declared_windows(m)!, mut data)
+	return true
+}
+
+// stamp_windows is stamp with `m`'s declared windows `ws` (declared_windows) found once, by a
+// sender that stamps the one message every period: building them is most of a stamp. False,
+// `data` unchanged, for no windows.
+pub fn (mut s E2eStamper) stamp_windows(m candb.Message, ws []E2e, mut data []u8) !bool {
+	if ws.len == 0 {
+		return false
 	}
+	short_frame(m, data)!
+	s.apply(m, ws, mut data)
+	return true
+}
+
+// declared_windows is the windows `m` declares (declared_set), or the error a declaration that
+// cannot be applied is refused with: sent unstamped it would go out unprotected unsaid.
+pub fn declared_windows(m candb.Message) ![]E2e {
 	ws, refused := declared_set(m)
 	if refused.len > 0 {
 		r := refused[0]
 		return error('${r.decl.where_in(m)} declares E2E that cannot be stamped: ${r.why}; send it as encoded instead')
 	}
-	k := vkey(m.id, m.ext)
+	return ws
+}
+
+// short_frame refuses a payload shorter than `m`'s, which holds no field to stamp.
+fn short_frame(m candb.Message, data []u8) ! {
+	if data.len < m.payload_len() {
+		return error('a frame of ${data.len} bytes is shorter than ${m.name} (${m.payload_len()})')
+	}
+}
+
+// apply writes `m`'s counter and checksum in each of windows `ws` and counts the send.
+fn (mut s E2eStamper) apply(m candb.Message, ws []E2e, mut data []u8) {
+	k := stamp_key(m.id, m.ext)
 	n := s.sent[k] or { u64(0) }
 	for e in ws {
 		e.apply(m, mut data, int(n))
 	}
 	s.sent[k] = n + 1
-	return true
 }

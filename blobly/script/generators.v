@@ -57,6 +57,7 @@ fn push_gen(l lua.State, g sim.GenInfo) {
 	l.set_int('cycle_ms', g.cycle_ms)
 	l.set_bool('running', g.running)
 	l.set_int('sent', g.sent)
+	l.set_int('skipped', g.skipped)
 	l.set_bool('applied', g.applied)
 	l.set_str('data', g.data.bytestr())
 	l.set_str('target', g.target)

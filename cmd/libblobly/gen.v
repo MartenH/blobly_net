@@ -102,6 +102,7 @@ pub fn bb_gen_info(g i32, out &C.bb_generator) i32 {
 		out.sendable = u8(i.note == '' && i.target != '')
 		out.applied = u8(i.applied)
 		out.cycle_ms = i32(i.cycle_ms)
+		out.skipped = if i.skipped > max_i32 { max_i32 } else { i32(i.skipped) }
 		out.sent = i.sent
 	}
 	return ok()

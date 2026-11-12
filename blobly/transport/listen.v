@@ -60,6 +60,9 @@ pub struct ListenTable {
 mut:
 	mu    sync.Mutex
 	wires map[string]WirePolicy
+	// what a wire with no entry reads: built once, since a WirePolicy built per read allocates
+	// its empty map, and a send reads the policy once or twice
+	none_declared WirePolicy
 }
 
 // listen_tbl is THE listen-only table for the process. A global for the reason sim.injected is
@@ -112,7 +115,7 @@ pub fn set_listen_only(iface string, on bool) {
 pub fn wire_policy(iface string) WirePolicy {
 	k := wire_key(iface)
 	listen_tbl.mu.lock()
-	v := listen_tbl.wires[k] or { WirePolicy{} }
+	v := listen_tbl.wires[k] or { listen_tbl.none_declared }
 	listen_tbl.mu.unlock()
 	return v
 }

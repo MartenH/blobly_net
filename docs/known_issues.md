@@ -156,13 +156,26 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   makes a closed receive case selectable like a plain `<-ch` (vlang/v `9edfec4157`, "fix read
   from closed channel behavior as in Go"; `sync.channel_select_lang`). Written as an expression
   (`ok := select { … }`) the same select returns `false` and runs no branch, as V's docs say.
-  `transport.InprocBus.recv` therefore uses the expression form and answers a closed queue with
-  `bus is closed`; before that a closed inproc bus delivered an endless stream of id-0 empty
+  `transport.InprocBus.recv` used the expression form to answer a closed queue with
+  `bus is closed` (it waits on a semaphore now, #689, and reads the close from `try_pop`); before
+  that a closed inproc bus delivered an endless stream of id-0 empty
   frames, which a stop-sliced ISO-TP receive skipped as not its own and asked again — a spin
   (#401). Where a closed channel is possible, take the `select` as an expression and read its
   `false`; a plain `<-q` needs its `or` for the same reason. Since the pin `5f7d4d0` the
   expression's result is a `bool` like any other (vlang/v#30830); on `0535623` it was untyped, so
   `if ok` and `!ok` worked but `println(ok)`, `'${ok}'` and `ok.str()` did not compile.
+- 🟡 **What allocates on a per-frame path, measured on the pin `5f7d4d0` (#689).** A `select` builds
+  its case arrays and subscriptions on every call (about 750 bytes, timed or not); a struct literal
+  with a map field allocates the empty map (about 160 bytes: `WirePolicy{}`, `Signal{}`); a cast
+  from one interface to another allocates its box (about 32 bytes: `if b is SentFrame`), and so
+  does passing a concrete `&T` where a `Bus` parameter is expected; an array allocates its header
+  with its data (an 8-byte `[]u8` costs about 48); and a local whose field's address is taken
+  anywhere in the function — `local.data.clone()`, `mut local.data` — is copied to the heap when
+  it is DECLARED, on every path through the function, not only the one that takes the address.
+  The hot paths answer by waiting on a `sync.Semaphore` (`timed_wait`, `try_wait`), keeping one
+  empty value or one cast, built once, and reading a field from its owner rather than through a
+  local copy; `allocated_bytes` tests (`blobly/wiretap/bench_test.v`, `blobly/*/alloc_test.v`,
+  `blobly/headless/send_alloc_test.v`) pin what is left in bytes.
 - 🟢 **`spawn` could pass an `f64` argument as zero (pre-V3 compiler).** `spawn read_passes(path,
   specs, rows, t0, pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no
   warning (`-old-compiler`, #172). V3 delivers it intact (checked on `0535623` and master

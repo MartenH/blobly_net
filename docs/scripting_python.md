@@ -265,6 +265,10 @@ what the Generators panel lets a person do.
   (`set`, `source`, `unset`, `data`; a cycle change is not one), and `g.wait_applied(timeout_ms=1000)`
   waits for it — `Timeout` when it did not happen in time, as for a generator nobody fires. `sent`
   alone cannot say this: a frame built just before an edit can be counted just after it.
+- `g.skipped` counts the slots of its cycle it left out: a frame sent late (its loop held up, or
+  its last send slow) is followed by the next slot after it, never by the slots it covered sent
+  back to back. On a cycle, `sent + skipped` follows the slots that passed, so a missing frame on
+  the bus is told apart from a value the script set; a fire adds to `sent` alone.
 - **What could not take effect is refused** with `blobly.GeneratorRefused`: a cycle outside 1 ..
   3600000 ms, a signal its message does not have or its payload does not hold (or any signal of a
   raw frame), a signal to unset it does not list, a payload for a message's generator or one
@@ -2927,6 +2931,7 @@ wire, and set nothing.
 | `g.running` | Sending on its cycle now. |
 | `g.cycle_ms` | Its cycle, 0 for none; set it (1 .. 3600000) to change it from the next frame. |
 | `g.sent` | Frames its bus took, fired and cyclic alike. |
+| `g.skipped` | Slots of its cycle it left out because its sending loop, or its last send, was late: never sent back to back afterwards. On a cycle, `sent + skipped` follows the slots that passed. |
 | `g.applied` | The last frame its bus took was built after the last edit of what it sends (`set`, `source`, `unset`, `data`); `True` before any edit. |
 | `g.wait_applied(timeout_ms=1000)` | Waits until `g.applied`; `Timeout` when it did not happen within `timeout_ms`. |
 | `g.data` | A raw generator's payload (`b""` for a message's); set it (bytes) to send that from the next frame (8 bytes at most, 64 on a CAN-FD row or wire). |

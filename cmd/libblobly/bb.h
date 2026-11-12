@@ -393,6 +393,9 @@ typedef struct bb_generator {
 	                       sends (bb_gen_set, bb_gen_source, bb_gen_unset, bb_gen_set_data); 1
 	                       before any edit */
 	int32_t  cycle_ms;  /* its cycle, 0 for none */
+	int32_t  skipped;   /* slots of its cycle it left out because its sending loop, or its last
+	                       send, was late (at most INT32_MAX; in what was padding: the layout is
+	                       unchanged) */
 	int64_t  sent;      /* frames its bus took, fired and cyclic alike */
 } bb_generator;
 
