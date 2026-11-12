@@ -89,7 +89,8 @@ class Generator:
     def skipped(self) -> int:
         """Slots of its cycle it left out because its sending loop, or its last send, was late: a
         late frame is followed by the next slot after it, never by the ones it covered. On a cycle,
-        sent + skipped follows the slots that passed; a fire adds to sent alone."""
+        sent + skipped follows the slots that passed; a fire adds to sent alone, and a slot whose
+        send failed is in neither."""
         return self._info().skipped
 
     @property

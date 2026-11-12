@@ -26,11 +26,16 @@ BO_ 256 Msg000: 8 Node
  SG_ S000_3 : 48|16@1+ (1,0) [0|65535] "" Receiver
 '
 
+// send_alloc_dir is where send_alloc_run writes its project, removed by the test.
+fn send_alloc_dir() string {
+	return os.join_path(os.vtmp_dir(), 'headless_send_alloc_${os.getpid()}')
+}
+
 // send_alloc_run starts a project with three generators on inproc:HALLOC, none on its cycle: a
 // message of static values (Static), the same message with a sine on one signal (Sourced), and a
 // raw frame (Raw).
 fn send_alloc_run() !&Run {
-	dir := os.join_path(os.vtmp_dir(), 'headless_send_alloc_${os.getpid()}')
+	dir := send_alloc_dir()
 	os.mkdir_all(dir)!
 	dbc := os.join_path(dir, 'alloc.dbc')
 	os.write_file(dbc, send_alloc_dbc)!
@@ -102,6 +107,9 @@ fn test_a_running_generator_sends_without_garbage() {
 	$if !gcboehm ? {
 		println('send cost: skipped, no Boehm allocation counter in this build')
 		return
+	}
+	defer {
+		os.rmdir_all(send_alloc_dir()) or {}
 	}
 	mut r := send_alloc_run()!
 	mut sub := transport.open('inproc:HALLOC')!

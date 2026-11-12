@@ -32,9 +32,8 @@ mut:
 	id      u32 // its frame's id: its message's, for one with a message
 	ext     bool
 	// a message's generator: its message as its target's databases send it
-	// (sim.sender_message_of), and whether that message is declared J1939; fixed for the run
+	// (sim.sender_message_of); fixed for the run
 	msg     candb.Message
-	j1939   bool
 	cyclic  bool // sending on its cycle
 	restart bool // its cycle starts again from now (gen_start)
 	left    bool // every row on its target has left the run: it is not said at the start
@@ -227,7 +226,6 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		}
 		if m := sim.sender_message_of(s, g.dbs) {
 			g.msg = m
-			g.j1939 = m.j1939
 			g.id, g.ext = m.id, m.ext
 			g.signal_notes = sim.sender_signal_refusals(s, g.dbs)
 			return
@@ -491,7 +489,7 @@ fn (mut g Gen) send(mut bus transport.Bus, now u64) cyclic.Step {
 			why: err.msg()
 		}
 	}
-	return not_sent(g.tp.begin(mut bus, frame, g.j1939, now))
+	return not_sent(g.tp.begin(mut bus, frame, g.msg.j1939, now))
 }
 
 // frame is g's frame as it is now, the edits it is built after noted for its send: the frame it

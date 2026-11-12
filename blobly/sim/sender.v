@@ -153,9 +153,9 @@ pub fn sender_j1939(s project.Sender, dbs []candb.Database) bool {
 
 // slots_skipped is how many slots of a `period` grid lie strictly between slot `slot` and slot
 // `next` (next_due's answer): the frames a sender left out because its last write, or its loop,
-// was late. 0 for a zero period.
+// was late. 0 for a zero period, or a `next` less than a period after `slot`.
 pub fn slots_skipped(slot u64, period u64, next u64) u64 {
-	if period == 0 || next <= slot {
+	if period == 0 || next < slot + period {
 		return 0
 	}
 	return (next - slot) / period - 1
