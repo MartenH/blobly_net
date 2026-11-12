@@ -154,6 +154,56 @@ fn test_next_due_keeps_the_grid_and_skips_what_a_slow_write_covered() {
 	assert sent == [u64(0), 10, 50, 60, 70]
 }
 
+// the slots a late write covered are the ones between the slot it was sent in and the next
+fn test_slots_skipped_counts_the_slots_a_late_write_covered() {
+	assert slots_skipped(0, 10, next_due(0, 10, 1)) == 0
+	assert slots_skipped(0, 10, next_due(0, 10, 10)) == 1, 'slot 10 was reached as the write returned'
+	assert slots_skipped(10, 10, next_due(10, 10, 45)) == 3, 'slots 20, 30 and 40 were left out'
+	assert slots_skipped(5, 0, 7) == 0
+	assert slots_skipped(20, 10, 20) == 0
+	// over a run, the slots sent and the slots left out are every slot that passed
+	mut slot := u64(0)
+	mut done := u64(0)
+	mut sent := 1
+	mut skipped := u64(0)
+	for write in [u64(1), 35, 1, 22, 1, 1] {
+		done = slot + write
+		next := next_due(slot, 10, done)
+		skipped += slots_skipped(slot, 10, next)
+		slot = next
+		sent++
+	}
+	assert u64(sent) + skipped == slot / 10 + 1
+}
+
+// a frame that cannot differ between sends is one with no value source sender_value evaluates
+fn test_sender_varies_only_on_a_value_source() {
+	mut s := project.Sender{
+		message: 'M'
+		signals: [project.SenderSig{
+			name:  'A'
+			value: 1
+		}]
+	}
+	assert !sender_varies(s)
+	s.signals << project.SenderSig{
+		name: 'B'
+		wave: project.GenCfg{
+			typ:    'sawtooth'
+			min:    0
+			max:    10
+			period: 0
+		}
+	}
+	assert !sender_varies(s), 'a source that cannot be evaluated sends its static value'
+	s.signals[1].wave = project.GenCfg{
+		typ:    'counter'
+		step:   1
+		modulo: 16
+	}
+	assert sender_varies(s)
+}
+
 // a generator listing a signal with no number: said once, and the frame carries none of it
 fn test_a_wide_signal_a_generator_lists_is_refused_and_not_sent() {
 	db := candb.parse_dbc('BO_ 1280 ConfigData: 24 T

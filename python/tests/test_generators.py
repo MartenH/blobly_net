@@ -51,12 +51,13 @@ class TestSimDemo:
 
     def test_fire_sends_once_with_the_value_set(self, sim_demo, can1):
         hb = sim_demo.generators["Heartbeat pulse"]
-        sent = hb.sent
+        sent, skipped = hb.sent, hb.skipped
         hb.set("Counter", 42)
         hb.fire()
         # the simulated SUT sends Heartbeat too: ours is the one at 42
         assert sum(f.data[0] == 42 for f in frames(can1, HEARTBEAT, 300)) == 1
-        assert hb.sent == sent + 1
+        # a fire is a frame sent, never a slot of a cycle
+        assert hb.sent == sent + 1 and hb.skipped == skipped
 
     def test_a_source_counts_the_frames_sent(self, sim_demo, can1):
         ping = sim_demo.generators["Ping ECU (Request)"]

@@ -158,6 +158,8 @@ mut:
 	spec    Spec
 	wire    &Wire = unsafe { nil }
 	stamper sim.E2eStamper     // the loop's alone
+	// the windows its message's declared E2E is stamped in, found once (none: nothing stamped)
+	windows []sim.E2e
 	frame   transport.CanFrame // what the spec sends now, encoded when it changes
 	asked   bool               // stop was asked
 	out     bool               // its wire still serves it
@@ -187,6 +189,9 @@ pub fn new_sender(spec Spec, iface string, row string) !&Sender {
 		out:   true
 	}
 	s.frame = encoded(s.spec)!
+	if spec.by_message && spec.e2e && spec.message.e2e_declared() {
+		s.windows = sim.declared_windows(spec.message)!
+	}
 	s.tp.stop_by(fn [s] () bool {
 		mut me := unsafe { s }
 		return me.stopping()
@@ -220,10 +225,7 @@ pub fn start(bus transport.Bus, spec Spec, life Life) !&Sender {
 		b.close()
 		return err
 	}
-	mut w := &Wire{
-		solo: true
-		life: life
-	}
+	mut w := make_wire('', unsafe { nil }, true, life)
 	s.join(mut w)!
 	spawn fn [mut w, bus] () {
 		w.run(fn [bus] (_ string) !transport.Bus {
@@ -300,19 +302,27 @@ fn (mut s Sender) poke() {
 // a classic row as its BAM or its connection, which serve drives from then (tp.v).
 fn (mut s Sender) send_once(mut bus transport.Bus, now u64) Step {
 	s.mu.lock()
-	sp := s.spec
+	declared := s.spec.by_message && s.spec.message.j1939
+	if s.windows.len == 0 {
+		// sent as encoded: a payload is never written once encoded (set_data, set_values). Nothing
+		// here takes the frame's address, which would put the local on the heap.
+		current := s.frame
+		s.mu.unlock()
+		return s.tp.begin(mut bus, current, declared, now)
+	}
+	// a message's E2E counter moves on each frame, so its frame is stamped on a copy
+	m := s.spec.message
 	mut frame := transport.CanFrame{
 		...s.frame
 		data: s.frame.data.clone()
 	}
 	s.mu.unlock()
-	// a message's E2E counter moves on each frame
-	if sp.by_message && sp.e2e {
-		s.stamper.stamp(sp.message, mut frame.data) or { return Step{
+	s.stamper.stamp_windows(m, s.windows, mut frame.data) or {
+		return Step{
 			why: err.msg()
-		} }
+		}
 	}
-	return s.tp.begin(mut bus, frame, sp.by_message && sp.message.j1939, now)
+	return s.tp.begin(mut bus, frame, declared, now)
 }
 
 // ended counts a send that ended, once it has (`st` not going), and grids the next from now.

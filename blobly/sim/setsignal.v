@@ -119,11 +119,11 @@ pub fn payload_of(msg candb.Message, vals []SetValue) []u8 {
 		}
 	}
 	mut data := msg.initial(switch_raw)
-	carried := msg.carried(data)
+	carried := msg.carriage(data)
 	for v in vals {
 		for i, sig in msg.signals {
 			if sig.name == v.signal {
-				if i != sw && carried[i] {
+				if i != sw && carried.carries(sig) {
 					sig.encode(mut data, v.value)
 				}
 				break

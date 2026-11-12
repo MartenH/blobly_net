@@ -56,6 +56,9 @@ pub:
 	cycle_ms int    // 0 when it has none
 	running  bool   // sending on its cycle now
 	sent     i64    // frames the bus took, by fire and cycle alike
+	// slots of its cycle it left out because its sending loop, or its last send, was late: a
+	// late send is followed by the next slot after it, never by the ones it covered (next_due)
+	skipped i64
 	// the last frame the bus took was built after the last edit of what it sends (a signal's
 	// value or source, a signal unset, its payload); true before any edit
 	applied bool

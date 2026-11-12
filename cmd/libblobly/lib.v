@@ -54,6 +54,7 @@ pub mut:
 	sendable u8
 	applied  u8
 	cycle_ms i32
+	skipped  i32
 	sent     i64
 }
 
@@ -565,7 +566,10 @@ const recv_slice_ms = 20
 @[heap]
 struct BusHandle {
 mut:
-	bus     &transport.MeteredBus // counts its load (metrics.v)
+	bus &transport.MeteredBus // counts its load (metrics.v)
+	// `bus` as a transport.Bus, for transport.recv_sliced: converted once at open, since the
+	// conversion allocates and a receive is made per frame
+	rd      transport.Bus
 	users   i64 // calls inside `bus` now
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
 	cancel  i64 // bb_message_cancel: the bb_message_send in progress ends between its frames
@@ -995,9 +999,11 @@ pub fn bb_bus_open(iface &char) i32 {
 	nominal, data := project.wire_rates(if bb_loaded { bb_rows } else { [] }, name) or {
 		project.address_rates(name)
 	}
+	m := transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
+		name, nominal, data)
 	mut hd := &BusHandle{
-		bus:   transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
-			name, nominal, data)
+		bus:   m
+		rd:    m
 		iface: name
 	}
 	closing := &hd.closing
@@ -1124,7 +1130,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'recv: the handle was closed')
 	}
-	fr := transport.recv_sliced(mut hd.bus, int(timeout_ms), recv_slice_ms, hd.stop) or {
+	fr := transport.recv_sliced(mut hd.rd, int(timeout_ms), recv_slice_ms, hd.stop) or {
 		code := recv_nothing(err)
 		if code == bb_none {
 			hd.j1939_idle()

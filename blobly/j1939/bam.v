@@ -21,10 +21,16 @@ pub const tp_priority = u8(7)
 // row and wire frame it, transport.frame_out) — its BAM (bam_frames); refused for one to a single
 // node, which is a connection (needs_connection) and no set of frames of its own.
 pub fn message_frames(f transport.CanFrame, declared bool, fd bool) ![]transport.CanFrame {
-	if !declared || fd || f.data.len < tp_min_size {
+	if goes_alone(f, declared, fd) {
 		return [f]
 	}
 	return bam_frames(f)!
+}
+
+// goes_alone is whether a message's frame `f` goes out as itself: not declared J1939, going out
+// CAN-FD, or short enough for one classic frame.
+fn goes_alone(f transport.CanFrame, declared bool, fd bool) bool {
+	return !declared || fd || f.data.len < tp_min_size
 }
 
 // stated is a message's frame `f` with format `ff` stated (FrameFormat.stamp), but for a message
@@ -108,40 +114,39 @@ pub fn send_message(mut bus transport.Bus, f transport.CanFrame, declared bool, 
 // send_message_within is send_message with a connection's answers each waited for `answer_ms`
 // (0: T3, 1250 ms).
 pub fn send_message_within(mut bus transport.Bus, f transport.CanFrame, declared bool, answer_ms int, stop fn () bool) ! {
-	p := plan_message(bus, f, declared)!
-	if p.connection {
-		send_connection(mut bus, f, answer_ms, stop)!
-		return
-	}
-	if p.frames.len == 1 {
-		bus.send(p.frames[0])!
-		return
-	}
-	send_paced(mut bus, p.frames, bam_gap_ms, lane_key(transport.wire_of(bus), sa_of(p.frames)),
-		stop)!
-}
-
-// Plan is how a message's frame goes out on a bus: its `frames` — the one frame, or its BAM — or,
-// `connection`, an RTS/CTS connection (connection_for), whose frames the connection makes.
-pub struct Plan {
-pub:
-	frames     []transport.CanFrame
-	connection bool
-}
-
-// plan_message is how message frame `f` (`declared` whether its database declares it J1939) goes
-// out on `bus`, decided by the frame as `bus` puts it on the wire (transport.frame_out): the one
-// rule send_message and a loop that cannot block (a generator's wire) both send by.
-pub fn plan_message(bus transport.Bus, f transport.CanFrame, declared bool) !Plan {
-	fd := transport.frame_out(bus, f).fd
-	if needs_connection(f, declared, fd) {
-		return Plan{
-			connection: true
+	match message_shape(bus, f, declared) {
+		.single {
+			bus.send(f)!
+		}
+		.connection {
+			send_connection(mut bus, f, answer_ms, stop)!
+		}
+		.bam {
+			frames := bam_frames(f)!
+			send_paced(mut bus, frames, bam_gap_ms, lane_key(transport.wire_of(bus), sa_of(frames)),
+				stop)!
 		}
 	}
-	return Plan{
-		frames: message_frames(f, declared, fd)!
+}
+
+// Shape is how a message's frame goes out on a bus: as itself, as its BAM, or by an RTS/CTS
+// connection.
+pub enum Shape {
+	single
+	bam
+	connection
+}
+
+// message_shape is how message frame `f` (`declared` whether its database declares it J1939) goes
+// out on `bus`, decided by the frame as `bus` puts it on the wire (transport.frame_out): the one
+// rule send_message and a loop that cannot block (a generator's wire) send by. It
+// builds nothing, so a frame that goes out as itself costs no allocation to decide.
+pub fn message_shape(bus transport.Bus, f transport.CanFrame, declared bool) Shape {
+	fd := transport.frame_out(bus, f).fd
+	if needs_connection(f, declared, fd) {
+		return .connection
 	}
+	return if goes_alone(f, declared, fd) { .single } else { .bam }
 }
 
 // send_paced sends `frames` on `bus`, the first once `lane` is free of any other sender's

@@ -13,10 +13,16 @@ import blobly.transport
 // that cannot be evaluated (an unknown type, a zero divisor), which
 // project.generator_source_warnings reports rather than sending a constant nobody asked for.
 pub fn sender_value(ss project.SenderSig, n int, el f64) f64 {
-	if ss.wave.typ == '' || project.gen_source_invalid(ss.wave) != '' {
+	if !sourced(ss) {
 		return ss.value
 	}
 	return gen_from_cfg(ss.wave).value(el, n)
+}
+
+// sourced is whether generator signal `ss` takes its value from its source: it has one, and one
+// that can be evaluated.
+fn sourced(ss project.SenderSig) bool {
+	return ss.wave.typ != '' && project.gen_source_invalid(ss.wave) == ''
 }
 
 // sender_message_frame encodes a message generator's frame from the first database that
@@ -27,26 +33,54 @@ pub fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 // `format:`, else the message's declared one (project.message_format).
 // An error when no database defines it, or the payload is past its stated format.
 pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f64) !transport.CanFrame {
+	m := sender_message_of(s, dbs) or {
+		return error('message "${s.message}" is not in the channel databases')
+	}
+	mut vals := []SetValue{cap: s.signals.len}
+	sender_values(mut vals, s, n, el)
+	return sender_frame(m, s.format, vals)
+}
+
+// sender_message_of is the message a message generator's frames are built from: its first
+// definition in `dbs`, as that database sends it (project.Sender.sent_message); none where no
+// database defines it. Found once by a sender that keeps it.
+pub fn sender_message_of(s project.Sender, dbs []candb.Database) ?candb.Message {
 	for db in dbs {
 		for dm in db.messages {
-			if dm.name != s.message {
-				continue
+			if dm.name == s.message {
+				return s.sent_message(db, dm)
 			}
-			m := s.sent_message(db, dm)
-			mut vals := []SetValue{cap: s.signals.len}
-			for ss in s.signals {
-				vals << SetValue{ss.name, sender_value(ss, n, el)}
-			}
-			mut data := payload_of(m, vals)
-			m.fill_unused(mut data)
-			return project.message_format(m, s.format).stamp(transport.CanFrame{
-				id:       m.id
-				extended: m.ext
-				data:     data
-			})!
 		}
 	}
-	return error('message "${s.message}" is not in the channel databases')
+	return none
+}
+
+// sender_values puts generator `s`'s signal values at send `n`, `el` seconds into the run, into
+// `out` (emptied first, its storage kept), in the order it lists them (sender_value).
+pub fn sender_values(mut out []SetValue, s project.Sender, n int, el f64) {
+	out.clear()
+	for ss in s.signals {
+		out << SetValue{ss.name, sender_value(ss, n, el)}
+	}
+}
+
+// sender_varies is whether generator `s`'s frame may differ from one send to the next: a signal
+// on a value source sender_value evaluates. Every other frame is the same until it is edited.
+pub fn sender_varies(s project.Sender) bool {
+	return s.signals.any(sourced(it))
+}
+
+// sender_frame is message `m`'s frame (sender_message_of) with the signal values `vals` encoded
+// in order (payload_of), the bits no signal covers at its fill, in format `ff` where stated, else
+// the message's declared one (project.message_format); an error for a payload past it.
+pub fn sender_frame(m candb.Message, ff transport.FrameFormat, vals []SetValue) !transport.CanFrame {
+	mut data := payload_of(m, vals)
+	m.fill_unused(mut data)
+	return project.message_format(m, ff).stamp(transport.CanFrame{
+		id:       m.id
+		extended: m.ext
+		data:     data
+	})!
 }
 
 // sender_messages are the messages a generator whose frame is built from `dbs` (its target rows'
@@ -115,6 +149,16 @@ pub fn sender_j1939(s project.Sender, dbs []candb.Database) bool {
 		}
 	}
 	return false
+}
+
+// slots_skipped is how many slots of a `period` grid lie strictly between slot `slot` and slot
+// `next` (next_due's answer): the frames a sender left out because its last write, or its loop,
+// was late. 0 for a zero period, or a `next` less than a period after `slot`.
+pub fn slots_skipped(slot u64, period u64, next u64) u64 {
+	if period == 0 || next < slot + period {
+		return 0
+	}
+	return (next - slot) / period - 1
 }
 
 // next_due is when a frame on a `period` grid is next due, the last one sent in grid slot `slot`

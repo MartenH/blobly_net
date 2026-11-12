@@ -29,7 +29,8 @@ class Generator:
     """One generator of the run: `name`, `channel` (the name of the channel it is written under),
     `message` (its DBC message, "" for a raw frame) and `trigger` ("manual", "key" or "cyclic", as
     the project writes it) are fixed; `id`, `ext`, `running`, `cycle_ms`, `sent` (frames its bus
-    took), `applied` (that frame was built after the last edit), `data` (a raw generator's payload),
+    took), `skipped` (slots of its cycle it left out), `applied` (that frame was built after the last
+    edit), `data` (a raw generator's payload),
     `target` (the interface it sends on) and `note` (why it cannot send, "" when it can) are read
     from the run as they are now. It belongs to the run that listed it: after a stop and a
     start it goes on working while the run has a generator of its name and channel at its
@@ -83,6 +84,14 @@ class Generator:
     def sent(self) -> int:
         """Frames its bus took, fired and cyclic alike."""
         return self._info().sent
+
+    @property
+    def skipped(self) -> int:
+        """Slots of its cycle it left out because its sending loop, or its last send, was late: a
+        late frame is followed by the next slot after it, never by the ones it covered. On a cycle,
+        sent + skipped follows the slots that passed; a fire adds to sent alone, and a slot whose
+        send failed is in neither."""
+        return self._info().skipped
 
     @property
     def applied(self) -> bool:

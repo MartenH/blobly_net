@@ -31,6 +31,9 @@ mut:
 	dbs     []candb.Database
 	id      u32 // its frame's id: its message's, for one with a message
 	ext     bool
+	// a message's generator: its message as its target's databases send it
+	// (sim.sender_message_of); fixed for the run
+	msg     candb.Message
 	cyclic  bool // sending on its cycle
 	restart bool // its cycle starts again from now (gen_start)
 	left    bool // every row on its target has left the run: it is not said at the start
@@ -40,6 +43,8 @@ mut:
 	// the signals it lists that carry no number (sim.sender_signal_refusals): said at the start
 	signal_notes []string
 	sent    i64
+	// slots of its cycle it left out because its loop or its last send was late (sim.next_due)
+	skipped i64
 	// edits of what it sends (a signal's value or source, a signal unset, its payload), and how
 	// many of them the last frame the bus took was built after
 	edits      i64
@@ -74,6 +79,12 @@ mut:
 	job_fire  ?&Fire
 	job_edits i64
 	fire_turn bool
+	// the frame it built last, the edits it was built after (-1: none) and whether the next may
+	// differ (sim.sender_varies); the values a message's frame is built from, its storage kept
+	built        transport.CanFrame
+	built_edits  i64 = -1
+	built_varies bool
+	vals         []sim.SetValue
 }
 
 // fires_waiting is how many fires may wait for one generator's loop at once.
@@ -213,12 +224,11 @@ fn (mut r Run) add_gen(ci int, s project.Sender, mut row_dbs map[int]candb.Datab
 		for row in rows {
 			g.dbs << row_db(mut row_dbs, proj.channels, row, proj_dir, files)
 		}
-		for db in g.dbs {
-			if m := db.message_named(s.message) {
-				g.id, g.ext = m.id, m.ext
-				g.signal_notes = sim.sender_signal_refusals(s, g.dbs)
-				return
-			}
+		if m := sim.sender_message_of(s, g.dbs) {
+			g.msg = m
+			g.id, g.ext = m.id, m.ext
+			g.signal_notes = sim.sender_signal_refusals(s, g.dbs)
+			return
 		}
 		g.note = 'message "${s.message}" is not in the channel databases'
 		g.open = ''
@@ -357,7 +367,18 @@ fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 	turn := g.fire_turn && fires
 	g.fire_turn = false
 	if !turn && cyc && (g.fresh || now >= sim.next_due(g.slot, period, g.done)) {
-		g.slot = if g.fresh { now } else { sim.next_due(g.slot, period, g.done) }
+		if g.fresh {
+			g.slot = now
+		} else {
+			next := sim.next_due(g.slot, period, g.done)
+			left := sim.slots_skipped(g.slot, period, next)
+			g.slot = next
+			if left > 0 {
+				g.mu.lock()
+				g.skipped += i64(left)
+				g.mu.unlock()
+			}
+		}
 		g.fresh = false
 		g.job_fire = none
 		said = g.progress(g.send(mut b, now))
@@ -463,26 +484,50 @@ fn (mut g Gen) poke() {
 // send begins g's frame on the bus — a J1939 message past eight bytes on a classic row as its BAM
 // or its connection (cyclic.Tp), which serve drives from then — its edits noted for when it ends.
 fn (mut g Gen) send(mut bus transport.Bus, now u64) cyclic.Step {
+	frame := g.frame() or {
+		return cyclic.Step{
+			why: err.msg()
+		}
+	}
+	return not_sent(g.tp.begin(mut bus, frame, g.msg.j1939, now))
+}
+
+// frame is g's frame as it is now, the edits it is built after noted for its send: the frame it
+// built last while nothing was edited since and none can differ from the one before
+// (sim.sender_varies), else one built afresh from what it is under the lock, so an edit is never
+// half seen. A frame kept is sent again as it is: a payload is never written once built.
+fn (mut g Gen) frame() !transport.CanFrame {
 	g.mu.lock()
-	s := project.Sender{
-		...g.s
-		signals: g.s.signals.clone()
-		data:    g.s.data.clone()
+	edits := g.edits
+	g.job_edits = edits
+	if edits == g.built_edits && !g.built_varies {
+		g.mu.unlock()
+		return g.built
 	}
-	n := int(g.sent)
-	g.job_edits = g.edits
-	g.mu.unlock()
+	if g.s.message == '' {
+		frame := sim.sender_raw_frame(g.s, g.s.id, g.s.ext, g.s.data.clone()) or {
+			g.mu.unlock()
+			return err
+		}
+		g.mu.unlock()
+		g.keep(frame, edits, false)
+		return frame
+	}
+	varies := sim.sender_varies(g.s)
 	el := f64(time.sys_mono_now() - g.run_t0) / 1_000_000_000.0
-	frame := if s.message != '' {
-		sim.sender_message_frame(s, g.dbs, n, el) or { return cyclic.Step{
-			why: err.msg()
-		} }
-	} else {
-		sim.sender_raw_frame(s, s.id, s.ext, s.data.clone()) or { return cyclic.Step{
-			why: err.msg()
-		} }
-	}
-	return not_sent(g.tp.begin(mut bus, frame, sim.sender_j1939(s, g.dbs), now))
+	sim.sender_values(mut g.vals, g.s, int(g.sent), el)
+	ff := g.s.format
+	g.mu.unlock()
+	frame := sim.sender_frame(g.msg, ff, g.vals)!
+	g.keep(frame, edits, varies)
+	return frame
+}
+
+// keep notes `frame` as the one g built last, after `edits`, `varies` whether its next may differ.
+fn (mut g Gen) keep(frame transport.CanFrame, edits i64, varies bool) {
+	g.built = frame
+	g.built_edits = edits
+	g.built_varies = varies
 }
 
 // not_sent is a send's step with a refusal by the bus said as one.
@@ -601,6 +646,7 @@ fn (mut g Gen) info(stopping bool) sim.GenInfo {
 		cycle_ms: if g.s.cycle_ms > 0 { g.s.cycle_ms } else { 0 }
 		running:  g.cyclic && !stopping
 		sent:     g.sent
+		skipped:  g.skipped
 		applied:  g.sent_edits == g.edits
 		data:     if g.s.message == '' { g.s.data.clone() } else { []u8{} }
 		target:   g.open

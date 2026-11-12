@@ -25,7 +25,7 @@ pub fn recv_sliced(mut bus Bus, timeout_ms int, slice_ms int, stop fn () bool) !
 		if timeout_ms > 0 {
 			left := deadline - time.ticks()
 			if left <= 0 {
-				return error('timeout')
+				return timed_out
 			}
 			if left < step {
 				step = int(left)
@@ -45,5 +45,5 @@ pub fn recv_sliced(mut bus Bus, timeout_ms int, slice_ms int, stop fn () bool) !
 		}
 		return f
 	}
-	return error('timeout')
+	return timed_out
 }

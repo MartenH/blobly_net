@@ -60,15 +60,26 @@ mut:
 	solo    bool // it ends once its last entry left (a sender started alone)
 	life    Life
 	say     fn (string) = unsafe { nil }
-	wake    chan bool   = chan bool{cap: 1}
+	// posted to wake the loop, which waits on it with a timeout and takes every post after: a
+	// `select` on a channel would allocate its case arrays on every pass
+	wake sync.Semaphore
 }
 
 // new_wire is a wire to `iface`, its loop not yet started; `say` is told what an entry says.
 pub fn new_wire(iface string, say fn (string)) &Wire {
-	return &Wire{
+	return make_wire(iface, say, false, Life{})
+}
+
+// make_wire is a wire to `iface`, `solo` when it ends once its last entry left, tied to `life`.
+fn make_wire(iface string, say fn (string), solo bool, life Life) &Wire {
+	mut w := &Wire{
 		iface: iface
 		say:   say
+		solo:  solo
+		life:  life
 	}
+	w.wake.init(0)
+	return w
 }
 
 // add puts `e` on the wire from its next pass; refused once the wire failed or ended.
@@ -91,7 +102,7 @@ pub fn (mut w Wire) add(e Entry) ! {
 	}
 	w.next_id++
 	w.version++
-	w.wake.try_push(true)
+	w.wake.post()
 }
 
 // failed is whether the wire's open failed: it takes no entries, and a new wire may be opened.
@@ -105,7 +116,7 @@ pub fn (mut w Wire) failed() bool {
 
 // poke wakes the loop: something became due sooner than it waits for.
 pub fn (mut w Wire) poke() {
-	w.wake.try_push(true)
+	w.wake.post()
 }
 
 // ask_stop asks the loop to end, without waiting.
@@ -113,7 +124,7 @@ pub fn (mut w Wire) ask_stop() {
 	w.mu.lock()
 	w.asked = true
 	w.mu.unlock()
-	w.wake.try_push(true)
+	w.wake.post()
 }
 
 // wait_opened waits until the loop has opened its handle, or failed to, or was asked to stop;
@@ -240,11 +251,11 @@ pub fn (mut w Wire) run(open fn (string) !transport.Bus) !transport.BusDiagnosti
 		// an owner asked at every poll is asked at least that often
 		cap := if w.life.running != unsafe { nil } { u64(poll_ms) } else { idle_wait_ms }
 		wait := sim.wait_until(earliest, after, cap)
-		select {
-			_ := <-w.wake {
-			}
-			i64(wait) * time.millisecond {
-			}
+		if wait > 0 {
+			w.wake.timed_wait(i64(wait) * time.millisecond)
+		}
+		// the posts made while the loop was busy or waiting: one pass sees what each asked for
+		for w.wake.try_wait() {
 		}
 	}
 	w.mu.lock()

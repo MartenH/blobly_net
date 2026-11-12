@@ -135,9 +135,9 @@ pub fn (m Message) initial(switch_raw ?u64) []u8 {
 			m.signals[sw].set_raw(mut data, m.signals[sw].start_raw)
 		}
 	}
-	carried := m.carried(data)
+	carried := m.carriage(data)
 	for i, s in m.signals {
-		if i != sw && s.has_start && carried[i] {
+		if i != sw && s.has_start && carried.carries(s) {
 			s.set_raw(mut data, s.start_raw)
 		}
 	}
@@ -838,12 +838,32 @@ pub fn (m Message) active_signals(data []u8) []Signal {
 // A signal the payload does not hold whole is not carried, nor a multiplexed one when the switch
 // itself is cut short: raw_value reads a missing byte as 0, a value never on the wire.
 pub fn (m Message) carried(data []u8) []bool {
-	sw := m.switch_in(data)
+	c := m.carriage(data)
 	mut out := []bool{len: m.signals.len}
 	for i, s in m.signals {
-		out[i] = sw.selects(s, data.len)
+		out[i] = c.carries(s)
 	}
 	return out
+}
+
+// Carriage is carried's answer for one payload, its switch read once and nothing allocated: what
+// a caller asks of each signal while it writes the others, the payload as it was when read.
+pub struct Carriage {
+	sw  MuxSwitch
+	len int
+}
+
+// carriage is the Carriage of `data`.
+pub fn (m Message) carriage(data []u8) Carriage {
+	return Carriage{
+		sw:  m.switch_in(data)
+		len: data.len
+	}
+}
+
+// carries is whether the payload carries signal `s` of its message (carried's rule).
+pub fn (c Carriage) carries(s Signal) bool {
+	return c.sw.selects(s, c.len)
 }
 
 // carried_bytes is carried's answer for the byte signals (Signal.is_bytes): which of the
@@ -914,7 +934,11 @@ struct MuxSwitch {
 
 fn (m Message) switch_in(data []u8) MuxSwitch {
 	i := m.multiplexor_index()
-	return read_switch(i >= 0, if i >= 0 { m.signals[i] } else { Signal{} }, data)
+	if i < 0 {
+		// no Signal{} stands in for the missing switch: its empty value table allocates
+		return MuxSwitch{}
+	}
+	return read_switch(true, m.signals[i], data)
 }
 
 fn read_switch(present bool, mux Signal, data []u8) MuxSwitch {

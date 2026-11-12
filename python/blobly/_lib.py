@@ -333,7 +333,7 @@ class BbGenerator(ctypes.Structure):
     """bb_generator, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("running", ctypes.c_uint8),
                 ("sendable", ctypes.c_uint8), ("applied", ctypes.c_uint8), ("cycle_ms", ctypes.c_int32),
-                ("sent", ctypes.c_int64)]
+                ("skipped", ctypes.c_int32), ("sent", ctypes.c_int64)]
 
 
 # bb_wave's parameters after its kind, in its order

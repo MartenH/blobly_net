@@ -152,6 +152,10 @@ pub fn fd_pad(data []u8) []u8 {
 	return out
 }
 
+// timed_out is the error('timeout') a receive answers when nothing came in time, built once: it is
+// the commonest answer a waiting reader gets, and an error built per answer allocates.
+const timed_out = error('timeout')
+
 // Bus is the transport contract. recv(timeout_ms) returns error('timeout') when
 // no frame arrives in time; timeout_ms < 0 blocks indefinitely.
 pub interface Bus {

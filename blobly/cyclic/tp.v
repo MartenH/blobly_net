@@ -63,35 +63,43 @@ pub fn (t &Tp) took_frame() bool {
 }
 
 // begin sends message frame `f` (`declared` whether its database declares it J1939) on `bus` as
-// j1939.plan_message says: the one frame now, else the first step of its BAM or its connection,
+// j1939.message_shape says: the one frame now, else the first step of its BAM or its connection,
 // which pump drives from then.
 pub fn (mut t Tp) begin(mut bus transport.Bus, f transport.CanFrame, declared bool, now u64) Step {
 	t.took = false
-	p := j1939.plan_message(bus, f, declared) or { return Step{
-		why: err.msg()
-	} }
-	if p.connection {
-		t.conn = j1939.connection_for(f, transport.wire_of(bus), 0) or {
-			return Step{
-				why: err.msg()
+	match j1939.message_shape(bus, f, declared) {
+		.single {
+			bus.send(f) or {
+				return Step{
+					why: err.msg()
+				}
 			}
+			t.took = true
+			return Step{}
 		}
-		t.in_conn = true
-		t.opened = false
-		return t.pump(mut bus, now)
+		.connection {
+			t.conn = j1939.connection_for(f, transport.wire_of(bus), 0) or {
+				return Step{
+					why: err.msg()
+				}
+			}
+			t.in_conn = true
+			t.opened = false
+			return t.pump(mut bus, now)
+		}
+		.bam {
+			frames := j1939.bam_frames(f) or {
+				return Step{
+					why: err.msg()
+				}
+			}
+			t.pacer.add(transport.wire_of(bus), frames, 0)
+			t.bam = true
+			t.count = frames.len
+			t.sent = 0
+			return t.pump(mut bus, now)
+		}
 	}
-	if p.frames.len == 1 {
-		bus.send(p.frames[0]) or { return Step{
-			why: err.msg()
-		} }
-		t.took = true
-		return Step{}
-	}
-	t.pacer.add(transport.wire_of(bus), p.frames, 0)
-	t.bam = true
-	t.count = p.frames.len
-	t.sent = 0
-	return t.pump(mut bus, now)
 }
 
 // due is when pump has something to do (ms on the monotonic clock), while busy.

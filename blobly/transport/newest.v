@@ -29,9 +29,12 @@ pub:
 
 struct EchoNote {
 	tok u64
-	// the frame as sent, and as the wire carries it where the backend changes it (wire_frame)
-	forms []CanFrame
-	at_ns i64
+	// the frame as sent, and as the wire carries it where the backend changes it (wire_frame,
+	// `changed`): two fields rather than an array, which a send would allocate
+	sent    CanFrame
+	wired   CanFrame
+	changed bool
+	at_ns   i64
 }
 
 // NewestView is the newest frame per (id, kind) on a wire, kept current by a reader of its own: a
@@ -189,6 +192,12 @@ pub fn (mut v NewestView) settle() {
 	}
 }
 
+// copied is a copy of `data`, taken by value: `.clone()` on a field of a parameter or a local puts
+// the whole of it on the heap first.
+fn copied(data []u8) []u8 {
+	return data.clone()
+}
+
 fn newest_key(id u32, ext bool) u64 {
 	return u64(id) | (u64(ext) << 32)
 }
@@ -217,9 +226,9 @@ pub fn (mut v NewestView) keep(f CanFrame, t_ns i64, now_ns i64) {
 	}
 }
 
-// echoed_by: the echo carries one of the note's forms.
+// echoed_by: the echo carries the frame as sent, or as the wire carries it.
 fn (n EchoNote) echoed_by(f CanFrame) bool {
-	return n.forms.any(echo_of(it, f))
+	return echo_of(n.sent, f) || (n.changed && echo_of(n.wired, f))
 }
 
 // echo_of: `f` carries the id, kind, remote bit and payload of `sent`, an FD one zero-padded up to
@@ -257,21 +266,20 @@ pub fn (mut v NewestView) sending(f CanFrame, now_ns i64) u64 {
 		id:       f.id
 		extended: f.extended
 		rtr:      f.rtr
-		data:     f.data.clone()
+		data:     copied(f.data)
 	}
-	mut forms := [given]
 	w := wire_frame(v.iface, f)
-	if w.id != f.id || w.data != f.data {
-		forms << CanFrame{
-			...given
-			id:   w.id
-			data: w.data.clone()
-		}
-	}
+	changed := w.id != f.id || w.data != f.data
 	v.notes << EchoNote{
-		tok:   v.next
-		forms: forms
-		at_ns: now_ns
+		tok:     v.next
+		sent:    given
+		wired:   if changed { CanFrame{
+				...given
+				id:   w.id
+				data: copied(w.data)
+			} } else { CanFrame{} }
+		changed: changed
+		at_ns:   now_ns
 	}
 	return v.next
 }
