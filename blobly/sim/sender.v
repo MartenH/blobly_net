@@ -13,10 +13,16 @@ import blobly.transport
 // that cannot be evaluated (an unknown type, a zero divisor), which
 // project.generator_source_warnings reports rather than sending a constant nobody asked for.
 pub fn sender_value(ss project.SenderSig, n int, el f64) f64 {
-	if ss.wave.typ == '' || project.gen_source_invalid(ss.wave) != '' {
+	if !sourced(ss) {
 		return ss.value
 	}
 	return gen_from_cfg(ss.wave).value(el, n)
+}
+
+// sourced is whether generator signal `ss` takes its value from its source: it has one, and one
+// that can be evaluated.
+fn sourced(ss project.SenderSig) bool {
+	return ss.wave.typ != '' && project.gen_source_invalid(ss.wave) == ''
 }
 
 // sender_message_frame encodes a message generator's frame from the first database that
@@ -61,12 +67,7 @@ pub fn sender_values(mut out []SetValue, s project.Sender, n int, el f64) {
 // sender_varies is whether generator `s`'s frame may differ from one send to the next: a signal
 // on a value source sender_value evaluates. Every other frame is the same until it is edited.
 pub fn sender_varies(s project.Sender) bool {
-	for ss in s.signals {
-		if ss.wave.typ != '' && project.gen_source_invalid(ss.wave) == '' {
-			return true
-		}
-	}
-	return false
+	return s.signals.any(sourced(it))
 }
 
 // sender_frame is message `m`'s frame (sender_message_of) with the signal values `vals` encoded

@@ -166,11 +166,11 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 		}
 		now := time.sys_mono_now()
 		if now >= deadline {
-			return error('timeout')
+			return timed_out
 		}
 		b.ready.timed_wait(i64(deadline - now))
 	}
-	return error('timeout')
+	return timed_out
 }
 
 // health: an in-process broadcast has no error counters — nothing to report, honestly.
