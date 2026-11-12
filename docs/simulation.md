@@ -1087,6 +1087,20 @@ Triggerable frames, for the "now do this" half of bench work:
 focus) or `cyclic` (sent automatically while the measurement runs, in the GUI and in the
 headless runner alike, from one frame builder: `sim.sender_message_frame`).
 
+In the GUI, as in a headless run, one sending loop per target wire sends every generator on it,
+each on its own cycle (`blobly/cyclic/wire.v`; the GUI's side is `cmd/blobly_net/gen_wire.v`), so
+a send that blocks on one wire, or a long J1939 message going out a packet at a time, holds no
+generator on another wire — or on its own. A generator sends the frame it built last until an
+edit changes something it is built from (a signal's value or source, its message, its id or
+payload as typed, its format); a value source builds each frame afresh. **Send now** and a hotkey
+ask that loop for one frame, so the cycle and a fire never overlap, and a fire asked while one is
+waiting or a transfer is going out is not taken. A cyclic generator waits for its row's transmit
+tap, and sends nothing onto a wire whose channels have all left the run (a wire nobody reads is
+still sent to). The panel shows each generator's **sent** frames and **skipped** slots — the
+slots of its cycle it left out because its loop or its last send was late, never sent in a
+burst afterwards. A cycle's failure is said in the Log once while it repeats; a fire's, every
+time.
+
 `data:` is parsed as a string of hex bytes (`01 00`, `0102FF`). A YAML sequence such as
 `[0x01, 0x00]` is *not* interpreted as bytes — it is stringified and misread.
 

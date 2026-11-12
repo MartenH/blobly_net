@@ -4,8 +4,6 @@ import math
 import genhome
 import blobly.project
 import blobly.sim
-import blobly.j1939
-import time
 import blobly.transport
 import blobly.candb
 import rowrule
@@ -190,10 +188,6 @@ fn draw_gen(mut app App) {
 	// stays scannable when everything is folded (start state).
 	mut remove_idx := -1
 	for i, sr in app.senders {
-		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields);
-		// do it before the header so the collapsed label reflects the latest edit.
-		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
-		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
 		mut s := app.senders[i].sender
 		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
 		trig := match s.trigger {
@@ -209,15 +203,25 @@ fn draw_gen(mut app App) {
 		}
 
 		nm := if s.name != '' { s.name } else { '(unnamed)' }
+		// while running, what it sent and the slots of its cycle it left out because its loop or
+		// its last send was late (sim.slots_skipped)
+		counts := if app.running {
+			sent, skipped := app.gen_counts(sr.uid)
+			'   ·   sent ${sent} · skipped ${skipped}'
+		} else {
+			''
+		}
 		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
-		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
+		if vgui.tree_node('${nm}   ·   ${trig}${counts}###gennode${i}') {
 			vgui.set_next_item_width(200 * app.prefs.ui_scale)
 			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
+				app.set_gen_name(i)
 				app.dirty = true
 			}
 			vgui.same_line()
 			vgui.set_next_item_width(36 * app.prefs.ui_scale)
 			if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
+				app.set_gen_name(i)
 				app.dirty = true
 			}
 			vgui.same_line()
@@ -377,11 +381,13 @@ fn draw_gen(mut app App) {
 			} else {
 				vgui.set_next_item_width(70 * app.prefs.ui_scale)
 				if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
+					app.set_gen_raw(i)
 					app.dirty = true
 				}
 				vgui.same_line()
 				vgui.set_next_item_width(260 * app.prefs.ui_scale)
 				if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
+					app.set_gen_raw(i)
 					app.dirty = true
 				}
 			}
@@ -429,6 +435,7 @@ fn (mut app App) add_generator() {
 	// The tap for a generator added mid-run opens on a worker (spawn_tap_for): opened here it
 	// ran on the GUI thread, and read tx_buses without the lock (codex round 4 on #257).
 	app.spawn_tap_for(if app.chans.len > 0 { 0 } else { -1 }, cname, iface)
+	app.sync_gen_entries()
 }
 
 // remove_generator drops generator `i` from the session.
@@ -440,11 +447,12 @@ fn (mut app App) remove_generator(i int) {
 			app.gen_bufs.delete(i)
 		}
 		// nothing to re-key: the per-generator state is keyed by SenderRT.uid, so the shift below
-		// cannot hand one generator's count or in-flight flag to another, and a fire still in
-		// flight for the removed generator writes back onto its own (now unused) entry
+		// cannot hand one generator's count to another, and a send still in flight for the
+		// removed generator writes back onto its own (now unused) entry
 		app.dirty = true
 	}
 	app.mu.unlock()
+	app.sync_gen_entries() // its entry leaves its wire
 }
 
 // sync_senders_into_proj flushes the Generators panel edit buffers into app.proj so a Save
@@ -453,10 +461,7 @@ fn (mut app App) sync_senders_into_proj() {
 	app.mu.lock()
 	defer { app.mu.unlock() }
 	for i in 0 .. app.senders.len {
-		if app.senders[i].sender.message == '' && i < app.gen_bufs.len {
-			app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
-			app.senders[i].sender.data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
-		}
+		app.set_gen_raw_locked(i)
 	}
 	mut p := app.proj
 	// WHERE EACH GENERATOR IS WRITTEN BACK is `genhome.homes`, which is tested — five defects
@@ -579,6 +584,7 @@ fn (mut app App) set_sender_message(i int, msg string) {
 		}
 		app.senders[i].sender.signals = sigs
 	}
+	app.senders[i].edits++
 	app.dirty = true
 }
 
@@ -595,7 +601,6 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 	ss := app.senders[i].sender.signals[j]
 	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
 	lbl := '${ss.name}${unit}##sig${i}_${j}'
-	pv := unsafe { &app.senders[i].sender.signals[j].value }
 	vgui.set_next_item_width(170 * app.prefs.ui_scale)
 	if have && sig.values.len > 0 {
 		// enum: dropdown of "value — name" states. VAL_ keys are stored two's-complement for
@@ -617,25 +622,68 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 		}
 		nsel := vgui.combo(lbl, labels, cur)
 		if nsel != cur && nsel >= 0 && nsel < raws.len {
-			unsafe {
-				*pv = sig.phys_from_raw(raws[nsel])
-			}
-			app.dirty = true
+			app.set_signal_value(i, j, sig.phys_from_raw(raws[nsel]))
 		}
 	} else if have && signal_is_integer(sig) {
 		mut iv := int(math.round(ss.value))
 		if vgui.input_int(lbl, &iv) {
-			unsafe {
-				*pv = f64(iv)
-			}
-			app.dirty = true
+			app.set_signal_value(i, j, f64(iv))
 		}
 	} else {
-		if vgui.input_double(lbl, pv) {
-			app.dirty = true
+		// A COPY, written back through the locked setter, as the source parameters are: the
+		// generator's entry reads the value under app.mu before it sends
+		mut v := ss.value
+		if vgui.input_double(lbl, &v) {
+			app.set_signal_value(i, j, v)
 		}
 	}
 	app.signal_source(i, j)
+}
+
+// set_signal_value sets signal `j` of generator `i` to `v` under app.mu, an edit its next frame is
+// built after.
+fn (mut app App) set_signal_value(i int, j int, v f64) {
+	app.mu.lock()
+	if i < app.senders.len && j < app.senders[i].sender.signals.len {
+		app.senders[i].sender.signals[j].value = v
+		app.senders[i].edits++
+	}
+	app.mu.unlock()
+	app.dirty = true
+}
+
+// set_gen_name takes generator `i`'s name and hotkey from its edit buffers, under app.mu: the
+// Log names a generator by it from its wire's loop.
+fn (mut app App) set_gen_name(i int) {
+	if i >= app.gen_bufs.len {
+		return
+	}
+	name := vgui.buf_str(app.gen_bufs[i].name_buf)
+	key := vgui.buf_str(app.gen_bufs[i].key_buf)
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.name = name
+		app.senders[i].sender.key = key
+	}
+	app.mu.unlock()
+}
+
+// set_gen_raw takes raw generator `i`'s id and payload from its edit buffers, an edit its next
+// frame is built after: what a fire and its cycle send is what the fields say as they are typed.
+fn (mut app App) set_gen_raw(i int) {
+	app.mu.lock()
+	app.set_gen_raw_locked(i)
+	app.mu.unlock()
+}
+
+// set_gen_raw_locked is set_gen_raw for a caller holding app.mu; nothing for a message generator.
+fn (mut app App) set_gen_raw_locked(i int) {
+	if i >= app.senders.len || i >= app.gen_bufs.len || app.senders[i].sender.message != '' {
+		return
+	}
+	app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+	app.senders[i].sender.data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+	app.senders[i].edits++
 }
 
 // The picker's entries, DERIVED from project.wave_kinds rather than restated: a source added or
@@ -705,9 +753,9 @@ fn (mut app App) signal_source(i int, j int) {
 		}
 		vgui.set_next_item_width(70 * app.prefs.ui_scale)
 		// A COPY, written back through a locked setter. Writing through a pointer into the live
-		// sender raced the fire path's snapshot (the GUI thread edits while gen_loop clones), and
-		// left a value the Start-time check could never see — these fields stay editable during a
-		// run, so an edit that makes the source unusable has to say so when it is made.
+		// sender raced its entry, which reads it under app.mu before it sends, and left a value
+		// the Start-time check could never see — these fields stay editable during a run, so an
+		// edit that makes the source unusable has to say so when it is made.
 		mut cur := wave_param(w, f[1])
 		if vgui.input_double('${f[0]}##wv${i}_${j}_${f[1]}', &cur) {
 			app.set_wave_param(i, j, f[1], cur)
@@ -761,6 +809,7 @@ fn (mut app App) set_wave_param(i int, j int, field string, v f64) {
 			else {}
 		}
 		why = project.gen_source_invalid(*w)
+		app.senders[i].edits++
 	}
 	app.mu.unlock()
 	app.dirty = true
@@ -802,11 +851,14 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 		if sg.wave.step == 0 {
 			sg.wave.step = 1.0
 		}
+		app.senders[i].edits++
 	}
 	app.mu.unlock()
 	app.dirty = true
 }
 
+// set_trigger and set_cycle change when generator `i` sends: its entry reads them again at once
+// (gen_bump_locked), so a cycle started, stopped or changed applies from now.
 fn (mut app App) set_trigger(i int, t string) {
 	app.mu.lock()
 	if i < app.senders.len {
@@ -815,6 +867,7 @@ fn (mut app App) set_trigger(i int, t string) {
 			app.senders[i].sender.cycle_ms = 100
 		}
 	}
+	app.gen_bump_locked()
 	app.mu.unlock()
 }
 
@@ -822,6 +875,7 @@ fn (mut app App) set_gen_format(i int, ff transport.FrameFormat) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.format = ff
+		app.senders[i].edits++
 	}
 	app.mu.unlock()
 	app.dirty = true
@@ -832,6 +886,7 @@ fn (mut app App) set_cycle(i int, ms int) {
 	if i < app.senders.len {
 		app.senders[i].sender.cycle_ms = ms
 	}
+	app.gen_bump_locked()
 	app.mu.unlock()
 }
 
@@ -854,8 +909,10 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
 		// ONLY THIS ENTRY. Resolving all of them here rewrote `tgt` and `chan` for generators
-		// nobody edited, racing the cyclic fire path (codex round 2 on #97).
+		// nobody edited, racing their entries (codex round 2 on #97).
 		app.resolve_one_sender_locked(i, app.sender_rows_locked())
+		// the rows its message is found in may have moved with it
+		app.senders[i].edits++
 		tgt := app.senders[i].target()
 		own := app.senders[i].chan
 		row := app.senders[i].chan_idx
@@ -872,12 +929,12 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 	if want_tgt != '' {
 		app.spawn_tap_for(want_row, want_own, want_tgt)
 	}
+	// its entry leaves the wire it was on, and one on its new target's takes its place
+	app.sync_gen_entries()
 }
 
-// fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
-// encode the edited signal values; raw generators use the edited id/data hex fields.
 // poll_hotkeys fires any 'key'-triggered generator whose key went down this frame. Runs on the
-// UI thread once per frame (fire_index reads UI-thread edit buffers).
+// UI thread once per frame.
 //
 // Suppressed while a widget holds the keyboard, which takes BOTH tests. want_text_input covers
 // an editable field; it is set only for editable ones (imgui gates it on !is_readonly), so a
@@ -904,106 +961,32 @@ fn (mut app App) poll_hotkeys() {
 	}
 }
 
+// fire_index sends generator `i`'s frame once, as it is edited now — its signal values, or its
+// raw id and payload — on its wire's loop (gen_wire.v), so the send never blocks the GUI thread,
+// and the cycle and a fire of one generator are served by one loop and cannot overlap. Not while
+// a fire of it waits or its transfer is going out (genrule.fire_taken): its previous frame has
+// not left yet. Its outcome is said in the Log where it fails.
 fn (mut app App) fire_index(i int) {
-	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
-	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
-	// A flag rather than a held lock, because the send must not be inside one — a generator
-	// stalled in its driver's write would otherwise block every other generator's fire, and a
-	// stalled write must cost its sender alone. A tick that finds its own generator still firing
-	// is skipped: its previous frame has not left the wire, so there is nothing to overlap.
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
 		app.mu.unlock()
 		return
 	}
 	uid := app.senders[i].uid
-	// a BAM still going out is a fire still in progress, counted when its last frame is out
-	if app.gen_firing[uid] || app.gen_tp.has(int(uid)) {
-		app.mu.unlock()
-		return
-	}
-	app.gen_firing[uid] = true
-	defer {
-		app.mu.lock()
-		app.gen_firing.delete(uid)
-		app.mu.unlock()
-	}
-	s := project.Sender{
-		...app.senders[i].sender
-		signals: app.senders[i].sender.signals.clone()
-	}
-	// THE DESTINATION IN THE SAME SNAPSHOT AS THE FRAME. These were read after the unlock, from
-	// app.senders[i], while an edit on ANOTHER generator could be rewriting them — and a V string
-	// assignment is not atomic, so a send could observe a mixed destination. Taken here, one
-	// generator's frame and the bus it goes to are decided from one consistent view, which is also
-	// what makes them agree: read separately, the DBC lookup below and the send could use two
-	// different targets (codex round 2 on #97, P1).
 	tgt := app.senders[i].tgt
-	own := app.senders[i].chan
-	own_row := app.senders[i].chan_idx
-	dbs := app.gen_dbs(app.senders[i])
-	n := app.gen_send_n[uid] or { 0 }
-	epoch := app.gen_state_epoch
-	wt0 := app.wave_t0_ns
+	name := app.senders[i].sender.name
+	mut e := app.gen_entries[uid] or {
+		app.mu.unlock()
+		// no entry: nothing resolved for its `bus:`, or a target no tap is opened for
+		app.notify(if tgt == '' {
+			'generator ${name}: no bus to send on'
+		} else {
+			'TX failed: no open bus for ${tgt}'
+		})
+		return
+	}
+	if e.ask_fire() {
+		e.wire.poke()
+	}
 	app.mu.unlock()
-	// ONE clock sample for the whole frame. Read per signal, two time-based sources in one message
-	// were sampled at different instants — the simulator passes a single `t` into its build() for
-	// the same reason. FROM THE RUN EPOCH, not process start, so a restarted measurement begins at
-	// the same phase instead of one that depends on how long the GUI had been open.
-	el := if wt0 > 0 { f64(time.sys_mono_now() - wt0) / 1_000_000_000.0 } else { 0.0 }
-	mut id := s.id
-	mut data := []u8{}
-	if s.message == '' && i < app.gen_bufs.len {
-		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
-		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
-	}
-	// resolved on the generator's own target bus (not globally), by the builders the headless
-	// runner's cyclic senders use too, which state the generator's format (or its message's)
-	frame := if s.message != '' {
-		sim.sender_message_frame(s, dbs, n, el) or {
-			app.notify('generator ${s.name}: ${err.msg()}')
-			return
-		}
-	} else {
-		sim.sender_raw_frame(s, id, s.ext, data) or {
-			app.notify('generator ${s.name}: ${err.msg()}')
-			return
-		}
-	}
-	// a J1939 message past eight bytes on a classic row is a BAM, paced by gen_loop
-	declared := s.message != '' && sim.sender_j1939(s, dbs)
-	frames := j1939.message_frames(frame, declared, transport.framed_for_wire(tgt, transport.CanFrame{
-		...frame
-		row: own
-	}).fd) or {
-		app.notify('generator ${s.name}: ${err.msg()}')
-		return
-	}
-	if frames.len > 1 {
-		app.mu.lock()
-		app.gen_tp.add(tgt, frames, int(uid))
-		app.gen_tp_xfers[int(uid)] = GenTpXfer{
-			row:   own_row
-			chan:  own
-			iface: tgt
-			epoch: epoch
-			n:     n
-		}
-		app.mu.unlock()
-		return
-	}
-	if app.tx_on_chan(own_row, own, tgt, frame) {
-		// delivered frames only — a fire refused while the tap is still opening put nothing on
-		// the bus, and counting it would make the sequence lie about what was transmitted.
-		// ...and only onto the generator set this fire was snapshotted from: a removal or a new
-		// run since would have shifted or cleared the counts, and this write would land on
-		// whichever generator now sits at this index.
-		app.mu.lock()
-		// the epoch still guards the RUN/PROJECT boundary (a new run restarts the sequences); the
-		// uid already guarantees this lands on the generator the fire was snapshotted from
-		if app.gen_state_epoch == epoch {
-			app.gen_send_n[uid] = n + 1
-		}
-		app.mu.unlock()
-	}
 }

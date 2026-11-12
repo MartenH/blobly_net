@@ -49,13 +49,20 @@ pub:
 // existing named tap wins outright, whatever an earlier failure said (round 7). A sender
 // without a channel wants the shared tap.
 pub fn ready(taps Taps, named string, wire_tap string, has_chan bool) bool {
-	if has_chan && named in taps.filed {
+	return ready_of(named in taps.filed, named in taps.failed, wire_tap in taps.filed, has_chan)
+}
+
+// ready_of is ready() over the three facts it reads — whether the named tap is filed, whether its
+// open failed for good, whether the wire's shared tap is filed — for a caller that asks its own
+// maps rather than building a Taps per send (a generator's entry, which asks before every frame).
+pub fn ready_of(named_filed bool, named_failed bool, wire_filed bool, has_chan bool) bool {
+	if has_chan && named_filed {
 		return true
 	}
-	if has_chan && named !in taps.failed {
+	if has_chan && !named_failed {
 		return false
 	}
-	return wire_tap in taps.filed
+	return wire_filed
 }
 
 // Fallback is what a manual send from a channel gets when its own tap is not filed.
@@ -72,10 +79,15 @@ pub enum Fallback {
 // ready(), from the manual side (#257 round 8): the shared tap stands in only when the
 // channel's own is known to have failed.
 pub fn fallback(taps Taps, named string, wire_tap string, has_chan bool) Fallback {
-	if has_chan && named !in taps.failed {
+	return fallback_of(named in taps.failed, wire_tap in taps.filed, has_chan)
+}
+
+// fallback_of is fallback() over the two facts it reads, as ready_of is ready().
+pub fn fallback_of(named_failed bool, wire_filed bool, has_chan bool) Fallback {
+	if has_chan && !named_failed {
 		return .wait
 	}
-	if wire_tap in taps.filed {
+	if wire_filed {
 		return .via_wire
 	}
 	return .none_open

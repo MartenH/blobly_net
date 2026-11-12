@@ -218,6 +218,9 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	// it is. For the software buses it is canonical_iface, so nothing changes for them — and it
 	// leaves their `@` alone, because `inproc:bench@A` is a bus NAME.
 	wire := transport.wire_key(iface)
+	// the payload copied from a local: a clone of the parameter's own field would put the whole
+	// frame on the heap first (V3's escape of `f`), per note
+	payload := f.data
 	r.items << Pending{
 		seq:     seq
 		key:     frame_key(wire, f)
@@ -230,7 +233,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		rtr:     f.rtr
 		fd:      f.fd
 		brs:     f.brs
-		data:    f.data.clone()
+		data:    payload.clone()
 		t_ms:    t_ms
 		open:    r.sends_settle
 	}
