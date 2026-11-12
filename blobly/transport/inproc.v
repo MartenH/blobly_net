@@ -43,9 +43,12 @@ mut:
 	name  string
 	id    u32
 	queue chan CanFrame
-	// posted once per frame queued and once at the close, so a receive waits for a frame with a
+	// posted for frames queued and once at the close, so a receive waits for a frame with a
 	// timeout without a `select`, which allocates its case arrays on every call
 	ready sync.Semaphore
+	// frames queued and not yet posted for: a send queues its frame for every subscriber before
+	// it posts any of them (send)
+	unposted &stdatomic.AtomicVal[u64] = stdatomic.new_atomic(u64(0))
 	// Frames a sender dropped because THIS subscriber's queue was full -- the in-process bus's
 	// only loss, counted on the sender's thread and read on the subscriber's (#213).
 	dropped u64
@@ -122,6 +125,10 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// statement), were ~1.2 KB of garbage per frame, on the thread whose collections are the
 	// replay stutter (#299's follow-up). Same outcome per subscriber: delivered, or dropped and
 	// counted for the one that fell behind (codex round 10 on #231).
+	// The frame is queued for every subscriber before any is woken for it, as a wire puts it in
+	// front of every node at once: a subscriber woken first could answer it, and its answer reach
+	// a third one ahead of the frame it answers. A post claims every frame queued since the last
+	// one, so a full queue is never posted for.
 	rlock inproc_reg {
 		if hub := inproc_reg.hubs[b.name] {
 			for s in hub.subs {
@@ -130,9 +137,18 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 				}
 				mut t := unsafe { s }
 				if t.queue.try_push(f) == .success {
-					t.ready.post()
+					t.unposted.add(1)
 				} else {
 					stdatomic.add_u64(&t.dropped, 1)
+				}
+			}
+			for s in hub.subs {
+				if s.id == b.id {
+					continue
+				}
+				mut t := unsafe { s }
+				if t.unposted.swap(0) > 0 {
+					t.ready.post()
 				}
 			}
 		}
