@@ -400,7 +400,7 @@ fn draw_dbc_editor(mut app App) {
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
 	// the trace decodes signal values at draw time.)
 	// The shared predicate, not a private copy of it: this panel and the System panel each had
-	// their own, and both counted rx loops only — sim_loop and gen_loop read app.chans and
+	// their own, and both counted rx loops only — sim_loop and the generators' loops read app.chans and
 	// app.senders the same way and were invisible to it (#125).
 	busy := app.runtime_busy()
 	// the selection is settled BEFORE anything reads it, so the read-only answer below is

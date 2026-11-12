@@ -237,11 +237,14 @@ fn (app &App) since_s() f64 {
 fn (mut app App) push_row_locked(row TraceRow) u64 {
 	seq := app.trace_seq
 	app.trace_seq++
-	mut r := row
-	r.seq = seq
-	r.idx = seq - app.trace_run_base // frozen here — see the field
-	r.run = app.trace_run_base
-	app.trace << r
+	// spread, not `mut r := row`: pushing a mutable copy clones every string and the payload of
+	// the row a second time, per row (V3's copy of a mutable struct)
+	app.trace << TraceRow{
+		...row
+		seq: seq
+		idx: seq - app.trace_run_base // frozen here — see the field
+		run: app.trace_run_base
+	}
 	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
 	// unnoticeable at a few frames a second, and the dominant cost when a recording is imported,
 	// which is exactly where the row count is largest. Letting it run to 1.5x and cutting back

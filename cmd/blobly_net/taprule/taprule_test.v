@@ -90,3 +90,33 @@ fn test_two_rows_sharing_a_name_and_a_wire_have_a_tap_each() {
 	assert tap_key(1, '2|x') != tap_key(12, 'x')
 	assert tap_key(-1, '1|x') != tap_key(1, 'x')
 }
+
+// THE BOOLEAN FORMS answer as the key forms do, over every combination of the facts they read:
+// a generator's entry asks them of its own maps before every frame (#691).
+fn test_the_boolean_forms_answer_as_the_key_forms_do() {
+	named := tap_key(0, 'inproc:CAN1')
+	wire_tap := tap_key(-1, 'inproc:CAN1')
+	for bits in 0 .. 16 {
+		nf := bits & 1 != 0
+		nx := bits & 2 != 0
+		wf := bits & 4 != 0
+		hc := bits & 8 != 0
+		mut filed := []string{}
+		mut failed := []string{}
+		if nf {
+			filed << named
+		}
+		if wf {
+			filed << wire_tap
+		}
+		if nx {
+			failed << named
+		}
+		t := Taps{
+			filed:  filed
+			failed: failed
+		}
+		assert ready_of(nf, nx, wf, hc) == ready(t, named, wire_tap, hc)
+		assert fallback_of(nx, wf, hc) == fallback(t, named, wire_tap, hc)
+	}
+}

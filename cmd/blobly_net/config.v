@@ -949,8 +949,8 @@ fn (mut app App) retarget_bus_locked(si int, target project.Channel, rows []proj
 // The resolver is asked; only `.iface` follows. `.ambiguous` does not either: on a shared wire the
 // value still names the sibling's wire after this row leaves it.
 //
-// UNDER app.mu, like every other writer of app.senders: gen_loop copies these same strings under
-// the lock every 8 ms, and a V string assignment is not atomic. The lock is taken here rather
+// UNDER app.mu, like every other writer of app.senders: a generator's entry reads these same
+// strings under the lock before it sends, and a V string assignment is not atomic. The lock is taken here rather
 // than by the callers, which run from GUI edit handlers that hold nothing.
 fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {

@@ -532,60 +532,14 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 }
 
 // tx_on_chan is tx_on from project row `row` (named `chan_name`); -1 and '' where the caller has
-// no particular one. The row picks the tap, the name is what the frame and the Log carry.
+// no particular one. The row picks the tap, the name is what the frame and the Log carry. The
+// send is tap_send's (gen_wire.v), which a generator's entry calls with its keys made once; a
+// refusal is said here.
 fn (mut app App) tx_on_chan(row int, chan_name string, iface string, f transport.CanFrame) bool {
-	// The LOOKUP is under app.mu; the send is not. Taps are opened ON A WORKER and filed as they
-	// land (#257, file_tap) — for a generator added or retargeted mid-run, long after Start — so
-	// tx_buses is written while a cyclic generator may be reading it from gen_loop, and a V map is
-	// not safe for a concurrent read and write. This used to be safe only because every insertion
-	// happened at Start, before any worker existed. The Bus reference is taken and the lock
-	// released before sending: b.send takes the interface's send lock and then app.mu inside
-	// note_emit, so holding app.mu across it would deadlock.
-	app.mu.lock()
-	named := tx_bus_key(row, iface)
-	mut b := app.tx_buses[named] or {
-		// THE SHARED TAP STANDS IN FOR A CHANNEL'S ONLY WHEN THAT CHANNEL'S IS KNOWN NOT TO
-		// COME. The taps open on a worker (#257), so for a moment after Start or a retarget a
-		// channel's own tap is not there yet; sent through the shared one meanwhile, the frame
-		// carries no channel identity and the trace files it under the first channel on the
-		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
-		// path has no owning channel and takes the shared tap as before.
-		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key(-1, iface),
-			row >= 0) {
-			.wait {
-				app.mu.unlock()
-				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
-				return false
-			}
-			.none_open {
-				app.mu.unlock()
-				app.notify('TX failed: no open bus for ${iface}')
-				return false
-			}
-			.via_wire {
-				app.tx_buses[tx_bus_key(-1, iface)] or {
-					app.mu.unlock()
-					app.notify('TX failed: no open bus for ${iface}')
-					return false
-				}
-			}
-		}
-	}
-	app.mu.unlock()
-	// a channel's frames in its own format, which on a wire two rows dispute the wire has not
-	// (#384): the tap frames it for its row and its wire in one policy read
-	sent := if row < 0 || chan_name == '' || f.format_stated { f } else { transport.CanFrame{
-			...f
-			row: chan_name
-		} }
-	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
-	// for every emitter rather than only for the ones that remember to log.
-	b.send(sent) or {
-		app.notify('TX failed: ${err}')
+	app.tap_send(tx_bus_key(row, iface), tx_bus_key(-1, iface), row, chan_name, iface, f) or {
+		app.notify(err.msg())
 		return false
 	}
-	// The count is the tap's job (note_emit), like the row and the recording — a generator that
-	// bypasses tx_on still transmits, and used to be invisible here.
 	return true
 }
 

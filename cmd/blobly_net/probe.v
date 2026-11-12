@@ -100,8 +100,8 @@ __global (
 	// a single sample is noise; the MEAN over hundreds of thousands is the section's own
 	// cost plus the others' rate times the section's duration, which for microsecond
 	// sections is negligible. Indexed by ProbeSec.
-	probe_sec_n         [8]u64
-	probe_sec_sum       [8]u64
+	probe_sec_n         [9]u64
+	probe_sec_sum       [9]u64
 )
 
 // ProbeSec names a section of the per-frame path. The enum is the index into the two arrays
@@ -115,6 +115,9 @@ enum ProbeSec {
 	rx_recv
 	tick
 	render
+	// a generator's send on its wire's loop (GenEntry.send): its frame and its send through its
+	// tap, the send section and its parts included — a transfer's later packets not
+	gen
 }
 
 fn bucket(x f64, edges [4]f64) int {
@@ -434,7 +437,7 @@ fn probe_summary() string {
 	s += 'hiccup_samples=${probe_hic_n} hic_lt20ms=${probe_hic[0]} hic_20_50=${probe_hic[1]} hic_50_200=${probe_hic[2]} hic_200_1000=${probe_hic[3]} hic_gt1000=${probe_hic[4]} hic_max_ms=${probe_hic_max_ms} hic_with_gc=${probe_hic_gc}\n'
 	s += 'measured_s=${probe_run_s:.2f} alloc_mb=${alloc:.0f} alloc_mb_per_s=${rate:.1f}\n'
 	s += 'heap_min_mb=${probe_heap_min_mb} heap_max_mb=${probe_heap_max_mb} live_after_gc_min_mb=${probe_live_min_mb} live_after_gc_max_mb=${probe_live_max_mb} collections_sampled=${probe_live_n}\n'
-	for sec in [ProbeSec.send, .emit, .inner, .after, .rx_handle, .rx_recv, .tick, .render] {
+	for sec in [ProbeSec.send, .emit, .inner, .after, .rx_handle, .rx_recv, .tick, .render, .gen] {
 		i := int(sec)
 		if probe_sec_n[i] == 0 {
 			continue
@@ -554,8 +557,10 @@ fn probe_driver(secs int) {
 	// that would not decode, a plan that kept no frames — and its refusal reaches the Log,
 	// not this thread. Zero frames scored is that outcome, and it exits as one (codex on
 	// #299 round 7).
-	if probe_late_n == 0 {
-		eprintln('probe: the run replayed no frames in ${probe_run_s:.1f} s; nothing to measure (see the Log)')
+	// A generator-only project measures its generators' sends instead (sec_gen), counted by the
+	// wires' loops with stdatomic.add_u64 and so loaded the same way.
+	if probe_late_n == 0 && stdatomic.load_u64(&probe_sec_n[int(ProbeSec.gen)]) == 0 {
+		eprintln('probe: the run replayed no frames and sent no generator frame in ${probe_run_s:.1f} s; nothing to measure (see the Log)')
 		exit(3)
 	}
 	// And a replay GROUP that failed after start() — its recording would not decode, no

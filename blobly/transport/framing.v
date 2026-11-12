@@ -233,6 +233,15 @@ pub fn row_framed(b Bus, iface string, row string) Bus {
 	if row == '' {
 		return b
 	}
+	return emitter_on(b, iface, row)
+}
+
+// emitter_on is `b` sending on `iface` as row `row`'s own emitter, wrapped for no row too: for a
+// bus that does not say its wire itself (the GUI's tap send for a generator), so frame_out and
+// wire_of answer for `iface` — a J1939 message's shape is then decided by the frame as its wire
+// frames it, and a transfer's lane and answers are that wire's. A frame stating no row is sent
+// as `b` gets it (as_row marks it with the row, '' for none).
+pub fn emitter_on(b Bus, iface string, row string) Bus {
 	return &RowFramedBus{
 		iface: iface
 		row:   row

@@ -6,7 +6,6 @@ import blobly.project
 import blobly.candb
 import blobly.transport
 import loadrule
-import taprule
 import blobly.telem
 import blobly.isotp
 import blobly.uds
@@ -276,157 +275,30 @@ fn sim_loop(app &App, sc SimCfg, gen u64, anns []nm.Announce) {
 	bus.close()
 }
 
-// gen_poll_ms is the longest gen_loop sleeps: how late it sees a sender started or changed.
-const gen_poll_ms = u64(8)
+// expire_every_ms is how often a run resolves the emissions whose echo never came: well inside the
+// echo window (wiretap.default_window_ms), so a bus that fell silent still marks its last rows.
+const expire_every_ms = 50
 
-// GenSlot is a cyclic generator's grid slot last fired in, its cycle then, and when that fire
-// returned (ms on the monotonic clock).
-struct GenSlot {
-	slot   u64
-	period u64
-	done   u64
-}
-
-// gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
-fn gen_loop(app &App) {
-	// Reads app.senders and app.chans lock-free every pass, and rebuild_from_proj replaces both.
+// pending_expiry_loop resolves the emissions whose echo never came while run `gen` is on. Expiry
+// otherwise rides on the next emission or the next received frame, so on a bus that falls silent
+// — a disconnected bench, the very case the mark is for — the last rows would stay unresolved. A
+// run worker, its slot reserved by start().
+fn pending_expiry_loop(app &App, gen u64) {
 	defer {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	mut slots := map[u64]GenSlot{} // by SenderRT.uid
-	a.mu.lock()
-	a.gen_tp = j1939.Pacer{} // nothing of an earlier run's transfers
-	a.gen_tp_xfers = map[int]GenTpXfer{}
-	a.mu.unlock()
-	for a.running {
-		now := time.sys_mono_now() / 1_000_000
-		mut next_at := now + gen_poll_ms // the earliest a cyclic sender is due next
-		mut fire := []int{}
-		mut fire_uids := []u64{}
+	for {
 		a.mu.lock()
-		// ONE snapshot of the taps per pass, not one per sender: this loop runs every few ms
-		// with app.mu held, and rebuilding the key lists per sender made it O(senders × taps)
-		// of allocation under the lock (codex round 1 on #261).
-		taps := a.taprule_taps_locked()
-		for i, sr in a.senders {
-			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
-				// NOT ONTO A WIRE THAT HAS LEFT THE RUN — but "has no reader" is not that.
-				// A generator may legitimately target a bus nobody monitors: an `off` channel,
-				// or a target-only wire, both of which start() opens a transmit tap for on
-				// purpose. Requiring a reader silenced every one of them, which is a supported
-				// arrangement rather than a failure.
-				//
-				// What rx_loop actually does to a dead destination is DISABLE its rows. So the
-				// question is whether this target's rows exist and have all left the run — not
-				// whether anybody is listening to it.
-				tgt := sr.target()
-				if tgt != '' && a.dest_left_the_run_locked(tgt) {
-					continue
-				}
-				// NOT BEFORE ITS TAP IS UP. The taps open on a worker since #257, and a cyclic
-				// sender that fired into "no open bus" had its first frame counted as fired
-				// and lost until the next cycle — on a slow CANsub and a long cycle, every
-				// Start dropped the first frame (codex round 3 on #257). Left unstamped, the
-				// first cycle fires the moment the tap is filed.
-				// ITS OWN tap when it has a channel: the shared tap is filed first and carries no
-				// channel identity, so a frame sent through it during the named open would be
-				// filed under whichever channel matched first (codex round 4 on #257).
-				// …unless its own is known not to come: then the shared tap is the answer, as
-				// it is for a manual send (codex round 6 on #257).
-				// An existing named tap wins outright; the shared one only stands in while the
-				// named one is known to have failed (codex round 7 on #257).
-				if tgt != ''
-					&& !taprule.ready(taps, tx_bus_key(sr.chan_idx, tgt), tx_bus_key(-1, tgt), sr.chan_idx >= 0) {
-					continue
-				}
-				// on its grid, from the time its last send returned (sim.next_due)
-				if g := slots[sr.uid] {
-					due := sim.next_due(g.slot, u64(sr.sender.cycle_ms), g.done)
-					if now >= due {
-						slots[sr.uid] = GenSlot{
-							slot:   due
-							period: u64(sr.sender.cycle_ms)
-						}
-						fire << i
-						fire_uids << sr.uid
-					} else if due < next_at {
-						next_at = due
-					}
-				} else {
-					slots[sr.uid] = GenSlot{
-						slot:   now
-						period: u64(sr.sender.cycle_ms)
-					}
-					fire << i
-					fire_uids << sr.uid
-				}
-			} else {
-				slots.delete(sr.uid) // not cyclic: made cyclic again, it starts a new grid
-			}
+		live := a.running && a.run_gen == gen
+		if live {
+			a.expire_pending_locked(a.since_ms())
 		}
 		a.mu.unlock()
-		for i, uid in fire_uids {
-			a.fire_index(fire[i])
-			if g := slots[uid] {
-				done := time.sys_mono_now() / 1_000_000
-				slots[uid] = GenSlot{
-					...g
-					done: done
-				}
-				due := sim.next_due(g.slot, g.period, done)
-				if due < next_at {
-					next_at = due
-				}
-			}
+		if !live {
+			return
 		}
-		a.send_gen_tp(f64(time.ticks()))
-		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
-		// emission or the next received frame, so on a bus that falls silent — a disconnected
-		// bench, the very case the mark is for — the last rows stayed unresolved forever.
-		a.mu.lock()
-		a.expire_pending_locked(a.since_ms())
-		a.mu.unlock()
-		// until the next cyclic sender is due, on the monotonic clock
-		time.sleep(i64(sim.wait_until(next_at, time.sys_mono_now() / 1_000_000, gen_poll_ms)) * time.millisecond)
-	}
-}
-
-// GenTpXfer is a generator's BAM in progress: where it goes, as tx_on_chan takes it, and the fire it
-// is (the generator set's epoch and its send index), counted once its last frame is out.
-struct GenTpXfer {
-	row   int
-	chan  string
-	iface string
-	epoch u64
-	n     int
-}
-
-// send_gen_tp sends the generators' BAM frames due by `now_ms`, taken under app.mu and sent
-// outside it, each reported back to the pacer once its write returned, so a transfer's lane stays
-// claimed until its last frame is out: a frame its tap refuses ends its transfer, and a transfer
-// whose last frame went out counts its generator's send (gen_send_n), as a one-frame fire counts a
-// delivered frame.
-fn (mut app App) send_gen_tp(now_ms f64) {
-	app.mu.lock()
-	dues := app.gen_tp.take(now_ms)
-	mut xs := []GenTpXfer{cap: dues.len}
-	for d in dues {
-		xs << app.gen_tp_xfers[d.tag] or { GenTpXfer{} }
-	}
-	app.mu.unlock()
-	for k, d in dues {
-		x := xs[k]
-		sent := app.tx_on_chan(x.row, x.chan, x.iface, d.frame)
-		app.mu.lock()
-		whole := app.gen_tp.settle(d, sent, f64(time.ticks()))
-		if !app.gen_tp.has(d.tag) {
-			app.gen_tp_xfers.delete(d.tag)
-		}
-		if whole && app.gen_state_epoch == x.epoch {
-			app.gen_send_n[u64(d.tag)] = x.n + 1
-		}
-		app.mu.unlock()
+		time.sleep(expire_every_ms * time.millisecond)
 	}
 }
 
@@ -1007,6 +879,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// before releasing the lock, or a row retired here keeps silencing a wire that
 				// something else is enabled onto later.
 				a.push_listen_only_locked()
+				// a generator's cycle sends nothing more onto a wire that left the run
+				a.gen_bump_locked()
 			}
 			a.mu.unlock()
 			break

@@ -62,23 +62,18 @@ mut:
 	wire   &cyclic.Wire = unsafe { nil }
 	ctl    &Ctl
 	run_t0 u64
-	// the wire's loop's alone: whether it was cyclic at the last pass, whether its cycle sends at
-	// once (started, or started again), why the cycle's last send failed (said once while it
-	// repeats), the note to go back to when it sends again, the grid slot the cycle last sent in
-	// and when that send ended, and the wire's handle as its row
-	was       bool
-	fresh     bool = true
+	// the wire's loop's alone: its grid (cyclic.Grid), why the cycle's last send failed (said
+	// once while it repeats), the note to go back to when it sends again, and the wire's handle as
+	// its row
+	grid      cyclic.Grid
 	failed    string
 	base_note string
-	slot      u64
-	done      u64
 	framed    ?transport.Bus
 	// the send in progress (a transfer), what it is — the fire it answers, else the cycle's — and
-	// the edits its frame was built after; whether a fire waiting goes before the cycle next
+	// the edits its frame was built after
 	tp        cyclic.Tp
 	job_fire  ?&Fire
 	job_edits i64
-	fire_turn bool
 	// the frame it built last, the edits it was built after (-1: none) and whether the next may
 	// differ (sim.sender_varies); the values a message's frame is built from, its storage kept
 	built        transport.CanFrame
@@ -316,28 +311,19 @@ fn (mut g Gen) due(now u64) ?u64 {
 	g.mu.lock()
 	cyc := g.cyclic
 	period := u64(g.s.cycle_ms)
-	if g.restart {
-		g.restart = false
-		g.fresh = true
-	}
+	restart := g.restart
+	g.restart = false
 	fire := g.queue.len > 0
 	g.mu.unlock()
-	if cyc && !g.was {
-		g.fresh = true
+	if restart {
+		g.grid.restart()
 	}
-	g.was = cyc
 	// stopped before its first frame: its wire is open, with nothing for it to send
 	if !cyc && !g.told {
 		g.told = true
 		g.report('')
 	}
-	if fire || (cyc && g.fresh) {
-		return now
-	}
-	if !cyc {
-		return none
-	}
-	return sim.next_due(g.slot, period, g.done)
+	return g.grid.due(cyc, period, fire, now)
 }
 
 // serve drives g's transfer in progress, else sends its cyclic frame if it is due, then one fire:
@@ -353,9 +339,7 @@ fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 	if g.tp.busy() {
 		of_cycle := g.job_fire == none
 		said := g.progress(not_sent(g.tp.pump(mut b, now)))
-		// a cycle's transfer ended: a fire waiting goes next, so a cycle shorter than its transfer
-		// cannot starve the fires
-		g.fire_turn = of_cycle && !g.tp.busy()
+		g.grid.pumped(of_cycle && !g.tp.busy())
 		return said
 	}
 	g.mu.lock()
@@ -364,22 +348,13 @@ fn (mut g Gen) serve(mut bus transport.Bus, now u64) string {
 	fires := g.queue.len > 0
 	g.mu.unlock()
 	mut said := ''
-	turn := g.fire_turn && fires
-	g.fire_turn = false
-	if !turn && cyc && (g.fresh || now >= sim.next_due(g.slot, period, g.done)) {
-		if g.fresh {
-			g.slot = now
-		} else {
-			next := sim.next_due(g.slot, period, g.done)
-			left := sim.slots_skipped(g.slot, period, next)
-			g.slot = next
-			if left > 0 {
-				g.mu.lock()
-				g.skipped += i64(left)
-				g.mu.unlock()
-			}
+	sends, left := g.grid.cycle(cyc, period, fires, now)
+	if sends {
+		if left > 0 {
+			g.mu.lock()
+			g.skipped += i64(left)
+			g.mu.unlock()
 		}
-		g.fresh = false
 		g.job_fire = none
 		said = g.progress(g.send(mut b, now))
 		if g.tp.busy() {
@@ -412,7 +387,7 @@ fn (mut g Gen) progress(st cyclic.Step) string {
 	if st.going {
 		return ''
 	}
-	g.done = time.sys_mono_now() / 1_000_000
+	g.grid.ended(fire == none, time.sys_mono_now() / 1_000_000)
 	if st.why == '' {
 		g.mu.lock()
 		g.sent++

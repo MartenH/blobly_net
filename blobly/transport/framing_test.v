@@ -481,3 +481,61 @@ fn test_frame_out_is_what_each_handle_sends() {
 	assert wire_of(metered(fd_tx, 'inproc:frame_out', 250000, 0)) == 'inproc:frame_out'
 	assert wire_of(plain) == 'inproc:frame_out'
 }
+
+// A bus that does not say its wire, as an emitter on one: frame_out answers by that wire's
+// declaration and its row's, wire_of names it, and no row leaves a frame unmarked.
+fn test_an_emitter_on_a_wire_answers_for_that_wire() {
+	clear_listen_only()
+	replace_wire_policy([], {
+		'inproc:emitter_on': Framing{
+			fd: true
+		}
+	})
+	defer {
+		clear_wire_framing()
+	}
+	f := CanFrame{
+		id:   0x10
+		data: []u8{len: 20}
+	}
+	mut unsaid := NoWire{}
+	assert !frame_out(unsaid, f).fd, 'a bus that does not say: the frame as stated'
+	assert wire_of(unsaid) == ''
+	mut on := emitter_on(unsaid, 'inproc:emitter_on', '')
+	assert frame_out(on, f).fd, 'on an FD wire, with no row: the wire frames it FD'
+	assert wire_of(on) == 'inproc:emitter_on'
+	on.send(f) or { panic(err) }
+	assert unsaid_last.row == ''
+	mut as_row := emitter_on(unsaid, 'inproc:emitter_on', 'R')
+	as_row.send(f) or { panic(err) }
+	assert unsaid_last.row == 'R'
+}
+
+__global unsaid_last CanFrame
+
+// NoWire is a bus that does not say its wire; what it was last sent is unsaid_last.
+struct NoWire {}
+
+fn (mut n NoWire) send(f CanFrame) ! {
+	unsaid_last = f
+}
+
+fn (mut n NoWire) recv(_ int) !CanFrame {
+	return error('timeout')
+}
+
+fn (mut n NoWire) close() {}
+
+fn (mut n NoWire) health() BusHealth {
+	return .unknown
+}
+
+fn (mut n NoWire) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
+fn (mut n NoWire) error_counters() ErrorCounters {
+	return ErrorCounters{}
+}
+
+fn (mut n NoWire) reconcile_silence(_ bool) ! {}

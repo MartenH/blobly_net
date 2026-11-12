@@ -23,6 +23,7 @@ import blobly.sim
 import blobly.canlog
 import blobly.doip
 import blobly.j1939
+import blobly.cyclic
 import blobly.nm
 import rowrule
 import vgui
@@ -185,12 +186,13 @@ mut:
 	//
 	// It was `dbc_readers`, and counted rx loops only, from AFTER their open. The DBC editor and
 	// the System panel already gated on it: both were right about the hazard and short by two
-	// workers, since sim_loop and gen_loop read app.chans and app.senders the same way.
+	// workers, since sim_loop and the generators' loops read app.chans and app.senders the same way.
 	// SPLIT IN TWO, because the drain covers one of them and must never cover the other.
 	//
-	// run_workers are the workers a RUN owns — rx_loop, sim_loop, gen_loop, the diagnostic and
-	// UDS node servers, a replay group, the DoIP watcher, the Diagnostics panel's connection
-	// holder (diag_hold.v) and a LIN bus's worker (lin_panel.v). stop() ENDS them but does not wait;
+	// run_workers are the workers a RUN owns — rx_loop, sim_loop, the generators' wire loops and
+	// the pending-echo expiry (gen_wire.v), the diagnostic and UDS node servers, a replay group,
+	// the DoIP watcher, the Diagnostics panel's connection holder (diag_hold.v) and a LIN bus's
+	// worker (lin_panel.v). stop() ENDS them but does not wait;
 	// rebuild_from_proj waits, because that is the operation that replaces what they read, and
 	// waiting in stop() would put ~200 ms — or seconds, against an adapter that has gone — on
 	// the GUI thread for every Stop. So `!app.running` is not on its own a licence to replace
@@ -440,34 +442,34 @@ mut:
 	// a save back, in .err).
 	cfg_file     TextFile
 	cfg_text_len int // bytes loaded, to notice when the box is nearly full
-	// per-generator send count, for the value sources that step per send (counter/stepmod).
-	// Keyed by SenderRT.uid, so a removal cannot shift one generator's count onto another and an
-	// in-flight fire always writes back onto the generator it read. Cleared for a new project /
-	// a new run (reset_gen_state), where the sequences legitimately restart. Read and written
-	// under app.mu — a cyclic fire and a manual one race otherwise.
+	// per-generator send count — the frames its bus took — which the value sources that step per
+	// send (counter/stepmod) ride and the Generators panel shows. Keyed by SenderRT.uid, so a
+	// removal cannot shift one generator's count onto another and a send in flight always writes
+	// back onto the generator it read. Cleared for a new project / a new run (reset_gen_state),
+	// where the sequences legitimately restart. Read and written under app.mu: a generator's
+	// entry writes it from its wire's loop (gen_wire.v) while the panel reads it.
 	gen_send_n map[u64]int
-	// Bumped whenever gen_send_n is reset or the sender set is reordered. A fire captures it with
-	// its index and only writes the count back if it still matches: a fire can be blocked in the
-	// driver's send while the GUI removes a generator or a new run starts, and its late write
-	// would otherwise land on whichever generator now sits at that index. The same
-	// generation-guard shape the rx ring uses; a lock cannot serve here because those paths hold
-	// app.mu and the fire mutex is taken OUTSIDE it.
+	// the slots of its cycle each generator left out because its loop or its last send was late
+	// (sim.slots_skipped), by SenderRT.uid, beside gen_send_n and under the same rules
+	gen_skipped map[u64]u64
+	// Bumped whenever gen_send_n is reset or the sender set is reordered. An entry captures it
+	// when it is made and writes a count back only while it still matches: a send can be blocked
+	// in the driver while a new run starts or the project is replaced, and its late write would
+	// otherwise land in the new run's counts. The same generation-guard shape the rx ring uses.
 	gen_state_epoch u64
-	// Which generators have a fire in flight, so two fires of the SAME one cannot overlap (a
-	// cyclic tick landing on a manual "Send now") and encode one counter value twice. Per
-	// generator, and NOT a lock held across the send: one global mutex made a generator stalled
-	// in its driver's write block "Send now" on an unrelated healthy wire, and a stalled socket
-	// write must cost its sender and nobody else. A tick that finds its own generator still
-	// firing is skipped — the previous frame has not left yet, so there is nothing to overlap.
-	// Keyed by SenderRT.uid and guarded by app.mu.
-	gen_firing map[u64]bool
 	// the next generator identity to hand out (see SenderRT.uid)
 	gen_next_uid u64
-	// generators' BAMs in progress (a J1939 message past eight bytes on a classic row), paced by
-	// gen_loop, a transfer's tag its generator's uid, keying where it goes in gen_tp_xfers;
-	// guarded by app.mu
-	gen_tp       j1939.Pacer
-	gen_tp_xfers map[int]GenTpXfer
+	// THE GENERATORS' LOOPS (gen_wire.v, #691): each generator with a CAN target is an entry of
+	// the run's wire to its destination (gen_wires, by transport.destination_key), one sending
+	// thread per wire, as a headless run's are. Written on the GUI thread under app.mu
+	// (sync_gen_entries, stop), read under it by every other thread.
+	gen_entries map[u64]&GenEntry
+	gen_wires   map[string]&cyclic.Wire
+	// Moves (atomically) whenever something an entry reads of the GUI before it sends changes —
+	// a trigger or a cycle, a tap filed, failed or dropped, a row retired — so an entry trusts
+	// what it read last until then (genrule.relook) instead of taking app.mu on every pass of
+	// its wire's loop. gen_bump_locked moves it and wakes the wires.
+	gen_rev u64
 	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
 	// Start, so a restarted measurement begins at the same phase instead of one that depends on
 	// how long the GUI happened to be open. 0 = never started.
@@ -715,10 +717,10 @@ mut:
 struct SenderRT {
 mut:
 	// A STABLE IDENTITY, assigned once when the generator enters the runtime set. Per-generator
-	// state (the send count, the in-flight flag) used to be keyed by array INDEX, and every
-	// removal shifted the rest onto each other's entries — a fire in flight then wrote its count
-	// onto a different generator, or cleared a flag that had come to mean another one. An index is
-	// a position, not an identity; this is the identity.
+	// state (the send and skip counts, its entry on a wire) used to be keyed by array INDEX, and
+	// every removal shifted the rest onto each other's entries — a send in flight then wrote its
+	// count onto a different generator. An index is a position, not an identity; this is the
+	// identity.
 	uid u64
 	// WHERE IT LIVES: the channel this generator is nested under in the project file. Both facts
 	// are kept because neither is an identity on its own (#97) — on a shared wire the interface
@@ -740,8 +742,8 @@ mut:
 	// value or the channel set changes, and never derived at a call site: `bus:` now has two
 	// accepted forms, and two call sites deriving the answer separately is precisely how the
 	// picker and the save path came to disagree in the first place. It is also read by the
-	// generator loop every 8 ms with app.mu held, where re-resolving per pass would allocate a
-	// channel list per sender per tick (codex round 1 on #261).
+	// generator's entry before it sends, with app.mu held, where re-resolving would allocate a
+	// channel list per frame (codex round 1 on #261).
 	tgt    string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
 	chan   string // the channel whose frames these are ('' = no single channel owns the target)
 	// …and its project ROW, -1 exactly when `chan` is '': the row's identity, which its transmit
@@ -756,6 +758,10 @@ mut:
 	// headless runner's: its own row alone, the named rows, or every row on a named wire
 	rows   []int
 	sender project.Sender
+	// edits of what its frame is built from — a signal's value or source, the message, the raw
+	// id or payload, the format — each moving it under app.mu, so its entry builds a frame
+	// afresh after one and otherwise sends the frame it built last (genrule.stale)
+	edits u64
 }
 
 // target is the interface this generator transmits on — the RESOLVED answer, not a re-derivation
@@ -1273,13 +1279,15 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
-// reset_gen_state drops the per-generator send counts, for a new project or a new run where the
-// sequences legitimately restart. UNDER app.mu: a fire blocked in its transport send reads and
-// writes these under it, so replacing the map unlocked is an unsafe concurrent map write.
+// reset_gen_state drops the per-generator send and skip counts, for a new project or a new run
+// where the sequences legitimately restart. UNDER app.mu: a generator's entry blocked in its
+// transport send writes these under it, so replacing the map unlocked is an unsafe concurrent
+// map write.
 fn (mut app App) reset_gen_state() {
 	app.mu.lock()
 	app.gen_send_n = map[u64]int{}
-	app.gen_state_epoch++ // an in-flight fire must not write its count back onto the new set
+	app.gen_skipped = map[u64]u64{}
+	app.gen_state_epoch++ // a send in flight must not write its count back onto the new set
 	app.mu.unlock()
 }
 
@@ -1718,13 +1726,10 @@ fn (mut app App) resolve_sender_targets_locked() {
 
 // resolve_one_sender_locked answers ONE generator's `bus:` against `rows`. Caller holds app.mu.
 //
-// It exists so a live edit writes only the entry it edited. Recomputing all of them on
-// set_sender_bus rewrote `tgt` and `chan` for every generator including ones nobody touched,
-// which is a data race against the cyclic fire path (codex round 2 on #97, P1): fire_index
-// snapshots its sender under the lock and used to read `.target()` and `.chan` after releasing
-// it, so an unrelated generator's send could observe a destination mid-assignment. Both halves
-// were fixed — the write is narrowed here, and fire_index now takes its target and owner in the
-// same snapshot as the rest.
+// It exists so a live edit writes only the entry it edited: recomputing all of them on
+// set_sender_bus rewrote `tgt` and `chan` for every generator including ones nobody touched
+// (codex round 2 on #97). A generator's entry (gen_wire.v) reads its target and owner under the
+// lock, in one look, and leaves its wire once they are not the ones it was made for.
 fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	if i < 0 || i >= app.senders.len {
 		return

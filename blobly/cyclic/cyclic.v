@@ -166,11 +166,8 @@ mut:
 	sent    u64
 	failed  u64
 	error   string
-	// the loop's alone: the grid slot last sent in and when that send ended (ms on the monotonic
-	// clock), whether nothing was sent yet, the wire's handle as its row, and the send in progress
-	first  bool = true
-	slot   u64
-	done   u64
+	// the loop's alone: its grid (grid.v), the wire's handle as its row, and the send in progress
+	grid   Grid
 	framed ?transport.Bus
 	tp     Tp
 }
@@ -247,11 +244,16 @@ fn (mut s Sender) due(now u64) ?u64 {
 	if s.tp.busy() {
 		return s.tp.due(now)
 	}
-	s.mu.lock()
-	period := u64(s.spec.period_ms)
-	s.mu.unlock()
 	// due by the period as it is now, so a changed one applies from the next frame
-	return if s.first { now } else { sim.next_due(s.slot, period, s.done) }
+	return s.grid.due(true, s.period(), false, now)
+}
+
+fn (mut s Sender) period() u64 {
+	s.mu.lock()
+	defer {
+		s.mu.unlock()
+	}
+	return u64(s.spec.period_ms)
 }
 
 fn (mut s Sender) serve(mut bus transport.Bus, now u64) string {
@@ -264,12 +266,10 @@ fn (mut s Sender) serve(mut bus transport.Bus, now u64) string {
 		s.ended(s.tp.pump(mut b, now))
 		return ''
 	}
-	due := s.due(now) or { return '' }
-	if now < due {
+	sends, _ := s.grid.cycle(true, s.period(), false, now)
+	if !sends {
 		return ''
 	}
-	s.slot = if s.first { now } else { due }
-	s.first = false
 	s.ended(s.send_once(mut b, now))
 	return ''
 }
@@ -330,7 +330,7 @@ fn (mut s Sender) ended(st Step) {
 	if st.going {
 		return
 	}
-	s.done = time.sys_mono_now() / 1_000_000
+	s.grid.ended(true, time.sys_mono_now() / 1_000_000)
 	if st.why != '' {
 		s.note_failure(st.why)
 		return

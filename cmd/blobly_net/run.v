@@ -106,25 +106,6 @@ fn (app &App) dbs_for_dest(iface string) []candb.Database {
 // The distinction exists because one reader serves a destination: `running` is a property of the
 // row that opened the port, while "is this bus being watched" is a property of the wire, and
 // every caller that was asking the first meant the second.
-// dest_left_the_run_locked reports a destination whose rows are ALL disabled, having existed in
-// this project — which is what rx_loop does to a wire whose adapter failed. A destination with no
-// rows at all (an anonymous tap, a generator's own target) has not left anything. Caller holds
-// app.mu.
-fn (app &App) dest_left_the_run_locked(iface string) bool {
-	want := transport.destination_key(iface)
-	mut seen := false
-	for c in app.chans {
-		if transport.destination_key(c.iface) != want {
-			continue
-		}
-		seen = true
-		if c.enabled {
-			return false
-		}
-	}
-	return seen
-}
-
 fn (app &App) dest_is_read_locked(iface string) bool {
 	want := transport.destination_key(iface)
 	for c in app.chans {
@@ -467,6 +448,7 @@ fn (mut app App) spawn_tap_for(row int, chan_name string, iface string) {
 	// took the shared tap and was filed under the wrong channel (codex round 9 on #257). The
 	// marker comes back only if this attempt fails too (install_tap).
 	app.tap_failed.delete(tx_bus_key(row, iface))
+	app.gen_bump_locked()
 	app.mu.unlock()
 	if !live {
 		return
@@ -509,6 +491,9 @@ fn (mut app App) drop_unwanted_taps(row int, iface string) {
 			doomed << b
 			app.tx_buses.delete(wire_tap)
 		}
+	}
+	if doomed.len > 0 {
+		app.gen_bump_locked()
 	}
 	app.mu.unlock()
 	for mut b in doomed {
@@ -562,13 +547,6 @@ fn (app &App) taprule_run_locked() taprule.Run {
 	return taprule.Run{
 		running: app.running
 		gen:     app.run_gen
-	}
-}
-
-fn (app &App) taprule_taps_locked() taprule.Taps {
-	return taprule.Taps{
-		filed:  app.tx_buses.keys()
-		failed: app.tap_failed.keys()
 	}
 }
 
@@ -631,11 +609,12 @@ fn (mut app App) install_tap(row int, chan_name string, iface string, phys strin
 			app.file_tap(named, mut b, gen)
 		} else {
 			named_failed[named] = true
-			// TERMINAL, and said so where gen_loop reads it: a sender waiting for this tap
+			// TERMINAL, and said so where a generator's entry reads it: a sender waiting for this tap
 			// would otherwise wait for the rest of the run (codex round 6 on #257).
 			app.mu.lock()
 			if app.run_gen == gen {
 				app.tap_failed[named] = true
+				app.gen_bump_locked() // the shared tap may stand in now
 			}
 			app.mu.unlock()
 			notify_gen(app, gen, '${chan_name}: transmit tap failed to open — ${err}')
@@ -665,6 +644,8 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 		// a generator added or retargeted — can succeed where Start's did not, and the sender
 		// must go back to its own tap (codex round 7 on #257).
 		app.tap_failed.delete(key)
+		// a generator's cycle waiting for this tap sends now
+		app.gen_bump_locked()
 	}
 	app.mu.unlock()
 	if !keep {
@@ -1058,9 +1039,9 @@ fn (mut app App) start() {
 	// the same frame the click lands in — rather than by closing the dialog here.
 	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
 	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
-	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
-	// survived the previous run can be in flight right here — replacing the map unlocked is an
-	// unsafe concurrent map write and the epoch a plain data race (codex #269).
+	// UNDER app.mu: a generator's entry reads and writes gen_send_n/gen_state_epoch under it, and
+	// one that survived the previous run can be in flight right here — replacing the map unlocked
+	// is an unsafe concurrent map write and the epoch a plain data race (codex #269).
 	app.mu.lock()
 	// AND AGAIN, now that run_gen has moved. The restore above had to happen before
 	// check_destinations, which reads the enabled rows — placed after it, a conflict involving a
@@ -1078,7 +1059,8 @@ fn (mut app App) start() {
 	app.push_listen_only_locked()
 	app.wave_t0_ns = time.sys_mono_now()
 	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
-	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
+	app.gen_skipped = map[u64]u64{}
+	app.gen_state_epoch++ // a send still in flight from the previous run must not write into it
 	// A NEW RUN OPENS EVERYTHING AGAIN, so the last run's failed opens say nothing about this
 	// one. HERE, under the lock that publishes the run, and not in the row loop below: that loop
 	// runs AFTER `app.running = true`, and a Lua or tool tap that survives Stop can send in
@@ -1342,8 +1324,11 @@ fn (mut app App) start() {
 	// above appends to the same array without the lock. Finishing that construction first is
 	// what makes the unlocked appends safe, rather than adding a lock to every one of them.
 	app.start_doip_hosts(desc_sys)
-	app.reserve_run_worker()
-	spawn gen_loop(app) // cyclic senders
+	// the generators, an entry each on a loop per destination (gen_wire.v); a generator's cycle
+	// waits for its tap, which open_taps_for_run files as it comes up
+	app.sync_gen_entries()
+	app.reserve_run_worker() // released by the loop's own defer
+	spawn pending_expiry_loop(app, start_gen)
 	// The players go LAST -- after the monitors, and after every in-process consumer has been
 	// spawned. Two separate reasons, and only the first was handled before:
 	//
@@ -1668,6 +1653,8 @@ fn (mut app App) stop() {
 	app.mu.lock()
 	app.running = false
 	app.mu.unlock()
+	// the generators' loops end: a send in progress ends with its tap below ("run ended")
+	app.stop_gen_wires()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.
 	// Snapshot under the lock the supervisor uses: it inserts and deletes entries as channels
