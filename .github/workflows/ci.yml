@@ -283,7 +283,7 @@ jobs:
         run: |
           sh scripts/ci_apt_direct.sh
           sudo apt-get install -y --no-install-recommends \
-            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev xvfb libgl1-mesa-dri
 
       - name: Build GUI dependencies (cached)
         uses: ./.github/actions/gui-deps
@@ -296,6 +296,15 @@ jobs:
         run: |
           RELEASE=1 RUN=0 sh scripts/run_gui.sh
           test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
+
+      # The release binary RUN, not only linked: sim-demo started on the GUI thread and drawn for
+      # 240 frames on Xvfb (mesa's software GL), the session log saying its buses opened.
+      - name: Run the GUI headless (sim-demo, 240 frames)
+        run: |
+          BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 VGUI_FRAMES=240 \
+            timeout 120 xvfb-run -a ./build/blobly_net
+          log="$(ls -t "$HOME"/.local/state/blobly_net/logs/*.log | head -1)"
+          grep -q 'CAN1: open on inproc:CAN1' "$log" || { cat "$log"; exit 1; }
 
       # THE BINARY THIS JOB ALREADY BUILT, kept instead of discarded. windows.yml has published
       # its bundle on every main push for a long time while the Linux job built the same app and

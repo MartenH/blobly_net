@@ -149,7 +149,8 @@ set -- -cc gcc -enable-globals -path "@vlib|libs|@vmodules"
 # The release flavour: gcc -O2 runs the engine 1.2-3x faster (decode, DBC parse, a .log or MF4 read)
 # at ~4x the C compile. -cflags, never -prod: -prod is a different program (`$if prod`, its own GC
 # build) and carries docs/known_issues.md's first entry.
-[ "${RELEASE:-0}" = "1" ] && set -- "$@" -cflags -O2
+# DBG=1 wins: a gdb build with its variables optimised away is no debug build.
+[ "${RELEASE:-0}" = "1" ] && [ "${DBG:-0}" != "1" ] && set -- "$@" -cflags -O2
 # Serialised C compile. The Windows CI runner builds with this; keep it a knob rather than a
 # platform default so a local Windows build still gets the parallel (much faster) path.
 [ "${NO_PARALLEL:-0}" = "1" ] && set -- "$@" -no-parallel
