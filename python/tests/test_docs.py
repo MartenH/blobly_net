@@ -138,13 +138,17 @@ class TestReference:
         assert "keys" in members(classes["Messages"], classes)
 
 
+# every Python block of the guides, one case each, so the workers share them out
+PYTHON_BLOCKS = [pytest.param(doc, i, code, id=f"{os.path.relpath(doc, REPO).replace(os.sep, '/')}#{i + 1}")
+                 for doc in RUN for i, code in enumerate(blocks(doc, "python"))]
+
+
 class TestBlocks:
-    def test_every_python_block_runs(self, monkeypatch):
+    @pytest.mark.parametrize("doc, i, code", PYTHON_BLOCKS)
+    def test_the_python_block_runs(self, monkeypatch, doc, i, code):
         monkeypatch.chdir(REPO)  # the blocks run from the root of a checkout
-        for doc in RUN:
-            for i, code in enumerate(blocks(doc, "python")):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exec(compile(code, f"{doc}#{i + 1}", "exec"), {"__name__": "__doc_block__"})
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(code, f"{doc}#{i + 1}", "exec"), {"__name__": "__doc_block__"})
 
     def test_every_yaml_block_is_a_project(self, tmp_path):
         # a project names its databases relative to itself: projects/ beside dbc/, as here

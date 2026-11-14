@@ -9,6 +9,8 @@ import socket
 import struct
 import threading
 
+import pytest
+
 from conftest import INSTALLED, REPO, SIM_DEMO, run_python as run
 
 EXAMPLES = os.path.join(REPO, "python", "examples")
@@ -90,17 +92,18 @@ class TestExamples:
         for name in sorted(here):
             assert f"]({name})" in index, f"{name} is not linked from python/examples/README.md"
 
-    def test_each_script_runs_clean(self):
-        for name, args in SCRIPTS.items():
-            node = SomeipNode() if args is None else None
-            try:
-                r = run(os.path.join(EXAMPLES, name), *(node.args if node else args))
-            finally:
-                if node:
-                    node.close()
-            assert r.returncode == 0, f"{name}:\n{r.stdout}\n{r.stderr}"
-            assert "engine " in r.stdout, name
-            assert_package(r.stdout, name)
+    @pytest.mark.parametrize("name", list(SCRIPTS))
+    def test_the_script_runs_clean(self, name):
+        args = SCRIPTS[name]
+        node = SomeipNode() if args is None else None
+        try:
+            r = run(os.path.join(EXAMPLES, name), *(node.args if node else args))
+        finally:
+            if node:
+                node.close()
+        assert r.returncode == 0, f"{name}:\n{r.stdout}\n{r.stderr}"
+        assert "engine " in r.stdout, name
+        assert_package(r.stdout, name)
 
     def test_a_project_named_on_the_command_line_is_used(self):
         r = run(os.path.join(EXAMPLES, "raw_can.py"), SIM_DEMO, "--channel", "CAN2")

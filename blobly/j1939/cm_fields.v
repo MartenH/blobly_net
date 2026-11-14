@@ -98,9 +98,14 @@ fn (f CmField) value(raw [8]u8) u32 {
 	return v
 }
 
+// hex is a field's value as a refusal spells it, built only for a refusal: `why` runs on every
+// field of every TP.CM frame.
+fn (f CmField) hex(v u32) string {
+	return if f.width == 1 { '0x${v:02X}' } else { '0x${v:X}' }
+}
+
 // why is the refusal of `v`, or none where the field may hold it.
 fn (f CmField) why(v u32) ?string {
-	hex := if f.width == 1 { '0x${v:02X}' } else { '0x${v:X}' }
 	match f.rule {
 		.range {
 			if v < f.lo || v > f.hi {
@@ -109,17 +114,17 @@ fn (f CmField) why(v u32) ?string {
 		}
 		.fixed {
 			if v != f.lo {
-				return '${cm_name(f.ctrl)} ${f.name} ${hex}; J1939-21 fixes it at 0x${f.lo:02X}'
+				return '${cm_name(f.ctrl)} ${f.name} ${f.hex(v)}; J1939-21 fixes it at 0x${f.lo:02X}'
 			}
 		}
 		.ones {
 			if v & f.lo != f.lo {
-				return '${cm_name(f.ctrl)} ${f.name} ${hex}; J1939-21 sets bits 0x${f.lo:02X}'
+				return '${cm_name(f.ctrl)} ${f.name} ${f.hex(v)}; J1939-21 sets bits 0x${f.lo:02X}'
 			}
 		}
 		.excludes {
 			if v & f.hi == f.lo {
-				return '${cm_name(f.ctrl)} ${f.name} ${hex}; the code ${f.lo:b} under 0x${f.hi:02X} is reserved'
+				return '${cm_name(f.ctrl)} ${f.name} ${f.hex(v)}; the code ${f.lo:b} under 0x${f.hi:02X} is reserved'
 			}
 		}
 		.any {}
