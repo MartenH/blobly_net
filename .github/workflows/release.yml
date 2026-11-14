@@ -15,9 +15,10 @@
 # PCANBasic.dll and canlib32.dll come with the vendor's driver installs, and the Vector XL
 # terms forbid redistribution (ROADMAP: the one hard-to-take-back mistake).
 #
-# The release binary is the same non-optimized build every test and CI run exercises — on a
-# beta compiler, shipping the binary everybody tested beats shipping a -prod profile nothing
-# ever ran. Revisit when CI itself builds -prod — and read the FIRST entry in
+# The release binary is run_gui.sh's RELEASE=1 flavour, which ci.yml and windows.yml build on every
+# push: gcc -O2 through -cflags, nothing else changed — the tests themselves run unoptimised. NOT
+# -prod: on a beta compiler, -prod is a different program (`$if prod`, its own GC build) that
+# nothing here runs. Revisit when CI itself builds -prod — and read the FIRST entry in
 # docs/known_issues.md before you do: -prod plus a Boehm GC mode makes every call out of a frame
 # holding a pointerful array by value cost O(len), which took a 1.23M-frame replay from real
 # time to about thirteen days (~17,000x). Nothing here builds -prod today, which is the only
@@ -108,7 +109,7 @@ jobs:
       - name: Build GUI dependencies (cached)
         uses: ./.github/actions/gui-deps
       - name: Build GUI app
-        run: RUN=0 bash scripts/run_gui.sh
+        run: RELEASE=1 RUN=0 bash scripts/run_gui.sh
       - name: Sanity — the binary answers with the tagged version
         run: |
           got="$(./build/blobly_net --version)"
