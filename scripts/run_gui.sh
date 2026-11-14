@@ -15,6 +15,8 @@
 #   scripts/run_gui.sh                       # build + run (driver-free sim by default)
 #   DEPS=1 scripts/run_gui.sh                # force a rebuild of libvgui_c.a
 #   RUN=0 scripts/run_gui.sh                 # build only -> build/blobly_net[.exe]
+#   RELEASE=1 RUN=0 scripts/run_gui.sh       # the release build: C optimised (-O2), what CI and
+#                                             #   the bundles build; ~110 s against ~30 s
 #   DBG=1 RUN=0 scripts/run_gui.sh           # build with -g (asserts on) for gdb
 #   NO_PARALLEL=1 scripts/run_gui.sh         # serialise the C compile (V's -no-parallel), which
 #                                             #   the Windows CI runner builds with
@@ -144,6 +146,10 @@ fi
 #    needs -enable-globals. DBG=1 adds -g (source-level symbols for gdb).
 set -- -cc gcc -enable-globals -path "@vlib|libs|@vmodules"
 [ "${DBG:-0}" = "1" ] && set -- "$@" -g
+# The release flavour: gcc -O2 runs the engine 1.2-3x faster (decode, DBC parse, a .log or MF4 read)
+# at ~4x the C compile. -cflags, never -prod: -prod is a different program (`$if prod`, its own GC
+# build) and carries docs/known_issues.md's first entry.
+[ "${RELEASE:-0}" = "1" ] && set -- "$@" -cflags -O2
 # Serialised C compile. The Windows CI runner builds with this; keep it a knob rather than a
 # platform default so a local Windows build still gets the parallel (much faster) path.
 [ "${NO_PARALLEL:-0}" = "1" ] && set -- "$@" -no-parallel

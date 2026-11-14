@@ -96,7 +96,7 @@ jobs:
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
 
-      # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -O1 -shared,
+      # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -O2 -shared,
       # then driven by a C host and by a ctypes host — each on a thread of the HOST's own as
       # well, with enough allocation on it to collect there, since a thread the collector did
       # not see born is the one way an embedded V runtime differs from a program.
@@ -290,10 +290,11 @@ jobs:
 
       # scripts/run_gui.sh (RUN=0 = build only) reuses the validated libvgui_c.a and compiles
       # cmd/blobly_net with the right flags (-cc gcc -enable-globals -path …|libs). Using
-      # the same script devs use keeps CI and local builds identical.
-      - name: Build GUI app (RUN=0 scripts/run_gui.sh)
+      # the same script devs use keeps CI and local builds identical; RELEASE=1 is the flavour
+      # the bundles ship (-O2).
+      - name: Build GUI app (RELEASE=1 RUN=0 scripts/run_gui.sh)
         run: |
-          RUN=0 sh scripts/run_gui.sh
+          RELEASE=1 RUN=0 sh scripts/run_gui.sh
           test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
 
       # THE BINARY THIS JOB ALREADY BUILT, kept instead of discarded. windows.yml has published
