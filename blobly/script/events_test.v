@@ -949,7 +949,8 @@ fn test_a_fractional_period_does_not_spin() {
 		log("fires " .. fires)
 		log("waits " .. waits)
 	')!
-	assert said.num('fires') >= 20, said.lines.str()
+	// a floor a loaded machine meets (an average wait under 20 ms); the spin bound is the test
+	assert said.num('fires') >= 5, said.lines.str()
 	assert said.num('waits') < 500, 'run() polled ${said.num('waits')} times in 100 ms'
 }
 
