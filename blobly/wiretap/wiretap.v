@@ -192,7 +192,8 @@ pub mut:
 	// gives that echo back (refuse).
 	sends_settle bool
 mut:
-	items []Pending
+	// by reference, so dropping one shifts a pointer per record behind it, not the record
+	items []&Pending
 }
 
 // note records a frame we are about to put on the wire. Call it BEFORE the send: a monitor
@@ -221,7 +222,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	// the payload copied from a local: a clone of the parameter's own field would put the whole
 	// frame on the heap first (V3's escape of `f`), per note
 	payload := f.data
-	r.items << Pending{
+	r.items << &Pending{
 		seq:     seq
 		key:     frame_key(wire, f)
 		tag:     tag
@@ -237,10 +238,10 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		t_ms:    t_ms
 		open:    r.sends_settle
 	}
-	if r.cap > 0 && r.items.len > r.cap {
-		// down to 7/8 of the cap in one pass, so a full ring pays one walk per cap/8 notes rather
-		// than a walk and a shift of the whole ring per note
-		return r.evict(r.items.len - r.cap + r.cap / 8)
+	if r.cap > 0 && r.items.len > r.cap + r.cap / 8 {
+		// back down to the cap once it is over by an eighth: one walk per cap/8 notes rather than
+		// a walk and a shift of the whole ring per note, and never fewer records kept than the cap
+		return r.evict(r.items.len - r.cap)
 	}
 	return []u64{}
 }
@@ -279,7 +280,7 @@ fn (mut r Ring) evict(k int) []u64 {
 		}
 		w++
 	}
-	r.items.trim(w)
+	r.items.delete_many(w, r.items.len - w) // clears the tail, so the dropped records can be collected
 	return evicted
 }
 
