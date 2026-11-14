@@ -1,7 +1,6 @@
 module mf4
 
 import os
-import encoding.binary
 
 // ByteSource is where the reader gets a file's bytes: the whole image in memory (the tests build
 // images in V; small files), or a file read at offsets — the shape a recording that does not
@@ -144,17 +143,32 @@ fn exact_at(mut src ByteSource, off u64, n int) ![]u8 {
 }
 
 fn u8_at(mut src ByteSource, off u64) u8 {
-	return bytes_at(mut src, off, 1)[0]
+	return u8(le_at(mut src, off, 1))
 }
 
 fn u16_at(mut src ByteSource, off u64) u16 {
-	return binary.little_endian_u16(bytes_at(mut src, off, 2))
+	return u16(le_at(mut src, off, 2))
 }
 
 fn u32_at(mut src ByteSource, off u64) u32 {
-	return binary.little_endian_u32(bytes_at(mut src, off, 4))
+	return u32(le_at(mut src, off, 4))
 }
 
 fn u64_at(mut src ByteSource, off u64) u64 {
-	return binary.little_endian_u64(bytes_at(mut src, off, 8))
+	return le_at(mut src, off, 8)
+}
+
+// le_at is bytes_at for a little-endian integer of n <= 8 bytes, read into a stack buffer
+// rather than a fresh array: the header walk asks this for every link and field it reads.
+// What was not read is zero, as in bytes_at.
+fn le_at(mut src ByteSource, off u64, n int) u64 {
+	mut b := [8]u8{}
+	// a view of b, not a copy: slicing a fixed array copies it, and the read would land there
+	mut view := unsafe { (&b[0]).vbytes(n) }
+	src.read_at(off, mut view) or {}
+	mut v := u64(0)
+	for i in 0 .. n {
+		v |= u64(unsafe { b[i] }) << (8 * i)
+	}
+	return v
 }
