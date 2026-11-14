@@ -70,8 +70,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   call removes the cost.
 
   **We are not affected today, and this is the reason to keep it that way.** Nothing in this
-  repo builds `-prod` — `release.yml` ships "the same non-optimized build every test and CI run
-  exercises" — and the unmodified `cmd/restbus` replays all 1,069,214 frames of that recording
+  repo builds `-prod` — the release is `run_gui.sh`'s `RELEASE=1`, gcc `-O2` through `-cflags`,
+  which sets no `prod` — and the unmodified `cmd/restbus` replays all 1,069,214 frames of that recording
   in 67 s. So this is filed against the "Revisit when CI itself builds `-prod`" note in
   `release.yml`: **turning `-prod` on without fixing this first would have taken that replay
   from real time to roughly thirteen days** — 0.94 frames/s against 16,200, about 17,000×, the

@@ -238,10 +238,10 @@ jobs:
       # user should ever see. That mismatch was a live bug: scripts/register_blobnet_win.ps1 has
       # always searched for blobly_net.exe, so .blobnet file association could never find the
       # executable it was written for.
-      - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
+      - name: Build the GUI app (RELEASE=1 RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |
-          RUN=0 NO_PARALLEL=1 V=/c/v-ct/v.exe sh scripts/run_gui.sh
+          RELEASE=1 RUN=0 NO_PARALLEL=1 V=/c/v-ct/v.exe sh scripts/run_gui.sh
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's ucrt64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.

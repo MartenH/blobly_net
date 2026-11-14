@@ -31,7 +31,7 @@ ln -s /usr/include/asm-generic "$hdr/asm-generic"
 ln -s "$asm" "$hdr/asm"
 # V's prebuilt collector is glibc's, so the bundled one is compiled; musl has no getcontext.
 "$V" -enable-globals -cc musl-gcc -d use_bundled_libgc \
-	-cflags "-static -s -isystem $hdr -DNO_GETCONTEXT" -o "$out/canbridge" cmd/canbridge
+	-cflags "-O2 -static -s -isystem $hdr -DNO_GETCONTEXT" -o "$out/canbridge" cmd/canbridge
 # A program interpreter is a dynamic link (ldd cannot say so of a musl one).
 if readelf -lW "$out/canbridge" | grep -q 'INTERP'; then
 	echo "build_canbridge: $out/canbridge is dynamically linked" >&2
