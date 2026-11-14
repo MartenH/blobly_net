@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# unit_tests.sh — the engine's unit tests (CI's `v test blobly/`), at one parallel job per core.
+# unit_tests.sh — the engine's unit tests (CI's `v test blobly/`), at one parallel job per core, at most 8.
 #
 # V3's test runner allows one job per 8 GB of memory (three on a 32 GB machine) while a compile
-# here peaks near 1 GB, so its default leaves most cores idle. VJOBS, when set, still decides.
+# here peaks near 1 GB, so its default leaves most cores idle. Past 8 nothing is gained: measured
+# on 16 cores (WSL), 16 jobs took 131 s and 8 took 134 s, at 1849 against 1386 CPU-seconds, each
+# compile slowing in the kernel's page-fault handling. VJOBS, when set, still decides.
 #
 #   ./scripts/unit_tests.sh [path...]   default: blobly/
 #   ./scripts/unit_tests.sh --shard I/N part I of N (scripts/unit_shard.sh) — CI runs one per job
@@ -19,7 +21,11 @@ if [ "${1:-}" = --shard ]; then
 	set --
 	for d in $dirs; do set -- "$@" "$root/$d"; done
 fi
-export VJOBS=${VJOBS:-$(nproc)}
+if [ -z "${VJOBS:-}" ]; then
+	cores=$(nproc)
+	VJOBS=$((cores < 8 ? cores : 8))
+fi
+export VJOBS
 # V's default tcc cannot build the suite on native Windows (docs/known_issues.md)
 cc=()
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) cc=(-cc gcc) ;; esac

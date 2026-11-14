@@ -129,7 +129,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -enable-globals run cmd/<tool>/<file>.v   # any other target
-./scripts/unit_tests.sh                    # unit tests — `v -enable-globals test blobly/` at one job per core
+./scripts/unit_tests.sh                    # unit tests — `v -enable-globals test blobly/` at one job per core, at most 8
 ./scripts/runtests.sh                       # ALL headless Lua suites (in-process sim) — CI's command
 ./scripts/runtests.sh tests/diag_basic.lua  # or name them: one invocation, one environment
 ```
