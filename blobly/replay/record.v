@@ -324,7 +324,6 @@ fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 		mut seq := u64(0)
 		mut dir := canlog.Dir.rx
 		if c := r.rings[i].claim_noted_by(i, t.iface, l.e.frame, l.at, l.seen) {
-			r.rings[i].forget(c.seq)
 			dir = .tx
 			if c.seq in r.unsettled {
 				r.unsettled[c.seq] = true
@@ -530,7 +529,6 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 	mut wait := u64(0)
 	if c := r.rings[i].claim(i, t.iface, f, at) {
 		ours = true
-		r.rings[i].forget(c.seq) // one reader per ring: a claimed note is done, and kept it is scanned
 		if c.seq in r.unsettled {
 			r.unsettled[c.seq] = true
 			wait = c.seq

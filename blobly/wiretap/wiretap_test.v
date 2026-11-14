@@ -18,10 +18,33 @@ fn test_a_frame_we_sent_is_recognised_as_ours() {
 		return
 	}
 	assert c.seq == 7
-	// still held — a second monitor on this interface gets its own copy of the frame and would
-	// otherwise see our own emission as foreign. Expiry retires it, silently, having been seen.
-	assert r.outstanding() == 1
+	// its one monitor has answered, so nothing can ask about it again: it is gone, no verdict
+	assert r.outstanding() == 0
 	assert r.expire(default_window_ms + 1) == []u64{}
+}
+
+// A record leaves the ring as it settles, so a ring of answered sends never fills: each frame's
+// note and claim walk what is still in flight, not the last cap's worth of answered sends.
+fn test_answered_sends_do_not_accumulate() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	for i in 0 .. 3 * default_cap {
+		f := frame(u32(0x100 + i % 64), [u8(i)])
+		r.note(u64(i), 'vcan0', f, 0, [0, 1], '', false)
+		r.claim(0, 'vcan0', f, 0) or { assert false }
+		r.claim(1, 'vcan0', f, 0) or { assert false }
+		assert r.outstanding() == 1, 'open: a refusal may still need it'
+		r.sent(u64(i))
+		assert r.outstanding() == 0
+	}
+	// and dropping a monitor settles what only it had left to answer
+	f := frame(0x7F0, [u8(9)])
+	r.note(1, 'vcan0', f, 0, [0, 1], '', false)
+	r.sent(1)
+	r.claim(0, 'vcan0', f, 0) or { assert false }
+	assert r.outstanding() == 1
+	r.drop_monitor(1)
 	assert r.outstanding() == 0
 }
 
@@ -627,7 +650,7 @@ fn test_an_unsure_send_keeps_its_echo() {
 	r.claim(0, 'vcan0', f, 2) or { assert false }
 	r.unsure(1)
 	r.unsure(2)
-	assert r.outstanding() == 1, 'the claimed record stays, the unclaimed one goes'
+	assert r.outstanding() == 0, 'the claimed record settles, the unclaimed one goes'
 	assert r.refuse(1) == []Reclaim{}, 'settled by unsure: nothing is provisional'
 }
 

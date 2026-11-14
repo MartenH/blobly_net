@@ -95,7 +95,8 @@ fn test_note_cost_when_the_ring_is_full() {
 			0, [0], '', false)
 	}
 	after := allocated_bytes()
-	assert r.outstanding() == default_cap
+	// a full ring is evicted to 7/8 of its cap at once, so it stays within that band
+	assert r.outstanding() <= default_cap && r.outstanding() >= default_cap - default_cap / 8
 	per := f64(after - before) / f64(n)
 	println('note cost @ ${default_cap} pending: ${per:.0f} bytes allocated per note')
 	assert per < 4096, 'note() at cap allocates ${per:.0f} bytes each -- the ring is being rebuilt per record'

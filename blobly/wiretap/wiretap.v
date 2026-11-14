@@ -159,8 +159,8 @@ mut:
 }
 
 // settled: every monitor that could have seen this emission has accounted for it, so no future
-// frame can match it. Nothing is lost by dropping it, which makes it the first thing to give up
-// when the ring is full — unless its send is still open, when a refusal would need it back.
+// frame can match it, and its send is not open (a refusal would need it back). Nothing is lost by
+// dropping it, so it is dropped as it settles (drop_if_settled).
 fn (p &Pending) settled() bool {
 	if p.open || p.allowed.len == 0 {
 		return false // nobody named: any monitor may still claim it (see `allowed`)
@@ -237,60 +237,58 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		t_ms:    t_ms
 		open:    r.sends_settle
 	}
-	mut evicted := []u64{}
 	if r.cap > 0 && r.items.len > r.cap {
-		// One victim at a time, IN PLACE. Rebuilding the array to evict ONE record — a map of
-		// indices, three passes and a fresh cap-sized copy — ran on EVERY note() once the ring was
-		// full, which at replay rates is thousands of times a second: ~150 KB of garbage per emitted
-		// frame, measured at ~1 GB/s inside the GUI, and the reason its heap collected every second
-		// (the once-a-second replay stutter). A delete shifts the tail down and allocates nothing.
-		// Which record goes is victim_index's question; whether dropping it is a verdict is
-		// reportable()'s — the same two answers the old passes gave, each now in one place.
-		mut need := r.items.len - r.cap
-		for need > 0 && r.items.len > 0 {
-			v := r.victim_index()
-			if r.items[v].reportable() {
-				evicted << r.items[v].seq
-			}
-			r.items.delete(v)
-			need--
-		}
+		// down to 7/8 of the cap in one pass, so a full ring pays one walk per cap/8 notes rather
+		// than a walk and a shift of the whole ring per note
+		return r.evict(r.items.len - r.cap + r.cap / 8)
 	}
+	return []u64{}
+}
+
+// evict gives up `k` records, IN PLACE (one compacting pass, nothing allocated), and returns the
+// row identities of those whose drop is a verdict (reportable). Cost order, not arrival order: a
+// verdictless record (never claimable, never reportable) goes first, then a claimed one whose
+// send is still open (it costs a refusal's reclaim, never a verdict), then the oldest. Plain
+// arrival order would drop an unwatched record — still claimable, and the startup window depends
+// on that — before a watched one, and a watched record before a verdictless one, accusing a
+// healthy bus of a miss. A settled record never waits here: it leaves the ring as it settles.
+fn (mut r Ring) evict(k int) []u64 {
+	mut count := [3]int{}
+	for i in 0 .. r.items.len {
+		count[r.items[i].cost()]++
+	}
+	mut take := [3]int{}
+	mut left := k
+	for c in 0 .. 3 {
+		take[c] = if count[c] < left { count[c] } else { left }
+		left -= take[c]
+	}
+	mut evicted := []u64{}
+	mut w := 0
+	for i in 0 .. r.items.len {
+		c := r.items[i].cost()
+		if take[c] > 0 {
+			take[c]--
+			if r.items[i].reportable() {
+				evicted << r.items[i].seq
+			}
+			continue
+		}
+		if w != i {
+			r.items[w] = r.items[i]
+		}
+		w++
+	}
+	r.items.trim(w)
 	return evicted
 }
 
-// victim_index is which record eviction gives up next. Cost order, not arrival order: a settled
-// record (every allowed monitor has answered — nothing can ever ask about it again) goes first,
-// else a verdictless one (never claimable, never reportable), else a claimed one whose send is
-// still open, else the oldest. Plain arrival
-// order would drop an unwatched record — still claimable, and the startup window depends on
-// that — before a settled one it happens to precede, and a watched record before a verdictless
-// one, accusing a healthy bus of a miss. ONE pass: the first settled record wins outright, the
-// first verdictless one is remembered in case none is settled. By index and by reference —
-// copying each Pending to ask it a question is the ~200us/frame the claim path already learned
-// not to pay.
-fn (r &Ring) victim_index() int {
-	mut verdictless := -1
-	mut answered := -1
-	for i in 0 .. r.items.len {
-		if r.items[i].settled() {
-			return i
-		}
-		if verdictless < 0 && (r.items[i].allowed.len == 0 || r.items[i].watched_gone) {
-			verdictless = i
-		}
-		if answered < 0 && r.items[i].open && !r.items[i].reportable() {
-			answered = i
-		}
+// cost is a record's eviction class, cheapest first (see evict).
+fn (p &Pending) cost() int {
+	if p.allowed.len == 0 || p.watched_gone {
+		return 0
 	}
-	if verdictless >= 0 {
-		return verdictless
-	}
-	// a claimed record whose send is open costs only a refusal's reclaim, never a verdict
-	if answered >= 0 {
-		return answered
-	}
-	return 0
+	return if p.open && !p.reportable() { 1 } else { 2 }
 }
 
 // frame_key is a cheap discriminator over everything the exact comparison checks: the interface,
@@ -385,13 +383,15 @@ pub fn (mut r Ring) claim_noted_by(monitor int, iface string, f transport.CanFra
 					r.items[i].provisional << pv
 				}
 			}
-			return Claim{
+			c := Claim{
 				seq:   p.seq
 				first: first
 				tag:   p.tag
 				done:  p.done
 				open:  p.open
 			}
+			r.drop_if_settled(i)
+			return c
 		}
 	}
 	return none
@@ -434,7 +434,7 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 // thing that could have said so was deliberately removed. Marking it missing would accuse the
 // bus of a fault the user caused by unticking a box.
 pub fn (mut r Ring) drop_monitor(monitor int) {
-	for i in 0 .. r.items.len {
+	for i := r.items.len - 1; i >= 0; i-- {
 		// Only records this monitor was ELIGIBLE for. An emission noted while nothing was
 		// watching has an empty allowed set from the start and must stay claimable — that is the
 		// startup window — so an unrelated monitor exiting must not turn it into "its watchers
@@ -449,6 +449,7 @@ pub fn (mut r Ring) drop_monitor(monitor int) {
 		if r.items[i].allowed.len == 0 {
 			r.items[i].watched_gone = true
 		}
+		r.drop_if_settled(i) // the monitors left had all answered
 	}
 }
 
@@ -501,6 +502,15 @@ pub fn (mut r Ring) sent(seq u64) {
 	r.items[i].has_prov0 = false
 	if r.items[i].provisional.len > 0 {
 		r.items[i].provisional = []
+	}
+	r.drop_if_settled(i)
+}
+
+// drop_if_settled removes record i once it is settled: no frame can match it again, and a full
+// ring of records nothing will ever ask about made every note and claim walk all of them.
+fn (mut r Ring) drop_if_settled(i int) {
+	if r.items[i].settled() {
+		r.items.delete(i)
 	}
 }
 
