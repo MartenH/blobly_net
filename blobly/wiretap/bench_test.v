@@ -49,17 +49,20 @@ fn test_claim_cost_when_the_ring_is_full() {
 	assert miss == 0
 
 	// TYPICAL: our own echo, which matches an early record (oldest-first, and the oldest are the
-	// ones still waiting) — the case that actually runs on a bench
+	// ones still waiting) — the case that actually runs on a bench. A claimed record leaves the
+	// ring, so each is replaced by a note first and the ring stays full.
 	mut hit := 0
 	t1 := time.ticks()
 	for i in 0 .. 1000 {
+		r.note(u64(default_cap + i), 'vcan0', bench_frame(0x7FE, u8(i % 256)), 0, [0], '',
+			false)
 		if _ := r.claim(0, 'vcan0', bench_frame(u32(0x100 + (i % 0x400)), u8(i % 256)), 1) {
 			hit++
 		}
 	}
 	typical_us := f64(time.ticks() - t1) * 1000.0 / 1000.0
 
-	println('claim cost @ ${default_cap} pending: worst ${worst_us:.2}us/frame, typical ${typical_us:.2}us/frame (${hit} hits)')
+	println('claim cost @ ${default_cap} pending: worst ${worst_us:.2}us/frame, typical ${typical_us:.2}us/frame with its note (${hit} hits)')
 	assert hit == 1000
 
 	// The number above is INFORMATIONAL by default. time.ticks() measures the machine and the
@@ -95,7 +98,8 @@ fn test_note_cost_when_the_ring_is_full() {
 			0, [0], '', false)
 	}
 	after := allocated_bytes()
-	assert r.outstanding() == default_cap
+	// a full ring is evicted back to its cap once it is over by an eighth
+	assert r.outstanding() >= default_cap && r.outstanding() <= default_cap + default_cap / 8
 	per := f64(after - before) / f64(n)
 	println('note cost @ ${default_cap} pending: ${per:.0f} bytes allocated per note')
 	assert per < 4096, 'note() at cap allocates ${per:.0f} bytes each -- the ring is being rebuilt per record'

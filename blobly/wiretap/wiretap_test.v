@@ -18,10 +18,66 @@ fn test_a_frame_we_sent_is_recognised_as_ours() {
 		return
 	}
 	assert c.seq == 7
-	// still held — a second monitor on this interface gets its own copy of the frame and would
-	// otherwise see our own emission as foreign. Expiry retires it, silently, having been seen.
-	assert r.outstanding() == 1
+	// its one monitor has answered, so nothing can ask about it again: it is gone, no verdict
+	assert r.outstanding() == 0
 	assert r.expire(default_window_ms + 1) == []u64{}
+}
+
+// A full ring is evicted back to its cap in one pass, cheapest first: the unwatched record, then
+// the claimed one whose send is open, then the oldest watched one, which is the only verdict.
+fn test_a_full_ring_evicts_by_cost_in_one_pass() {
+	mut r := Ring{
+		cap:          16
+		sends_settle: true
+	}
+	mut missed := []u64{}
+	missed << r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [0], '', false)
+	missed << r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [0], '', false)
+	missed << r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, [], '', false)
+	missed << r.note(4, 'vcan0', frame(0x104, [u8(4)]), 0, [0], '', false)
+	r.claim(0, 'vcan0', frame(0x104, [u8(4)]), 0) or { assert false }
+	for seq in 5 .. 19 {
+		missed << r.note(u64(seq), 'vcan0', frame(u32(0x100 + seq), [u8(seq)]), 0, [0], '',
+			false)
+		assert missed == []u64{}, 'evicted before the ring was an eighth over its cap'
+		assert r.outstanding() == seq
+	}
+	missed << r.note(19, 'vcan0', frame(0x113, [u8(19)]), 0, [0], '', false)
+	assert missed == [u64(1)], 'only the oldest watched record is a verdict'
+	assert r.outstanding() == 16
+	assert r.refuse(4) == []Reclaim{}, 'the open claimed record was evicted'
+	if _ := r.claim(1, 'vcan0', frame(0x103, [u8(3)]), 0) {
+		assert false, 'the unwatched record was kept'
+	}
+	c := r.claim(0, 'vcan0', frame(0x102, [u8(2)]), 0) or {
+		assert false, 'the second oldest watched record was evicted'
+		return
+	}
+	assert c.seq == 2
+}
+
+// A record leaves the ring as it settles, so a ring of answered sends never fills: each frame's
+// note and claim walk what is still in flight, not the last cap's worth of answered sends.
+fn test_answered_sends_do_not_accumulate() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	for i in 0 .. 3 * default_cap {
+		f := frame(u32(0x100 + i % 64), [u8(i)])
+		r.note(u64(i), 'vcan0', f, 0, [0, 1], '', false)
+		r.claim(0, 'vcan0', f, 0) or { assert false }
+		r.claim(1, 'vcan0', f, 0) or { assert false }
+		assert r.outstanding() == 1, 'open: a refusal may still need it'
+		r.sent(u64(i))
+		assert r.outstanding() == 0
+	}
+	// and dropping a monitor settles what only it had left to answer
+	f := frame(0x7F0, [u8(9)])
+	r.note(1, 'vcan0', f, 0, [0, 1], '', false)
+	r.sent(1)
+	r.claim(0, 'vcan0', f, 0) or { assert false }
+	assert r.outstanding() == 1
+	r.drop_monitor(1)
 	assert r.outstanding() == 0
 }
 
@@ -627,7 +683,7 @@ fn test_an_unsure_send_keeps_its_echo() {
 	r.claim(0, 'vcan0', f, 2) or { assert false }
 	r.unsure(1)
 	r.unsure(2)
-	assert r.outstanding() == 1, 'the claimed record stays, the unclaimed one goes'
+	assert r.outstanding() == 0, 'the claimed record settles, the unclaimed one goes'
 	assert r.refuse(1) == []Reclaim{}, 'settled by unsure: nothing is provisional'
 }
 
