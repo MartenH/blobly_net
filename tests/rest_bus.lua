@@ -75,22 +75,34 @@ test("signals go out at their start value: raw 0 where the DBC states none", fun
   check.equal(s.InteriorTemp, -40)   -- raw 0 with offset -40 is -40 degC, not 0
 end)
 
+-- run body, then undo what it set even when a check in it fails: a failed check must not leave a
+-- held signal or a dropped message behind for the next test, or for a suite run after this one
+local function undoing(undo, body)
+  local ok, err = pcall(body)
+  undo()
+  if not ok then error(err, 0) end
+end
+
 test("sim.set holds one signal at a value, and sim.clear gives it back", function()
-  sim.set("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal", 80)
-  expect_signal("CAN1", id_of("BrakeStatus"), "BrakePedal", 80, 1000)
-  local f = expect("CAN1", id_of("BrakeStatus"), 500)
-  check.equal(decode("CAN1", f.id, f.data).BrakePressure, 0, "the other signals keep their source")
-  sim.clear("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal")
-  expect_signal("CAN1", id_of("BrakeStatus"), "BrakePedal", 0, 1000)
+  undoing(function() sim.clear("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal") end, function()
+    sim.set("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal", 80)
+    expect_signal("CAN1", id_of("BrakeStatus"), "BrakePedal", 80, 1000)
+    local f = expect("CAN1", id_of("BrakeStatus"), 500)
+    check.equal(decode("CAN1", f.id, f.data).BrakePressure, 0, "the other signals keep their source")
+    sim.clear("CAN1", "ChassisECU", "BrakeStatus", "BrakePedal")
+    expect_signal("CAN1", id_of("BrakeStatus"), "BrakePedal", 0, 1000)
+  end)
 end)
 
 test("a drop fault takes one message off the bus, and clearing brings it back", function()
-  sim.fault("CAN1", "ChassisECU", "WheelSpeeds", "drop")
-  sleep_ms(100)                      -- the next pass of the simulation picks it up
-  drain("CAN1")
-  local seen = listen("CAN1", 400)
-  check.equal(seen[id_of("WheelSpeeds")], nil, "WheelSpeeds still arriving while dropped")
-  check.truthy(seen[id_of("BrakeStatus")] ~= nil, "BrakeStatus, from the same node, stopped too")
-  sim.clear_fault("CAN1", "ChassisECU", "WheelSpeeds")
-  expect("CAN1", id_of("WheelSpeeds"), 1000)
+  undoing(function() sim.clear_fault("CAN1", "ChassisECU", "WheelSpeeds") end, function()
+    sim.fault("CAN1", "ChassisECU", "WheelSpeeds", "drop")
+    sleep_ms(100)                      -- the next pass of the simulation picks it up
+    drain("CAN1")
+    local seen = listen("CAN1", 400)
+    check.equal(seen[id_of("WheelSpeeds")], nil, "WheelSpeeds still arriving while dropped")
+    check.truthy(seen[id_of("BrakeStatus")] ~= nil, "BrakeStatus, from the same node, stopped too")
+    sim.clear_fault("CAN1", "ChassisECU", "WheelSpeeds")
+    expect("CAN1", id_of("WheelSpeeds"), 1000)
+  end)
 end)

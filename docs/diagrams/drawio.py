@@ -38,7 +38,7 @@ class Diagram:
         return f'{hint}{self.n}'
 
     def _text_svg(self, lines, cx, x, top, h, fs, color, anchor, bold, valign='middle'):
-        lh = LINE_H[fs]
+        lh = LINE_H.get(fs, round(fs * 1.3))
         if valign == 'middle':
             y0 = top + h / 2 - lh * len(lines) / 2 + lh / 2
         else:
@@ -119,6 +119,8 @@ class Diagram:
             (ax, ay), (bx, by) = a, b
             dx, dy = bx - ax, by - ay
             ln = (dx * dx + dy * dy) ** 0.5
+            if ln == 0:
+                raise ValueError(f'a line ends in a segment of no length at {b}')
             ux, uy = dx / ln, dy / ln
             cx, cy = bx - 10 * ux, by - 10 * uy
             px, py = -uy * 4.5, ux * 4.5
@@ -148,5 +150,5 @@ class Diagram:
                f'height="{self.h}px" viewBox="0 0 {self.w} {self.h}" content="{esc(model)}">'
                f'<rect x="0" y="0" width="{self.w}" height="{self.h}" fill="#ffffff"/>'
                + ''.join(self.svg) + '</svg>\n')
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(out)

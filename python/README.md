@@ -5,7 +5,7 @@ Blobly Net's automotive bus test engine from Python. `blobly` loads a Blobly Net
 and receive CAN and CAN-FD frames, encode and decode DBC messages by signal name, read the
 controller's health and the bus load, send frames in the background, react to traffic with an
 event loop of frame, timer and health handlers, drive the project's generators, replay and record
-the wire, inject faults into the simulated ECUs, and protect frames with AUTOSAR E2E Profile 1.
+the wire, inject faults into the simulated ECUs, and protect frames with AUTOSAR E2E Profile 1 and Profile 5.
 On top of that: UDS diagnostics over CAN and DoIP (0x27 and 0x29 included, DTCs decoded, a node
 of the system model reached by name with its DIDs decoded), raw ISO-TP, DoIP discovery, SOME/IP,
 flashing a blobly_emb bootloader, J1939 and CAN network management read off a wire, and LIN buses

@@ -4,6 +4,7 @@
 # committed SVG that differs was edited by hand or not regenerated, and the next regeneration
 # would silently undo or drop that change. Fails naming the file.
 set -euo pipefail
+shopt -s nullglob
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -20,8 +21,9 @@ for svg in "$tmp"/*.drawio.svg; do
 	fi
 done
 for svg in "$repo"/docs/*.drawio.svg; do
-	[ -e "$svg" ] || continue
 	[ -e "$tmp/$(basename "$svg")" ] || { echo "diagrams_check: docs/$(basename "$svg") has no script in docs/diagrams/" >&2; fail=1; }
 done
-[ "$fail" = 0 ] && echo "diagrams_check: $(ls "$tmp"/*.drawio.svg | wc -l) diagram(s) match their scripts"
+made=("$tmp"/*.drawio.svg)
+[ "${#made[@]}" -gt 0 ] || { echo "diagrams_check: no script in docs/diagrams/ drew a *.drawio.svg" >&2; fail=1; }
+[ "$fail" = 0 ] && echo "diagrams_check: ${#made[@]} diagram(s) match their scripts"
 exit "$fail"

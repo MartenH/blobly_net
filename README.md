@@ -114,9 +114,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:       # loaded and star
 ```
 
 Run it from a source checkout ([from a source checkout](docs/scripting_python.md#from-a-source-checkout))
-or a release folder, so the project path resolves. `pip install blobly` installs the package from
-PyPI; the version there today predates `expect` and most of the API below, which ship with the
-next release. The [Python guide](docs/scripting_python.md) and the
+or a release folder, so the project path resolves; `pip install blobly` installs the package
+from PyPI. The [Python guide](docs/scripting_python.md) and the
 [examples](python/examples/README.md) go on from here.
 
 **3. A Lua test suite.** From a source checkout, headless, with a non-zero exit status on failure:
