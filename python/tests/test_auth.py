@@ -80,6 +80,7 @@ class TestAuthenticate:
                 d.authenticate(1, key=seed)
                 assert d.read_did(0xF1B0) == b"SECRET-LEVEL-1"
 
+    @pytest.mark.skipif(os.name == "nt", reason="a Windows file name is UTF-16: no name is not UTF-8")
     def test_a_seed_file_whose_name_is_not_utf8(self, auth_demo, row, tmp_path):
         # a path is encoded as the file system encodes it: a surrogate-escaped name reaches its file
         name = os.fsdecode(b"tester-\xff.seed")
