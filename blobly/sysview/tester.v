@@ -54,9 +54,9 @@ pub:
 	hosts bool
 }
 
-// RowTarget is node's diagnostic server on one row: a CAN row's request and response ids (29-bit
-// past 0x7FF, the convention can_targets uses), or a DoIP row's own connection, whose entity is
-// the node.
+// RowTarget is node's diagnostic server on one row: a CAN row's request and response ids and their
+// format (the node's, can_ext — 29-bit past 0x7FF whatever it declares), or a DoIP row's own
+// connection, whose entity is the node.
 pub struct RowTarget {
 pub:
 	row  int
@@ -116,7 +116,7 @@ fn (sys &System) can_target(n int, r RowRef, i int) ?RowTarget {
 		row: i
 		req: s.req
 		rsp: s.rsp
-		ext: s.req > 0x7FF || s.rsp > 0x7FF
+		ext: s.ext
 	}
 }
 
@@ -253,7 +253,7 @@ pub fn (sys &System) reach(n int, rows []RowRef, row int) !RowTarget {
 	if row >= 0 {
 		for t in ts {
 			if t.row == row {
-				return t
+				return can_openable(name, t)!
 			}
 		}
 		on := if row < rows.len { rows[row].name } else { 'row ${row}' }
@@ -263,12 +263,23 @@ pub fn (sys &System) reach(n int, rows []RowRef, row int) !RowTarget {
 		return error('${name} is not reached on ${on}; it is on: ${ts.map(rows[it.row].name).join(', ')}')
 	}
 	if ts.len == 1 {
-		return ts[0]
+		return can_openable(name, ts[0])!
 	}
 	if ts.len == 0 {
 		return error('${name} is reached on no enabled row of the project: ${sys.reached_by(n)}')
 	}
 	return error('${name} is reached on ${ts.len} rows (${ts.map(rows[it.row].name).join(', ')}); name the channel to use')
+}
+
+// can_openable: target `t` as a script opens it, or refused — a script's connection takes ids at or
+// below 0x7FF as 11-bit (udsconn: no width is carried through yet), so a node declared 29-bit on
+// two such ids would be opened as another frame, another ECU's perhaps. Refused rather than opened
+// wrong, until the width is carried through to the opener.
+fn can_openable(name string, t RowTarget) !RowTarget {
+	if !t.doip && t.ext && t.req <= 0x7FF && t.rsp <= 0x7FF {
+		return error('${name} is reached on 29-bit ids 0x${t.req:X}/0x${t.rsp:X}, which a script opens as 11-bit (udsconn takes ids at or below 0x7FF as standard): not reachable from a script yet')
+	}
+	return t
 }
 
 // reached_by says how node `n`'s diagnostic server is reached, for a refusal that found no row.
@@ -284,7 +295,7 @@ fn (sys &System) reached_by(n int) string {
 		} else {
 			'on the CAN bus its [isotp] bus names, which system.toml does not declare'
 		}
-		ways << 'at 0x${s.req:X}/0x${s.rsp:X} ${on}'
+		ways << 'at 0x${s.req:X}/0x${s.rsp:X}${if s.ext { ' (29-bit)' } else { '' }} ${on}'
 	}
 	if node.doip != 0 {
 		ways << 'over DoIP on a row whose ecu_address is its logical address 0x${node.doip:04X}'

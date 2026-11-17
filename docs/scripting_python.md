@@ -1580,8 +1580,10 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
 
 **Reaching a node.** `node.uds(channel=None)` is a `NodeClient` on the channel of the run that
 reaches it: a CAN channel named after the bus its diagnostic server is on, at its `diag = { req,
-rsp }` ids from system.toml (else its ecu.toml's `[isotp]`), or a DoIP channel whose
-`ecu_address` is its entity's logical address. A node reached on several channels needs one named
+rsp }` ids from system.toml (else its ecu.toml's `[isotp]`) — or the ids normal fixed addressing
+derives (`addressing = "normal_fixed", sa, ta`: `0x18DA<sa><ta>` / `0x18DA<ta><sa>`), and 29-bit
+where `ext = true`; a node declared 29-bit on ids at or below 0x7FF is refused (a script opens
+those as 11-bit) — or a DoIP channel whose `ecu_address` is its entity's logical address. A node reached on several channels needs one named
 (`channel=`, a `Channel` or its name). One reached on none is refused (`Refused`), saying how it is
 reached, so the project can be given that row. `node.targets` lists where it is reached.
 

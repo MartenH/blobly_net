@@ -408,8 +408,10 @@ check.equal(d:read("parameter status").SteerLimit, 1)   -- coded
 
 `uds.node(name [, opts])` opens a `uds.open` connection on the channel and at the ids the system
 gives the node: a CAN channel **named after the bus its diagnostic server is on**, at its `diag =
-{ req, rsp }` ids (else its ecu.toml's `[isotp]`), or a DoIP channel whose `ecu_address` is its
-entity's logical address. `opts.channel` names the channel when the node is reached on several.
+{ req, rsp }` ids (else its ecu.toml's `[isotp]`) — or the ids normal fixed addressing derives
+(`addressing = "normal_fixed", sa, ta`: `0x18DA<sa><ta>` / `0x18DA<ta><sa>`), and 29-bit where
+`ext = true`; a node declared 29-bit on ids at or below 0x7FF is refused (a script opens those as
+11-bit) — or a DoIP channel whose `ecu_address` is its entity's logical address. `opts.channel` names the channel when the node is reached on several.
 A node the project reaches nowhere is refused with how it is reached (`zone_a is reached on no
 enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge`). Everything a
 `uds.open` connection has is there, plus:

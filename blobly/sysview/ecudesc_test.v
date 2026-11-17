@@ -780,3 +780,107 @@ param = "Trim"
 	assert d.errs[6] == 'did 0x0200: signal Speed: field "v\\0a" holds a NUL; not read'
 	assert d.errs[7] == 'did 0x0201: [[param]] Limit was not read'
 }
+
+// The format is part of a node's identity (blobly_emb docs/can-tp.md §3.8): three nodes on one bus,
+// one 29-bit on 0x123/0x124, one 11-bit on the same numbers, one on normal fixed addressing — each
+// found by its own format, allocated in it, and reached by a script where a script can open it.
+const fx_formats = '
+[bus.body]
+interface = "can0"
+
+[[node]]
+name  = "n29"
+ecu   = "nodes/n29/ecu.toml"
+buses = ["body"]
+diag  = { req = 0x123, rsp = 0x124, ext = true }
+
+[[node]]
+name  = "n11"
+ecu   = "nodes/n11/ecu.toml"
+buses = ["body"]
+diag  = { req = 0x123, rsp = 0x124 }
+
+[[node]]
+name  = "nf"
+ecu   = "nodes/nf/ecu.toml"
+buses = ["body"]
+diag  = { addressing = "normal_fixed", sa = 0x10, ta = 0xF1 }
+
+[[node]]
+name  = "nl"
+ecu   = "nodes/nl/ecu.toml"
+buses = ["body"]
+diag  = { addressing = "normal_fixed", sa = 0x20, ta = 0xF1, functional_ta = 0x33 }
+'
+
+fn test_a_nodes_id_format_is_part_of_its_address() {
+	dir := os.join_path(os.temp_dir(), 'sysview_formats_${os.getpid()}')
+	os.rmdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	for n, isotp in {
+		'n29': 'rx_id = 0x123\ntx_id = 0x124\next = true'
+		'n11': 'rx_id = 0x123\ntx_id = 0x124'
+		'nf':  'addressing = "normal_fixed"\nsa = 0x10\nta = 0xF1'
+		// a dissolved node's [isotp] that states no ids: blobly_emb's sysgen lowers its diag into it
+		'nl':  ''
+	} {
+		os.mkdir_all(os.join_path(dir, 'nodes', n)) or { panic(err) }
+		os.write_file(os.join_path(dir, 'nodes', n, 'ecu.toml'), '[isotp]\nbus = "can0"\n${isotp}\n') or {
+			panic(err)
+		}
+	}
+	os.write_file(os.join_path(dir, 'system.toml'), fx_formats) or { panic(err) }
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	idx := fn [sys] (name string) int {
+		return sys.node_named(name) or { panic(err) }
+	}
+	n29, n11, nf := idx('n29'), idx('n11'), idx('nf')
+	q29, p29 := sys.nodes[n29].can_ids()
+	q11, p11 := sys.nodes[n11].can_ids()
+	qf, pf := sys.nodes[nf].can_ids()
+	assert q29 == 0x123 && p29 == 0x124 && sys.nodes[n29].can_ext()
+	assert q11 == 0x123 && p11 == 0x124 && !sys.nodes[n11].can_ext()
+	assert qf == 0x18DA10F1 && pf == 0x18DAF110 && sys.nodes[nf].can_ext()
+	assert sys.nodes[n29].desc.isotp_ext && !sys.nodes[n11].desc.isotp_ext && sys.nodes[nf].desc.isotp_ext
+	// node_for: one number, two formats, two nodes
+	assert sys.node_for(TargetAddr{ req: 0x123, rsp: 0x124, ext: true }).node == n29
+	assert sys.node_for(TargetAddr{ req: 0x123, rsp: 0x124 }).node == n11
+	assert sys.node_for(TargetAddr{ req: 0x18DA10F1, rsp: 0x18DAF110 }).node == nf // past 0x7FF: 29-bit
+	miss := sys.node_for(TargetAddr{ req: 0x125, rsp: 0x126, ext: true })
+	assert miss.node == -1 && miss.why.contains('0x125/0x126 (29-bit)'), miss.why
+	// the allocation keeps the two formats apart: neither id collides
+	alloc := sys.id_allocation('body').filter(it.id == 0x123)
+	assert alloc.len == 2 && alloc.any(it.ext && it.owner == 'n29') && alloc.any(!it.ext && it.owner == 'n11')
+	assert !sys.is_collision('body', 0x123, true) && !sys.is_collision('body', 0x123, false)
+	// can_targets carry the format, which the GUI's target key holds apart
+	ts := sys.can_targets([ChanRef{'body', 'can0'}])
+	assert ts.filter(it.node == n29).all(it.ext) && ts.filter(it.node == n11).all(!it.ext)
+	assert ts.filter(it.node == nf).all(it.ext && it.req == 0x18DA10F1)
+	// reach: the 11-bit node is not contested by its 29-bit twin, and opens
+	rows := [RowRef{
+		name: 'body'
+		wire: 'can0'
+	}]
+	r11 := sys.reach(n11, rows, -1) or { panic(err) }
+	assert r11.req == 0x123 && !r11.ext
+	// the 29-bit node on 11-bit-sized ids is listed, but a script cannot open it yet
+	assert sys.targets(n29, rows).len == 1 && sys.targets(n29, rows)[0].ext
+	if _ := sys.reach(n29, rows, -1) {
+		assert false, 'a 29-bit node on small ids was handed to a script, which opens them as 11-bit'
+	} else {
+		assert err.msg() == 'n29 is reached on 29-bit ids 0x123/0x124, which a script opens as 11-bit (udsconn takes ids at or below 0x7FF as standard): not reachable from a script yet'
+	}
+	sys.reach(n29, rows, 0) or { assert err.msg().contains('not reachable from a script yet') }
+	// normal fixed addressing's ids are past 0x7FF: a script opens them as 29-bit
+	rf := sys.reach(nf, rows, -1) or { panic(err) }
+	assert rf.ext && rf.req == 0x18DA10F1 && rf.rsp == 0x18DAF110
+	// an [isotp] stating no ids serves on the node's diag (blobly_emb REQ-TOPO-014): addressed by it
+	nl := idx('nl')
+	assert sys.nodes[nl].desc.isotp_req == 0 && sys.nodes[nl].desc.isotp_rsp == 0
+	ql, pl := sys.nodes[nl].can_ids()
+	assert ql == 0x18DA20F1 && pl == 0x18DAF120 && sys.nodes[nl].can_ext()
+	rl := sys.reach(nl, rows, -1) or { panic(err) }
+	assert rl.ext && rl.req == 0x18DA20F1 && rl.rsp == 0x18DAF120
+}

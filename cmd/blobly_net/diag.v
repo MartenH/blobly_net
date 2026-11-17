@@ -159,9 +159,9 @@ fn (app &App) diag_targets() []DiagTarget {
 			}
 		}
 		a.mu.unlock()
-		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
+		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id, false)) {
 			dflt << DiagTarget{
-				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
+				key:   diag_key_can(hw, diag_tx_id, diag_rx_id, false)
 				note:  note
 				iface: hw
 				rx:    diag_tx_id
@@ -240,7 +240,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	}
 	if out.len == 0 {
 		out << DiagTarget{
-			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id)
+			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id, false)
 			note:  note
 			iface: app.diag_iface()
 			rx:    diag_tx_id
