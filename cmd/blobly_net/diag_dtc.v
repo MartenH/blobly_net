@@ -148,7 +148,7 @@ fn (mut app App) diag_sys_refresh() {
 	if app.diag_sys_ok {
 		for nt in app.diag_sys.can_targets(rows) {
 			targets << DiagTarget{
-				key:   diag_key_can(nt.iface, nt.req, nt.rsp)
+				key:   diag_key_can(nt.iface, nt.req, nt.rsp, nt.ext)
 				iface: nt.iface
 				chan:  nt.bus
 				rx:    nt.req
@@ -234,6 +234,7 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 			req: t.rx
 			rsp: t.tx
 			bus: t.chan
+			ext: t.ext // a node declared 29-bit is described only for a 29-bit target
 		}
 	}
 	link := app.diag_sys.node_for(addr)

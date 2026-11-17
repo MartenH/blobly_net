@@ -227,7 +227,7 @@ class Node:
     def uds(self, channel: "Channel | str | None" = None) -> "NodeClient":
         """A NodeClient on this node, while the project is started: on the channel of the run that
         reaches it (or on `channel`, a Channel or its name, when it is reached on several), at the ids
-        its system.toml (else its ecu.toml) gives it. Refused (Refused), saying how the node is
+        its system.toml (else its ecu.toml) gives it, in the width it declares (NodeTarget.ext). Refused (Refused), saying how the node is
         reached, when no channel of the run does."""
         return NodeClient(self, channel)
 
@@ -352,7 +352,9 @@ class NodeClient(UdsClient):
                 self._row = ch._index
             self.node = node
             self._reached = self._reach()
-            super().__init__(self._reached.channel, self._reached.tx, self._reached.rx)
+            # in the node's width, which its ids do not say where it is 29-bit on small ones
+            r = self._reached
+            super().__init__(r.channel, r.tx, r.rx, ext=None if r.tx is None else r.ext)
 
     def _reach(self) -> NodeTarget:
         """Where the node is reached in this run (under _lib.state_lock)."""

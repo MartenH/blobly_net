@@ -57,6 +57,8 @@ static int_int_fn bb_uds_supported_dtcs_p;
 static uds_dtc_fn bb_uds_dtc_p;
 static dtc_name_fn bb_dtc_name_p;
 static uds_open_fn bb_uds_open_p;
+typedef int (*uds_open_ext_fn)(int, const int64_t *, const int64_t *, int, bb_uds_target *);
+static uds_open_ext_fn bb_uds_open_ext_p;
 static uds_did_fn bb_uds_read_did_p;
 static uds_last_fn bb_uds_last_p;
 static uds_data_fn bb_uds_data_p;
@@ -469,7 +471,18 @@ static int uds_steps(int row) {
 	CHECK(bb_dtc_name_p((int)d.code, name, sizeof name) == 8 && strcmp(name, "P1234-56") == 0, "its display name: %s", name);
 	CHECK(bb_uds_dtc_p(u, 2, &d) == BB_ERR, "a DTC past the answer must refuse");
 	CHECK(bb_uds_close_p(u) == 0 && bb_uds_close_p(u) == BB_ERR_HANDLE, "a closed UDS handle is gone");
-	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, the DTCs\n");
+	/* a width stated: 29-bit on the default ids, which bb_uds_open opens 11-bit; 11-bit refusing an
+	   id past 0x7FF; a code that is no width refused */
+	int64_t wide = 0x18DAF110;
+	CHECK(bb_uds_open_ext_p(row, NULL, NULL, 2, &t) == BB_ERR && strstr(bb_last_error_p(), "ext 2"), "ext 2 must refuse");
+	CHECK(bb_uds_open_ext_p(row, NULL, &wide, 0, &t) == BB_ERR && strstr(bb_last_error_p(), "ext = false"),
+		"an 11-bit width on a 29-bit id must refuse: %s", bb_last_error_p());
+	u = bb_uds_open_ext_p(row, NULL, NULL, 1, &t);
+	CHECK(u >= 0 && t.tx == 0x7E0 && t.rx == 0x7E8 && t.ext, "a stated 29-bit width opens 29-bit on 0x7E0 / 0x7E8");
+	CHECK(bb_uds_close_p(u) == 0, "close the 29-bit handle");
+	u = bb_uds_open_ext_p(row, NULL, NULL, -1, &t);
+	CHECK(u >= 0 && t.tx == 0x7E0 && !t.ext && bb_uds_close_p(u) == 0, "ext -1 opens as bb_uds_open");
+	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, the DTCs, a stated width\n");
 	return 0;
 }
 
@@ -479,6 +492,7 @@ static int doip_steps(int doip) {
 	bb_uds_target t;
 	int64_t id = 0x7E0;
 	CHECK(bb_uds_open_p(doip, &id, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "DoIP addressing"), "CAN ids on a DoIP row must refuse");
+	CHECK(bb_uds_open_ext_p(doip, NULL, NULL, 1, &t) == BB_ERR && strstr(bb_last_error_p(), "drop ext"), "a width on a DoIP row must refuse");
 	int u = bb_uds_open_p(doip, NULL, NULL, &t);
 	CHECK(u >= 0 && t.tx == 0x0E80 && t.rx == 0x1000, "open on the row's logical addresses");
 	CHECK(bb_uds_open_p(doip, NULL, NULL, &t) == BB_ERR, "a second handle on the row's connection must refuse");
@@ -898,7 +912,7 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released); SYM(bb_wait_ready);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
-	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
+	SYM(bb_uds_open); SYM(bb_uds_open_ext); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
 	SYM(bb_e2e_p05_crc); SYM(bb_e2e_p05_protect);
 	SYM(bb_e2e_attach); SYM(bb_e2e_stamp);

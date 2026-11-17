@@ -5,7 +5,7 @@ import blobly.transport
 
 // resolve_isotp is the raw ISO-TP channel `a` asks for on row `name` of carrier `car`: a CAN row
 // only (ISO-TP is a CAN transport), both ids given (a raw channel carries no protocol whose
-// default pair it could take), 29-bit when either is past 0x7FF, as resolve's.
+// default pair it could take), their width as resolve's.
 pub fn resolve_isotp(a Ask, name string, car Carrier) !Target {
 	check_ids(a, name)!
 	if k := car.not_can() {

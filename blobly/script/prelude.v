@@ -672,7 +672,7 @@ function uds.open(channel, opts)
     error("uds.open: keep_alive_ms " .. tostring(ka) .. ": give 250 .. 60000", 2)
   end
   local h = __uds_open(channel, opts.tx, opts.rx, opts.padding, opts.block_size, opts.stmin_ms,
-    opts.tx_dl, opts.format)
+    opts.tx_dl, opts.format, opts.ext)
   local self = connection(h, channel)
   if timed then self:set_timing(opts) end
   if opts.keep_alive_ms ~= nil then self:keep_alive(opts.keep_alive_ms) end

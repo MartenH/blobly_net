@@ -63,7 +63,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			// 29-bit addressing is inferred, because an id above 0x7FF cannot be anything
 			// else. Opened as standard, SocketCAN masks it to 11 bits and 0x18DAF110 goes out
 			// as 0x110 — a different, probably occupied, address.
-			ext:    cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			ext:    isotp.pair_ext(false, u32(cfg.rx), u32(cfg.tx))
 			tx_dl:  if tx_dl_usable(cfg.tx_dl) { u8(cfg.tx_dl) } else { u8(8) }
 			server: build_server(cfg, max_response, max_dtcs)
 		}
@@ -413,7 +413,7 @@ pub fn uds_addrs(nodes []project.NodeCfg) []UdsAddr {
 			name: n.name
 			rx:   u32(cfg.rx)
 			tx:   u32(cfg.tx)
-			ext:  cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			ext:  isotp.pair_ext(false, u32(cfg.rx), u32(cfg.tx))
 		}
 	}
 	return out
@@ -449,7 +449,7 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			warns << 'uds on "${n.name}": 0x${cfg.rx:X}/0x${cfg.tx:X} exceeds the 29-bit CAN id range'
 		}
 		if cfg.functional != 0 {
-			ext := cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			ext := isotp.pair_ext(false, u32(cfg.rx), u32(cfg.tx))
 			if !functional_usable(cfg.functional, ext, physical_ids(uds_nodes(nodes))) {
 				why := if cfg.functional > can_id_max {
 					'exceeds the 29-bit CAN id range'

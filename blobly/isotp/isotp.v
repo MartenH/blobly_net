@@ -41,6 +41,19 @@ mut:
 	diagnostics() transport.BusDiagnostics
 }
 
+// std_id_max is the largest 11-bit CAN identifier.
+pub const std_id_max = u32(0x7FF)
+
+// ext_id_max is the largest 29-bit CAN identifier.
+pub const ext_id_max = u32(0x1FFFFFFF)
+
+// pair_ext is whether a connection's request and response ids are 29-bit: where `declared` says so,
+// or where either id is past 0x7FF, which no 11-bit id can be. The ONE spelling of that rule —
+// sysview's node formats, udsconn's opener, the GUI's targets all ask it.
+pub fn pair_ext(declared bool, a u32, b u32) bool {
+	return declared || a > std_id_max || b > std_id_max
+}
+
 // open returns an ISO-TP channel on `iface`, transmitting on `tx_id` and receiving on `rx_id`;
 // `extended` for 29-bit identifiers. The kernel socket on Linux, the software state machine
 // everywhere else — see the platform note at the top. A caller that wants the software channel

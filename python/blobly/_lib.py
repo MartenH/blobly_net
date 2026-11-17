@@ -574,6 +574,7 @@ def _declare(lib):
         "bb_decode_bytes": ([c_int, P(BbFrame), c_int, c_int, c_char_p, c_int], c_int),
         # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
         "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
+        "bb_uds_open_ext": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), c_int, P(BbUdsTarget)], c_int),
         "bb_uds_close": ([c_int], c_int),
         "bb_uds_cancel": ([c_int], c_int),
         "bb_uds_replaces": ([c_int], c_int),

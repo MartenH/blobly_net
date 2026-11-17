@@ -195,6 +195,10 @@ pub mut:
 	// the node's own ISO-TP ids ([isotp] rx_id / tx_id): its request and response
 	isotp_req u32
 	isotp_rsp u32
+	isotp_ext bool // 29-bit ids ([isotp] ext, or normal fixed addressing: addressing.v)
+	// non-empty: its [isotp] states ids that could not be read (addressing.v, said in errs): it
+	// then addresses nothing
+	isotp_err string
 	isotp_bus string // [isotp] bus: the node's own name for the controller its server is on ("can0")
 	// whether the node runs a diagnostic server at all ([uds], [isotp] or [doip] declared)
 	server bool
@@ -560,8 +564,14 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	d.boot = doc.value_opt('boot') or { toml.Any(toml.Null{}) } !is toml.Null
 	if iv := doc.value_opt('isotp') {
 		im := iv.as_map()
-		d.isotp_req = u32(tint(im, 'rx_id'))
-		d.isotp_rsp = u32(tint(im, 'tx_id'))
+		a := addressing_of(im, 'rx_id', 'tx_id')
+		d.isotp_req, d.isotp_rsp, d.isotp_ext = a.req, a.rsp, a.ext
+		for e in a.errs {
+			d.errs << '[isotp] ${e}'
+		}
+		if a.unreadable {
+			d.isotp_err = a.errs.join('; ')
+		}
 		d.isotp_bus = tstr(im, 'bus')
 	}
 	// the parameters refused for a label no binding carries, so a DID naming one says so

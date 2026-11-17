@@ -429,3 +429,73 @@ fn test_a_channel_name_two_rows_share_reaches_nothing() {
 	assert got.contains('-- SUT: no project channel reaches it; its requests are comments'), got
 	assert !got.contains('uds.open'), got
 }
+
+// serve_vin answers 0x22 F190 with `vin` on `ch` until stopped: two ECUs told apart by what they say
+fn serve_vin(ch_ isotp.Channel, vin string, stop &bool) {
+	mut ch := ch_
+	mut srv := uds.default_server()
+	srv.put_did(0xF190, vin.bytes())
+	for !*stop {
+		req := ch.recv(20) or { continue }
+		resp := srv.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
+}
+
+// A target reached on 29-bit ids at or below 0x7FF is opened 29-bit by the script it becomes
+// (`ext = true`): on a wire where an 11-bit ECU answers the same numbers, the script reaches the ECU
+// the panel did, not its 11-bit twin.
+fn test_a_29_bit_target_on_small_ids_replays_29_bit() {
+	wire := 'inproc:RECLUA_EXT'
+	mut stop := false
+	t29 := spawn serve_vin(isotp.open_software(wire, 0x124, 0x123, true) or { panic(err) }, 'N29',
+		&stop)
+	t11 := spawn serve_vin(isotp.open_software(wire, 0x124, 0x123, false) or { panic(err) }, 'N11',
+		&stop)
+	defer {
+		stop = true
+		t29.wait()
+		t11.wait()
+	}
+	mut e := ent(1, [u8(0x22), 0xF1, 0x90], [u8(0x62), 0xF1, 0x90, `N`, `2`, `9`])
+	e = uds.LogEntry{
+		...e
+		key: 'n29'
+	}
+	src := lua_from_log([e], LuaOpts{
+		targets: [LuaTarget{
+			key:     'n29'
+			label:   'n29'
+			channel: 'CAN1'
+			ids:     true
+			tx:      0x123
+			rx:      0x124
+			ext:     true
+		}]
+	})
+	assert src.contains('diag = uds.open("CAN1", { tx = 0x123, rx = 0x124, ext = true })'), src
+	mut env := new_env([ChanInfo{
+		name:  'CAN1'
+		iface: wire
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source(src)!
+	assert env.total() == 1 && env.passed() == 1, env.results.filter(!it.ok).map(it.msg).str() + '\n' + src
+	// and uds.open refuses a width it cannot hold, as other bad options
+	env.run_source('
+		test("ext", function()
+			local ok, err = pcall(uds.open, "CAN1", { tx = 0x123, rx = 0x124, ext = 1 })
+			check.truthy(not ok and string.find(err, "ext is 1, not true or false", 1, true), tostring(err))
+			ok, err = pcall(uds.open, "CAN1", { tx = 0x18DA10F1, rx = 0x124, ext = false })
+			check.truthy(not ok and string.find(err, "ext = false, but tx = 0x18DA10F1 is past 0x7FF", 1, true), tostring(err))
+			local d = uds.open("CAN1", { tx = 0x123, rx = 0x124, ext = false })
+			check.equal(d:read_did(0xF190), "N11")
+			d:close()
+		end)
+	')!
+	assert env.total() == 2 && env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+}

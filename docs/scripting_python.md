@@ -1389,13 +1389,15 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 [uds_diag.py](../python/examples/uds_diag.py) is a complete script.
 
-**Opening a client.** `ch.uds(tx=None, rx=None)` takes the CAN ids as the Lua `uds.open` does.
-`None` is the default, 0x7E0 for `tx` and 0x7E8 for `rx`; 0 is an id like any other. Either id
-past 0x7FF makes both 29-bit. An id that is not a CAN identifier (a negative one, or one past 29
-bits) is refused. `diag.tx`, `diag.rx` and `diag.ext` are the ids it opened on.
+**Opening a client.** `ch.uds(tx=None, rx=None, ext=None)` takes the CAN ids as the Lua `uds.open`
+does. `None` is the default, 0x7E0 for `tx` and 0x7E8 for `rx`; 0 is an id like any other. Either
+id past 0x7FF makes both 29-bit; `ext=True` makes them 29-bit whatever their numbers (an ECU on
+29-bit 0x123, which is another frame than 11-bit 0x123), and `ext=False` states 11-bit, refusing an
+id past 0x7FF. An id that is not a CAN identifier (a negative one, or one past 29 bits) is refused.
+`diag.tx`, `diag.rx` and `diag.ext` are the ids it opened on.
 
-- **CAN and DoIP rows.** On a DoIP row the addressing is the row's, so `tx` and `rx` are refused
-  there ([DoIP](#11-doip)). A SOME/IP row is not a diagnostics carrier, and is refused.
+- **CAN and DoIP rows.** On a DoIP row the addressing is the row's, so `tx`, `rx` and `ext` are
+  refused there ([DoIP](#11-doip)). A SOME/IP row is not a diagnostics carrier, and is refused.
 - **The project must be started.** A stop lets the client's connection go. The next call after a
   start opens another on the same ids, so a client kept in a variable goes on working. A client
   of a channel that another load did not keep refuses.
@@ -1580,8 +1582,14 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
 
 **Reaching a node.** `node.uds(channel=None)` is a `NodeClient` on the channel of the run that
 reaches it: a CAN channel named after the bus its diagnostic server is on, at its `diag = { req,
-rsp }` ids from system.toml (else its ecu.toml's `[isotp]`), or a DoIP channel whose
-`ecu_address` is its entity's logical address. A node reached on several channels needs one named
+rsp }` ids from system.toml (else its ecu.toml's `[isotp]`) — or the ids normal fixed addressing
+derives (`addressing = "normal_fixed", sa, ta`: `0x18DA<sa><ta>` / `0x18DA<ta><sa>`), opened in the
+width the node declares (29-bit where `ext = true` or by normal fixed addressing, whatever the ids'
+numbers: `NodeTarget.ext`) — or a DoIP channel whose `ecu_address` is its entity's logical address.
+A `diag` or `[isotp]` blobly_emb would refuse (an addressing other than `"normal"` /
+`"normal_fixed"`, a normal fixed pair missing `sa` or `ta`, an `ext` that is not a boolean)
+addresses nothing: the node is refused saying why, and a `diag` that cannot be read is not replaced
+by the node's `[isotp]`. A node reached on several channels needs one named
 (`channel=`, a `Channel` or its name). One reached on none is refused (`Refused`), saying how it is
 reached, so the project can be given that row. `node.targets` lists where it is reached.
 
@@ -2540,8 +2548,7 @@ after `start()`.
 | `ch.error_counters()` | An `ErrorCounters`: the controller's transmit and receive error counters as it last reported them; `None` where the backend cannot say ([Health](#8-health)). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}` (a byte signal's `bytes`), or `None` for a frame of no message or a remote frame. |
-| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None, padding=0, block_size=0, stmin_ms=0, tx_dl=8, format=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive; `padding`, `block_size`, `stmin_ms`, `tx_dl` and `format` are its ISO-TP channel's on a CAN row ([Raw ISO-TP](#raw-iso-tp)), refused on a DoIP row. |
-| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
+| `ch.uds(tx=None, rx=None, *, ext=None, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None, padding=0, block_size=0, stmin_ms=0, tx_dl=8, format=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8), 29-bit when `ext` is `True` or either id is past 0x7FF (`ext=False` refuses such an id); on a DoIP row over its connection, `tx`, `rx` and `ext` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive; `padding`, `block_size`, `stmin_ms`, `tx_dl` and `format` are its ISO-TP channel's on a CAN row ([Raw ISO-TP](#raw-iso-tp)), refused on a DoIP row. |
 | `ch.j1939(*, address=None)` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)); with `address`, answering RTS/CTS connections aimed at it. |
 | `ch.nm(lo=None, hi=None, *, ext=False, timeout_ms=300)` | The row's `NmListener`: who reports in on its NM cluster and who keeps it awake, by its wire's configuration or the range given ([Network management](#network-management)). |
 | `ch.isotp(tx, rx, *, padding=0, block_size=0, stmin_ms=0, tx_dl=8, format=None)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top, its frames padded with `padding` (None: unpadded), the Flow Control it answers with `block_size` / `stmin_ms`, its frames up to `tx_dl` bytes long (above 8 CAN-FD) and in `format` (None: the row's) ([Raw ISO-TP](#raw-iso-tp)). |

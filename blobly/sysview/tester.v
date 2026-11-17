@@ -54,9 +54,10 @@ pub:
 	hosts bool
 }
 
-// RowTarget is node's diagnostic server on one row: a CAN row's request and response ids (29-bit
-// past 0x7FF, the convention can_targets uses), or a DoIP row's own connection, whose entity is
-// the node.
+// RowTarget is node's diagnostic server on one row: a CAN row's request and response ids and their
+// format (the node's, can_ext: 29-bit where it declares so, and past 0x7FF whatever it declares) —
+// the width a tester opens them in (udsconn.Ask.ext) —, or a DoIP row's own connection, whose
+// entity is the node.
 pub struct RowTarget {
 pub:
 	row  int
@@ -116,7 +117,7 @@ fn (sys &System) can_target(n int, r RowRef, i int) ?RowTarget {
 		row: i
 		req: s.req
 		rsp: s.rsp
-		ext: s.req > 0x7FF || s.rsp > 0x7FF
+		ext: s.ext
 	}
 }
 
@@ -284,12 +285,19 @@ fn (sys &System) reached_by(n int) string {
 		} else {
 			'on the CAN bus its [isotp] bus names, which system.toml does not declare'
 		}
-		ways << 'at 0x${s.req:X}/0x${s.rsp:X} ${on}'
+		ways << 'at ${pair_text(s.req, s.rsp, s.ext, '/')} ${on}'
 	}
 	if node.doip != 0 {
 		ways << 'over DoIP on a row whose ecu_address is its logical address 0x${node.doip:04X}'
 	}
 	if ways.len == 0 {
+		// a diag or an [isotp] that states ids nothing could read says so, rather than that none is given
+		if node.diag_err != '' {
+			return 'its diag in ${os.file_name(sys.path)} could not be read (${node.diag_err}), so it has no CAN ids, and it has no DoIP entity (doip = { logical })'
+		}
+		if node.desc.isotp_err != '' && node.diag_req == 0 && node.diag_rsp == 0 {
+			return 'its ecu.toml [isotp] could not be read (${node.desc.isotp_err}) and ${os.file_name(sys.path)} gives it no diag, so it has no CAN ids, and it has no DoIP entity (doip = { logical })'
+		}
 		return 'neither ${os.file_name(sys.path)} (diag = { req, rsp }) nor its ecu.toml ([isotp] rx_id / tx_id) gives it CAN ids, and it has no DoIP entity (doip = { logical })'
 	}
 	return 'it is reached ${ways.join(', or ')}'

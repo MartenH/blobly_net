@@ -12,6 +12,7 @@
 module sim
 
 import blobly.candb
+import blobly.isotp
 import math
 import os
 import blobly.project
@@ -35,7 +36,8 @@ pub:
 // the description; the block's own `dids:` replace a value (or add an open, read-only DID) and
 // its `dtcs:` set a status, so a project can still seed a fault.
 pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?project.UdsCfg, remote bool) Described {
-	idx := link_node(sys, t, name) or {
+	idx, why := link_node(sys, t, name)
+	if idx < 0 {
 		if sys.describes(t) {
 			// several nodes are addressed so and the bus does not settle it: none is chosen, and
 			// no name may choose one either — a description of the wrong ECU is worse than none
@@ -43,7 +45,9 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 				notes: ['${if name != '' { name } else { 'the built-in server' }}: ${sys.node_for(t).why}; served from the project']
 			}
 		}
-		return Described{}
+		return Described{
+			notes: if why != '' { [why] } else { []string{} }
+		}
 	}
 	n := sys.nodes[idx]
 	if n.ecu_err != '' {
@@ -114,6 +118,7 @@ pub fn describe_uds_nodes(sys &sysview.System, mut nodes []UdsNode, peers []proj
 			req: u.rx
 			rsp: u.tx
 			bus: chans[u.src] or { '' }
+			ext: u.ext
 		}, u.name, cfg, false)
 		if d.ok {
 			u.server = d.server
@@ -152,18 +157,35 @@ pub fn describe_default(sys &sysview.System, chan_name string, iface string, rx 
 	}
 }
 
-// link_node is the described node a simulated server is: by addressing, else — when no node is
-// addressed so at all — by name.
-fn link_node(sys &sysview.System, t sysview.TargetAddr, name string) ?int {
+// link_node is the described node a simulated server is (-1: none): by addressing, else — when no
+// node is addressed so at all — by name, but never a node a CAN server is in another FORMAT from:
+// node_for keeps an 11-bit and a 29-bit pair of one number apart, and so does the name, so a server
+// on 11-bit 0x123/0x124 is not described as a node declared 29-bit on those ids (the Diagnostics
+// panel, asking node_for, finds no node there either). Such a name is said, in the second value.
+fn link_node(sys &sysview.System, t sysview.TargetAddr, name string) (int, string) {
 	l := sys.node_for(t)
 	if l.node >= 0 {
-		return l.node
+		return l.node, ''
 	}
 	if name == '' || sys.describes(t) {
-		return none
+		return -1, ''
 	}
 	named := []int{len: sys.nodes.len, init: index}.filter(sys.nodes[it].name == name)
-	return if named.len == 1 { named[0] } else { none }
+	if named.len != 1 {
+		return -1, ''
+	}
+	n := sys.nodes[named[0]]
+	req, rsp := n.can_ids()
+	ext := isotp.pair_ext(t.ext, t.req, t.rsp)
+	if !t.doip && (req != 0 || rsp != 0) && n.can_ext() != ext {
+		return -1, '${name}: ${os.file_name(sys.path)} addresses ${n.name} on ${pair_width(n.can_ext())} ids 0x${req:X}/0x${rsp:X}, and this simulated server is on ${pair_width(ext)} ids 0x${t.req:X}/0x${t.rsp:X}; not described as it — served from the project'
+	}
+	return named[0], ''
+}
+
+// pair_width names a pair's format in a note
+fn pair_width(ext bool) string {
+	return if ext { '29-bit' } else { '11-bit' }
 }
 
 // live_table is the simulated signal values a described server's live DIDs read: the generators'

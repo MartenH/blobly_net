@@ -58,6 +58,11 @@ pub mut:
 	nm       u32 // NM node offset within the cluster (0 = none)
 	diag_req u32
 	diag_rsp u32
+	// the diag ids are 29-bit (`ext = true`, or normal fixed addressing: addressing.v)
+	diag_ext bool
+	// non-empty: its diag was given and could not be read (addressing.v, said in errs) — it then
+	// addresses nothing, and its ecu.toml's [isotp] pair does not stand in for it
+	diag_err string
 	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	testers  []u16  // who may activate routing at that entity (`doip = { testers = [...] }`)
 	address  string // its network address (`endpoint = { address = ... }`, or its `host` on its segment's subnet); '' = none
@@ -206,9 +211,14 @@ pub fn load(path string) !System {
 			}
 		}
 		if dv := nm['diag'] {
-			dm := dv.as_map()
-			n.diag_req = u32(tint(dm, 'req'))
-			n.diag_rsp = u32(tint(dm, 'rsp'))
+			a := addressing_of(dv.as_map(), 'req', 'rsp')
+			n.diag_req, n.diag_rsp, n.diag_ext = a.req, a.rsp, a.ext
+			for e in a.errs {
+				sys.errs << 'node ${n.name}: diag ${e}'
+			}
+			if a.unreadable {
+				n.diag_err = a.errs.join('; ')
+			}
 		}
 		mut node_bench_key := ?bool(none)
 		if dv := nm['doip'] {
@@ -357,12 +367,14 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 			}
 		}
 		// the ids a tester addresses it by — the ONE rule node_for and can_targets use too, so a
-		// node addressed by its own [isotp] pair has those ids allocated, collisions and all
+		// node addressed by its own [isotp] pair has those ids allocated, collisions and all — in
+		// the format the node declares (can_ext): a 29-bit id is another frame than the 11-bit one
 		req, rsp := n.can_ids()
+		ext := n.can_ext()
 		if req != 0 {
 			out << IdUse{
 				id:    req
-				ext:   req > 0x7FF
+				ext:   ext
 				kind:  'diag-req'
 				owner: n.name
 			}
@@ -370,7 +382,7 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 		if rsp != 0 {
 			out << IdUse{
 				id:    rsp
-				ext:   rsp > 0x7FF
+				ext:   ext
 				kind:  'diag-rsp'
 				owner: n.name
 			}

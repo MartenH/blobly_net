@@ -1279,7 +1279,7 @@ fn (mut app App) start() {
 			app.reserve_run_worker() // released by the loop's own defer
 			spawn diag_server_loop(app, sc.iface, sc.pch.name, dflt.server, start_gen) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
-				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
+				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id, false)
 				iface: sc.iface
 				chan:  sc.pch.name
 				rx:    diag_tx_id
@@ -1306,7 +1306,7 @@ fn (mut app App) start() {
 			spawn uds_node_loop(app, own_row, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.functional,
 				u.fext, u.server, settings, start_gen)
 			app.diag_plan << DiagTarget{
-				key:   diag_key_can(sc.iface, u.rx, u.tx)
+				key:   diag_key_can(sc.iface, u.rx, u.tx, u.ext)
 				iface: sc.iface
 				chan:  own.name // this node's OWN channel, not the first one on the wire
 				rx:    u.rx
@@ -1560,9 +1560,10 @@ fn diag_key_doip(pch project.Channel) string {
 	return 'doip|' + project.compose_key(pch.iface, pch.name, '0x${pch.ecu_addr:04X}')
 }
 
-fn diag_key_can(iface string, rx u32, tx u32) string {
-	// The ids cannot contain a separator, but the interface can.
-	return 'can|' + project.compose_key(iface, '0x${rx:X}/0x${tx:X}')
+fn diag_key_can(iface string, rx u32, tx u32, ext bool) string {
+	// The ids cannot contain a separator, but the interface can. The format is part of the key:
+	// an 11-bit and a 29-bit target of one number are two ECUs
+	return 'can|' + project.compose_key(iface, '0x${rx:X}/0x${tx:X}', if ext { '29' } else { '11' })
 }
 
 fn (mut app App) doip_forget_if_current(pi int, pch project.Channel, gen u64) {

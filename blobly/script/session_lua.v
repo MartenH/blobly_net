@@ -20,6 +20,8 @@ pub:
 	ids     bool   // a CAN target: `uds.open` is given its ids (DoIP: the channel alone)
 	tx      u32    // the tester transmits on (the ECU's request id)
 	rx      u32    // the ECU answers on
+	// the ids are 29-bit: `uds.open` is given `ext = true`, which ids at or below 0x7FF do not say
+	ext bool
 }
 
 // LuaOpts is the script's context.
@@ -111,7 +113,8 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 				out << '${h}:close()  -- the requests move to another target'
 			}
 			open := if t.ids {
-				'uds.open(${lua_str(t.channel)}, { tx = 0x${t.tx:X}, rx = 0x${t.rx:X} })'
+				ext := if t.ext { ', ext = true' } else { '' }
+				'uds.open(${lua_str(t.channel)}, { tx = 0x${t.tx:X}, rx = 0x${t.rx:X}${ext} })'
 			} else {
 				'uds.open(${lua_str(t.channel)})'
 			}

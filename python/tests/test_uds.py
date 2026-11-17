@@ -347,6 +347,31 @@ class FakeEcu:
             pass  # the test ended and its project stopped under the wait
 
 
+class WidthEcu:
+    """Answers TesterPresent single frames on request id 0x700 (answer 0x708) in ONE width, `ext`:
+    a frame of the other width is another id, which it never answers. `seen` holds the width of
+    each request it heard on 0x700."""
+
+    def __init__(self, ch, ext):
+        self.ch, self.ext, self.seen = ch, ext, []
+        self.stop = threading.Event()
+        ch.look()  # its handle open before the client's first request
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        try:
+            while not self.stop.is_set():
+                f = self.ch.recv(100)
+                if f is None or f.id != 0x700:
+                    continue
+                self.seen.append(f.ext)
+                if f.ext == self.ext and f.data[:3] == b"\x02\x3e\x00":
+                    self.ch.send(0x708, b"\x02\x7e\x00", ext=self.ext)
+        except blobly.BloblyError:
+            pass  # the test ended and its project stopped under the wait
+
+
 class TestFailures:
     """The failures sim-demo's ECUs never produce, and the services they do not serve."""
 
@@ -367,6 +392,25 @@ class TestFailures:
     def diag(self, ch):
         with ch.uds(tx=0x700, rx=0x708) as client:
             yield client
+
+    def test_a_stated_width_opens_in_it(self, ch):
+        ecu = WidthEcu(ch, True)
+        try:
+            with ch.uds(tx=0x700, rx=0x708, ext=True) as wide:
+                assert (wide.tx, wide.rx, wide.ext) == (0x700, 0x708, True)
+                wide.tester_present()  # answered only in 29-bit
+            with ch.uds(tx=0x700, rx=0x708, timeout_ms=100) as narrow:
+                assert not narrow.ext, "small ids say 11-bit"
+                with pytest.raises(blobly.Timeout):
+                    narrow.tester_present()
+            assert ecu.seen == [True, False]
+        finally:
+            ecu.stop.set()
+            ecu.thread.join(2)
+        with pytest.raises(blobly.Refused, match="ext = false, but tx = 0x18DA10F1 is past 0x7FF"):
+            ch.uds(tx=0x18DA10F1, rx=0x708, ext=False)
+        with pytest.raises(TypeError):
+            ch.uds(tx=0x700, rx=0x708, ext=1)
 
     def test_pending_then_silence(self, ch, diag):
         # a 0x10 answer announcing P2* = 10 ms, so the wait after 0x78 is 1010 ms, not 6 s

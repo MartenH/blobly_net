@@ -225,6 +225,7 @@ outside a `test` aborts the script (and the runner reports it).
 
 ```lua
 local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
+local diag = uds.open(channel, { tx = 0x123, rx = 0x124, ext = true })  -- 29-bit on small ids
 local diag = uds.open(channel)                                   -- DoIP
 local diag = uds.open(channel, { timeout_ms = 300 })            -- with its waits stated
 local diag = uds.open(channel, { keep_alive_ms = 2000 })        -- its session kept alive
@@ -236,10 +237,13 @@ script body works over either.
 
 On a **CAN** channel, `tx`/`rx` are the ISO-TP ids (defaults shown). `0` is a valid
 arbitration id and is honoured as one — omit the option to get the default, don't
-pass zero.
+pass zero. The ids are 29-bit when either is past 0x7FF; `ext = true` makes them 29-bit whatever
+their numbers (an ECU addressed on 29-bit `0x123`, which is another frame than 11-bit `0x123`), and
+`ext = false` states 11-bit, an id past 0x7FF then raising. Anything but `true`, `false` or nil
+raises.
 
 On a **DoIP** channel there are no CAN ids: addressing is the logical pair
-configured on the channel (`tester_address` / `ecu_address`). Passing `tx`/`rx`
+configured on the channel (`tester_address` / `ecu_address`). Passing `tx`/`rx` (or `ext`)
 there is an **error**, not an ignored argument — they cannot be honoured, and
 silently dropping them would let a test believe it had addressed something it had
 not. A second `uds.open` on the same DoIP channel returns the live connection: an
@@ -408,8 +412,13 @@ check.equal(d:read("parameter status").SteerLimit, 1)   -- coded
 
 `uds.node(name [, opts])` opens a `uds.open` connection on the channel and at the ids the system
 gives the node: a CAN channel **named after the bus its diagnostic server is on**, at its `diag =
-{ req, rsp }` ids (else its ecu.toml's `[isotp]`), or a DoIP channel whose `ecu_address` is its
-entity's logical address. `opts.channel` names the channel when the node is reached on several.
+{ req, rsp }` ids (else its ecu.toml's `[isotp]`) — or the ids normal fixed addressing derives
+(`addressing = "normal_fixed", sa, ta`: `0x18DA<sa><ta>` / `0x18DA<ta><sa>`), in the width the node
+declares (29-bit where `ext = true` or by normal fixed addressing, whatever the ids' numbers) — or a
+DoIP channel whose `ecu_address` is its entity's logical address. A `diag` or `[isotp]` blobly_emb
+would refuse (an addressing other than `"normal"` / `"normal_fixed"`, a normal fixed pair missing
+`sa` or `ta`, an `ext` that is not a boolean) addresses nothing: the node is refused saying why, and
+a `diag` that cannot be read is not replaced by the node's `[isotp]`. `opts.channel` names the channel when the node is reached on several.
 A node the project reaches nowhere is refused with how it is reached (`zone_a is reached on no
 enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge`). Everything a
 `uds.open` connection has is there, plus:

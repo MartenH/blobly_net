@@ -377,20 +377,16 @@ fn (app &App) script_chan_names() []script.ChanInfo {
 
 // lua_target is how a script reaches `t`: by the channel that carries it, among the channels a
 // script is given — the ENABLED runtime ones, as script_worker builds them (script.channel_for) —
-// with its ids on CAN: the tester transmits on the id the ECU listens on.
+// with its ids and their width on CAN: the tester transmits on the id the ECU listens on.
 fn (app &App) lua_target(t DiagTarget, chans []script.ChanInfo) script.LuaTarget {
-	mut ch := script.channel_for(t.chan, t.iface, chans)
-	// uds.open infers 29-bit addressing from an id above 0x7FF: a 29-bit target on smaller ids
-	// cannot be opened as it was reached, so its requests are left as comments
-	if t.carrier.kind != .doip && t.ext && t.rx <= 0x7FF && t.tx <= 0x7FF {
-		ch = ''
-	}
+	can := t.carrier.kind != .doip
 	return script.LuaTarget{
 		key:     t.key
 		label:   t.label
-		channel: ch
-		ids:     t.carrier.kind != .doip
+		channel: script.channel_for(t.chan, t.iface, chans)
+		ids:     can
 		tx:      t.rx
 		rx:      t.tx
+		ext:     can && t.ext
 	}
 }

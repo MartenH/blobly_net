@@ -45,6 +45,65 @@ fn test_29_bit_ids_are_inferred_from_either_id() {
 	assert !resolve(ask(true, 0x7FF, true, 0x7FF), 'CAN1', Carrier{})!.ext
 }
 
+// A width the caller states is the connection's: 29-bit on ids at or below 0x7FF (a node declared
+// so), 11-bit refused for an id no 11-bit frame carries, and refused on a DoIP row like its ids.
+fn test_a_stated_width_is_kept_and_an_impossible_one_refused() {
+	wide := Ask{
+		...ask(true, 0x123, true, 0x124)
+		ext: true
+	}
+	assert resolve(wide, 'CAN1', Carrier{})!.ext
+	narrow := Ask{
+		...ask(true, 0x7E0, true, 0x7E8)
+		ext: false
+	}
+	assert !resolve(narrow, 'CAN1', Carrier{})!.ext
+	// a default pair takes the stated width too
+	assert resolve(Ask{
+		what: 'uds.open'
+		ext:  true
+	}, 'CAN1', Carrier{})!.ext
+	resolve(Ask{
+		...ask(true, 0x7E0, true, 0x18DAF110)
+		ext: false
+	}, 'CAN1', Carrier{}) or {
+		assert err.msg() == 'uds.open("CAN1"): ext = false, but rx = 0x18DAF110 is past 0x7FF, the largest 11-bit id'
+		resolve(Ask{
+			what: 'uds.open'
+			ext:  true
+		}, 'D', Carrier{ kind: .doip }) or {
+			assert err.msg() == 'uds.open("D"): DoIP addressing comes from the channel (tester_address/ecu_address); drop ext'
+			return
+		}
+		assert false, 'a width on a DoIP row resolved'
+	}
+	assert false, 'an 11-bit width on a 29-bit id resolved'
+}
+
+// A 29-bit connection on small ids reaches the 29-bit ECU and not the 11-bit one on the same
+// numbers: the width is part of the frame.
+fn test_a_stated_29_bit_width_opens_29_bit() {
+	wire := 'inproc:UDSCONN_EXT'
+	mut e11 := isotp.open_software(wire, 0x124, 0x123, false)!
+	mut e29 := isotp.open_software(wire, 0x124, 0x123, true)!
+	d29 := chan bool{cap: 1}
+	spawn serve(mut e29, d29)
+	t := resolve(Ask{
+		...ask(true, 0x123, true, 0x124)
+		ext: true
+	}, 'CAN1', Carrier{})!
+	mut c := open(t, 'CAN1', wire, Carrier{}, opener)!
+	assert c.cli.read_data_by_identifier(0xF190)!.bytestr() == 'BLOBLYNETV0SUT001'
+	assert <-d29
+	c.ch.close()
+	// nothing reached the 11-bit server on the same numbers
+	e11.recv(0) or {
+		e11.close()
+		return
+	}
+	assert false, 'the 11-bit ECU heard a 29-bit request'
+}
+
 fn test_an_id_that_is_not_a_can_identifier_is_refused_before_the_row() {
 	check_ids(ask(true, -2, false, 0), 'X') or {
 		assert err.msg() == 'uds.open("X"): tx = -2 is not a CAN identifier (0..0x1FFFFFFF)'

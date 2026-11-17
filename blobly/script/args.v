@@ -73,6 +73,19 @@ fn ms_up(l lua.State, i int) i64 {
 	return i64(math.ceil(math.min(f, f64(max_i32))))
 }
 
+// width_arg is a connection's `ext` (argument i) as udsconn.ext_of's code: nil states none (-1: the
+// width follows the ids, 29-bit when either is past 0x7FF), true or false states it (1, 0), anything
+// else is refused.
+fn width_arg(l lua.State, i int) !int {
+	if l.arg_absent(i) {
+		return -1
+	}
+	if !l.arg_is_bool(i) {
+		return error('ext is ${l.arg_given(i)}, not true or false')
+	}
+	return if l.arg_bool(i) { 1 } else { 0 }
+}
+
 // isotp_settings_arg is arguments i .. i+4 as an ISO-TP channel's settings (isotp.settings_with):
 // padding a byte or false for none, block_size, stmin_ms, tx_dl, format ("classic", "fd" or
 // "fd_brs"); nil or absent is the default of each.

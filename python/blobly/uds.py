@@ -303,8 +303,9 @@ def _nrc_name(nrc: int) -> str:
 
 class UdsClient:
     """A UDS client on a channel (Channel.uds). On a CAN channel requests go out on `tx` and answers
-    come back on `rx`, 29-bit when `ext`; on a DoIP channel they ride its connection to the entity,
-    from logical address `tester` to `ecu` (tx and rx None). Every call is bounded by the engine's
+    come back on `rx`, 29-bit when `ext` (stated, or either id past 0x7FF); on a DoIP channel they
+    ride its connection to the entity, from logical address `tester` to `ecu` (tx and rx None).
+    Every call is bounded by the engine's
     timing — the first answer within 1000 ms (a 0x10 answer's P2 can lengthen that), each
     responsePending (0x78) then waited for the ECU's P2* + 1000 ms, one request never longer than
     120 s — and fails with a typed error: NegativeResponse (with its NRC), Timeout, PendingExpired,
@@ -335,7 +336,7 @@ class UdsClient:
     ecu: int | None
 
     def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None, *,
-                 timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
+                 ext: bool | None = None, timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
                  pending_budget_ms: int | None = None, keep_alive_ms: int | None = None,
                  padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0, tx_dl: int = 8,
                  format: "FrameFormat | None" = None) -> None:
@@ -346,6 +347,9 @@ class UdsClient:
         self._keep_alive_ms = _keep_alive_period(keep_alive_ms)
         self._keep_alive_used = self._keep_alive_ms is not None  # its failures are said, even once stopped
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
+        if ext is not None and not isinstance(ext, bool):
+            raise TypeError(f"ext must be True, False or None, not {ext!r}")
+        self._ext = ext  # the ids' width as stated; None: the ids say it (either past 0x7FF: 29-bit)
         # the waits a script stated, stated again on each connection the client opens
         stated = (("timeout_ms", timeout_ms), ("p2_star_ms", p2_star_ms), ("margin_ms", margin_ms),
                   ("pending_budget_ms", pending_budget_ms))
@@ -377,7 +381,11 @@ class UdsClient:
             raise BloblyError(f"{self.channel.name}: the project is not started", _lib.BB_ERR_STATE)
         ids = [None if v is None else ctypes.byref(ctypes.c_int64(v)) for v in self._ask]
         out = _lib.BbUdsTarget()
-        self._h = _lib.check(getattr(lib, self._opener)(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
+        if self._ext is None:
+            self._h = _lib.check(getattr(lib, self._opener)(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
+        else:  # a width stated, which bb_uds_open (and bb_flash_open) infer from the ids
+            self._h = _lib.check(lib.bb_uds_open_ext(self.channel._index, ids[0], ids[1], int(self._ext),
+                                                     ctypes.byref(out)))
         self.tx = self.rx = self.tester = self.ecu = None
         self.ext = False
         if self.channel.kind == "doip":  # bb_uds_target holds the logical addresses there

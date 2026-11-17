@@ -406,7 +406,7 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	h.cli.stop_requested = h.stop
 	h.cli.on_exchange = h.on_x
 	h.cli.loosen_p2_star(h.p2_star_ms)
-	h.where = 'ISO-TP on ${iface} (0x${t.rx:X}/0x${t.tx:X})'
+	h.where = 'ISO-TP on ${iface} (${sysview.pair_text(t.rx, t.tx, t.ext, '/')})'
 	h.attached = true
 }
 
