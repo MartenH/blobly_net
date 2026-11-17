@@ -10,9 +10,11 @@ shipped: per-signal generators, request/response rules and end-to-end protection
 configurable per node.
 
 Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `blobly/sim/uds_nodes.v`),
-described per node by blobly_emb's `ecu.toml` (`uds.server_from`, below)
-and the Ethernet phase for DoIP (`blobly/sim/doip_entity.v`, `doip_host.v`). Still open: **LIN**,
-and SOME/IP service simulation. Tracked in [`ROADMAP.md`](../ROADMAP.md).
+described per node by blobly_emb's `ecu.toml` (`uds.server_from`, below),
+the Ethernet phase for DoIP (`blobly/sim/doip_entity.v`, `doip_host.v`), and **LIN** — built in
+its own modules rather than through this model: a LIN row (`adapter: lin`) publishes the frames of
+the LDF nodes it `simulate:`s and runs the master's schedule (`blobly/lin`, `blobly/lindb`;
+[`lin.md`](lin.md)). Still open: SOME/IP service simulation. Tracked in [`ROADMAP.md`](../ROADMAP.md).
 
 This is the plan for
 turning the tester into a simulation host: simulated ECUs and the
@@ -21,14 +23,15 @@ process**, driver-free by default, with the existing Python SUT as the oracle
 that proves the native stack before we trust it.
 
 > **This is the 2026-06 design document, kept for the reasoning.** Where it disagrees with what
-> shipped — the generator set is const / sine / sawtooth / counter / stepmod, a Lua scripting layer
-> exists ([`scripting.md`](scripting.md)), and the project schema is `buses:` with per-channel
+> shipped — the generator set is const / sine / sawtooth / counter / stepmod, Python and Lua
+> scripting layers exist ([`scripting_python.md`](scripting_python.md), [`scripting.md`](scripting.md)), and the project schema is `buses:` with per-channel
 > `simulation:`/`nodes:`, `adapter:`+`address:`, signals as a list and `uds:` with a `dids:` list,
-> never `networks:`/`backend:`/`diagnostics:` — [`simulation.md`](simulation.md) and
+> never `networks:`/`backend:`, and a node's UDS server is `uds:`, not `diagnostics:` (on a CAN row
+> that key names diagnostic servers by their ODX description) — [`simulation.md`](simulation.md) and
 > [`project_editing.md`](project_editing.md) are the current description, and the "What exists vs.
 > what's needed" table, the "Python SUT as the oracle" verification gate (superseded by `blobly/sim`
 > and the Lua suites; `sut/*.py` are dev-time oracles, not the sim path) and the phasing below are
-> historical (phases 1–5 shipped; 6 shipped for DoIP, not LIN).
+> historical (phases 1–5 shipped; 6 shipped for DoIP and for LIN, LIN in its own modules).
 
 ## Mental model — Networks own the database, Nodes attach
 
@@ -103,8 +106,8 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
   description**: a server addressed like a node of the project's `system.toml` is built from that
   node's `ecu.toml` (`uds.server_from`) and answers with blobly_emb `comm/uds`'s gates and NRC
   order — DIDs with sizes, values and read/write gates, the `[uds] services` table, 0x27 at its
-  levels with the reference key only where the description names it, parameters within their
-  range, the declared DTCs. The dependency runs **uds ← sysview ← sim**: sysview already imports
+  levels with the reference key only where the description names it (or 0x29 authentication where
+  the description asks for it), parameters within their range, the declared DTCs. The dependency runs **uds ← sysview ← sim**: sysview already imports
   uds (the standard DID names), so uds cannot read a description; it defines `ServerSpec`,
   sysview fills it (`EcuDesc.server_spec`), and sim links a simulated node to its described node
   (`sim.describe`, by the Diagnostics panel's rule `System.node_for`, else by name) and feeds a
@@ -124,7 +127,8 @@ clean `*_linux.v` / interface split.
 Landed against this rule so far (2026-09-19): SOME/IP as its own message type and its own trace row
 *kind*, never a `CanFrame` — see [`data_path.md`](data_path.md) for how CAN and SOME/IP reach the
 trace, how DoIP reaches the diagnostics client instead, and what the scripts and files see. LIN
-remains planned.
+landed the same way: its own `lin.Frame` and `lin.Bus` (`blobly/lin`), a trace row of its own kind,
+never a `CanFrame`.
 
 ## Project schema growth (`.yml`)
 

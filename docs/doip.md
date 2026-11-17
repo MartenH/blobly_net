@@ -217,9 +217,10 @@ long as the project runs.
   received** by a wildcard listener on loopback here, so IPv6 passive collection is implemented
   and unproven rather than working. Use `doip.discover` for IPv6 entities, which is unicast: it
   brackets an IPv6 literal correctly, though only the IPv4 path has a test of its own — the
-  IPv6 path covered end-to-end is the TCP one (`open_doip`). Tracked separately; do not read
-  the passive-listening row above as covering IPv6.
-- **No SOME/IP service discovery** — a separate protocol, tracked separately.
+  IPv6 path covered end-to-end is the TCP one (`open_doip`). Tracked in
+  [ROADMAP.md](../ROADMAP.md); do not read the passive-listening row above as covering IPv6.
+- **No SOME/IP service discovery** — a separate protocol, which the SOME/IP tester leaves out
+  ([ethernet_architecture.md](ethernet_architecture.md#someip--what-this-tester-does-and-what-it-leaves-alone)).
 
 ## Reading a capture
 

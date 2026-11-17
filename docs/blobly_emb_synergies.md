@@ -1,7 +1,8 @@
 # blobly_net ↔ blobly_emb — synergies & shared-module assessment
 
 Captured 2026-06-30. `blobly_net` is the **tester** half (analyzer-style:
-trace, DBC, sim, diagnostics, DoIP, scripting). `blobly_emb` is the **ECU/SUT**
+trace, DBC, sim, diagnostics, DoIP, scripting). [`blobly_emb`](https://github.com/MartenH/blobly_emb)
+(public) is the **ECU/SUT**
 half — a no-dynamic-allocation V automotive stack (Function Blocks + Loom
 scheduler + COM/UDS/ISO-TP/SecOC/E2E/NM, SocketCAN host → ST FDCAN target),
 config-driven by `ecu.toml` + a DBC. Same author, same language, same vcan-first
@@ -15,7 +16,8 @@ philosophy. They are two halves of one world.
    test/*.lua`. emb's `diag.lua` uses blobly_net's Lua API (`test`, `check.equal`,
    `uds.open`, `bus.send_message`, `sleep_ms`); `test/vcan.yml` *is* a blobly_net
    project file. **The Lua prelude API + runner CLI are a versioned contract**
-   between the repos — drift in blobly_net silently breaks emb's CI.
+   between the repos — drift in blobly_net silently breaks emb's integration suites
+   (`make test` per example), which emb's CI does not run.
    → Action: document the contract in both; add a **drift-guard** CI job (blobly_net
    runs one emb example end-to-end) so an API change can't break emb unnoticed.
 
@@ -29,12 +31,14 @@ philosophy. They are two halves of one world.
    multi-frame and all. Keep both — they validate each other.
 
 4. **Features emb has that blobly_net could grow tester-side support for:**
-   **SecOC** (freshness/MAC) — blobly_net has none of it, and emb is a ready oracle.
+   **SecOC** (freshness/MAC) — blobly_net only reads a SecOC layout from ARXML, carried but
+   neither stamped nor verified, and emb is a ready oracle.
    **NM** is read-side now: `blobly/nm` decodes emb's NM PDU (NID, control bit vector, PN mask)
    and the Network Management panel shows who reports in on each cluster and who keeps it awake,
    the cluster read from the same `system.toml` (`nm = { peers, timeout_ms }`, a node's `nm`
-   offset) ([`nm.md`](nm.md)); nothing here sends NM yet. **E2E** is no longer on this list: blobly_net stamps
-   and verifies AUTOSAR E2E Profile 1 (`blobly/sim/e2e.v`, `verify.v`), reads the contract from
+   offset) ([`nm.md`](nm.md)); a row's simulated nodes announce their NM PDU while a run is up,
+   and a script can release and request the network. **E2E** is no longer on this list: blobly_net stamps
+   and verifies AUTOSAR E2E Profiles 1 and 5 (`blobly/sim/e2e.v`, `verify.v`), reads the contract from
    the DBC attributes both repos share ([`dbc_attributes.md`](dbc_attributes.md)) and injects
    `bad_crc`/`freeze_counter` from a script; emb's integration suites already stamp and check
    with its `e2e.p01_protect`, so the two implementations cross-validate on every run.
@@ -53,8 +57,9 @@ drift/duplication cost exceeds the versioning overhead.
 | `lua` | Maybe (low priority) | Clean, reusable V↔Lua 5.4 facade; only net consumes it today. Extract only if reuse is foreseen. |
 | `uds`, `isotp` | **No** | emb's are **no-alloc runtime** (`[max_dids]Did`, `&u8`); net's are dynamic. Different implementations under different constraints — oracle pairs, not merge candidates. |
 | `transport` | No | emb has `driver/can` (no-alloc, different abstraction). |
-| `someip` | No | net has the client/oracle half, emb the no-alloc server half — an oracle pair, like `uds`/`isotp`. |
-| `doip`, `canlog`, `mf4`, `player`, `sim`, `script`, `telem`, `sysview`, `wiretap`, `flash`, `j1939`, `timebase`, `sampledb`, `testports` | No | net-only; no second consumer. |
+| `someip` | No | net has the client/reader half, emb the no-alloc server/sender half — oracle pairs, like `uds`/`isotp`. |
+| `nm` | No | both read and send NM: emb's is the no-alloc stack on the target, net's the tester's reader plus its simulated nodes' announcements — an oracle pair. |
+| `doip`, `canlog`, `mf4`, `player`, `replay`, `sim`, `cyclic`, `script`, `headless`, `udsconn`, `telem`, `sysview`, `odx`, `wiretap`, `flash`, `j1939`, `lin`, `lindb`, `inflate`, `timebase`, `sampledb`, `testports` | No | net-only; no second consumer. |
 
 **Mechanism / cost for `candb`:** a shared module repo (e.g. `blobly_candb`) pinned
 via `v.mod` git dependency in both, or a git **subtree/submodule** (pragmatic middle

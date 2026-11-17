@@ -6,8 +6,8 @@ keep a run bounded and its result readable.
 
 ## What it is
 
-Blobly Net is an automotive bus tester. It exercises a system under test over CAN, and over
-Ethernet through DoIP and SOME/IP: it runs diagnostics, simulates ECUs, scripts tests and reads
+Blobly Net is an automotive bus tester. It exercises a system under test over CAN and LIN, and
+over Ethernet through DoIP and SOME/IP: it runs diagnostics, simulates ECUs, scripts tests and reads
 back logs. A **project** (a `.blobnet` file) names the channels, the interface each one opens,
 its databases (DBC or ARXML) and the ECUs simulated on it.
 
@@ -102,7 +102,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
             print("  ", sig.name, sig.unit, sig.minimum, sig.maximum, sig.labels)
 ```
 
-- `ch.kind` is `"can"`, `"doip"` or `"someip"`; only a CAN row carries frames.
+- `ch.kind` is `"can"`, `"doip"`, `"someip"` or `"lin"`; only a CAN row carries frames (a LIN
+  row's are `net.lin`'s).
 - `ch.iface` is what the row opens, as the run has it (a hosted DoIP entity's moved port included).
 - `ch.messages` exists only while the project is started.
 - Names come from `keys()`, and every collection completes with `dir()`. An unknown name raises
@@ -274,10 +275,13 @@ Complete scripts, each bounded and with a clear exit status, in
 | [bus_metrics.py](../python/examples/bus_metrics.py) | A channel's bus load and diagnostics counts over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
 | [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |
+| [described_node.py](../python/examples/described_node.py) | A node of the system model by name: its DIDs with their layout and gates, read and written by name, a gated write refused with what it needs (`WriteGated`), its DTCs named by its faults. |
 | [isotp_raw.py](../python/examples/isotp_raw.py) | Raw ISO-TP with no UDS on top: a multi-frame answer, a malformed request and its bytes; a UDS client's waits read and stated. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
+| [rest_bus.py](../python/examples/rest_bus.py) | A rest bus from the database alone ([rest_bus.md](rest_bus.md)): each simulated node's messages at the DBC's cycle, one signal held at a value and let go, a message dropped and brought back. |
 | [e2e_check.py](../python/examples/e2e_check.py) | E2E Profile 1 as a DBC declares it: each received frame's verdict, a broken sender caught by `expect(..., e2e=True)`, a send by name stamped. |
 | [flash_ecu.py](../python/examples/flash_ecu.py) | Flashing a blobly_emb bootloader with progress and a report, against a simulated one (`--board` for a real one). |
+| [replay_record.py](../python/examples/replay_record.py) | A recording replayed onto a wire (paused, seeked, sped up) while the wire is recorded to a candump `.log`, read back. |
 | [interfaces.py](../python/examples/interfaces.py) | No project: the interfaces present, the Vector channels, a frame exchanged on a bus opened by address. |
 | [j1939_listen.py](../python/examples/j1939_listen.py) | J1939 with the script as every node: a BAM rejoined and decoded by PGN, an RTS/CTS connection followed, a dropped packet as a fault, the address directory after a contested claim. |
 | [nm_monitor.py](../python/examples/nm_monitor.py) | Network management: who keeps the bus awake, who woke it, and the wait for releasing and asleep, on the NM demo's replayed recording. |
@@ -289,7 +293,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file; J1939 multi-packet messages, their faults and the address directory (`ch.j1939()`); the NM reading, who keeps the bus awake and the wait for asleep (`ch.nm()`); LIN buses, a project's (`net.lin`) and one by address (`blobly.lin.open`); the interfaces present, a bus by address, Vector assignment. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, generator control, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 and 5 helpers); UDS over CAN and DoIP (sessions, DIDs, security access and 0x29 authentication, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); nodes of the system model and their DIDs by name; raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file; J1939 multi-packet messages, their faults and the address directory (`ch.j1939()`); the NM reading, who keeps the bus awake and the wait for asleep (`ch.nm()`); LIN buses, a project's (`net.lin`) and one by address (`blobly.lin.open`); the interfaces present, a bus by address, Vector assignment, the WSL bridge. | A suite's verdict as a JSON run report under one overall timeout (`--report`, `--timeout`), and a session recorded in the GUI's Diagnostics panel (Copy as Lua). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 

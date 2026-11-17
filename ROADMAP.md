@@ -10,28 +10,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- ⏭️ **Replay of recordings that do not fit in memory — streaming.** #299, #300 and the arena (#303)
-  took a 13-bus replay from one 700 ms freeze a second to four collections a minute and 99.7% of
-  frames within 1 ms, on a file that fits. A tens-of-GB recording does not, and the loader reads the
-  whole file. The design is `docs/streaming_replay.md`: a cursor per data group merged by time,
-  reproducing the in-memory order exactly (golden test), a survey pass for labels, span and a seek
-  index, a bounded FIFO window of arena rows filled by a decoder thread and drained by the player,
-  per-row bus mapping and subtraction at decode time, and a file-size switch between the two paths.
-  Each step measured with `cmd/blobly_net/probe.v`; **steps 1–3 are built** (#172:
-  `mf4.Stream` reproduces the loader's order from the file a chunk at a time, golden-tested;
-  `mf4.survey()` answers the buses, span and the stream's high-water marks in one pass, and
-  `restbus --list` reads through it; `player.Chunker` plays a recording a chunk at a time from a
-  reader thread, held to the in-memory playback by `chunked_test.v`). Next is step 4: the GUI and
-  the CLI switching to the chunker by file size, which neither does yet. Beside it, the smaller items the
-  reviews named: the wire identity resolved once per channel and tap at open; a per-group index for
-  the grouped Trace view; `wiretap` holding only in-flight records; the Replay panel's census not
-  loading the file a second time.
+- ⏭️ **Replay hot paths — what is left.** Streaming shipped (see the shipped list); the smaller
+  items the reviews named beside it remain: the wire identity resolved once per channel and tap at
+  open, a per-group index for the grouped Trace view, and the Replay panel's census not loading a
+  file below the streaming threshold a second time.
 
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
-  `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
+  `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md) — and
+  the shipped binaries are built gcc `-O2` through `-cflags` (`RELEASE=1`, #697), which sets no
+  `prod`.
   **There is now a known blocker, measured:** `-prod` plus a Boehm GC mode makes every call out
   of a frame holding a pointerful array BY VALUE cost O(len) — a 1.23 M-frame replay went from
-  real time to about thirteen days (~17,000×), and nothing profiles as hot. First entry in
+  real time to about thirteen days (~17,000×), and nothing profiles as hot. Its entry in
   [docs/known_issues.md](docs/known_issues.md); upstream
   [vlang/v#28418](https://github.com/vlang/v/issues/28418), **fixed** by
   [vlang/v#28426](https://github.com/vlang/v/pull/28426), which is in the V3 pin the toolchain
@@ -59,8 +49,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   missing:
   - ✅ **Config-driven per node** — a simulated server addressed like a node of the project's
     `system.toml` is built from that node's `ecu.toml` (`uds.server_from`, `sim.describe`): its
-    DIDs, gates, services table, 0x27 levels and key, parameters and DTCs, answering as the
-    board does (cross-checked against zone_a; `docs/simulation.md`, "Described servers").
+    DIDs, gates, services table, 0x27 levels and key (or **0x29** authentication, where the node
+    authenticates), parameters and DTCs, answering as the board does (cross-checked against zone_a; `docs/simulation.md`, "Described servers").
     Without a description, `default_server()` and the project's `uds:` content as before.
   - **0x31 RoutineControl** — start/stop/requestResults; nothing today.
   - **0x28 CommunicationControl** — refused, because nothing in the simulation gates its
@@ -94,15 +84,15 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   `blobly/doip/net_test.v`), so they stay findable only by an address you name. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
-- 🚧 **LIN** — contained in its own modules, never a CAN row (`docs/lin.md`). Built: `blobly/lin`
-  (frame, codec, the in-process bus, schedules, `Row`) and `blobly/lindb` (LDF), `cmd/lin_monitor`.
-  Next, each its own PR: a serial tty/pty backend (Linux), the `lin:` project section with the
-  headless run and Lua, the C ABI and Python; then PEAK PLIN on Windows (the bench PCAN-USB Pro FD's
-  two LIN channels), a LIN panel in the GUI (built: View ▸ LIN), and a real LIN node on a system_full board (zone_a,
-  USART2 in LIN mode, behind a transceiver). After v1, the row model is restructured so a fourth
-  kind of bus is one row kind, not an audit of every site that reads `Project.channels`.
+- 🔨 **LIN** — contained in its own modules, never a CAN bus (`docs/lin.md`). Built: `blobly/lin`
+  (frame, codec, the in-process bus, schedules, `Row`, the serial `tty:`/`pty:` backend on Linux)
+  and `blobly/lindb` (LDF), `cmd/lin_monitor`; a LIN bus as a project row of its own kind
+  (`adapter: lin`, `RowKind.lin`) with the headless run, Lua, the C ABI and Python; and in the GUI,
+  View ▸ LIN and LIN frames in the trace. Next, each its own PR: LIN in recordings; PEAK PLIN on
+  Windows (the bench PCAN-USB Pro FD's two LIN channels); and a real LIN node on a system_full board
+  (zone_a, USART2 in LIN mode, behind a transceiver).
 - 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: per-concern
-  files (44 today, 27,111 lines between them, `main.v` itself 525), pure moves, build targets
+  files (49 today, 29,269 lines between them, `main.v` itself 594), pure moves, build targets
   the directory. What remains here is the second half below — the app state and the
   telemetry-speaking core paths, which no file move dislodges.*
   The motivation, as measured before the split (2026-08-10): one file of **7,475 lines /
@@ -141,19 +131,21 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   **System** panel and `system.toml` (`panel_system.v`), and the SOME/IP module bindings, plus the `sysview`, `telem` and
   `flash` modules and the `flash` / `trace_dump` CLI tools. All of it speaks protocols and
   config formats that only **blobly_emb** produces, so for anyone without that stack it is
-  surface area that cannot do anything — the README already has to explain that several panels
-  "have nothing to talk to".
+  surface area that cannot do anything — which is why those panels are hidden until
+  **View ▸ blobly_emb panels** is ticked.
   The fix is not a build flag (that fragments testing) but two cheaper moves: **discovery** —
   a panel is *promoted* when its artifact is present (a `system.toml` beside the project, a
   manifest on a channel, a bootloader-capable target) rather than being equally prominent
   always; and a **module boundary** —
   the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
   than asserted. The **visible** half of this already exists and is the baseline to build on,
-  not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
+  not remaining work: Trace Chart, Flash, Shell and System are grouped under a
   `blobly_emb target` separator in both the View menu and the activity bar
-  (`draw_menubar`/`draw_activity_bar`, `panel_misc.v`). One *promotion* also already ships:
-  `load_project` finds a `system.toml` beside the project and sets `show_sys = sys_loaded`
-  (`app.v`), opening the System panel by itself.
+  (`draw_menubar`/`draw_activity_bar`, `panel_misc.v`), and are offered only once
+  **View ▸ blobly_emb panels** is ticked (off by default, remembered as `emb_panels` in the
+  settings file). One *promotion* also already ships: `load_project` finds a `system.toml` beside
+  the project and sets `show_sys = sys_loaded && prefs.emb_panels` (`app.v`), opening the System
+  panel by itself where those panels are offered.
   So the remaining promotion work is the manifest and bootloader cases, not all three.
   **Discovery must not gate the entry points that create the thing being discovered.** Two in
   particular are circular: the System panel holds the *only* `system.toml` path input
@@ -173,8 +165,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Cross-repo: blobly_emb
 
-blobly_net is the **tester**; [blobly_emb](docs/blobly_emb_synergies.md) is the **SUT** (the
-embedded ECU stack). Wire formats — trace records, SOME/IP datagrams, telemetry, the flashing
+blobly_net is the **tester**; [blobly_emb](https://github.com/MartenH/blobly_emb) is the **SUT**
+(the embedded ECU stack; [how the two meet](docs/blobly_emb_synergies.md)). Wire formats — trace records, SOME/IP datagrams, telemetry, the flashing
 protocol — are pinned by **golden vectors on both sides**, so they change together. When emb adds
 a wire-visible feature, the matching host support usually lands here in the same period.
 
@@ -189,7 +181,11 @@ a wire-visible feature, the matching host support usually lands here in the same
   DBC messages complete in a REPL, frames are sent and received directly, messages are encoded
   and decoded by signal name, and `on_message` / `on_timer` / `on_health` with `run()` follow the
   rules of the Lua `run()`. Wheels for Linux x86_64 (manylinux) and Windows x64, published to
-  PyPI by the release workflow. Not yet: UDS, background senders, a console beside the GUI.
+  PyPI by the release workflow. Since then it has grown the rest of Lua's surface: UDS over CAN
+  and DoIP (DTCs, functional addressing, 0x27 and 0x29), raw ISO-TP, flashing, SOME/IP, J1939,
+  NM, LIN, nodes of the system model by name, background senders and a keep-alive, fault
+  injection and E2E, replay and recording, and a pytest plugin. VS Code is its console
+  ([docs/vscode.md](docs/vscode.md)); there is no console in the GUI, by decision.
 - ✅ **J1939 understood, read-side** (#171, `blobly/j1939`, [docs/j1939.md](docs/j1939.md)): the
   trace's name column reads a 29-bit id as PGN / source (and destination) address, BAM and RTS/CTS
   transfers are rejoined into rows of their own (flags `TP`, the whole parameter group as data,
@@ -287,9 +283,11 @@ a wire-visible feature, the matching host support usually lands here in the same
   platform-gated: a USB network adapter over REST + WebSocket, HW-verified classic and FD
 - ✅ Software buses — in-process (`inproc:`) and localhost UDP multicast (`udp:`) — driver-free
   tests and demos
-- ✅ **CAN bridge** (#451) — `bridge:<name>/<channel>`, another host's CAN interfaces over one TCP
-  connection (`cmd/canbridge` dials in); the Windows build starts it in a WSL distribution from
-  the Discover dialog and reaches its `vcan`s ([docs/wsl_bridge.md](docs/wsl_bridge.md))
+- ✅ **CAN bridge** (#451, #587) — `bridge:<name>/<channel>`, another host's CAN interfaces over one
+  TCP connection (`cmd/canbridge` dials in); the Windows build starts it in a WSL distribution from
+  the Discover dialog and reaches its `vcan`s, and a bridge on the LAN dials in to a listener
+  set by `BLOBLY_BRIDGE_LISTEN` ([docs/wsl_bridge.md](docs/wsl_bridge.md); the wire format is
+  public, [docs/bridge_protocol.md](docs/bridge_protocol.md))
 - ✅ **Receive timestamps** (#149 steps 1, 2 and 4) — a frame carries its receive time and the
   clock that read it (`blobly/timebase`), and the trace places each row by it; the vendor
   backends' stamps (step 3) are what is left
@@ -305,7 +303,8 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **DBC editor** — forms, bit-matrix grid, live-loop save, read-only while running, and a
   **canonical writer** so a save/load cycle never drifts a file (git diffs show real changes only)
 - ✅ **AUTOSAR ARXML** (#272, #461) — read natively into the same `Database`, one per CAN cluster,
-  several files merged as one system through the vendored arxmodel; **Import ARXML…** makes a
+  several files merged as one system through the vendored arxmodel — a set named on the command
+  line, by a model file (`.arxmodel.toml`) or by an ExtractEditor project (`.e3proj`); **Import ARXML…** makes a
   project's channels from one (#439); `cmd/arxml2dbc` exports a DBC plus an `ecu.toml` fragment
 - ✅ **AUTOSAR E2E Profile 1** (#271) — stamped and verified as specified, declared in the DBC
   (`E2E*` attributes, [docs/dbc_attributes.md](docs/dbc_attributes.md)) or by a node's
@@ -317,37 +316,49 @@ a wire-visible feature, the matching host support usually lands here in the same
 **Diagnostics**
 - ✅ **ISO-TP** (ISO 15765-2) · ✅ **UDS client** · ✅ **DoIP** (ISO 13400 — UDS over TCP)
 - ✅ **UDS client, complete enough to test with** — a response must answer its request, P2/P2*
-  timing, 0x11/0x14/0x28/0x85 and suppress-positive-response, DTCs as a model with snapshots and
+  timing, 0x11/0x14/0x28/0x85, 0x31/0x2F/0x23/0x3D, **0x29 authentication** and
+  suppress-positive-response, DTCs as a model with snapshots and
   extended data (0x19 01/02/0A/03/04/06), and **functional addressing** on CAN and DoIP
 - ✅ **Diagnostics panel** — one held connection per target with tester-present, a request log
   that **Copy as Lua** turns into a script, DTC and DID tabs named from a blobly_emb `ecu.toml`,
   writes behind a stated plan, and security-access Unlock / Lock
   ([docs/security_access.md](docs/security_access.md))
 - ✅ **Described simulated servers** — a simulated node addressed like a node of the project's
-  `system.toml` answers as its `ecu.toml` describes it (DIDs, gates, services, 0x27 levels, DTCs)
+  `system.toml` answers as its `ecu.toml` describes it (DIDs, gates, services, 0x27 levels or 0x29
+  authentication, DTCs)
 - ✅ **DoIP discovery on the local segment** — `doip.identify` (every answer to one request, with
   the address to dial) and Configure → **Discover…** adding what answers as channels; a client
   can be retargeted to a node behind a DoIP gateway
-- ✅ **Flashing** — `cmd/flash`, the GUI Flash panel and Lua's `flash.program`; UDS firmware
+- ✅ **Flashing** — `cmd/flash`, the GUI Flash panel, Lua's and Python's `flash.program` and the
+  C ABI's `bb_flash_program`; UDS firmware
   download against a blobly_emb bootloader, with **0x29 challenge/response** auth (retired 0x27
   seed/key)
+- ✅ **Diagnostic nodes from ODX / PDX** (#659, #688) — a CAN node named by its ODX description,
+  its DIDs read and written with their scaled values and its DTCs by name
+  ([docs/odx.md](docs/odx.md))
 
 **Ethernet services**
 - ✅ **SOME/IP** — 16-byte header codec, envelope validation, golden vectors, an **RPC client**
   (with the eth shell in the GUI) cross-checked against blobly_emb by an oracle, and a **passive
   listener** (Lua `someip.listen`: any port or multicast group, header-decoded, payload raw) — also
-  as a **`someip` channel** in a project, so the GUI trace shows the stream — and Lua's
-  `someip.send` / `someip.call`, which send from a port and hear that port.
+  as a **`someip` channel** in a project, so the GUI trace shows the stream — and
+  `someip.send` / `someip.call` from Lua, Python and the C ABI, which send from a port and hear
+  that port.
   What the tester does and does not do on SOME/IP is fixed in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md)
 
 **Simulation, logs & replay**
-- ✅ Simulated ECUs (`sim`) — tests need no hardware
+- ✅ Simulated ECUs (`sim`) — tests need no hardware; a rest bus from the database alone
+  ([docs/rest_bus.md](docs/rest_bus.md))
 - ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
 - ✅ **Replay** — end to end since #111/#113 (this line said "nothing drives it" long after that
   stopped being true): replay channels play on Start, every bus of one recording shares one
   clock, and the **Replay panel** is the live transport surface (pause / seek / speed / loop,
   position-preserving via `player.set_speed`)
+- ✅ **Streaming replay** (#172) — a recording that does not fit in memory: an `.mf4` from
+  `BLOBLY_MF4_STREAM_MB` (64 MiB) up is read a chunk at a time by a reader thread
+  (`mf4.Stream`, `player.Chunker`), held to the in-memory playback by golden tests, in the GUI,
+  `cmd/restbus`, Lua, the C ABI and Python ([docs/streaming_replay.md](docs/streaming_replay.md))
 - ✅ **Rest bus from a recording** (#98) — the ECU under test subtracted by DBC sender
   (`replay.exclude`), several recorded buses of one `.mf4` mapped onto several live channels
   from one clock (`replay.bus`), the Scan-recording dialog to pick both; `cmd/restbus` headless
@@ -359,6 +370,9 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **Fault ladder on a wire nobody reads** (#142) — a generator's target wire reports its
   controller state, asked on the transmit tap already open
 - ✅ **Performance panel** — each frame's work and the garbage collector, for a stutter
+- ✅ **Network Management panel** (#550) — who reports in on each CAN NM cluster and who keeps the
+  network awake; simulated nodes announce their NM PDU, and a script releases and requests the
+  network (#655, [docs/nm.md](docs/nm.md))
 - ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
   preemption cut-links, per-core lanes, RTOS priority labels, multi-block dump
 - ✅ **Cross-core time correlation** — a satellite core's block carries its measured clock offset
@@ -369,6 +383,8 @@ a wire-visible feature, the matching host support usually lands here in the same
 
 **Platform**
 - ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI (MSYS2 UCRT64)
+- ✅ **macOS (Apple Silicon)** (#585) — the GUI and the driver-free transports (`inproc:`, `udp:`,
+  `bridge:`, `cansub:`) build and run; no CI runner and no release bundle
 - ✅ **V3 toolchain** — one pinned V for this repo and blobly_emb; the engine's modules live in
   `blobly/` and are imported as `blobly.<name>` (#447)
 - ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI

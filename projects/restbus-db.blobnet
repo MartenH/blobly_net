@@ -1,0 +1,22 @@
+# Rest bus from the database alone — zero drivers, no hardware, no recording.
+#
+# One in-process CAN bus on dbc/blobly_net.dbc. The only simulation is `simulate:`: BodyECU,
+# ChassisECU and BatteryECU each send every cyclic message the DBC says they send, at the DBC's
+# GenMsgCycleTime, with every signal at its start value. Nothing here restates an id, a cycle or a
+# signal. Of the DBC's other two nodes, SUT is the ECU under test (its Powertrain, Heartbeat and
+# Response are what the device on the bench sends) and Tester is the role the test itself plays.
+# On a bench, change `adapter:` / `address:` to the adapter (docs/rest_bus.md says how).
+#
+# docs/rest_bus.md walks through it; tests/rest_bus.lua and python/examples/rest_bus.py run
+# against it.
+project:
+  name: Rest bus from the database
+  version: 2
+
+buses:
+  - name: CAN1
+    adapter: virtual
+    address: RESTBUS
+    databases:
+      - ../dbc/blobly_net.dbc
+    simulate: [BodyECU, ChassisECU, BatteryECU]

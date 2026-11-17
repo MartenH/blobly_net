@@ -25,7 +25,7 @@ else (forms, validation, the bit grid) is table stakes.
 
 `candb` was parse-only; the editor needs the inverse. The serializer emits the
 exact record subset the parser reads — `BU_`, `BO_`, `SG_` (incl. mux
-markers, receivers), `BO_TX_BU_`, `CM_ SG_`, `VAL_`, the message attributes
+markers, receivers), `BO_TX_BU_`, `CM_ SG_`, `VAL_`, `SIG_GROUP_`, the message attributes
 `GenMsgCycleTime`, the send attributes (`GenMsgSendType`, `GenMsgCycleTimeFast`,
 `GenMsgNrOfRepetition`, `GenMsgDelayTime`, `GenMsgStartDelayTime`), `VFrameFormat`, `CANFD_BRS` and the E2E
 contract, and the signal attribute `GenSigStartValue` ([dbc_attributes.md](dbc_attributes.md))
@@ -81,7 +81,7 @@ trace decodes signal values at draw time), so the live loop survives.
 Value-table and multiplexing editing have since landed. Out of P1 scope and still absent:
 J1939 attributes, creating files from scratch (open-and-edit first), and RENAME REFACTORING —
 renaming a message/signal does not retarget project generators that reference
-the old name (they fail loud with "message not in any DBC"); a
+the old name (they fail loud with `message "…" is not in the channel databases`); a
 rename-aware sweep over the sender model is its own rung.
 
 ## Roadmap: system VIEWER, not a system editor

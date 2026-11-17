@@ -88,7 +88,7 @@ replaces the overloaded "channel".
 | Kvaser | `kvaser` | `0` | `kvaser:0` |
 | Vector | `vector` | `1` | `vector:1` |
 | CANsub | `cansub` | `e5a16adf/1` | `cansub:e5a16adf/1` |
-| CAN bridge (WSL) | `bridge` | `Ubuntu-24.04/vcan0` | `bridge:Ubuntu-24.04/vcan0` |
+| CAN bridge (WSL or LAN) | `bridge` | `Ubuntu-24.04/vcan0` | `bridge:Ubuntu-24.04/vcan0` |
 | DoIP (Ethernet diag) | `doip` | `127.0.0.1:13400` | `doip:127.0.0.1:13400` |
 | SOME/IP (Ethernet listen) | `someip` | `0.0.0.0:30490` | `someip:0.0.0.0:30490` |
 
@@ -105,7 +105,7 @@ The transport layer is untouched: parse composes `adapter`+`address` into the ex
 
 ## Schema (evolved, back-compatible)
 
-`schema_version` bumps to 2 (now 11: a Save writes the version the project's features need,
+`schema_version` bumps to 2 (now 14: a Save writes the version the project's features need,
 `version_for` in `blobly/project/project.v`). New files use `buses:` + `adapter`/`address`/`network`; old
 files (`channels:` + `interface:`) still load — the parser accepts the legacy keys and
 decomposes `interface:` into `adapter`+`address`.
@@ -334,8 +334,8 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 
 imgui has no native dialog and WSL isn't the primary target, so there is a small
 self-contained imgui browser (`draw_filebrowser`, `cmd/blobly_net/panel_config.v`): a plain
-window — not a modal — listing `os.ls(dir)` (dirs, then files), `*.blobnet` (+ `*.yml`/`*.yaml`)
-filter in open mode, a filename input in save mode, Open/Save and Cancel. Starts in the current
+window — not a modal — listing `os.ls(dir)` (dirs, then files), `*.blobnet` (+ `*.yml`/`*.yaml`, and an ExtractEditor
+`*.e3proj`) filter in open mode, a filename input in save mode, Open/Save and Cancel. Starts in the current
 project's dir, else `projects/`.
 
 Its grammar is VS Code's picker's, and it is a tested rule (`cmd/blobly_net/pickrule/`, #270):
@@ -389,7 +389,8 @@ stderr. A Save As writes the suggested spelling itself.
 
 ## Configuration editor — the Bus fields
 
-Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
+Per bus (a tree row `CAN1   [virtual:CAN1]  ·  Powertrain` with its enable tick beside it, and
+**remove this bus** at the bottom of its fields):
 
 | Field | Widget | Notes |
 |-------|--------|-------|
@@ -455,7 +456,7 @@ makes a new chip appear automatically.
 
 1. **File → New** → 0 buses; title `untitled ●`.
 2. **Configure… → ＋ Add bus** → name `CAN1`, network `Powertrain`, adapter Virtual,
-   address `CAN1`, mode monitor.
+   address `CAN1`, mode normal.
 3. **＋ Add DBC** → browser → `dbc/blobly_net.dbc`.
 4. **Save As** → `projects/myrig.blobnet`.
 5. **New**, then **Open** `myrig.blobnet` → identical setup (round-trip).

@@ -14,6 +14,7 @@ struct HelpDoc {
 
 const help_docs = [
 	HelpDoc{'Quick start', ''},
+	HelpDoc{'Rest bus', 'docs/rest_bus.md'},
 	HelpDoc{'Simulation', 'docs/simulation.md'},
 	HelpDoc{'Scripting', 'docs/scripting.md'},
 	HelpDoc{'Python', 'docs/scripting_python.md'},
@@ -176,8 +177,9 @@ fn rewrite_help_links(html string) string {
 		close := out.index_after('</a>', gt) or { break }
 		text := out[gt + 1..close]
 		mut repl := ''
-		if href.ends_with('.md') && !href.starts_with('http') {
-			if idx := base_to_idx[href.all_after_last('/')] {
+		target := href.all_before('#') // `x.md#section` jumps to the page; the section is dropped
+		if target.ends_with('.md') && !href.starts_with('http') {
+			if idx := base_to_idx[target.all_after_last('/')] {
 				repl = '<span class="xref" data-goto="${idx}">${text}</span>'
 			} else {
 				repl = text // not a Help page: keep the words, drop the dead link
@@ -191,6 +193,37 @@ fn rewrite_help_links(html string) string {
 	return out.replace('<a data-ok ', '<a ')
 }
 
+// rewrite_help_images points a relative `<img src>` at the image beside its doc, as a file:// URI:
+// the Help page is written to a cache directory, so a relative src resolves there and finds
+// nothing. An image that is not there is dropped and its alt text kept, as a dead link's text is.
+fn rewrite_help_images(html string, doc_dir string) string {
+	mut out := html
+	mut from := 0
+	for _ in 0 .. 64 { // bounded: each pass rewrites one image, and pages have few
+		start := out.index_after('<img src="', from) or { break }
+		qs := start + '<img src="'.len
+		qe := out.index_after('"', qs) or { break }
+		src := out[qs..qe]
+		if src.contains('://') || src.starts_with('data:') || src.starts_with('/') {
+			from = qe
+			continue
+		}
+		file := os.real_path(os.join_path(doc_dir, src))
+		if os.is_file(file) {
+			uri := if file.starts_with('/') { 'file://' + file } else { 'file:///' + file.replace('\\', '/') }
+			out = out[..qs] + uri + out[qe..]
+			from = qs + uri.len
+		} else {
+			gt := out.index_after('>', qe) or { break }
+			alt_at := out[start..gt].index('alt="') or { -1 }
+			alt := if alt_at >= 0 { out[start + alt_at + 5..gt].all_before('"') } else { '' }
+			out = out[..start] + alt + out[gt + 1..]
+			from = start + alt.len
+		}
+	}
+	return out
+}
+
 // help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
 // full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
 // Pure client-side JS — no web server. Written once, opened as a file:// URL.
@@ -201,7 +234,8 @@ fn (mut app App) help_html() string {
 		active := if i == 0 { ' active' } else { '' }
 		hidden := if i == 0 { '' } else { ' hidden' }
 		nav.write_string('<li class="navitem${active}" data-page="${i}">${d.title}</li>')
-		body := rewrite_help_links(markdown.to_html(app.help_text(d.path)))
+		body := rewrite_help_images(rewrite_help_links(markdown.to_html(app.help_text(d.path))),
+			os.dir(d.path))
 		pages.write_string('<div class="page${hidden}" id="page-${i}">${body}</div>')
 	}
 	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +

@@ -1,6 +1,6 @@
 # Data path — from the wire to the panels, the scripts and the files
 
-> Status: overview, 2026-09-19. This is the map; the deeper records are linked from each section.
+> Status: overview, updated 2026-11-17. This is the map; the deeper records are linked from each section.
 > Short on purpose — elaborate in the linked documents, not here.
 
 ## The shape
@@ -23,8 +23,9 @@ Eth  doip:<host:port>    TCP: DoipClient / DoipServer                  UDS bytes
 Eth  someip:<host:port>  udp_bind + udp_read (transport/udpwindow)      someip.Message       someip_rx_loop → TraceRow (RX, kind=someip)
      [+ group]            Capture.ingest splits datagrams                                   Lua someip.listen → Capture
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
-LIN                      planned (ROADMAP) — its own LinFrame + bus,   —                    —
-                          per the seam rule below; nothing exists yet
+LIN  adapter: lin        blobly/lin: one lin.Row per bus owns its      lin.Frame            lin_worker → TraceRow (kind=lin)
+     inproc: tty: pty:    handle (inproc, serial) — NOT a Bus: its own  (decoded by the LDF) View ▸ LIN panel (RowView)
+                          Frame and Bus, per the seam rule below                             Lua lin.*, C bb_lin_*, Python net.lin
 ```
 
 Two things enter the same trace from somewhere other than a wire:
@@ -43,9 +44,10 @@ Two things enter the same trace from somewhere other than a wire:
 ## The rules that hold across all of it
 
 - **Frame types are per protocol.** `CanFrame` is CAN; a SOME/IP message is a `someip.Message`; LIN
-  will be a `LinFrame`. No generic envelope (simulation_architecture.md, *Multi-protocol seam*).
+  is a `lin.Frame`. No generic envelope (simulation_architecture.md, *Multi-protocol seam*).
   Where they meet is the **trace row**, which carries its `kind` so no CAN consumer — the filter, the
-  Signals and Graphics decode, the DBC menu, the Send panel — reads a SOME/IP id as an arbitration id.
+  Signals and Graphics decode, the DBC menu, the Send panel — reads a SOME/IP or LIN id as an arbitration id
+  (`TraceRow.can()` is the question).
 - **Decode is per database, at the consumer.** A backend hands over bytes and an id; the DBC (CAN) or
   the config-derived layout (SOME/IP, next rung) is applied by whoever displays or checks the value.
 - **Every row says where it came from.** `TX` we sent as tester · `TX-S` our simulated rest-of-bus,
@@ -62,7 +64,7 @@ Two things enter the same trace from somewhere other than a wire:
   is told. That half is documented, not prevented: *A bound UDP port is not an owned one* in
   [bus_config_dialog.md](bus_config_dialog.md). A DoIP row has
   no reader at all: no RX thread, no rows, a client (or a hosted entity) and nothing else.
-- **What kind of row is this?** has one answer, `project.RowKind` (`can`, `doip`, `someip`):
+- **What kind of row is this?** has one answer, `project.RowKind` (`can`, `doip`, `someip`, `lin`):
   `project.Channel.kind()` in the model, `Chan.kind` at runtime, `udsconn.Carrier.kind` for a
   script's connection. "Is this a CAN wire?" — taps, load, replay, the sim loop, staleness, trace
   ownership — is `kind == .can`. What differs per kind is a `RowKind` method that matches
@@ -80,11 +82,11 @@ Two things enter the same trace from somewhere other than a wire:
 | consumer | reads | notes |
 |---|---|---|
 | Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity — CAN: origin, channel, wire, id, `ext`, `fd`, `brs`, `rtr` (a classic and an FD 0x120 are two rows); SOME/IP: origin, channel, id, message type, both versions, sender, header validity |
-| Signals, Graphics | rows, matched by CAN (id, ext) on ONE wire (`TraceRow.wire`, `watchrule`), decoded with that wire's databases | kind-gated: never a SOME/IP payload. Two wires carrying one id are two series (#330) |
-| Record | received CAN frames, plus our own sends as accepted by the driver (`note_emit` appends at emit; an echo, where the backend gives one, confirms it rather than creating it) → `canlog` (candump `.log`, each line ending `T` for our own frame and `R` for the rest, as `candump -x` writes a direction) | **not an independent bus capture**: a host-accepted send is in the file whether or not it was seen on the wire. **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
+| Signals, Graphics | rows, matched by CAN (id, ext) on ONE wire (`TraceRow.wire`, `watchrule`), decoded with that wire's databases | kind-gated: never a SOME/IP or LIN payload (a LIN row is decoded through its LDF in the trace's detail and the LIN panel). Two wires carrying one id are two series (#330) |
+| Record | received CAN frames, plus our own sends as accepted by the driver (`note_emit` appends at emit; an echo, where the backend gives one, confirms it rather than creating it) → `canlog` (candump `.log`, each line ending `T` for our own frame and `R` for the rest, as `candump -x` writes a direction) | **not an independent bus capture**: a host-accepted send is in the file whether or not it was seen on the wire. **CAN only** — a SOME/IP or LIN row is shown, not recorded, and the Log says so once |
 | Diagnostics | an `isotp.Channel` | over a CAN tap (`isotp.on_bus`) or a `DoipClient` — the same `uds.Client` either way |
 | Lua (`cmd/script`, the Script panel) | `bus.recv`/`bus.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |
-| Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:` | `blobly/sim`, [simulation_architecture.md](simulation_architecture.md) |
+| Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:`, else by the E2E its DBC declares (`sim.declared_e2e`) | `blobly/sim`, [simulation_architecture.md](simulation_architecture.md) |
 | Verification | checks frames against the channel's **`verify:`** entries — live `RX` in `rx_loop`, and every frame of an opened recording in `load_recording`, whose verdict sits on the `REP` row | a DUT is not a simulated node, so its messages can never sit under a `protect:`; `verify:` exists for exactly that ECU (`sim.verifiers_for`) |
 
 ## Where to read next

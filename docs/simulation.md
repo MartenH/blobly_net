@@ -34,9 +34,9 @@ on that channel (Python's `Channel.send`, `Message.send` and `send_cyclic` alike
 the `canfd` row and classic from the `can` row. Diagnostics testers, flash and the shell have no
 row and follow the wire's declaration. Quick Send's *as declared* is the selected row's format.
 
-Not every backend can carry it. SocketCAN, `inproc` and `udp` all do; Vector and Kvaser do, both
-verified on hardware — PCAN cross-vendor against a Kvaser at 1/2/4/8 Mbit/s (#217), Kvaser and
-Vector to 8 Mbit/s, CANsub at 2 Mbit/s.
+Not every backend can carry it. SocketCAN, `inproc`, `udp` and the CAN bridge all do; so do
+Vector, Kvaser, PCAN and CANsub, all verified on hardware — PCAN cross-vendor against a Kvaser at
+1/2/4/8 Mbit/s (#217), Kvaser and Vector to 8 Mbit/s, CANsub at 2 Mbit/s.
 
 For *why* it is built this way, see [simulation_architecture.md](simulation_architecture.md) —
 that is the design document. This page is how to use it.
@@ -65,9 +65,10 @@ channels:
       - ../dbc/blobly_net.dbc   # relative to this project file; the NETWORK owns the
                                 # database, not the ECU
                                 # an AUTOSAR system description works here too:
-                                # `db/net.arxml`, or `"db/net.arxml#Body"` to name the
-                                # CAN cluster when the file describes several — QUOTED,
-                                # or the `#Body` is read as a comment
+                                # `db/net.arxml`, or `db/net.arxml#Body` to name the
+                                # CAN cluster when the file describes several (`#`
+                                # starts a YAML comment only after a space; quoting
+                                # keeps the file safe for an older build)
     simulation:
       - name: SUT               # must SEND something in the DBC — named as a message's
                                 # transmitter. A BU_ entry alone is not enough; a node
@@ -87,7 +88,7 @@ or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message a
 provenance comment naming the ARXML it came from. What the reader could not resolve or chose
 not to extract (container PDUs, LIN clusters, …) is reported on load — in the Log, on the
 headless runner's stderr, by `cmd/sim_startup_check` — never dropped in silence; and a file
-with several CAN clusters is refused until the entry names one (`"net.arxml#Body"`, quoted). The
+with several CAN clusters is refused until the entry names one (`net.arxml#Body`). The
 Configuration panel's **+ Add DBC** asks which cluster when there are several, and an attached
 ARXML's **cluster...** button changes it.
 
@@ -141,7 +142,7 @@ Python SUT the native simulation was verified against. Its signals do *not* stay
 is the shipped demo database's own ECU; any other name behaves as described above.
 
 This is the usual starting point for rest-bus work: name every node **except** the one on the
-bench.
+bench. [rest_bus.md](rest_bus.md) walks through a rest bus built this way, from the database alone.
 
 ### With real signal behaviour
 
@@ -677,6 +678,13 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   delay — after a lockout that has ended too — so a suite that resets between security tests
   ends each with the right key, as blobly_emb's do. The session times out after `s3_ms` without a request. A functional
   0x27 is ignored (SecurityAccess is physical only).
+- **0x29 instead of 0x27** where the description says `[uds] access = "authentication"`: the
+  same levels unlocked by an Ed25519 challenge and proof against the level's `auth_keys`, with the
+  same gates, relock, attempt count and lockout; such a node answers 0x27 `serviceNotSupported`, as a
+  seed-key node answers 0x29 ([security_access.md](security_access.md#authentication-0x29)).
+  Over DoIP a tester's connection ending ends what it established — a seed or 0x29 challenge, an
+  unlock, the session it opened — as the board's `remote_dropped` does, so the next connection
+  unlocks for itself.
 - **0x2E at the DID's size** — a writable DID takes a record of exactly its declared size
   (`bytes` / `ascii`, a parameter's width); any other length is `0x13`, checked after the write
   gate's session (`0x31`) and level (`0x33`), and the DID keeps its value and size — a write
@@ -700,9 +708,7 @@ here gates the simulated traffic); the programming handoff `0x10 02` is `conditi
 once its gates pass (no bootloader is simulated); a `tx_saturations` DID reads 0 and a `[boot]`
 node's `0xF195` reads 0; DTC statuses start at power-on rather than at the node's history. A
 gate naming a session that is not one (`"extended "`) is closed rather than open, and said. Two
-nodes addressed alike that the bus does not tell apart describe neither — no name decides it. Over
-DoIP the session and the unlock belong to the entity, not to the connection, so a tester that
-reconnects finds them as the last one left them (the per-connection state on the roadmap).
+nodes addressed alike that the bus does not tell apart describe neither — no name decides it.
 `tests/diag_described.lua` runs against `projects/described-ecu-demo/`, a trimmed copy of system_full's
 zone_a; the same requests against the board on the bench gave the same answers but for those.
 
@@ -1174,6 +1180,9 @@ there the generators are the panel's.
 
 ## Replay — playing a recording onto a bus
 
+[rest_bus.md](rest_bus.md#from-a-recording-instead) says when a recording is the better rest bus
+than the database, and when it is not.
+
 The project format accepts a replay channel:
 
 ```yaml
@@ -1366,6 +1375,8 @@ See [scripting.md](scripting.md) for the test API.
   the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
-- **No LIN in a project yet.** CAN, CAN-FD and DoIP; LIN runs in its own modules and `lin_monitor`, and joins projects step by step ([lin.md](lin.md)).
+- **LIN is its own kind of row.** A LIN bus is a project row (`adapter: lin`, schema v12) that
+  runs headless, from Lua, C and Python, and in the GUI, simulating the LDF nodes its `simulate:` names (and running a master's schedule);
+  it is not in recordings yet ([lin.md](lin.md)).
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.

@@ -203,6 +203,13 @@ jobs:
           chmod +x scripts/v_toolchain_test.sh
           ./scripts/v_toolchain_test.sh
 
+      # Every docs/*.drawio.svg is what its script in docs/diagrams/ draws, so a diagram is
+      # always regenerable and editable from its source.
+      - name: diagrams match their scripts (scripts/diagrams_check.sh)
+        run: |
+          chmod +x scripts/diagrams_check.sh
+          ./scripts/diagrams_check.sh
+
       # What check_cmds.sh's mut-alias scan calls a COPY under V3 (`ap := app` in a mut method)
       # and what it must not (`&app`, `unsafe { app }`, a nested fn's pointer parameter, a
       # `// copy:` snapshot). The copy it guards against crashed the CAN diagnostic press.

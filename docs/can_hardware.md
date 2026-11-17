@@ -89,7 +89,7 @@ No SocketCAN on Windows, so each vendor needs its SDK DLL wrapped via C-interop 
 | Vendor | SDK | File | Key calls (open/tx/rx) | Discovery |
 |---|---|---|---|---|
 | Kvaser | CANlib (`canlib32.dll`) | `blobly/transport/kvaser_windows.v` | `canOpenChannel` / `canWrite` / `canReadWait` | `canGetNumberOfChannels` |
-| PEAK | PCAN-Basic (`PCANBasic.dll`) | `blobly/transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` | `CAN_GetValue(PCAN_ATTACHED_CHANNELS)` |
+| PEAK | PCAN-Basic (`PCANBasic.dll`) | `blobly/transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` (`…FD` on an FD channel) | `CAN_GetValue(PCAN_CHANNEL_CONDITION)` on `PCAN_USBBUS1..8` |
 | Vector | XL Driver Library (`vxlapi64.dll`) | `blobly/transport/vector_windows.v` (+ `vector_shim.h`, where the open/config calls live) | `xlOpenPort` / `xlCanTransmit`(`Ex`) / `xlReceive`, `xlCanReceive` | `xlGetDriverConfig` |
 
 Each implements the existing `transport.Bus` interface, so callers don't change.

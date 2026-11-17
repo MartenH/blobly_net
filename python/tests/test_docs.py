@@ -3,7 +3,8 @@
     section of docs/scripting_python.md, so the reference cannot silently fall behind the code;
   - every Python block in the guide, in docs/agents.md, docs/vscode.md and python/README.md (the
     PyPI page) runs as written, from the repository root, and every YAML block there is a project
-    that loads (and, when every row is an in-process bus, starts);
+    that loads (and, when every row is an in-process bus, starts); docs/rest_bus.md's Python
+    blocks run too (its YAML blocks are fragments of a row);
   - every link in those pages and in python/examples/README.md reaches a file of the repository,
     and an anchor a heading of it.
 The public surface is what `blobly.__all__` exports: its functions, its classes, and each class's
@@ -27,7 +28,9 @@ pytestmark = pytest.mark.usefixtures("engine")
 GUIDE = os.path.join(REPO, "docs", "scripting_python.md")
 RUN = [GUIDE, os.path.join(REPO, "docs", "agents.md"), os.path.join(REPO, "docs", "vscode.md"),
        os.path.join(REPO, "python", "README.md")]
-LINKED = RUN + [os.path.join(REPO, "python", "examples", "README.md")]
+# pages whose Python blocks run and links resolve, but whose YAML blocks are fragments of a row
+PY_ONLY = [os.path.join(REPO, "docs", "rest_bus.md")]
+LINKED = RUN + PY_ONLY + [os.path.join(REPO, "python", "examples", "README.md")]
 GITHUB = "https://github.com/MartenH/blobly_net/"
 
 
@@ -140,7 +143,7 @@ class TestReference:
 
 # every Python block of the guides, one case each, so the workers share them out
 PYTHON_BLOCKS = [pytest.param(doc, i, code, id=f"{os.path.relpath(doc, REPO).replace(os.sep, '/')}#{i + 1}")
-                 for doc in RUN for i, code in enumerate(blocks(doc, "python"))]
+                 for doc in RUN + PY_ONLY for i, code in enumerate(blocks(doc, "python"))]
 
 
 class TestBlocks:

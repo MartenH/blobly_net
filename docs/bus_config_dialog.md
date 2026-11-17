@@ -4,8 +4,8 @@ A GUI front-end for setting up channels by **discovering** the available interfa
 ticking the ones you want and adding them to the project (editing them afterwards in the
 Configuration editor; the inline grid edit sketched below did not ship) — the
 same idea as a network hardware configuration dialog. The GUI-free seam already
-exists (`transport.list_interfaces()` / `channels_yaml()`, `blobly/transport/
-discover*.v`); this is the visual layer on top.
+exists (`transport.local_interfaces()`, `blobly/transport/interfaces.v`, over
+`list_interfaces()` in `discover*.v`); this is the visual layer on top.
 
 ## Status
 
@@ -24,6 +24,10 @@ discover*.v`); this is the visual layer on top.
   be dropped (they come from an address this host never sent to); asking the address works.
   On Windows with WSL, a **WSL (CAN bridge)** section starts `canbridge` in a distribution, and
   its CAN interfaces join the list as `bridge:<distro>/<iface>` rows ([wsl_bridge.md](wsl_bridge.md)).
+  A **CAN bridges on the LAN** section says where the listener a bridge dials is (or that it is
+  not listening — `BLOBLY_BRIDGE_LISTEN` / `BLOBLY_BRIDGE_TOKEN` set it), lists each connected
+  bridge with its channel count, and each that dialled in to say why it could not start; their
+  channels join the list too.
   **Add ticked** closes the dialog once it has added something.
   The dialog stays open across Start and can be opened mid-run (the Configuration editor offers
   only Discover… then): looking works, while the add buttons and Vector **Assign** wait for Stop.
@@ -48,15 +52,15 @@ discover*.v`); this is the visual layer on top.
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**Discover** calls `transport.list_interfaces()` — Linux parses `ip -details -json
-link show` (finds vcan0/can0, reads the real bitrate), Windows queries the vendor DLLs
-(Kvaser, PCAN, Vector) and appends the virtual `udp:`/`inproc:` options — and fills the grid;
-CANsub devices come from a separate mDNS browse (`transport.discover_cansub()`, ~0.7 s) that
-Refresh and opening the dialog start on their own thread, with "browsing…" shown until it lands
-and the reason shown if it could not look
-with candidates pre-filled (name from
-the iface, bitrate read off a configured `can0`). Tick the ones you want and press
-**Add ticked**; name, mode and DBC are then edited in the Configuration editor's rows.
+**Discover** calls `transport.local_interfaces()` — on Linux every CAN link in
+`/sys/class/net` (down ones too), merged with `list_interfaces()`, which parses `ip -details
+-json link show` (reads the real bitrate); on Windows `list_interfaces()` queries the vendor
+DLLs (Kvaser, PCAN, Vector); both append the virtual `udp:`/`inproc:` options — and fills the
+grid, a connected bridge's channels with it. CANsub devices come from a separate mDNS browse
+(`transport.discover_cansub()`, ~0.7 s) that Refresh and opening the dialog start on their own
+thread, with "browsing…" shown until it lands and the reason shown if it could not look. Tick
+the ones you want and press **Add ticked**: each becomes a row named from its address; name,
+mode, bitrate and DBC are then edited in the Configuration editor's rows.
 **Refresh** re-scans (e.g. after `ip link add vcan1`).
 
 **Where the YAML write happens:** the dialog only edits the in-memory `Project` →
@@ -76,9 +80,9 @@ the GUI-free core (`blobly/sim` generators + the `Iface`/`channels_yaml` seam).
 
 ## Toolkit note
 
-Shipped as a floating Dear ImGui window through `libs/vgui`, which exposes `table_*` rather
-than a grid widget and has no modal wrapper — the old `vlang/gui` "data_grid / modal overlay"
-question this section used to ask is settled.
+Shipped as a Dear ImGui dialog through `libs/vgui` (`vgui.begin_dialog`: not docked, and kept
+inside the main window), which exposes `table_*` rather than a grid widget — the old `vlang/gui`
+"data_grid / modal overlay" question this section used to ask is settled.
 
 ## SOME/IP listener rows
 

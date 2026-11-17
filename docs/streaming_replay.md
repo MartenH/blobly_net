@@ -8,7 +8,7 @@
 > UnFinMF) and the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
 > high-water mark of either path; `mf4.survey()` is the one-pass survey; `player.Chunker` plays a
 > recording a chunk at a time; and (step 4) every replay — the GUI's Replay panel and Scan,
-> `cmd/restbus`, Lua's `replay.*`, the C ABI and Python's `net.replays` — opens its recording
+> `cmd/restbus`, Lua's `replay.*`, the C ABI and Python's `net.replay` — opens its recording
 > through `replay.open_recording`, which streams an `.mf4` from `BLOBLY_MF4_STREAM_MB` (64 MiB)
 > up. **This shipped differently from *The shape* below**: no window ring, no decoder thread
 > filling one and no cursor interface (items 3–8); step 3's reader thread queuing chunks replaced
@@ -19,12 +19,13 @@
 
 ## Why
 
-A replay today loads the WHOLE file: `mf4.load_file` reads the bytes, decodes every channel
-group, sorts globally and hands the rows to the player. With the arena that is ~80 bytes a
-frame in one block the collector never walks — fine for the tens-of-MB files on the bench,
-impossible for the tens-of-GB ones a long drive produces (a 10 GB file is 250–700 M frames).
-The maintainer's requirement: read one or two seconds ahead of the play head, release what has
-played, FIFO. The arena is the cell of that window, not something the window replaces.
+Before streaming, a replay loaded the WHOLE file (as it still does below the threshold):
+`mf4.load_file` reads the bytes, decodes every channel group, sorts globally and hands the rows
+to the player. With the arena that is ~80 bytes a frame in one block the collector never walks
+— fine for the tens-of-MB files on the bench, impossible for the tens-of-GB ones a long drive
+produces (a 10 GB file is 250–700 M frames). The maintainer's requirement: read one or two
+seconds ahead of the play head, release what has played, FIFO. The arena is the cell of that
+window, not something the window replaces.
 
 ## What the file allows
 
@@ -163,7 +164,8 @@ import (whole-file by design, 2000-row cap).
    readers, `record_size`). Round 11: a DZ block's header and compressed bytes are read exactly
    (`exact_at`); `FileSource` sizes the handle, not the path; a record id width outside 0/1/2/4/8
    is refused by both readers. The review stopped there by the maintainer's decision, as #329
-   did; the class test is #345, for step 2.
+   did; the class test came after it (#345: every header field at each extreme, both readers
+   agreeing).
 2. **Built.** `mf4.survey()` / `survey_file()` (`survey.v`): one pass over the stream retaining
    counts and labels and nothing else, answering what the loader answered from the whole
    recording — the buses (label, `cg_tx_acq_name`, frames; `tally_buses`' rule for a label with
@@ -206,7 +208,7 @@ import (whole-file by design, 2000-row cap).
    data groups: disorder 0, nothing queued, every counter 0, and the survey's buses equal
    `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two
    paths, as they must be: the dump materializes the rows either way, and the memory win is
-   the chunked player's, step 3. The seek index the design listed here waits for step 4.
+   the chunked player's, step 3. The seek index the design listed here was not built (step 4).
 3. **Built** (#172), smaller than planned: no window ring and no cursor interface.
    `player.Chunker` (`chunked.v`) runs a READER THREAD that reads the stream, decides each row
    and queues chunks of rows (`chunk_rows` = 256, up to `chunk_ahead` = 64 ahead) on a channel.
