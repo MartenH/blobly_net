@@ -149,8 +149,8 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // write changes (a parameter's status DID). Each step is its own timed line.
 fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	name := did_label(req.desc, req.did)
-	plan := uds.write_plan(req.writable, h.session(), req.sessions, req.level, h.security().unlocked(),
-		req.ref_key)
+	plan := uds.write_plan_by(req.writable, h.session(), req.sessions, req.level, h.security().unlocked(),
+		req.ref_key, req.desc.authenticates())
 	if plan.refusal != '' {
 		// nothing sent: the connection is as it was
 		return DiagOut{
@@ -681,8 +681,8 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 		// what the connection has established, only if it is to THIS target: another target's
 		// session says nothing about this one, and the holder opens a fresh connection for it
 		mine := st.conn == .held && st.key == t.key
-		plan := uds.write_plan(r.writable, if mine { st.session } else { u8(0) }, r.sessions, r.level,
-			if mine { st.security.unlocked() } else { u8(0) }, r.ref_key)
+		plan := uds.write_plan_by(r.writable, if mine { st.session } else { u8(0) }, r.sessions,
+			r.level, if mine { st.security.unlocked() } else { u8(0) }, r.ref_key, desc_authenticates(desc))
 		if plan.refusal != '' {
 			why = plan.refusal
 			vgui.text_colored(235, 90, 80, 'cannot write: ${plan.refusal}')

@@ -26,8 +26,22 @@ pub fn unlock_level_default(levels []int, max int) u8 {
 // [doip] node: REQ-NET-012). An undescribed target is tried: a simulated ECU, or an ECU nothing here
 // describes, may accept it, and a 0x35 then says that it does not.
 pub fn unlock_refusal(described bool, ref_key bool, doip bool, bench_key bool) string {
+	return unlock_refusal_by(described, ref_key, doip, bench_key, false)
+}
+
+// auth_refusal is the one text for a target that unlocks with 0x29 Authentication (its description
+// says `[uds] access = "authentication"`): it answers 0x27 serviceNotSupported, and this panel
+// offers no 0x29 yet — so neither its Unlock nor a gated write's unlock sends anything.
+pub const auth_refusal = 'not sent — it unlocks with 0x29 Authentication ([uds] access = "authentication"), not offered by this panel yet; use a script (diag:authenticate, UdsClient.authenticate)'
+
+// unlock_refusal_by is unlock_refusal for a target that may unlock by 0x29 (`authenticates`): the
+// ONE rule, so the Unlock button and the write dialog refuse alike.
+pub fn unlock_refusal_by(described bool, ref_key bool, doip bool, bench_key bool, authenticates bool) string {
 	if !described {
 		return ''
+	}
+	if authenticates {
+		return auth_refusal
 	}
 	if !ref_key {
 		return 'not sent — its description names no reference key ([uds] security_key = "reference"): its key is the OEM\'s, which the panel cannot compute, and a wrong key counts toward its lockout; unlock it from a script with its key function'

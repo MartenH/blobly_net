@@ -114,7 +114,9 @@ class Node:
     """A node of the run's system model: `name`; `described` (its ecu.toml was read, else
     `problem` says why and it lists only the ISO DIDs), `server` (it declares a diagnostic server),
     `reference_key` (its [uds] security_key is blobly_net's reference key, which
-    UdsClient.security_access computes when given no key_fn); `dids`, `faults` and `targets`, where
+    UdsClient.security_access computes when given no key_fn), `authenticates` (its [uds] access is
+    "authentication": it unlocks with UdsClient.authenticate, 0x29, and answers 0x27
+    serviceNotSupported); `dids`, `faults` and `targets`, where
     the run reaches it. It belongs to the run that listed it: after a stop and a start it goes on
     working while the run's model has a node of its name at its position, and refuses otherwise."""
     name: str
@@ -128,7 +130,7 @@ class Node:
         info = _lib.BbNode()
         _lib.check(lib.bb_node_info(n, ctypes.byref(info)))
         self._info = (bool(info.described), bool(info.server), bool(info.reference_key),
-                      _lib.string(lib.bb_node_problem, n))
+                      _lib.string(lib.bb_node_problem, n), bool(info.authenticates))
         dids = []
         for d in range(info.dids):
             x = _lib.BbDid()
@@ -166,7 +168,7 @@ class Node:
             raise BloblyError(f"node {self.name!r} is not in this run's system model; take it from "
                               "project.nodes again", _lib.BB_ERR_STATE)
 
-    def _current(self) -> tuple[bool, bool, bool, str]:
+    def _current(self) -> tuple[bool, bool, bool, str, bool]:
         with _lib.state_lock:
             self._live()
             return self._info
@@ -185,6 +187,12 @@ class Node:
     def reference_key(self) -> bool:
         """Its [uds] security_key is blobly_net's reference key."""
         return self._current()[2]
+
+    @property
+    def authenticates(self) -> bool:
+        """Its [uds] access is "authentication": it unlocks with 0x29 (UdsClient.authenticate),
+        not 0x27."""
+        return self._current()[4]
 
     @property
     def problem(self) -> str:

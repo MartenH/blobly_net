@@ -2,6 +2,7 @@ module sysview
 
 import os
 import toml
+import blobly.uds
 
 // A trimmed copy of blobly_emb's examples/system_full (origin/main, 2026-10-06): the system.toml
 // node and signal declarations the diagnostic link reads, and zone_a's ecu.toml with its faults,
@@ -1006,4 +1007,63 @@ fn test_an_isotp_id_that_is_not_an_integer_addresses_nothing() {
 		return
 	}
 	assert false, 'a node whose [isotp] rx_id is a string was reached'
+}
+
+const auth_desc = '
+[uds]
+access    = "authentication"
+auth_keys = { "1" = "reference" }
+
+[[did]]
+id    = 0xF1B0
+ascii = "SECRET"
+read  = { session = ["extended"], security = 1 }
+
+[[did]]
+id    = 0x0110
+bytes = "00"
+write = { session = ["extended"], security = 1 }
+'
+
+// `[uds] access` and `auth_keys` are read as blobly_emb reads them, what loom2v refuses said in errs,
+// and the server a simulation serves authenticates with the same keys
+fn test_an_authenticating_description() {
+	d := parse_ecu_desc(toml.parse_text(auth_desc) or { panic(err) }, map[string][]Field{})
+	assert d.errs == [], d.errs.str()
+	assert d.authenticates() && d.auth_ref[1] && d.auth_keys[1] == uds.dev_tester_public()
+	spec, notes := d.server_spec(false)
+	assert spec.authenticates && spec.auth_key(1) or { []u8{} } == uds.dev_tester_public()
+	assert !notes.any(it.contains('0x27')), notes.str()
+	// over DoIP without allow_bench_key the dev key is refused, as the node refuses it
+	rs, rn := d.server_spec(true)
+	assert rs.auth_key(1) or { []u8{} } != uds.dev_tester_public()
+	assert rn.any(it.contains('0x29 refuses the dev tester key'))
+	// a gated write plans an authenticate, and WriteGated names 0x29
+	w := d.dids.filter(it.id == 0x0110)[0]
+	p := w.plan_write(uds.ConnState{ session: 0x03 }, true)
+	assert p.authenticates && p.steps() == ['authenticate level 1 (0x29 05/06)']
+	g := WriteGated{
+		did:           0x0110
+		level:         1
+		authenticates: true
+	}
+	assert g.msg().contains('0x29') && !g.msg().contains('0x27')
+}
+
+fn test_an_authentication_description_that_cannot_work_is_said() {
+	zero := '00'.repeat(32)
+	for text, want in {
+		auth_desc.replace('"1" = "reference"', '"2" = "reference"'):                           'security level 1 is gated but auth_keys has no key'
+		auth_desc.replace('"1" = "reference"', '"1" = "reference", "2" = "reference"'):        'no gate names security level 2'
+		auth_desc.replace('"reference"', '"abcd"'):                                             'is not 64 hex characters'
+		auth_desc.replace('"reference"', '"${zero}"'):                                          'is all zeros'
+		auth_desc.replace('"reference"', '"02${'00'.repeat(31)}"'):                             'not a curve point'
+		auth_desc.replace('"1" = ', '"9" = '):                                                  'is not a security level'
+		auth_desc.replace('access    = "authentication"', 'access = "password"'):              'is neither'
+		auth_desc.replace('access    = "authentication"\n', ''):                               'access is "seed_key"'
+		auth_desc.replace('access    = "authentication"', 'access = "authentication"\nsecurity_key = "reference"'): 'security_key is the 0x27 key'
+	} {
+		d := parse_ecu_desc(toml.parse_text(text) or { panic(err) }, map[string][]Field{})
+		assert d.errs.any(it.contains(want)), '${want}: ${d.errs}'
+	}
 }

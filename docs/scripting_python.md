@@ -1414,6 +1414,15 @@ blobly_net's reference key, `blobly.reference_key(seed)` (each byte XOR 0xFF), w
 ECUs accept ([security_access.md](security_access.md)). An all-zero seed is ISO 14229-1's "already
 unlocked", and no key is sent for it. A wrong key raises `NegativeResponse` (NRC 0x35).
 
+**Authentication.** `authenticate(level, key=None)` unlocks `level` on an ECU that unlocks with 0x29
+instead of 0x27 (blobly_emb `[uds] access = "authentication"`, `node.authenticates`): a challenge
+(0x29 05), the tester's Ed25519 signature over it (0x29 06) — which blobly_emb answers responsePending
+while it verifies, a slice per pass, and the call waits through. `key` is the tester seed: `None` or
+`"reference"` the dev tester key, 32 bytes, 64 hex characters, or a seed file's path. A wrong key
+raises `NegativeResponse` (NRC 0x58; 0x36 the last allowed, then 0x37 for the lockout delay), a
+level outside 1..8 or a malformed key `Refused` (or `ValueError`) before anything is sent
+([security_access.md](security_access.md#authentication-0x29)).
+
 **DTCs.** The fault memory reads as a model: no 0x19 payload is parsed in Python. Each `Dtc` has
 its `code`, its display `name` (`P1234-56`), its `status` byte and `bits`, each ISO 14229-1 status
 bit the ECU reports, by name (`testFailed`, `confirmedDTC`, ...). A bit outside the ECU's
@@ -2728,6 +2737,7 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.read_did(did)` | 0x22 ReadDataByIdentifier: the DID's value. |
 | `diag.write_did(did, data)` | 0x2E WriteDataByIdentifier. |
 | `diag.security_access(level, key_fn=None)` | 0x27: the seed for `level`, the key from `key_fn(seed)` (the reference key without one) at `level + 1`. Returns the seed; an all-zero seed (unlocked already) sends no key. |
+| `diag.authenticate(level, key=None)` | 0x29 Authentication (ACR, Ed25519) for `level` 1..8: the challenge signed with the tester seed `key` (`None`/`"reference"` the dev key, 32 bytes, 64 hex, or a seed file). |
 | `diag.reset(kind=0x01)` | 0x11 ECUReset (1 hard, 2 key-off-on, 3 soft). Returns the answer after its SID. |
 | `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
 | `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |
@@ -2818,6 +2828,7 @@ run's model has a node of its name at its position, and refuses otherwise.
 | `node.problem` | Why its ecu.toml was not read, `""` when it was. |
 | `node.server` | Its ecu.toml declares a diagnostic server (`[uds]`, `[isotp]` or `[doip]`). |
 | `node.reference_key` | Its `[uds] security_key` is blobly_net's reference key, which `security_access` computes without a `key_fn`. |
+| `node.authenticates` | Its `[uds] access` is `"authentication"`: it unlocks with `authenticate` (0x29) and answers 0x27 serviceNotSupported. |
 | `node.dids` | Its DIDs, a `Dids`: its own, then the ISO identification DIDs it does not declare. |
 | `node.faults` | Its `[[fault]]`s, a `NodeFaults` (`node.faults.SpeedImplausible`), each a `Fault`. |
 | `node.targets` | Where the run reaches it, each a `NodeTarget`. |

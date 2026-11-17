@@ -853,6 +853,38 @@ pub fn bb_uds_security_key(u i32, level i32, key &u8, n i32) i32 {
 	})
 }
 
+// bb_uds_authenticate: 0x29 ACR on the handle's ECU (uds.Client.authenticate), signed with `seed`
+// (32 bytes; NULL and 0 = the dev tester seed). The level and the seed are refused before anything
+// is sent; a lost DoIP connection is reopened first, as for any call — the ECU's challenge is its
+// own, so a proof on a new connection is refused 0x24 by the ECU, never sent for an old challenge.
+@[export: 'bb_uds_authenticate']
+pub fn bb_uds_authenticate(u i32, level i32, seed &u8, n i32) i32 {
+	return exchange(u, fn [level, seed, n] (mut hd UdsHandle) !i32 {
+		if level < 1 || level > 8 {
+			return error('authenticate: security level ${level} is out of range (1..8)')
+		}
+		s := if isnil(seed) && n == 0 {
+			uds.dev_tester_seed()
+		} else {
+			bytes_in('authenticate', seed, n)!
+		}
+		if s.len != 32 {
+			return error('authenticate: a tester seed is 32 bytes, got ${s.len}')
+		}
+		mut cl := hd.cli()!
+		cl.authenticate(int(level), s)!
+		return ok()
+	})
+}
+
+// bb_tester_seed: a tester seed as a key spec names it (uds.tester_key).
+@[export: 'bb_tester_seed']
+pub fn bb_tester_seed(spec &char, buf &u8, cap i32) i32 {
+	text := if isnil(spec) { '' } else { unsafe { cstring_to_vstring(spec) } }
+	s := uds.tester_key(text) or { return fail(bb_err, 'tester seed: ${err.msg()}') }
+	return put_bytes(s, buf, cap)
+}
+
 // bb_reference_key: blobly_net's reference key for a seed (uds.security_key), the key the
 // simulated ECUs accept.
 @[export: 'bb_reference_key']

@@ -58,6 +58,20 @@ fn (mut h DoipHost) answer(req []u8, functional bool) []u8 {
 	return if functional { h.server.handle_functional(req) } else { h.server.handle(req) }
 }
 
+// dropped: the entity's tester connection ended — what the server kept for it (a seed or 0x29
+// challenge, an unlock, the session it opened) ends with it, as on the board (comm/diag
+// remote_dropped). The next connection authenticates for itself.
+pub fn (mut h DoipHost) dropped() {
+	h.server.connection_dropped()
+}
+
+// bind_close tells the host when the entity's tester connection ends (dropped).
+pub fn (mut h DoipHost) bind_close(mut s doip.DoipServer) {
+	s.set_close_handler(fn [mut h] () {
+		h.dropped()
+	})
+}
+
 // bind_functional hands an entity's functional requests to its host.
 pub fn (mut h DoipHost) bind_functional(mut s doip.DoipServer) {
 	s.set_functional_handler(fn [mut h] (req []u8) []u8 {

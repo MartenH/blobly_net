@@ -51,6 +51,16 @@ fn test_wrong_keys_lock_the_level_out_for_the_delay() {
 	key << security_key(seed[2..])
 	assert s.handle(key) == [u8(0x67), 0x02]
 	assert s.handle([u8(0x27), 0x02, 0, 0, 0]) == [u8(0x7F), 0x27, 0x13]
+	// a seed drawn before its level's lockout began (on the board, over the other transport) buys no
+	// key during it: 0x37 after the sequence check, the key not judged, the seed spent (comm/uds)
+	s.handle([u8(0x10), 0x03])
+	seed2 := s.handle([u8(0x27), 0x01])
+	s.sa_delay_until[0] = now.t + 1000
+	mut key2 := [u8(0x27), 0x02]
+	key2 << security_key(seed2[2..])
+	assert s.handle(key2) == [u8(0x7F), 0x27, 0x37]
+	assert s.unlocked == 0 && s.sa_since[0] == 0
+	assert s.handle(key2) == [u8(0x7F), 0x27, 0x24]
 }
 
 fn test_s3_ends_a_quiet_session() {

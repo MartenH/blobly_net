@@ -31,7 +31,9 @@ pub mut:
 	snap_taken bool
 	session  u8 = 1
 	sec_seed []u8 // last seed handed out (0x27 request seed)
-	seed_lvl u8   // the security level sec_seed was handed out for
+	seed_lvl u8   // the security level sec_seed (or, authenticating, auth_challenge) was handed out for
+	// the 0x29 challenge outstanding on a described server that authenticates (described.v d_auth)
+	auth_challenge []u8
 	unlocked u8   // the security level granted (0x27 valid key accepted), 0 = locked
 	// the DTC status bits the server maintains: a 0x19 mask is ANDed with it, and it is the
 	// availability mask the answers carry (blobly_emb's fault memory: 0x7F, no warning lamp)
@@ -108,7 +110,9 @@ pub fn default_server() Server {
 
 // handle computes the UDS response for one request PDU (pure; no I/O). A sub-function service
 // with suppress-positive-response set (bit 7) is served on its sub-function without the bit, and
-// its positive response is withheld; a refusal is still answered (ISO 14229-1).
+// its positive response is withheld; a refusal is still answered (ISO 14229-1). 0x29 judges the bit
+// itself (d_auth), as blobly_emb's server does: 05 always answers (the challenge is the answer) and
+// so does 06 (the board's responsePending lifts the suppression); 00 honours it.
 pub fn (mut s Server) handle(req []u8) []u8 {
 	if req.len == 0 {
 		return []
@@ -117,7 +121,8 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 		s.take_snapshots()
 	}
 	_, subfn := echo_of(req) // the client's list: one answer to which services carry a sub-function
-	if subfn && req[0] != sid_read_dtc_information && req.len > 1 && req[1] & 0x80 != 0 {
+	if subfn && req[0] != sid_read_dtc_information && req[0] != sid_authentication && req.len > 1
+		&& req[1] & 0x80 != 0 {
 		mut plain := req.clone()
 		plain[1] &= 0x7F
 		resp := s.answer(plain)

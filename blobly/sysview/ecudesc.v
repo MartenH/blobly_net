@@ -2,6 +2,7 @@ module sysview
 
 import toml
 import blobly.uds
+import crypto.ed25519 as ed
 
 // ecudesc.v — a blobly_emb node's DIAGNOSTIC description, read from its ecu.toml: what a tester
 // needs to show names instead of codes. Each `[[fault]]` names a DTC, each `[[did]]` is a data
@@ -60,6 +61,9 @@ pub fn (x DidDesc) is_text() bool {
 
 // DidDesc is one `[[did]]`.
 pub struct DidDesc {
+pub mut:
+	// its node unlocks by 0x29 Authentication (`[uds] access`): a gated write plans an authenticate
+	authenticates bool
 pub:
 	id   u16
 	kind DidKind
@@ -205,6 +209,13 @@ pub mut:
 	// `[uds] security_key`: "reference" is blobly_net's public bench key (uds.security_key), the
 	// one key a tester here can compute; '' = the OEM's, which it cannot
 	security_key string
+	// `[uds] access`: "seed_key" (0x27, the default) or "authentication" (0x29 ACR with Ed25519,
+	// blobly_emb comm/uds auth.v; 0x27 then not served)
+	access string
+	// `[uds] auth_keys`, read and checked: per level, the tester's Ed25519 public key (32 bytes), and
+	// which levels named "reference" (the dev tester key — a bench key over DoIP, REQ-NET-012)
+	auth_keys map[int][]u8
+	auth_ref  map[int]bool
 	// `allow_bench_key = true` in its [doip] table (or its system.toml node's `doip`, which sysgen
 	// lowers there): over DoIP it answers 0x27 with the reference key; without it, it refuses that
 	// key over the network (blobly_emb REQ-NET-012)
@@ -523,6 +534,10 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	if uv := doc.value_opt('uds') {
 		um := uv.as_map()
 		d.security_key = tstr(um, 'security_key')
+		d.access = tstr(um, 'access')
+		if akv := um['auth_keys'] {
+			d.read_auth_keys(akv)
+		}
 		d.s3_ms = int(tint(um, 's3_ms'))
 		d.security_attempts = int(tint(um, 'security_attempts'))
 		d.security_delay_ms = int(tint(um, 'security_delay_ms'))
@@ -756,7 +771,100 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			ranges:     ranges
 		}
 	}
+	d.check_access()
 	return d
+}
+
+// authenticates: the node unlocks its levels with 0x29 rather than 0x27 (`[uds] access =
+// "authentication"`)
+pub fn (d &EcuDesc) authenticates() bool {
+	return d.access == 'authentication'
+}
+
+// read_auth_keys reads `[uds] auth_keys` as blobly_emb's loom2v does: level "1".."8" -> "reference"
+// or 64 hex characters naming a 32-byte Ed25519 public key; a key all zeros or not a curve point is
+// refused — each refusal said in errs and the key left out
+fn (mut d EcuDesc) read_auth_keys(v toml.Any) {
+	if v !is map[string]toml.Any {
+		d.errs << '[uds] auth_keys is not a table; not read'
+		return
+	}
+	for lk, kv in v.as_map() {
+		level := if lk.len == 1 && lk[0] >= `1` && lk[0] <= `8` { int(lk[0] - `0`) } else { 0 }
+		if level == 0 {
+			d.errs << '[uds] auth_keys "${lk}" is not a security level (1..8); not read'
+			continue
+		}
+		text := if kv is string { kv } else { '' }
+		if text == 'reference' {
+			d.auth_keys[level] = uds.dev_tester_public()
+			d.auth_ref[level] = true
+			continue
+		}
+		h := text.trim_space().to_lower()
+		if h.len != 64 || !h.bytes().all(it.is_hex_digit()) {
+			d.errs << '[uds] auth_keys "${lk}" is not 64 hex characters or "reference"; not read'
+			continue
+		}
+		mut key := []u8{len: 32}
+		for i in 0 .. 32 {
+			key[i] = u8(('0x' + h[2 * i..2 * i + 2]).u8())
+		}
+		if key.all(it == 0) {
+			d.errs << '[uds] auth_keys "${lk}" is all zeros; not read'
+			continue
+		}
+		// a key that is not a curve point is refused by the verifier with an error (not false)
+		if _ := ed.verify(key, []u8{}, []u8{len: 64}) {
+		} else {
+			d.errs << '[uds] auth_keys "${lk}" is not an Ed25519 public key (not a curve point); not read'
+			continue
+		}
+		d.auth_keys[level] = key
+		d.auth_ref[level] = false
+	}
+}
+
+// check_access says what blobly_emb's loom2v refuses about how the node unlocks: an access that is
+// neither method, auth keys on a seed-key node, a 0x27 key on an authenticating one, a gated level
+// with no key, a key for a level nothing gates, and authentication with nothing gated
+fn (mut d EcuDesc) check_access() {
+	if d.access == '' {
+		d.access = 'seed_key'
+	}
+	if d.access !in ['seed_key', 'authentication'] {
+		d.errs << '[uds] access "${d.access}" is neither "seed_key" nor "authentication"; read as "seed_key"'
+		d.access = 'seed_key'
+	}
+	for mut x in d.dids {
+		x.authenticates = d.authenticates()
+	}
+	if !d.authenticates() {
+		if d.auth_keys.len > 0 {
+			d.errs << '[uds] auth_keys are 0x29 keys, but access is "seed_key"; not read'
+			d.auth_keys = map[int][]u8{}
+			d.auth_ref = map[int]bool{}
+		}
+		return
+	}
+	if d.security_key != '' {
+		d.errs << '[uds] security_key is the 0x27 key, but access = "authentication"; not read'
+		d.security_key = ''
+	}
+	levels := d.security_levels()
+	if levels.len == 0 {
+		d.errs << '[uds] access = "authentication", but no gate names a security level: nothing to unlock'
+	}
+	for l in levels {
+		if l !in d.auth_keys {
+			d.errs << '[uds] access = "authentication": security level ${l} is gated but auth_keys has no key for it'
+		}
+	}
+	for l, _ in d.auth_keys {
+		if l !in levels {
+			d.errs << '[uds] auth_keys "${l}": no gate names security level ${l}; the key unlocks nothing'
+		}
+	}
 }
 
 // load_ecu_desc reads one ecu.toml file's diagnostic description.

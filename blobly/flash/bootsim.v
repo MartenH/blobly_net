@@ -2,6 +2,7 @@ module flash
 
 import sync.stdatomic
 import blobly.isotp
+import blobly.uds
 import crypto.ed25519 as ed
 
 // bootsim — a simulated blobly_emb bootloader, to rehearse a flash with no board: the session
@@ -87,7 +88,7 @@ fn rd32(b []u8, off int) u32 {
 }
 
 fn serve_boot(mut b BootSim) {
-	public := ed.new_key_from_seed(tester_seed('') or { panic(err) }).public_key()
+	public := ed.PublicKey(uds.dev_tester_public())
 	for {
 		select {
 			_ := <-b.stop {

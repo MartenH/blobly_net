@@ -293,3 +293,43 @@ fn test_another_ecu_knows_nothing_of_its_state() {
 	c.another_ecu()
 	assert c.state == ConnState{}
 }
+
+// 0x29 ACR: an answered 05 binds its level, a verified 06 unlocks it, 00 relocks, a refusal or an
+// unanswered proof forgets; the bootloader's 01 / 02 change nothing
+fn test_authentication_is_observed() {
+	mut s := ConnState{}
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x(auth_challenge_request(2), []u8{len: 55}))
+	assert s.auth_level == 2
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+	assert s.security.unlocked() == 2 && s.auth_level == 0
+	s.observe(ok_x([u8(0x29), 0x00], [u8(0x69), 0x00, 0x10]))
+	assert s.security.known && s.security.unlocked() == 0
+	s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+	s.observe(nrc_x(auth_proof_request([]u8{len: 64}), 0x58))
+	assert !s.security.known, 'a failed proof kept the level'
+	s.observe(nrc_x(auth_challenge_request(1), 0x7F))
+	assert s.session == 0, '0x7F did not forget the session'
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(silent_x(auth_proof_request([]u8{len: 64}), true))
+	assert !s.security.known
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x([u8(0x29), 0x01], []u8{len: 34}))
+	s.observe(ok_x([u8(0x29), 0x02], [u8(0x69), 0x02]))
+	assert s.security.known && s.security.unlocked() == 0, "the bootloader's profile moved the level"
+}
+
+// an authenticating node's write plan names 0x29, and its refusal points at authenticate
+fn test_an_authenticating_write_plan_names_0x29() {
+	p := write_plan_by(true, 0x03, [u8(0x03)], 1, 0, true, true)
+	assert p.unlock == 1 && p.authenticates
+	assert p.steps() == ['authenticate level 1 (0x29 05/06)']
+	r := write_plan_by(true, 0x03, [u8(0x03)], 1, 0, false, true)
+	assert r.refusal.contains('0x29 Authentication') && r.refusal.contains('authenticate')
+	assert !r.refusal.contains('0x27')
+	d := write_plan_by(true, 0x01, [default_session], 1, 0, true, true)
+	assert d.refusal.contains('where 0x29 is not served')
+	assert write_plan(true, 0x03, [u8(0x03)], 1, 0, true) == write_plan_by(true, 0x03, [u8(0x03)],
+		1, 0, true, false)
+}

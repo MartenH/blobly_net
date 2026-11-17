@@ -11,7 +11,13 @@
 //   0x2E: length (0x13) → the DID's support, writability and write session (0x31) → security
 //   (0x33) → the record length, which must be the DID's size (0x13) → a parameter's range (0x31);
 //   0x27: sub-function (0x12) → requestSeed: the lockout delay (0x37); sendKey: length (0x13), a
-//   seed of that level outstanding (0x24), the key (0x35, 0x36 on the last allowed attempt).
+//   seed of that level outstanding (0x24), the lockout delay (0x37, the seed spent), the key (0x35,
+//   0x36 on the last allowed attempt);
+//   0x29, on a node whose description says `access = "authentication"` (0x27 is then not served):
+//   blobly_emb comm/uds auth.v's order — length (0x13), sub-function 00/05/06 (0x12), its exact
+//   length and fixed length fields (0x13); 05: algorithm or level (0x31), the delay (0x37); 06: a
+//   challenge outstanding (0x24), the algorithm (0x31), the delay (0x37, the challenge void), the
+//   proof (0x58, 0x36 on the last allowed).
 //
 // The description is not read here: uds is below sysview (which imports uds for the standard DID
 // names), so sysview fills a ServerSpec and this builds from it. What a simulated ECU cannot do it
@@ -23,6 +29,7 @@ module uds
 
 import time
 import blobly.isotp
+import crypto.ed25519 as ed
 
 // Session masks, one bit per 0x10 session value (bit n-1 for session n); 0 = every session.
 pub const in_default = u8(0x01)
@@ -112,13 +119,26 @@ pub mut:
 	max_response int
 	security_delay_ms int // 0 = 10 s
 	s3_ms             int // 0 = 5 s
+	// `[uds] access = "authentication"`: the levels are unlocked with 0x29 ACR against auth_keys
+	// (index level - 1, each a 32-byte Ed25519 public key; empty = no key for that level), and 0x27
+	// is not served
+	authenticates bool
+	auth_keys     [][]u8
+}
+
+// auth_key: the public key level L's proofs verify against; none when the description gives none
+pub fn (spec ServerSpec) auth_key(level u8) ?[]u8 {
+	if level < 1 || int(level) > spec.auth_keys.len || spec.auth_keys[level - 1].len != 32 {
+		return none
+	}
+	return spec.auth_keys[level - 1]
 }
 
 // default_sessions is where a service runs unless its row says otherwise (comm/uds
-// default_sessions): 0x27, 0x28 and 0x85 only outside the default session.
+// default_sessions): 0x27, 0x28, 0x29 and 0x85 only outside the default session.
 pub fn default_sessions(sid u8) u8 {
 	return match sid {
-		0x27, 0x28, 0x85 { in_extended | in_programming }
+		0x27, 0x28, 0x29, 0x85 { in_extended | in_programming }
 		else { u8(0) }
 	}
 }
@@ -265,10 +285,11 @@ fn (s &Server) now_ms() i64 {
 	return i64(time.sys_mono_now() / 1_000_000) // monotonic: a wall-clock step moves no deadline
 }
 
-// physical_only: a request a server ignores when it arrives functionally — SecurityAccess, whose
-// seed and key are one tester's exchange (comm/uds handle_functional).
+// physical_only: a request a server ignores when it arrives functionally — SecurityAccess and
+// Authentication, whose seed and key (or challenge and proof) are one tester's exchange (comm/uds
+// handle_functional).
 pub fn physical_only(req []u8) bool {
-	return req.len > 0 && req[0] == 0x27
+	return req.len > 0 && (req[0] == 0x27 || req[0] == 0x29)
 }
 
 // handle_functional answers a request that arrived on the functional address: a described server
@@ -348,7 +369,8 @@ fn (s &Server) supported(sid u8) bool {
 		0x10, 0x22, 0x2E, 0x3E { true }
 		0x11 { s.spec.serves_reset }
 		0x14, 0x19, 0x85 { s.spec.faults.len > 0 }
-		0x27 { s.spec.security_mask() != 0 }
+		0x27 { s.spec.security_mask() != 0 && !s.spec.authenticates }
+		0x29 { s.spec.security_mask() != 0 && s.spec.authenticates }
 		0x2F { s.io_start.len > 0 }
 		0x23, 0x3D { s.memory.len > 0 }
 		else { false }
@@ -382,6 +404,7 @@ fn (mut s Server) enter_session(session u8) {
 	s.unlocked = 0
 	s.seed_lvl = 0
 	s.sec_seed = []u8{}
+	s.auth_challenge = []u8{}
 	s.session = session
 	if session == 1 {
 		s.return_io_control()
@@ -411,6 +434,7 @@ fn (mut s Server) answer_described(req []u8) []u8 {
 		0x22 { s.d_read(req) }
 		0x2E { s.d_write(req) }
 		0x27 { s.d_security(req, now) }
+		0x29 { s.d_auth(req, now) }
 		0x3E { s.d_tester_present(req) }
 		0x14, 0x19, 0x85 { s.answer_dtc(req) }
 		0x2F { s.io_control(req) }
@@ -694,24 +718,141 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 	seed := s.sec_seed.clone()
 	s.seed_lvl = 0
 	s.sec_seed = []u8{}
+	if now < s.sa_delay_until[level - 1] {
+		return neg(0x27, 0x37) // a seed drawn before the lockout buys no key during it
+	}
 	want := if s.spec.reference_key { security_key(seed) } else { oem_key(seed) }
 	if req[2..] != want {
-		limit := s.sa_limit()
-		if s.sa_since[level - 1] < limit {
-			s.sa_since[level - 1]++
-		}
-		s.sa_failed[level - 1]++
-		if s.sa_failed[level - 1] >= limit {
-			s.sa_failed[level - 1] = 0
-			s.sa_delay_until[level - 1] = now + i64(s.sa_delay())
-			return neg(0x27, 0x36)
-		}
-		return neg(0x27, 0x35)
+		return neg(0x27, s.d_wrong(level, now, 0x35))
 	}
+	s.d_granted(level)
+	return [u8(0x67), sub]
+}
+
+// d_wrong: a wrong 0x27 key or a failed 0x29 proof of `level`, counted — one count per level for
+// both, as comm/uds sa_wrong: `wrong` to answer, or 0x36 when this one reached the limit and
+// started the lockout
+fn (mut s Server) d_wrong(level u8, now i64, wrong u8) u8 {
+	limit := s.sa_limit()
+	if s.sa_since[level - 1] < limit {
+		s.sa_since[level - 1]++
+	}
+	s.sa_failed[level - 1]++
+	if s.sa_failed[level - 1] >= limit {
+		s.sa_failed[level - 1] = 0
+		s.sa_delay_until[level - 1] = now + i64(s.sa_delay())
+		return 0x36
+	}
+	return wrong
+}
+
+// d_granted: a correct key or proof of `level` — unlocked, its count cleared
+fn (mut s Server) d_granted(level u8) {
 	s.sa_failed[level - 1] = 0
 	s.sa_since[level - 1] = 0
 	s.unlocked = level
-	return [u8(0x67), sub]
+}
+
+// d_auth is 0x29 on a described server that authenticates — blobly_emb comm/uds auth.v's layouts
+// and order, through this module's offsets (auth.v): 00 relocks, 05 binds a fresh 32-byte challenge
+// to the level its communicationConfiguration names, 06 verifies the Ed25519 signature over it
+// against that level's public key. A failed proof counts as a wrong key (d_wrong).
+fn (mut s Server) d_auth(req []u8, now i64) []u8 {
+	if req.len < 2 {
+		return neg(0x29, 0x13)
+	}
+	sub := req[1] & 0x7F
+	suppress := req[1] & 0x80 != 0
+	want := match sub {
+		auth_deauthenticate { 2 }
+		auth_request_challenge { auth_challenge_req_len }
+		auth_verify_proof { auth_proof_req_len }
+		else { 0 }
+	}
+	if want == 0 {
+		return neg(0x29, 0x12)
+	}
+	if req.len != want {
+		return neg(0x29, 0x13)
+	}
+	if sub == auth_verify_proof && (be16_at(req, auth_proof_len_at) != auth_proof_len
+		|| be16_at(req, auth_cc_len_at) != 0 || be16_at(req, auth_ap_len_at) != 0) {
+		return neg(0x29, 0x13)
+	}
+	if sub == auth_deauthenticate {
+		s.unlocked = 0
+		s.seed_lvl = 0
+		s.auth_challenge = []u8{}
+		return if suppress { []u8{} } else { [u8(0x69), 0x00, auth_deauthenticated] }
+	}
+	if sub == auth_request_challenge {
+		level := req[auth_level_at]
+		key_ok := if _ := s.spec.auth_key(level) { true } else { false }
+		if req[auth_alg05_at..auth_alg05_at + 16] != ed25519_algorithm || level == 0 || level > 8
+			|| s.spec.security_mask() & (u8(1) << (level - 1)) == 0 || !key_ok {
+			return neg(0x29, 0x31)
+		}
+		if now < s.sa_delay_until[level - 1] {
+			return neg(0x29, 0x37)
+		}
+		if s.spec.resp_cap() < auth_challenge_answer_len {
+			return neg(0x29, 0x14)
+		}
+		s.seed_lvl = 0
+		s.auth_challenge = s.next_bytes(auth_challenge_len) // never all zero: no 0x59 here
+		s.seed_lvl = level
+		mut resp := [u8(0x69), auth_request_challenge, auth_request_accepted]
+		resp << ed25519_algorithm
+		resp << [u8(0x00), u8(auth_challenge_len)]
+		resp << s.auth_challenge
+		resp << [u8(0), 0]
+		return resp
+	}
+	if s.seed_lvl == 0 || s.auth_challenge.len != auth_challenge_len {
+		return neg(0x29, 0x24)
+	}
+	if req[auth_alg_at..auth_alg_at + 16] != ed25519_algorithm {
+		return neg(0x29, 0x31) // the challenge stays
+	}
+	if now < s.sa_delay_until[s.seed_lvl - 1] {
+		s.seed_lvl = 0
+		s.auth_challenge = []u8{}
+		return neg(0x29, 0x37) // a challenge drawn before the lockout buys no proof during it
+	}
+	if s.spec.resp_cap() < auth_proof_answer_len {
+		return neg(0x29, 0x14) // the challenge stays
+	}
+	level := s.seed_lvl
+	challenge := s.auth_challenge.clone()
+	s.seed_lvl = 0
+	s.auth_challenge = []u8{}
+	key := s.spec.auth_key(level) or { []u8{} }
+	ok := key.len == 32 && (ed.verify(key, challenge, req[auth_proof_at..auth_proof_at +
+		auth_proof_len]) or { false })
+	if !ok {
+		return neg(0x29, s.d_wrong(level, now, nrc_ownership_failed))
+	}
+	s.d_granted(level)
+	// answered whatever the suppress bit, as the board does: its 06 answers responsePending first,
+	// which lifts the suppression (ISO 14229-1); the simulation verifies at once and sends no 0x78
+	return auth_proof_answer()
+}
+
+fn be16_at(b []u8, at int) int {
+	return int(b[at]) << 8 | int(b[at + 1])
+}
+
+// connection_dropped: the tester's connection is gone (a hosted DoIP entity's tester disconnected)
+// — as blobly_emb comm/diag remote_dropped: its seed or challenge is void, its unlock ends and the
+// session it opened returns to default. The next connection authenticates for itself.
+pub fn (mut s Server) connection_dropped() {
+	if s.session != 1 {
+		s.enter_session(1)
+	}
+	s.unlocked = 0
+	s.seed_lvl = 0
+	s.sec_seed = []u8{}
+	s.auth_challenge = []u8{}
 }
 
 // sa_restart: what a reset makes of the 0x27 counts, comm/uds sa_restart's rule (a target's
@@ -741,12 +882,18 @@ fn (s &Server) sa_delay() int {
 
 // next_seed is a fresh, never all-zero seed (all zeros means "already unlocked" on the wire).
 fn (mut s Server) next_seed() []u8 {
+	return s.next_bytes(sa_seed_len)
+}
+
+// next_bytes is `n` fresh bytes from the seed generator, never all zero — a 0x27 seed or a 0x29
+// challenge.
+fn (mut s Server) next_bytes(n int) []u8 {
 	if s.sa_state == 0 {
 		s.sa_state = u32(time.sys_mono_now()) | 1
 	}
-	mut out := []u8{len: sa_seed_len}
+	mut out := []u8{len: n}
 	for {
-		for i in 0 .. sa_seed_len {
+		for i in 0 .. n {
 			s.sa_state ^= s.sa_state << 13
 			s.sa_state ^= s.sa_state >> 17
 			s.sa_state ^= s.sa_state << 5

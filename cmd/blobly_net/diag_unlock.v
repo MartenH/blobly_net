@@ -202,13 +202,20 @@ fn draw_unlock(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 // unlock_refusal_for is diaghold.unlock_refusal for target `t` as `desc` describes it: its key, and
 // on DoIP its opt-in to the reference key over the network.
 fn unlock_refusal_for(t DiagTarget, desc DiagDesc) string {
-	return diaghold.unlock_refusal(desc.ok && desc.desc.server, desc.ok
+	return diaghold.unlock_refusal_by(desc.ok && desc.desc.server, desc.ok
 		&& desc.desc.security_key == 'reference', t.carrier.kind == .doip, desc.ok
-		&& desc.desc.allow_bench_key)
+		&& desc.desc.allow_bench_key, desc.ok && desc.desc.authenticates())
 }
 
 // panel_can_unlock: a DID write's unlock (uds.write_plan's `can_unlock`) asks the same as an
-// Unlock — a described target that accepts the reference key on this carrier.
+// Unlock — a described target that accepts the reference key on this carrier (never one that
+// unlocks with 0x29, which the panel does not offer).
 fn panel_can_unlock(t DiagTarget, desc DiagDesc) bool {
-	return desc.ok && desc.desc.security_key == 'reference' && unlock_refusal_for(t, desc) == ''
+	return desc.ok && !desc.desc.authenticates() && desc.desc.security_key == 'reference'
+		&& unlock_refusal_for(t, desc) == ''
+}
+
+// desc_authenticates: the target's description says it unlocks with 0x29
+fn desc_authenticates(desc DiagDesc) bool {
+	return desc.ok && desc.desc.authenticates()
 }

@@ -243,6 +243,23 @@ def _close_orphans() -> None:
         getattr(lib, closer)(h)
 
 
+def _tester_seed(key) -> "bytes | None":
+    """A tester seed as authenticate takes one: None for the dev key, else its 32 bytes."""
+    if key is None or (isinstance(key, str) and key.strip() in ("", "reference")):
+        return None
+    if isinstance(key, (bytes, bytearray, memoryview)):
+        b = bytes(key)
+        if len(b) != 32:
+            raise ValueError(f"authenticate: a tester seed is 32 bytes, got {len(b)}")
+        return b
+    if isinstance(key, (str, os.PathLike)):
+        spec = os.fspath(key).encode()
+        buf = ctypes.create_string_buffer(32)
+        _lib.check(_lib.lib().bb_tester_seed(spec, buf, 32))
+        return buf.raw
+    raise TypeError(f"authenticate: key must be None, bytes, a str or a path, not {type(key).__name__}")
+
+
 def reference_key(seed: ByteData) -> bytes:
     """blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF): the key the simulated
     ECUs accept, and a blobly_emb node whose description names it (docs/security_access.md)."""
@@ -645,6 +662,23 @@ class UdsClient:
                     _callbacks.depth -= 1
             self._call_on(h, _lib.lib().bb_uds_security_key, level + 1, key, len(key))
             return seed
+
+    def authenticate(self, level: int, key: "ByteData | str | os.PathLike[str] | None" = None) -> None:
+        """0x29 Authentication (ACR with Ed25519) on an ECU that unlocks that way instead of 0x27
+        (blobly_emb `[uds] access = "authentication"`): a challenge for `level` (0x29 05), signed
+        with the tester's Ed25519 seed and sent back (0x29 06). `key` is the seed: None or
+        "reference" the dev tester key (the one such a node's auth_keys "reference" trusts), 32
+        bytes, 64 hex characters, or a seed file's path. A refusal raises NegativeResponse (NRC 0x58
+        a wrong key, 0x36 the last one, 0x37 the lockout, 0x24 no challenge)."""
+        level = _int("level", level)
+        seed = _tester_seed(key)
+        with self._lock:
+            if self._in_key_fn:
+                raise BloblyError(f"{self!r}: authenticate inside a key_fn", _lib.BB_ERR_STATE)
+            if seed is None:
+                self._call(_lib.lib().bb_uds_authenticate, level, None, 0)
+            else:
+                self._call(_lib.lib().bb_uds_authenticate, level, seed, len(seed))
 
     def reset(self, kind: int = 0x01) -> bytes:
         """0x11 ECUReset: kind 1 hard, 2 key-off-on, 3 soft; returns the answer after its SID."""

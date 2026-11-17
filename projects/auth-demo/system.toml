@@ -1,0 +1,13 @@
+# The system auth-demo.blobnet's simulated node is described by (sysview.find_system finds this file
+# in the project's folder): one node, `auth`, on a CAN bus and as a DoIP entity.
+[bus.auth]
+interface = "can0"
+fd        = false
+bitrate   = 500000
+
+[[node]]
+name  = "auth"
+ecu   = "nodes/auth/ecu.toml"
+buses = ["auth"]
+diag  = { req = 0x7E0, rsp = 0x7E8 }
+doip  = { logical = 0x1001, testers = [0x0E80], allow_bench_key = true }
