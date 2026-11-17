@@ -131,6 +131,7 @@ pub fn (mut s ConnState) forget(f Forget) {
 		.session {
 			s.session = 0
 			s.security = Security{}
+			s.auth_level = 0 // every session entry voids a 0x29 challenge
 		}
 	}
 }
@@ -146,7 +147,8 @@ pub fn (s ConnState) words() string {
 }
 
 // observe updates the state from one exchange that ended: a positive 0x10 establishes its session,
-// locked (ISO 14229-1 relocks on every transition), a positive 0x11 the default session, locked; a
+// locked (ISO 14229-1 relocks on every transition), a positive 0x11 the default session, locked —
+// either voiding a 0x29 challenge outstanding, as forgetting the session does; a
 // granted 0x27 key, or an all-zero seed, its level; a 0x27 or 0x2E refusal forgets what its code
 // says (unlock_refusal_forgets, write_refusal_forgets). A session change or a 0x27 the ECU may have
 // acted on without answering leaves that state unknown; a request that never went out changes
@@ -164,9 +166,9 @@ pub fn (mut s ConnState) observe(x Exchange) {
 				// the echo may carry the suppress bit (answer_to accepts it): the session is without it
 				s.session = if x.resp.len > 1 { x.resp[1] & ~suppress_positive } else { sub }
 				s.security = security_locked()
+				s.auth_level = 0 // a session entry voids the 0x29 challenge outstanding
 			} else if !x.negative {
-				s.session = 0
-				s.security = Security{}
+				s.forget(.session)
 			}
 		}
 		sid_ecu_reset {
@@ -175,10 +177,10 @@ pub fn (mut s ConnState) observe(x Exchange) {
 			} else if answered && sub >= reset_hard && sub <= reset_soft {
 				s.session = default_session
 				s.security = security_locked()
+				s.auth_level = 0 // a reset voids the 0x29 challenge outstanding
 			} else if !x.negative {
 				// a reset of a kind ISO does not define, or one sent and unanswered: not known
-				s.session = 0
-				s.security = Security{}
+				s.forget(.session)
 			}
 		}
 		sid_security_access {
@@ -211,9 +213,14 @@ pub fn (mut s ConnState) observe(x Exchange) {
 }
 
 // observe_auth: 0x29 ACR (blobly_emb's application profile, auth.v) — an answered 05 binds its level,
-// a verified 06 unlocks it, an answered 00 relocks; a refusal forgets what its code says (0x58 a
-// failed proof, like 0x35 a wrong key: the level is not known), and a 06 or 00 sent and unanswered
-// leaves the level unknown. The bootloader's own 01 / 02 are not this connection's security levels.
+// a 06 answered ownershipVerified (0x12) unlocks it, an answered 00 relocks. A refusal under which
+// the server keeps its challenge (auth_refusal_keeps_challenge: the request was refused before it
+// touched it, so before any 0x78) changes nothing, so a corrected retry unlocks as the ECU does; a
+// refusal after a 0x78 (the verify ran: a valid proof's 0x14 its transport's room) and any other
+// forgets what its code says (0x58 a failed proof, like 0x35 a wrong key: the level is not known)
+// and the challenge with it. A 06 answered positively with another returnValue, or a 06 or 00 sent
+// and unanswered, leaves the level unknown. The bootloader's own 01 / 02 are not this connection's
+// security levels.
 fn (mut s ConnState) observe_auth(x Exchange, sub u8, answered bool) {
 	if sub == boot_request_challenge || sub == boot_send_proof {
 		return
@@ -224,7 +231,8 @@ fn (mut s ConnState) observe_auth(x Exchange, sub u8, answered bool) {
 				s.auth_level = if x.req.len > auth_level_at { x.req[auth_level_at] } else { u8(0) }
 			}
 			auth_verify_proof {
-				s.security = if s.auth_level != 0 {
+				verified := x.resp.len > 2 && x.resp[2] == auth_ownership_verified
+				s.security = if verified && s.auth_level != 0 {
 					security_unlocked(s.auth_level)
 				} else {
 					Security{}
@@ -240,6 +248,9 @@ fn (mut s ConnState) observe_auth(x Exchange, sub u8, answered bool) {
 		return
 	}
 	if x.negative && x.resp.len == 3 {
+		if x.timing.pending == 0 && auth_refusal_keeps_challenge(sub, x.resp[2]) {
+			return
+		}
 		s.forget(unlock_refusal_forgets(x.resp[2]))
 		s.auth_level = 0
 	} else if sub == auth_verify_proof || sub == auth_deauthenticate {

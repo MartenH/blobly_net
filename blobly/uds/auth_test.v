@@ -1,6 +1,7 @@
 module uds
 
 import os
+import crypto.ed25519 as ed
 import blobly.isotp
 
 // 0x29 Authentication from the tester's side (auth.v) and on the described server (described.v): the
@@ -57,9 +58,19 @@ fn proof_for(ans []u8, seed []u8) []u8 {
 	})
 }
 
+fn hex_nul() string {
+	return '11'.repeat(16) + '\0' + '11'.repeat(15)
+}
+
 fn test_the_key_forms() {
 	dev := dev_tester_seed()
-	assert tester_key('')! == dev && tester_key('reference')! == dev && tester_key(' reference ')! == dev
+	assert tester_key('reference')! == dev && tester_key(' reference ')! == dev
+	// a key that was given names something: empty, or cut by a NUL, is never the dev key
+	for bad in ['', '  ', '\0bad', 'reference\0', hex_nul()] {
+		if _ := tester_key(bad) {
+			assert false, 'the key ${bad.bytes()} was taken'
+		}
+	}
 	hex := '11'.repeat(32)
 	assert tester_key(hex)! == other_seed()
 	if _ := tester_key('11'.repeat(31) + '1') {
@@ -75,6 +86,10 @@ fn test_the_key_forms() {
 	f := os.join_path(dir, 'tester.seed')
 	os.write_file(f, hex + '\n')!
 	assert tester_key(f)! == other_seed()
+	// a path cut by a NUL would open the file before it: refused, never read
+	if _ := tester_key(f + '\0.other') {
+		assert false, 'a path cut by a NUL was read'
+	}
 	empty := os.join_path(dir, 'empty.seed')
 	os.write_file(empty, '')!
 	if _ := tester_key(empty) {
@@ -218,5 +233,143 @@ fn test_an_undecodable_challenge_answer() {
 		assert false
 	} else {
 		assert err is UndecodableAnswer
+	}
+}
+
+// small_order_encodings: every encoding of a small-order point — the eight canonical ones (the
+// neutral point, the point of order 2, the two of order 4, the four of order 8), the sign bit set on
+// an x of zero, and y at or above p (p, p+1: the order-4 and neutral y's again) — blobly_emb's
+// bcrypto and doipcfg tests hold the same list
+const small_order_encodings = [
+	'0100000000000000000000000000000000000000000000000000000000000000',
+	'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+	'0000000000000000000000000000000000000000000000000000000000000000',
+	'0000000000000000000000000000000000000000000000000000000000000080',
+	'26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+	'26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85',
+	'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+	'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+	'0100000000000000000000000000000000000000000000000000000000000080',
+	'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+	'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+	'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+	'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+	'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+]
+
+fn unhex(h string) []u8 {
+	mut out := []u8{len: h.len / 2}
+	for i in 0 .. out.len {
+		out[i] = u8(('0x' + h[2 * i..2 * i + 2]).u8())
+	}
+	return out
+}
+
+// small_order_key recognises every small-order encoding, computed, and no key of large order
+fn test_small_order_keys_are_recognised() {
+	for h in small_order_encodings {
+		assert small_order_key(unhex(h)), h
+	}
+	assert !small_order_key(dev_tester_public())
+	for i in 0 .. 16 {
+		k := ed.new_key_from_seed([]u8{len: 32, init: u8(i * 7 + 1)}).public_key()
+		assert !small_order_key(k)
+	}
+	// 02 00..00 is no point: not small-order either (the curve-point check refuses it)
+	assert !small_order_key(unhex('02' + '00'.repeat(31)))
+	assert !small_order_key([]u8{len: 31})
+}
+
+// the described server's refusals keep or spend the challenge exactly as the client's table says
+// (auth_refusal_keeps_challenge): each refusal is followed by the proof for the first challenge,
+// which verifies only where the challenge was kept
+fn test_the_challenge_table_matches_the_described_server() {
+	mut now := &AuthClock{}
+	mut s := authed_server(now)
+	s.handle([u8(0x10), 0x03])
+	// 06 refusals: its length (0x13), its algorithm (0x31), the verdict (0x58)
+	for nrc in [u8(0x13), 0x31, 0x58] {
+		ans := s.handle(auth_challenge_request(1))
+		mut req := proof_for(ans, if nrc == 0x58 { other_seed() } else { dev_tester_seed() })
+		if nrc == 0x13 {
+			req[auth_proof_len_at + 1] ^= 1
+		} else if nrc == 0x31 {
+			req[auth_alg_at] = 0x07
+		}
+		assert s.handle(req) == [u8(0x7F), 0x29, nrc]
+		kept := s.handle(proof_for(ans, dev_tester_seed())) == auth_proof_answer()
+		assert kept == auth_refusal_keeps_challenge(auth_verify_proof, nrc), '06 0x${nrc:02X}'
+		s.handle([u8(0x10), 0x03])
+	}
+	// 0x37: a challenge drawn before the lockout is spent by the refusal
+	a37 := s.handle(auth_challenge_request(1))
+	s.sa_delay_until[0] = now.t + 1000
+	assert s.handle(proof_for(a37, dev_tester_seed())) == [u8(0x7F), 0x29, 0x37]
+	s.sa_delay_until[0] = 0
+	assert (s.handle(proof_for(a37, dev_tester_seed())) == auth_proof_answer()) == auth_refusal_keeps_challenge(auth_verify_proof,
+		0x37)
+	// 05 refusals: the challenge outstanding stays
+	s.handle([u8(0x10), 0x03])
+	a5 := s.handle(auth_challenge_request(1))
+	assert s.handle(auth_challenge_request(9)) == [u8(0x7F), 0x29, 0x31]
+	assert auth_refusal_keeps_challenge(auth_request_challenge, 0x31)
+	assert s.handle(proof_for(a5, dev_tester_seed())) == auth_proof_answer()
+}
+
+// 0x29 00 deAuthenticate relocks the level as blobly_emb's does: the IO controls gated on it are
+// returned to the ECU, not left in force; a dropped connection likewise; controls gated on no level
+// stay
+fn test_deauthenticate_returns_the_controls_its_level_gated() {
+	for gated in [true, false] {
+		mut now := &AuthClock{}
+		mut s := server_from(ServerSpec{
+			dids:          [
+				DidSpec{
+					id:   0x0102
+					data: [u8(7)]
+					read: GateSpec{
+						sessions: in_extended
+						level:    1
+					}
+				},
+			]
+			table:         true
+			services:      [
+				ServiceSpec{
+					sid: 0x10
+				},
+				ServiceSpec{
+					sid: 0x22
+				},
+				ServiceSpec{
+					sid: 0x29
+				},
+				ServiceSpec{
+					sid:   0x2F
+					level: if gated { u8(1) } else { u8(0) }
+				},
+			]
+			authenticates: true
+			auth_keys:     [dev_tester_public()]
+		})
+		s.clock = fn [now] () i64 {
+			return now.t
+		}
+		s.declare_io(0x1234, 1)
+		s.handle([u8(0x10), 0x03])
+		ans := s.handle(auth_challenge_request(1))
+		assert s.handle(proof_for(ans, dev_tester_seed())) == auth_proof_answer()
+		assert s.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x05])[0] == 0x6F
+		assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x05]
+		assert s.handle([u8(0x29), 0x00]) == [u8(0x69), 0x00, 0x10]
+		want := if gated { u8(0x00) } else { u8(0x05) }
+		assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, want], 'gated ${gated}: deAuthenticate'
+		// the end of the connection that earned the unlock, in the extended session it keeps
+		a2 := s.handle(auth_challenge_request(1))
+		s.handle(proof_for(a2, dev_tester_seed()))
+		s.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x06])
+		s.relock(s.unlocked)
+		want2 := if gated { u8(0x00) } else { u8(0x06) }
+		assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, want2], 'gated ${gated}: relock'
 	}
 }

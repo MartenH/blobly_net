@@ -1,7 +1,6 @@
 module sysview
 
 import blobly.uds
-import crypto.ed25519 as ed
 
 // simserver.v — a node's description as the diagnostic server a simulation serves for it
 // (uds.server_from). Here and not in uds because uds sits below sysview (this module imports it
@@ -71,12 +70,6 @@ const declared_sids = [u8(0x23), 0x2F, 0x3D]
 // boot_sw_version_did is the DID a [boot] node answers with its running image's sw_version
 // (blobly_emb loom2v handoff_did): a u32, which the simulation has no image to take it from.
 const boot_sw_version_did = u16(0xF195)
-
-// not_the_dev_key: a valid Ed25519 public key no tester here holds the seed of — the key a simulated
-// node verifies with where the node would refuse the dev key
-fn not_the_dev_key() []u8 {
-	return ed.new_key_from_seed([]u8{len: 32, init: 0xA5}).public_key()
-}
 
 // server_spec is the server the description states. `remote` = served over DoIP, where the
 // reference key is accepted only with `allow_bench_key` (blobly_emb REQ-NET-012). The notes say
@@ -215,20 +208,21 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		notes << '0x10 02 (the programming handoff) is refused with conditionsNotCorrect: no bootloader is simulated'
 	}
 	reference := d.security_key == 'reference' && (!remote || d.allow_bench_key)
-	// 0x29: each level's public key — the dev key ("reference") only where the node would accept it
-	// (over DoIP with allow_bench_key, REQ-NET-012), else a key no tester here holds
+	// 0x29: each level's public key — the dev key ("reference", or its hex) only where the node would
+	// accept it (over DoIP with allow_bench_key, REQ-NET-012); else the level is REFUSED: its challenge
+	// served and no proof verified, since no key stands in for it (auth_refused)
 	mut auth_keys := [][]u8{len: 8}
-	mut bench_refused := false
+	mut auth_refused := u8(0)
 	if d.authenticates() {
 		for l, k in d.auth_keys {
 			if d.auth_ref[l] && remote && !d.allow_bench_key {
-				auth_keys[l - 1] = not_the_dev_key()
-				bench_refused = true
+				auth_refused |= u8(1) << (l - 1)
 			} else {
 				auth_keys[l - 1] = k.clone()
 			}
 		}
 	}
+	bench_refused := auth_refused != 0
 	spec := uds.ServerSpec{
 		dids:              dids
 		table:             d.services_table
@@ -248,6 +242,7 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		s3_ms:             d.s3_ms
 		authenticates:     d.authenticates()
 		auth_keys:         auth_keys
+		auth_refused:      auth_refused
 	}
 	if bench_refused {
 		notes << '0x29 refuses the dev tester key over DoIP, as the node does (auth_keys "reference" without `allow_bench_key`)'

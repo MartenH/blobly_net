@@ -244,20 +244,32 @@ def _close_orphans() -> None:
 
 
 def _tester_seed(key) -> "bytes | None":
-    """A tester seed as authenticate takes one: None for the dev key, else its 32 bytes."""
-    if key is None or (isinstance(key, str) and key.strip() in ("", "reference")):
+    """A tester seed as authenticate takes one: None for the dev key, else its 32 bytes. A key that
+    is given names one: an empty one, or one holding a NUL (which the C boundary would cut, naming
+    another key — the dev key for a leading NUL), is refused; a path is encoded as the file system
+    encodes it (os.fsencode), so a name that is not UTF-8 still reaches its file."""
+    if key is None:
         return None
-    if isinstance(key, (bytes, bytearray, memoryview)):
-        b = bytes(key)
-        if len(b) != 32:
-            raise ValueError(f"authenticate: a tester seed is 32 bytes, got {len(b)}")
-        return b
     if isinstance(key, (str, os.PathLike)):
-        spec = os.fspath(key).encode()
+        spec = os.fsencode(key)
+        if b"\0" in spec:
+            raise ValueError("authenticate: the key holds a NUL character, which would cut it short")
+        if spec.strip() == b"":
+            raise ValueError('authenticate: the key is empty — leave it out, or "reference", for the dev tester key')
+        if spec.strip() == b"reference":
+            return None
         buf = ctypes.create_string_buffer(32)
         _lib.check(_lib.lib().bb_tester_seed(spec, buf, 32))
         return buf.raw
-    raise TypeError(f"authenticate: key must be None, bytes, a str or a path, not {type(key).__name__}")
+    try:
+        b = _lib.byte_data("authenticate: key", key)
+    except TypeError:
+        raise TypeError(
+            f"authenticate: key must be None, bytes, a str or a path, not {type(key).__name__}"
+        ) from None
+    if len(b) != 32:
+        raise ValueError(f"authenticate: a tester seed is 32 bytes, got {len(b)}")
+    return b
 
 
 def reference_key(seed: ByteData) -> bytes:

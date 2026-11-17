@@ -803,6 +803,8 @@ static int auth_steps(const char *sim_project) {
 	uint8_t seed[32];
 	CHECK(bb_tester_seed_p("reference", seed, sizeof seed) == 32 && seed[0] == 0x20 && seed[31] == 0x3F, "the dev tester seed by name");
 	CHECK(bb_tester_seed_p("abc", seed, sizeof seed) == BB_ERR, "three hex characters must refuse");
+	CHECK(bb_tester_seed_p("", seed, sizeof seed) == BB_ERR, "an empty key must refuse, not name the dev seed");
+	CHECK(bb_tester_seed_p(NULL, seed, sizeof seed) == 32 && seed[0] == 0x20, "NULL is the dev tester seed");
 	CHECK(bb_load_p(project) == 0, "load auth-demo");
 	CHECK(bb_start_p() == 0, "start auth-demo");
 	if (auth_on(0, "AUTH (CAN)") || auth_on(1, "AUTH_IP (DoIP)")) return 1;

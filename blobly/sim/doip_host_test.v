@@ -63,3 +63,23 @@ fn test_a_described_vin_write_moves_the_announcement_either_way_it_is_addressed(
 		assert e.announced_vin() == host_vin, 'functional ${functional}'
 	}
 }
+
+// a host bound to a new entity (a node ticked off and on: the GUI's watcher re-binds one host and
+// does not join the old entity's serving thread) ignores a late close from the old one — only the
+// entity bound last ends the connection state; its own close still does
+fn test_a_stale_close_does_not_reset_the_new_connection() {
+	mut h, _ := host_on(uds.default_server())
+	old_close := h.closer() // the entity bound first
+	new_close := h.closer() // the one bound after it
+	assert h.handle([u8(0x10), 0x03])[0] == 0x50
+	seed := h.handle([u8(0x27), 0x01])
+	assert seed.len > 2 && seed[0] == 0x67
+	mut key := [u8(0x27), 0x02]
+	key << uds.security_key(seed[2..])
+	assert h.handle(key) == [u8(0x67), 0x02]
+	assert h.server.unlocked == 1
+	old_close()
+	assert h.server.unlocked == 1 && h.server.session == 0x03, 'a stale close reset the new connection'
+	new_close()
+	assert h.server.unlocked == 0 && h.server.session == 0x01, 'its own close did not end its connection'
+}

@@ -887,9 +887,10 @@ int bb_uds_authenticate(int u, int level, const uint8_t *seed, int n);
                                           A refusal is BB_ERR_NEGATIVE (NRC 0x58 a wrong key, 0x36
                                           the last one, 0x37 the lockout) */
 int bb_tester_seed(const char *spec, uint8_t *buf, int cap); /* a tester seed as a key spec names
-                                       it: NULL, "" or "reference" the dev tester seed, 64 hex
+                                       it: NULL or "reference" the dev tester seed, 64 hex
                                        characters, or a seed file's path; the 32 bytes, refused
-                                       with the reason (a hex spec of another length names it) */
+                                       with the reason (a hex spec of another length names it;
+                                       "" names no key and is refused) */
 int bb_reference_key(const uint8_t *seed, int n, uint8_t *buf, int cap); /* blobly_net's
                                        reference key for a seed (each byte XOR 0xFF): the key the
                                        simulated ECUs accept */

@@ -124,14 +124,28 @@ pub mut:
 	// is not served
 	authenticates bool
 	auth_keys     [][]u8
+	// levels (bit L-1) whose key the node would refuse here — the dev tester key over DoIP without
+	// allow_bench_key (sysview server_spec): a challenge is served, as the node serves one, and NO
+	// proof verifies, the key being absent rather than some other key's
+	auth_refused u8
 }
 
-// auth_key: the public key level L's proofs verify against; none when the description gives none
+// auth_key: the public key level L's proofs verify against; none when the description gives none,
+// or the level's key is refused here (auth_refused)
 pub fn (spec ServerSpec) auth_key(level u8) ?[]u8 {
-	if level < 1 || int(level) > spec.auth_keys.len || spec.auth_keys[level - 1].len != 32 {
+	if level < 1 || int(level) > spec.auth_keys.len || spec.auth_keys[level - 1].len != 32
+		|| spec.auth_refused & (u8(1) << (level - 1)) != 0 {
 		return none
 	}
 	return spec.auth_keys[level - 1]
+}
+
+// auth_keyed: level L has a key, whether or not it is refused here — what a 05 asks
+pub fn (spec ServerSpec) auth_keyed(level u8) bool {
+	if level < 1 || level > 8 {
+		return false
+	}
+	return spec.auth_refused & (u8(1) << (level - 1)) != 0 || (spec.auth_key(level) or { []u8{} }).len == 32
 }
 
 // default_sessions is where a service runs unless its row says otherwise (comm/uds
@@ -399,14 +413,42 @@ fn (s &Server) row(sid u8) (ServiceSpec, bool) {
 }
 
 // enter_session relocks and voids an outstanding seed, every entry included the one already
-// active; entering the default session (a reset and S3 included) returns IO control too.
+// active; it returns the IO controls the entry ends (io_ends: every one on entering the default
+// session — a reset and S3 included —, on another entry those the relock or the new session ends).
 fn (mut s Server) enter_session(session u8) {
 	s.unlocked = 0
 	s.seed_lvl = 0
 	s.sec_seed = []u8{}
 	s.auth_challenge = []u8{}
 	s.session = session
-	if session == 1 {
+	if s.io_ends(0, false, session) {
+		s.return_io_control()
+	}
+}
+
+// io_ends: whether the 0x2F controls go back to the ECU — every one is gated by the "0x2F" row (its
+// level and sessions), and the rule is blobly_emb comm/uds io_ends: on a session entry (`session`
+// != 0) a return to default ends them, and any other entry relocks, so a control that needs a
+// level ends, as does one whose sessions leave out the new one; else (`session` 0) when the relock
+// of `level` ends its level — or, `others`, the relock of every level but `level` (a grant)
+fn (s &Server) io_ends(level u8, others bool, session u8) bool {
+	row, listed := s.row(0x2F)
+	sec := if listed { row.level } else { u8(0) }
+	if session != 0 {
+		return session == 1 || sec != 0 || (listed && !in_mask(row.sessions, session))
+	}
+	return if others { sec != 0 && sec != level } else { level != 0 && sec == level }
+}
+
+// relock: level `level` relocked without a session entry (0x29 00 deAuthenticate, the end of the
+// connection that earned it) — blobly_emb comm/uds relock: the unlock where it is that level, and
+// the 0x2F controls gated on it returned (the routines it gates are blobly_emb's; this server
+// performs none)
+fn (mut s Server) relock(level u8) {
+	if level != 0 && s.unlocked == level {
+		s.unlocked = 0
+	}
+	if s.io_ends(level, false, 0) {
 		s.return_io_control()
 	}
 }
@@ -746,15 +788,19 @@ fn (mut s Server) d_wrong(level u8, now i64, wrong u8) u8 {
 	return wrong
 }
 
-// d_granted: a correct key or proof of `level` — unlocked, its count cleared
+// d_granted: a correct key or proof of `level` — unlocked, its count cleared, and the controls of
+// another level it relocks returned (blobly_emb comm/uds sa_granted's end_levels)
 fn (mut s Server) d_granted(level u8) {
 	s.sa_failed[level - 1] = 0
 	s.sa_since[level - 1] = 0
+	if s.io_ends(level, true, 0) {
+		s.return_io_control()
+	}
 	s.unlocked = level
 }
 
 // d_auth is 0x29 on a described server that authenticates — blobly_emb comm/uds auth.v's layouts
-// and order, through this module's offsets (auth.v): 00 relocks, 05 binds a fresh 32-byte challenge
+// and order, through this module's offsets (auth.v): 00 relocks (relock: its controls returned), 05 binds a fresh 32-byte challenge
 // to the level its communicationConfiguration names, 06 verifies the Ed25519 signature over the
 // application message for that level and challenge (auth_message) against the level's public key.
 // A failed proof counts as a wrong key (d_wrong).
@@ -781,16 +827,15 @@ fn (mut s Server) d_auth(req []u8, now i64) []u8 {
 		return neg(0x29, 0x13)
 	}
 	if sub == auth_deauthenticate {
-		s.unlocked = 0
+		s.relock(s.unlocked) // the unlock, and the controls it gated
 		s.seed_lvl = 0
 		s.auth_challenge = []u8{}
 		return if suppress { []u8{} } else { [u8(0x69), 0x00, auth_deauthenticated] }
 	}
 	if sub == auth_request_challenge {
 		level := req[auth_level_at]
-		key_ok := if _ := s.spec.auth_key(level) { true } else { false }
 		if req[auth_alg05_at..auth_alg05_at + 16] != ed25519_algorithm || level == 0 || level > 8
-			|| s.spec.security_mask() & (u8(1) << (level - 1)) == 0 || !key_ok {
+			|| s.spec.security_mask() & (u8(1) << (level - 1)) == 0 || !s.spec.auth_keyed(level) {
 			return neg(0x29, 0x31)
 		}
 		if now < s.sa_delay_until[level - 1] {
@@ -847,6 +892,7 @@ fn be16_at(b []u8, at int) int {
 // — as blobly_emb comm/diag remote_dropped: its seed or challenge is void, its unlock ends and the
 // session it opened returns to default. The next connection authenticates for itself.
 pub fn (mut s Server) connection_dropped() {
+	s.relock(s.unlocked) // the unlock it earned, and the controls it gated
 	if s.session != 1 {
 		s.enter_session(1)
 	}

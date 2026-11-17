@@ -877,10 +877,11 @@ pub fn bb_uds_authenticate(u i32, level i32, seed &u8, n i32) i32 {
 	})
 }
 
-// bb_tester_seed: a tester seed as a key spec names it (uds.tester_key).
+// bb_tester_seed: a tester seed as a key spec names it (uds.tester_key; NULL = the dev tester seed,
+// "" refused).
 @[export: 'bb_tester_seed']
 pub fn bb_tester_seed(spec &char, buf &u8, cap i32) i32 {
-	text := if isnil(spec) { '' } else { unsafe { cstring_to_vstring(spec) } }
+	text := if isnil(spec) { 'reference' } else { unsafe { cstring_to_vstring(spec) } }
 	s := uds.tester_key(text) or { return fail(bb_err, 'tester seed: ${err.msg()}') }
 	return put_bytes(s, buf, cap)
 }

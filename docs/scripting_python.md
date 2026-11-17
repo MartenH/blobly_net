@@ -2739,7 +2739,7 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.read_did(did)` | 0x22 ReadDataByIdentifier: the DID's value. |
 | `diag.write_did(did, data)` | 0x2E WriteDataByIdentifier. |
 | `diag.security_access(level, key_fn=None)` | 0x27: the seed for `level`, the key from `key_fn(seed)` (the reference key without one) at `level + 1`. Returns the seed; an all-zero seed (unlocked already) sends no key. |
-| `diag.authenticate(level, key=None)` | 0x29 Authentication (ACR, Ed25519) for `level` 1..8: the level's application message (a context, the level, the challenge — never the bare challenge) signed with the tester seed `key` (`None`/`"reference"` the dev key, 32 bytes, 64 hex, or a seed file). |
+| `diag.authenticate(level, key=None)` | 0x29 Authentication (ACR, Ed25519) for `level` 1..8: the level's application message (a context, the level, the challenge — never the bare challenge) signed with the tester seed `key` (`None`/`"reference"` the dev key, 32 bytes as any byte sequence, 64 hex, or a seed file's path — `os.PathLike` included; an empty key or one holding a NUL raises `ValueError`). |
 | `diag.reset(kind=0x01)` | 0x11 ECUReset (1 hard, 2 key-off-on, 3 soft). Returns the answer after its SID. |
 | `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
 | `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |

@@ -47,3 +47,20 @@ test("a key file is resolved against the script; a short hex key is refused", fu
   local ok, err = pcall(function() d:authenticate(1, { key = string.rep("1", 63) }) end)
   check.truthy(not ok and tostring(err):find("got 63", 1, true), tostring(err))
 end)
+
+test("a key option that is not a non-empty string is refused by name, not read as the dev key", function()
+  local d = can()
+  d:session(0x03)
+  for _, bad in ipairs({ false, true, 42, {}, function() end, "", "   " }) do
+    local ok, err = pcall(function() d:authenticate(1, { key = bad }) end)
+    check.truthy(not ok, "key " .. tostring(bad) .. " authenticated")
+    local msg = tostring(err)
+    check.truthy(msg:find("key must be a string", 1, true) or msg:find("key is empty", 1, true), msg)
+  end
+  -- nothing was sent: the level stays locked, and no failed proof was counted (three tries remain)
+  check.nrc(0x33, function() d:read_did(0xF1B0) end)
+  local wrong = string.rep("22", 32)
+  check.nrc(0x58, function() d:authenticate(1, { key = wrong }) end)
+  d:authenticate(1)
+  check.equal(d:read_did(0xF1B0), "SECRET-LEVEL-1")
+end)

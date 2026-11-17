@@ -146,7 +146,10 @@ The key is the tester's Ed25519 **seed** (32 bytes). By name, `"reference"` (or 
 blobly_emb's dev tester seed, `examples/keys/tester.seed` — the key a bootloader's `session_key` and
 an application's `auth_keys "reference"` both trust. Like the 0x27 reference key it is public, so a
 `[doip]` node accepts it only with `allow_bench_key = true`. Otherwise the key is 64 hex characters
-(exactly: a hex key of another length is refused, naming its length) or a seed file's path.
+(exactly: a hex key of another length is refused, naming its length) or a seed file's path. A key
+that is given names one: an empty key, a key holding a NUL byte, or (Lua) a `key` option that is not
+a string is refused before anything is sent — never read as the dev key. In Python the seed may be
+any byte sequence (`bytes`, a list, a `range`), and a path any `os.PathLike`.
 
 ```lua
 local d = uds.open("AUTH", { tx = 0x7E0, rx = 0x7E8 })
@@ -164,7 +167,7 @@ with net.channels.AUTH.uds() as d:
 ```
 
 From C, `bb_uds_authenticate(u, level, seed, n)` (NULL and 0: the dev key) and
-`bb_tester_seed(spec, buf, cap)` to resolve a key spec. `node.authenticates` (Python, `bb_node`)
+`bb_tester_seed(spec, buf, cap)` to resolve a key spec (NULL the dev key, `""` refused). `node.authenticates` (Python, `bb_node`)
 says whether a described node unlocks this way. Both helpers are `uds.Client.authenticate`, which
 signs through `uds.proof_of` — the one signing site, which `blobly/flash` uses too for the
 bootloader's own profile (01 challenge, 02 proof). The two profiles sign **different messages**:
@@ -186,7 +189,7 @@ blobly_emb.
 | `0x58` | ownershipVerificationFailed | the proof is wrong; it counts toward the lockout like a wrong 0x27 key |
 | `0x36` | exceededNumberOfAttempts | the failed proof that reached the limit: the level's lockout starts. Not in ISO 14229-1's list for 0x29, nor is 0x37: blobly_emb's choice, since the attempt limit and lockout are 0x27's, shared per level, and answered in 0x27's words |
 | `0x59` | challengeCalculationFailed | the ECU's random source failed |
-| `0x14` | responseTooLong | the answer does not fit what the transport carries — a valid proof then unlocks nothing and is not counted |
+| `0x14` | responseTooLong | the answer does not fit what the transport carries: before the 0x78 the request is refused and its challenge stays; after it, a valid proof unlocks nothing (its level's wrong-proof count is cleared all the same, the proof being correct) and its challenge is spent |
 | `0x7F` | serviceNotSupportedInActiveSession | not in the default session |
 
 The **simulated** node answers 0x29 as the board does when its description says

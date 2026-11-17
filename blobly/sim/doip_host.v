@@ -15,6 +15,10 @@ pub struct DoipHost {
 pub mut:
 	server uds.Server
 	entity &doip.DoipServer = unsafe { nil }
+mut:
+	// how many entities were bound to this host (bind_close): a close handler acts for the entity
+	// bound last only
+	bound u64
 }
 
 // handle serves one physically addressed request (serve).
@@ -65,11 +69,23 @@ pub fn (mut h DoipHost) dropped() {
 	h.server.connection_dropped()
 }
 
-// bind_close tells the host when the entity's tester connection ends (dropped).
+// bind_close tells the host when the entity's tester connection ends (dropped) — for the entity
+// bound LAST: a host bound to a new entity (the GUI's watcher re-binds one host when its node is
+// ticked off and on, and does not join the old entity's serving thread) ignores a late close from
+// the one before, which would otherwise reset the new connection's session, challenge and unlock.
 pub fn (mut h DoipHost) bind_close(mut s doip.DoipServer) {
-	s.set_close_handler(fn [mut h] () {
-		h.dropped()
-	})
+	s.set_close_handler(h.closer())
+}
+
+// closer: the close handler of the entity being bound now (bind_close)
+fn (mut h DoipHost) closer() fn () {
+	h.bound++
+	gen := h.bound
+	return fn [mut h, gen] () {
+		if gen == h.bound {
+			h.dropped()
+		}
+	}
 }
 
 // bind_functional hands an entity's functional requests to its host.

@@ -782,8 +782,10 @@ pub fn (d &EcuDesc) authenticates() bool {
 }
 
 // read_auth_keys reads `[uds] auth_keys` as blobly_emb's loom2v does: level "1".."8" -> "reference"
-// or 64 hex characters naming a 32-byte Ed25519 public key; a key all zeros or not a curve point is
-// refused — each refusal said in errs and the key left out
+// or 64 hex characters naming a 32-byte Ed25519 public key — the dev tester key written as its hex is
+// "reference" too (the key is compared, not its spelling: the bench-key rule follows it); a key all
+// zeros, not a curve point or of small order (uds.small_order_key: under one a forged proof verifies)
+// is refused — each refusal said in errs and the key left out
 fn (mut d EcuDesc) read_auth_keys(v toml.Any) {
 	if v !is map[string]toml.Any {
 		d.errs << '[uds] auth_keys is not a table; not read'
@@ -820,8 +822,12 @@ fn (mut d EcuDesc) read_auth_keys(v toml.Any) {
 			d.errs << '[uds] auth_keys "${lk}" is not an Ed25519 public key (not a curve point); not read'
 			continue
 		}
+		if uds.small_order_key(key) {
+			d.errs << '[uds] auth_keys "${lk}" is a point of small order — a forged proof verifies under it; not read'
+			continue
+		}
 		d.auth_keys[level] = key
-		d.auth_ref[level] = false
+		d.auth_ref[level] = key == uds.dev_tester_public()
 	}
 }
 

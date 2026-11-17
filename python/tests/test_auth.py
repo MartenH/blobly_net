@@ -60,6 +60,39 @@ class TestAuthenticate:
             with pytest.raises(TypeError):
                 d.authenticate(1, key=42)
 
+    def test_a_key_cut_by_a_nul_or_empty_is_refused(self, auth_demo, row):
+        # the C boundary cuts a string at its first NUL: chr(0) + "bad" would reach it as "" and
+        # name the dev key, so it is refused here, as an empty key is, before anything is sent
+        with auth_demo.channels[row].uds() as d:
+            d.session(0x03)
+            for bad in (chr(0) + "bad", "reference" + chr(0), "", "   ", "11" * 16 + chr(0) + "11" * 15):
+                with pytest.raises(ValueError):
+                    d.authenticate(1, key=bad)
+            with pytest.raises(blobly.NegativeResponse) as e:
+                d.read_did(0xF1B0)
+            assert e.value.nrc == 0x33, "a refused key unlocked"
+
+    def test_a_seed_as_any_byte_sequence(self, auth_demo, row):
+        # ByteData: a list or a range of byte values is a seed, as for every byte-taking call
+        with auth_demo.channels[row].uds() as d:
+            for seed in (list(range(0x20, 0x40)), range(0x20, 0x40), bytearray(range(0x20, 0x40))):
+                d.session(0x03)
+                d.authenticate(1, key=seed)
+                assert d.read_did(0xF1B0) == b"SECRET-LEVEL-1"
+
+    def test_a_seed_file_whose_name_is_not_utf8(self, auth_demo, row, tmp_path):
+        # a path is encoded as the file system encodes it: a surrogate-escaped name reaches its file
+        name = os.fsdecode(b"tester-\xff.seed")
+        path = tmp_path / name
+        path.write_bytes(bytes(range(0x20, 0x40)).hex().encode() + b"\n")
+        with auth_demo.channels[row].uds() as d:
+            d.session(0x03)
+            d.authenticate(1, key=path)
+            assert d.read_did(0xF1B0) == b"SECRET-LEVEL-1"
+            d.session(0x03)
+            d.authenticate(1, key=str(path))
+            assert d.read_did(0xF1B0) == b"SECRET-LEVEL-1"
+
     def test_wrong_keys_count_to_the_lockout(self, auth_demo, row):
         with auth_demo.channels[row].uds() as d:
             d.session(0x03)

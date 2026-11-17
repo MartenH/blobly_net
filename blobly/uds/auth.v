@@ -2,6 +2,7 @@ module uds
 
 import os
 import crypto.ed25519 as ed
+import math.big
 
 // 0x29 Authentication, the tester's side — ONE signing site for both profiles blobly_emb serves:
 //   - an APPLICATION with `[uds] access = "authentication"`: ISO 14229-1's challenge-response (ACR),
@@ -108,12 +109,20 @@ pub fn tester_seed_file(path string) ![]u8 {
 	return tester_seed(text) or { return error('seed file ${path}: ${err}') }
 }
 
-// tester_key resolves a key spec as a script names one: '' or 'reference' is the dev tester seed; a
-// spec made only of hex digits is a seed and must be exactly 64 of them (the length named
-// otherwise); anything else is a seed file's path.
+// tester_key resolves a key spec as a script names one: 'reference' is the dev tester seed; a spec
+// made only of hex digits is a seed and must be exactly 64 of them (the length named otherwise);
+// anything else is a seed file's path. An empty spec, or one holding a NUL (which a C string or a
+// path would cut, naming another key), is refused: a key that was given names something — the dev
+// key is asked for by leaving the key out, or by "reference".
 pub fn tester_key(spec string) ![]u8 {
+	if spec.contains_u8(0) {
+		return error('a key holds a NUL byte, which would cut it short; not used')
+	}
 	v := spec.trim_space()
-	if v == '' || v == 'reference' {
+	if v == '' {
+		return error('an empty key names no key — leave it out, or write "reference", for the dev tester key')
+	}
+	if v == 'reference' {
 		return dev_tester_seed()
 	}
 	if is_hex_text(v) {
@@ -123,7 +132,7 @@ pub fn tester_key(spec string) ![]u8 {
 }
 
 // names_key_text: `spec` is a key by name or by value, not a path — what a script resolves no path
-// for ('' , 'reference', hex digits)
+// for ('' (refused by tester_key), 'reference', hex digits)
 pub fn names_key_text(spec string) bool {
 	v := spec.trim_space()
 	return v == '' || v == 'reference' || is_hex_text(v)
@@ -257,4 +266,63 @@ pub fn (mut c Client) boot_proof(seed []u8, challenge []u8) ! {
 	mut req := [sid_authentication, boot_send_proof]
 	req << proof_of(seed, challenge)!
 	c.raw(req)!
+}
+
+// small_order_key: `key` (32 bytes) decodes to an Ed25519 point of small order — one the cofactor 8
+// takes to the neutral point: the neutral point and the points of order 2, 4 and 8, in every
+// encoding (a y at or above p reduces like any other). Under such a key a forged proof verifies —
+// under the neutral point R = neutral, S = 0 for every message — so a configured key must not be
+// one (blobly_emb refuses it at generation: bcrypto.small_order). Computed, not a list: y decoded,
+// x² from the curve equation, three doublings on y alone (an Edwards doubling's y needs only x²
+// and y²), compared with the neutral point's y = 1. A key that is no point answers false.
+pub fn small_order_key(key []u8) bool {
+	if key.len != 32 {
+		return false
+	}
+	p := big.integer_from_int(1).left_shift(255) - big.integer_from_int(19) // the field prime
+	mut le := key.clone()
+	le[31] &= 0x7F
+	mut y := big.integer_from_radix(le.reverse().hex(), 16) or { return false }
+	y = y.mod_euclid(p)
+	one := big.integer_from_int(1)
+	two := big.integer_from_int(2)
+	// d = -121665 / 121666
+	inv := big.integer_from_int(121666).mod_inverse(p) or { return false }
+	d := (p - big.integer_from_int(121665)) * inv % p
+	for i in 0 .. 3 {
+		y2 := y * y % p
+		den := (d * y2 + one).mod_euclid(p)
+		den_inv := den.mod_inverse(p) or { return false }
+		x2 := ((y2 - one).mod_euclid(p) * den_inv) % p
+		if i == 0 {
+			// a point only where x² is a square (Euler's criterion)
+			e := x2.big_mod_pow((p - one) / two, p) or { return false }
+			if !(e == one || x2 == big.zero_int) {
+				return false
+			}
+		}
+		// doubled: y' = (x² + y²) / (2 + x² - y²) on -x² + y² = 1 + d x² y²
+		dd := (two + x2 - y2).mod_euclid(p)
+		dd_inv := dd.mod_inverse(p) or { return false }
+		y = (x2 + y2).mod_euclid(p) * dd_inv % p
+	}
+	return y == one
+}
+
+// auth_refusal_keeps_challenge: whether a 0x29 `sub` (05 or 06) refused with `nrc` leaves the
+// challenge outstanding on the server — the ONE table of blobly_emb comm/uds auth.v's (and the
+// described server's, d_auth) refusal order: a request refused before it touches the challenge (its
+// length 0x13, the algorithm or the level 0x31, the answer's room 0x14 — and for 05 its level's
+// delay 0x37, judged before a new challenge voids the old one) keeps it; a 06 refused after it is
+// spent (0x37 voiding it, the verdict 0x58 / 0x36, an owed answer given up 0x22) or with none
+// outstanding (0x24), a 05 whose new challenge failed (0x59), and every code not named, do not. Only
+// a refusal given BEFORE the server's 0x78: a 06 answered 0x14 after its 0x78 is a valid proof whose
+// owing transport could not carry ownershipVerified (blobly_emb auth_owed), its challenge spent at
+// the verify — the caller asks that apart (ConnState.observe_auth, by the exchange's 0x78 count).
+pub fn auth_refusal_keeps_challenge(sub u8, nrc u8) bool {
+	return match sub {
+		auth_request_challenge { nrc in [u8(0x13), 0x31, 0x37, 0x14] }
+		auth_verify_proof { nrc in [u8(0x13), 0x31, 0x14] }
+		else { false }
+	}
 }

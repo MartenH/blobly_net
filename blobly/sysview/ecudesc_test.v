@@ -1058,6 +1058,8 @@ fn test_an_authentication_description_that_cannot_work_is_said() {
 		auth_desc.replace('"reference"', '"abcd"'):                                             'is not 64 hex characters'
 		auth_desc.replace('"reference"', '"${zero}"'):                                          'is all zeros'
 		auth_desc.replace('"reference"', '"02${'00'.repeat(31)}"'):                             'not a curve point'
+		auth_desc.replace('"reference"', '"01${'00'.repeat(31)}"'):                             'is a point of small order'
+		auth_desc.replace('"reference"', '"EE${'FF'.repeat(30)}7F"'):                           'is a point of small order'
 		auth_desc.replace('"1" = ', '"9" = '):                                                  'is not a security level'
 		auth_desc.replace('access    = "authentication"', 'access = "password"'):              'is neither'
 		auth_desc.replace('access    = "authentication"\n', ''):                               'access is "seed_key"'
@@ -1065,5 +1067,62 @@ fn test_an_authentication_description_that_cannot_work_is_said() {
 	} {
 		d := parse_ecu_desc(toml.parse_text(text) or { panic(err) }, map[string][]Field{})
 		assert d.errs.any(it.contains(want)), '${want}: ${d.errs}'
+	}
+}
+
+// a key of small order is refused, in every encoding, and so cannot unlock the simulated node with
+// the forged proof that verifies under it (R = the neutral point, S = 0)
+fn test_a_small_order_auth_key_is_refused() {
+	for h in ['0100000000000000000000000000000000000000000000000000000000000000',
+		'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+		'0000000000000000000000000000000000000000000000000000000000000080',
+		'26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+		'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+		'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'] {
+		d := parse_ecu_desc(toml.parse_text(auth_desc.replace('"reference"', '"${h}"')) or {
+			panic(err)
+		}, map[string][]Field{})
+		assert d.errs.any(it.contains('small order')), '${h}: ${d.errs}'
+		assert 1 !in d.auth_keys
+		spec, _ := d.server_spec(false)
+		mut s := uds.server_from(spec)
+		s.handle([u8(0x10), 0x03])
+		ans := s.handle(uds.auth_challenge_request(1))
+		mut forged := []u8{len: 64}
+		forged[0] = 1
+		assert s.handle(uds.auth_proof_request(forged))[0] != 0x69, '${h}: a forged proof unlocked'
+		assert s.unlocked == 0 && ans[0] == 0x7F // no key for the level: its challenge is refused
+	}
+}
+
+// the dev tester key written as its hex, in either case, IS the bench key: over DoIP without
+// allow_bench_key the level is refused as for "reference"
+fn test_the_dev_key_written_as_hex_is_the_bench_key() {
+	hex := uds.dev_tester_public().hex()
+	for spelling in [hex, hex.to_upper()] {
+		d := parse_ecu_desc(toml.parse_text(auth_desc.replace('"reference"', '"${spelling}"')) or {
+			panic(err)
+		}, map[string][]Field{})
+		assert d.errs == [] && d.auth_ref[1], spelling
+		_, notes := d.server_spec(true)
+		assert notes.any(it.contains('0x29 refuses the dev tester key')), spelling
+	}
+}
+
+// a level whose key the node refuses here verifies NO proof — neither the dev seed's nor any seed's
+// (no stand-in key whose seed is in the source); its challenge is served as the node serves one
+fn test_a_refused_bench_key_verifies_no_proof() {
+	d := parse_ecu_desc(toml.parse_text(auth_desc) or { panic(err) }, map[string][]Field{})
+	spec, _ := d.server_spec(true)
+	assert spec.auth_refused == 0x01
+	for seed in [uds.dev_tester_seed(), []u8{len: 32, init: 0xA5}, []u8{len: 32, init: 0x11}] {
+		mut s := uds.server_from(spec)
+		s.handle([u8(0x10), 0x03])
+		ans := s.handle(uds.auth_challenge_request(1))
+		assert ans[0] == 0x69, 'the challenge of a refused level was not served'
+		ch := ans[uds.auth_answer_challenge_at..uds.auth_answer_challenge_at + uds.auth_challenge_len]
+		proof := uds.app_proof_of(seed, 1, ch) or { panic(err) }
+		assert s.handle(uds.auth_proof_request(proof)) == [u8(0x7F), 0x29, 0x58], 'seed ${seed[0]:02X} unlocked'
+		assert s.unlocked == 0
 	}
 }
