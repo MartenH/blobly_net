@@ -26,6 +26,7 @@ SCRIPTS = {
     "doip_diag.py": [],
     "isotp_raw.py": [],
     "fault_injection.py": [],
+    "rest_bus.py": [],
     "e2e_check.py": [],
     "flash_ecu.py": [],
     "described_node.py": [],

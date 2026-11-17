@@ -14,6 +14,7 @@ struct HelpDoc {
 
 const help_docs = [
 	HelpDoc{'Quick start', ''},
+	HelpDoc{'Rest bus', 'docs/rest_bus.md'},
 	HelpDoc{'Simulation', 'docs/simulation.md'},
 	HelpDoc{'Scripting', 'docs/scripting.md'},
 	HelpDoc{'Python', 'docs/scripting_python.md'},

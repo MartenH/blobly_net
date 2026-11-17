@@ -3,423 +3,417 @@
   <img src="docs/logo-light.png" alt="Blobly Net" width="480">
 </picture></h1>
 
-An automotive bus tester written in [V](https://vlang.io). It exercises a System Under
-Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols that run on it
-(**DoIP**, **SOME/IP**) — send and observe traffic, run diagnostics, script test cases,
-simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
-a drop-in: SocketCAN adapters on Linux, **PEAK PCAN**, **Kvaser** and **Vector XL** on
-Windows, and the **CSS Electronics CANsub** — a USB *network* adapter — from either OS with no
-driver at all. All four vendors are hand-verified on the bench, CAN-FD included.
+**An open-source automotive bus tester for CAN, CAN-FD, LIN, DoIP and SOME/IP.** Simulate the rest
+of the vehicle around the ECU on your bench, straight from its DBC or ARXML. Watch and decode the
+traffic, run UDS diagnostics, replay real recordings, and script all of it from Python, Lua or C.
+Use the GUI, or run it headless in CI.
 
-> ## ⚠ Very early in development
->
-> This is a single-author project still in its **design phase** — not a product, and not
-> something to rely on yet. Specifically:
->
-> - **Maturity varies a lot between features.** The protocol engine in `blobly/` is
->   [unit-tested and runs in CI](#how-its-tested) on every push; a fair amount of the rest has
->   only ever been exercised on the
->   author's own bench, against the author's own boards. Some of it is **effectively untested**,
->   and a feature existing here is not a claim that it is correct.
-> - **Formats and interfaces will change** — `.blobnet` projects, and the wire formats shared
->   with blobly_emb. Releases are tagged, but a version number is not yet a compatibility
->   promise.
-> - **It has had no users but the author**, so expect missing validation, unhandled edge cases
->   and error paths nobody has walked.
->
-> It is used daily against real hardware and is genuinely useful — but go in expecting to hit
-> things, and please [open an issue](../../issues) when you do.
+It needs no hardware to start: the simulated ECUs run in-process, on Linux and Windows. When the
+bench is ready, the same project drives PEAK, Kvaser, Vector and CSS Electronics CANsub adapters
+and any SocketCAN interface. MIT licensed.
 
-**Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
-**[headless](#headless--scripted-no-gui)** — Lua test scripts, a Python package and CLI tools
-with no window and no display, which is how it runs in CI. The protocol engine lives in `blobly/` and imports no
-GUI code, so scripted use is a first-class path, not a cut-down one. (The reverse isn't claimed:
-editing a DBC or watching a live plot needs the GUI.)
+![Blobly Net: live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
 
-![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
+*Two virtual CAN buses (`projects/restbus-2vcan.blobnet`). The **origin** column says who sent
+each frame: `TX-S` is the simulated rest bus, `TX` is the tester, `RX` is everyone else. On a
+bench, `RX` is the ECU under test.*
 
-*The `restbus-2vcan` project on two virtual CAN networks. The **origin** column says who put
-each frame on the wire: `TX-S` is our own rest-of-bus simulation (Powertrain, BodyStatus,
-Heartbeat, and the Response it answered with), `TX` is the tester's own Request, and `RX` is
-everything Blobly Net did not send — here a stand-in chassis ECU running as a separate process
-on `vcan0` (WheelSpeeds, BrakeStatus). On a bench that same `RX` is the device under test; the
-label means "not ours", and cannot tell a stand-in from silicon. The plots mix the two sources
-on one timeline.*
+## Why Blobly Net
 
-## Get it
+- **A rest bus from the database, in one line.** Name the nodes to simulate and every one of
+  them sends what the DBC or ARXML says it sends, at the database's timing, with E2E counters and
+  CRCs stamped per frame. No recording and no hand-written frames.
+- **No hardware needed to start.** Simulated ECUs, UDS servers, DoIP entities and LIN nodes run
+  in-process. The same project drives a real bench by changing an interface string.
+- **The adapters you already have.** PCAN, Kvaser and Vector on Windows, any SocketCAN adapter
+  on Linux, and a CANsub from either, all with CAN-FD. Each vendor backend is verified by hand on
+  real hardware.
+- **Python, Lua and C over one engine.** A typed Python package with a pytest plugin, a Lua test
+  runner with JSON reports and hard timeouts, and a C ABI for any other language. The GUI uses the
+  same engine, so a script sees what the GUI sees.
+- **Diagnostics that say what went wrong.** One UDS client over CAN and DoIP: answers matched to
+  their request, `0x78` waited out with the ECU's own P2*, DTCs decoded with their snapshots and
+  extended data, and a negative response, a timeout and a dead adapter kept apart.
+- **Real recordings as a rest bus too.** Replay a capture with the ECU under test removed by DBC
+  sender, several buses on one clock, and MF4 files far larger than RAM streamed from disk.
+- **You know whose frame it is.** The trace tells your own traffic (`TX`, `TX-S`) from the ECU's
+  (`RX`) by matching what comes back against what this process sent.
+- **Listen-only means silent.** On PCAN, Kvaser, Vector and CANsub the controller stops
+  acknowledging frames, and every part of the app, scripts included, is refused a send on that
+  wire.
+- **Readers that say what they skipped.** Every database reader lists what it did not use, and
+  the ARXML, LDF and ODX readers refuse a malformed value instead of reading it as 0.
 
-**[Releases](../../releases)** carry two bundles per version — a Linux **tar.gz** and a Windows
-**zip** — with no GitHub sign-in and no expiry, plus the two Python wheels (Linux x86_64,
-Windows x64) that `pip install blobly` takes from PyPI. (Ignore the `v-toolchain` entry — that is
-CI's prebuilt compiler; releases from `v0.1.0` onward are the product.) Both bundles carry the
-demo projects, DBCs, sample logs, the docs the Help panel renders, a `README.txt` and a
-`VERSION.txt` under one top-level folder. The **Windows zip is self-contained** (mingw runtime
-DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet` files open in the
-app). On Linux (**Ubuntu 24.04 or newer**, or another Linux whose glibc is at least as new as
-24.04's) unpack the **tar.gz** and install the runtime it links against —
-`sudo apt install libglfw3 libfreetype6 libgl1`, of which GLFW is usually the only one missing —
-then run `./blobly_net`. Which version you have: `VERSION.txt`, the
-window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so
-pipe it (`blobly_net.exe --version | more`).
-**Vendor CAN libraries are never bundled** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll`
-come with the vendor's own driver installs (the Vector XL terms forbid redistributing it).
-Every release is cut from a tag the release workflow verifies against reviewed `main` and
-against the version in `v.mod`, which is the same value the binary decodes and reports.
+## Rest-bus simulation
 
-**Between releases (Windows)** — CI still builds the bundle on every push to `main` (pull
-requests compile-validate but publish no artifact, so every downloadable bundle comes from
-reviewed `main`). Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest
-`windows-build` run **on `main`** → the **`blobly_net-windows-x64`** artifact. Unzip and run
-`blobly_net.exe` — same self-contained contents as a release zip, minus the top-level folder.
-Two caveats: downloading an artifact requires being signed in to GitHub, and artifacts expire
-(~90 days), so use a recent run.
+![The DBC or ARXML feeds Blobly Net's simulated nodes; they send on the bus to the real ECU under test; a Python, Lua or GUI test sets signals and checks what the ECU answers](docs/rest-bus.drawio.svg)
 
-**Between releases (Linux)** — the `ci` workflow builds the app on every push to `main` and
-keeps it: **[Actions](../../actions/workflows/ci.yml)** → the latest `ci` run **on `main`** → the
-**`blobly_net-linux-x64`** artifact, built on Ubuntu 24.04 like a release, so it has the same
-floor. The same signed-in and ~90-day caveats apply. Inside the
-downloaded zip is a `.tar.gz` — GitHub zips every artifact and strips the executable bit doing
-it, so unpack the tar rather than the binary:
+Put the network's database on the bus the ECU sits on, and name every node except the ECU under
+test:
 
-```sh
-unzip blobly_net-linux-x64.zip && tar -xzf blobly_net-linux-x64.tar.gz
-./blobly_net-linux-x64/blobly_net
+```yaml
+buses:
+  - name: CAN1
+    adapter: socketcan                    # or pcan / kvaser / vector / cansub, or virtual for no hardware
+    address: can0
+    databases:
+      - dbc/vehicle.dbc                   # or "vehicle.arxml#BodyCAN"
+    simulate: [BodyECU, ChassisECU, BatteryECU]
 ```
 
-It is the **executable plus the licence texts** (`licenses/`), not a bundle: no projects, DBCs, samples or
-docs, and it needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`). For
-everything in one folder, take a release.
+Each simulated node then sends what the database gives it:
 
-**Linux / WSL2 from source** — it's two commands, see [Build & run](#build--run) below.
+- **Cyclic messages** at `GenMsgCycleTime`, after `GenMsgStartDelayTime`; **event and mixed
+  messages** when a value changes, with their repetitions, fast cycle and minimum gap.
+- **Signals** at their start values, multiplexed pages and CAN-FD frames as declared.
+- **E2E**: AUTOSAR Profile 1 and Profile 5 counters and CRCs, stamped fresh per frame from the
+  database's declarations.
 
-**macOS (Apple Silicon)** — from source, see [macOS](#macos) under Build & run. No prebuilt bundle and no CI job yet.
+And from the project: a UDS server on the bus (or one per simulated ECU, each with its own DIDs
+and DTCs), a DoIP entity, and network-management announcements where the NM cluster is configured.
 
-## What it does
+From an **AUTOSAR ARXML** (one file, a set of files, or an ExtractEditor project),
+**Import ARXML…** builds the channels: you tick the ECUs under test, and every other ECU that
+sends on the cluster goes into the rest bus. The OEM's file stays the source of truth: nothing is converted, and a reissued extract
+is simply read again.
 
-**Buses & transport**
-- **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows; **CANsub**
-  (CSS Electronics, a USB *network* adapter reached over REST + WebSocket) from either OS with
-  no vendor DLL (see the hardware/OS matrix below). CAN-FD on SocketCAN, the software buses,
-  **CANsub** (`cansub:<device-id>/1@500000/2000000`) and **Vector**
-  (`vector:1@500000/2000000`) and **Kvaser** (`kvaser:0@500000/2000000`) — in both, the data
-  rate in the address is what asks for it — and **PCAN** (`pcan:PCAN_USBBUS1@500000/2000000`)
-  since #217, which completes the FD set: every CAN backend now carries it. A *classic* channel
-  still refuses an FD frame rather than truncating it.
-- **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
-  whole test suite runs with no hardware and no drivers.
-- **CAN bridge** — another host's CAN interfaces over TCP (`bridge:`, `cmd/canbridge`): the
-  Windows build reaches WSL's `vcan`s this way, and any build a machine on the LAN
-  ([wsl_bridge.md](docs/wsl_bridge.md), the protocol in [bridge_protocol.md](docs/bridge_protocol.md)).
-- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (send and call from Lua, an RPC client, a
-  passive listener, and a `someip` channel whose messages are trace rows), over ordinary
-  TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
-- **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
+Then make it behave: give a signal a waveform (sine, sawtooth, counter, staircase), set one value
+live from a test (the CRC is computed over it, so the frame stays valid), or inject a fault
+(drop a message, corrupt its CRC, freeze its counter, send an out-of-range value). The GUI and
+the headless runner build the rest bus with the same code, so a rest bus in CI behaves like the
+one on your desk.
 
-**Diagnostics**
-- **ISO-TP** (ISO 15765-2) and a **UDS client** over it — physical and functional addressing,
-  DTCs with their snapshots and extended data
-- **DoIP** (ISO 13400) — UDS over TCP, tester side and entity (server) side; **Discover** finds
-  an entity on the local segment and adds it as a channel
-- **Diagnostics panel** — one held connection per target, DTC and DID tabs named from a
-  blobly_emb `ecu.toml`, security-access unlock, and the session copied out as a Lua script
-- **Firmware flashing** — `cmd/flash`, the GUI Flash panel and Lua's `flash.program`, UDS
-  download with 0x29 auth
-- **Shell panel** — an interactive console to the target over CAN
+The full walkthrough, from the database or from a recording, is
+**[rest_bus.md](docs/rest_bus.md)**.
 
-**Databases & decoding**
-- **DBC** parse, decode, encode — multiplexing and value tables included
-- **AUTOSAR ARXML** read natively (one database per CAN cluster), a project's channels imported
-  from one, and `cmd/arxml2dbc` to export a DBC
-- **J1939**, read side — PGN and source address in the trace, transport-protocol transfers
-  rejoined, address claims ([j1939.md](docs/j1939.md))
-- **DBC editor** in the GUI — forms, a bit-matrix grid, live save, read-only while running
-- **`candump -l` logs** and a native **ASAM MDF4** (`.mf4`) reader
+## Quick start
 
-**Simulation** ([manual](docs/simulation.md))
-- **Simulated ECUs** in-process — cyclic senders, signal generators (sine, sawtooth, counter,
-  step), request/response rules and per-ECU UDS servers, so tests need no hardware
-- **Rest bus** from a real recording — replay a capture with the ECU under test subtracted by
-  DBC sender, so it cannot argue with a recording of itself
-- **Multi-bus replay** — several recorded buses onto several live ones from one clock, because
-  the timing *between* buses is what a gateway polices
-- **End-to-end protection** — AUTOSAR E2E Profile 1 stamped and verified, declared in the DBC
-  or in the project
-- **Fault injection** — drop, bad CRC, frozen counter, out-of-range, applied around end-to-end
-  protection rather than after it
+Three ways in, none of them needs hardware.
 
-**Scripting & automation**
-- **Embedded Lua** with a test-framework prelude, and a **headless runner** for CI
-- **Projects** are `.blobnet` files (YAML) describing buses, channels and databases
-
-**Trace & analysis**
-- Live trace with signal decode, a send panel, and telemetry capture
-- **Trace chart** — handler/thread swimlanes, a derived idle lane, execution-vs-response bars
-- **Cross-core time correlation** — a satellite core's block carries its measured clock offset
-- **System panel** — a read-only view of a blobly_emb `system.toml`
-
-### CAN hardware — and why the same adapter is named differently per OS
-
-The **same physical adapter** is reached through a **different software stack** depending on where
-Blobly Net runs, so the interface string differs too:
-
-| | Linux / **WSL2** | native Windows |
-|---|---|---|
-| **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
-| **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
-| **Vector** (VN16xx…) | ❌ no mainline driver | ✅ XL Driver Library → `vector:1@500000` (HW-verified on a VN1630A; add `,silent` to listen without acknowledging) |
-| **CANsub** (CSS Electronics) | ✅ `cansub:<device-id>/1@500000` — a USB *network* adapter, found by mDNS, no driver | ✅ the same string, the same code (HW-verified on a CANsub.4, classic and 64-byte FD) |
-| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | **Vector ✅** `vector:1@500000/2000000` · **Kvaser ✅** `kvaser:0@500000/2000000` — both HW-verified to an 8 Mbit/s data phase; Kvaser FD arbitration is 500k or 1M · **PCAN ✅** `pcan:PCAN_USBBUS1@500000/2000000` — HW-verified cross-vendor at 1/2/4/8 Mbit/s |
-
-- **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
-  (`can0`), so Blobly Net just uses SocketCAN — no vendor SDK involved.
-- **On native Windows** there is no SocketCAN, so the adapter is reached through the **vendor's
-  userspace DLL**, loaded at runtime (no SDK to build against; you do need the vendor driver).
-- **WSL2 needs one extra step:** USB isn't exposed by default, so attach the adapter with
-  `usbipd-win` first — `scripts/usbip.sh attach <busid>` — after which the kernel driver creates
-  `can0` exactly as on native Linux.
-
-Full detail, including the WSL kernel requirements:
-[can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md).
-
-**Diagnostics** — **UDS** over **ISO-TP** (ISO 15765-2), plus a **flashing** tool that
-drives a UDS firmware-download session against a [blobly_emb](docs/blobly_emb_synergies.md)
-bootloader.
-
-**Databases & signals** — a native **DBC** parser and **ARXML** reader (`candb`) with a **DBC editor** in the
-GUI: decode/encode signals, value tables, multiplexing, and a canonical writer so a
-save/load cycle never drifts a file (git diffs show real changes only).
-
-**Simulation** — simulated ECUs that send and answer frames, so tests need no hardware.
-
-**Logs & replay** — `candump -l` files, native **ASAM MDF4** (`.mf4`) reading, and **replay**
-of a recording at its original cadence.
-
-**Observability** — a **trace/telemetry** view of a running SUT (handler and thread
-swimlanes, CPU load), and a read-only **System** panel showing the modelled network.
-
-![Two-core trace swimlane from a live STM32H755, with an interactive shell to the target](docs/screenshots/trace-multicore-h755.png)
-
-*A dual-core **STM32H755** traced live over SocketCAN. Handler lanes on top (`c0` = the CM7's
-`LoadFast`/`LoadMid`/`Governor`/`LoadSlow`, `c1` = the CM4's `M4Load`/`M4Churn`), RTOS thread
-lanes below with their priorities, a derived idle lane, and preemption cut-links joining a
-preempted thread to what displaced it. Both cores share **one** timeline: each stamps records
-from its own free-running clock, so the target measures the offset per dump and the header
-reports it —* `1/1 satellite core(s) time-corrected (±608 µs)` *— rather than silently implying
-the lanes are comparable. Below, the **Shell** panel talks to the target over CAN (`bmc` is an
-on-target DWT benchmark: cycles, CPI, stalls).*
-
-> ### ⚠ This screenshot needs the other half — which isn't released yet
->
-> The **trace swimlane**, **Shell**, **Flash** and **System** panels don't test an arbitrary
-> ECU: they speak wire formats implemented by
-> [**blobly_emb**](docs/blobly_emb_synergies.md), the companion embedded stack that runs on the
-> target. They are the group at the bottom of the activity bar (`Cht`/`Fsh`/`Shl`/`Sys`),
-> deliberately separated there for this reason, and hidden until **View ▸ blobly_emb panels**
-> is ticked (remembered across runs).
->
-> **blobly_emb is not publicly released yet**, so today those four panels have nothing to talk
-> to. Everything else on this page — CAN and CAN-FD, DBC decode/encode and the editor, ISO-TP,
-> UDS, DoIP, SOME/IP, simulated ECUs, logs, replay and Lua scripting — is standalone and works
-> against any target, or against no hardware at all.
-
-**Scripting** — **Lua** test scripts with a small test framework, runnable headless in
-CI or live in the GUI, and the engine from **Python** (`pip install blobly`), in your own process.
-
-The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`). The **protocol
-engine** underneath it is equally reachable without a display — see
-[headless](#headless--scripted-no-gui) — though the interactive editors (DBC, project/bus
-config) and the live plots exist only in the GUI.
-
-## Build & run
-
-**Linux, including WSL2** — Ubuntu 24.04 is what this is developed on. Under WSL2 the GUI
-renders through **WSLg**, so there's no X server to set up, but hardware GL wants a current Mesa
-(25.x is known good; older Mesa crashed the GPU path). **Native Windows is a different
-toolchain** — MSYS2/mingw, not these scripts. The recipe is
-[`windows.yml`](.github/workflows/windows.yml), which CI runs on every push; or just take the
-[prebuilt bundle](#get-it). **macOS** has its own steps, [below](#macos).
+**1. The GUI with the simulation demo.** Download a [release](../../releases), unpack it and run
+`blobly_net` (`blobly_net.exe` on Windows). Open `projects/sim-demo.blobnet`, which has two CAN
+buses and a DoIP endpoint with simulated ECUs, and press **Start**. From a source checkout on
+Linux:
 
 ```sh
-scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
-scripts/run_gui.sh            # build + run the GUI
+scripts/setup_env.sh      # once: the pinned V toolchain and the native dependencies
+scripts/run_gui.sh        # build and run the GUI
 ```
 
-To reproduce the screenshot above — no hardware, no drivers, nothing else to start:
+**2. Python.** The engine inside your own process, on Linux x86_64 and Windows x64:
 
-```sh
-BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_gui.sh
+```python
+import blobly
+
+blobly.init()                                                  # load the engine, on the main thread
+with blobly.Project("projects/sim-demo.blobnet") as net:       # loaded and started; stopped at the end
+    can1 = net.channels.CAN1
+    can1.send(0x101, b"\x05")                                  # sim-demo's SUT answers with 0x102
+    answer = can1.expect(0x102, timeout_ms=1000)               # every wait is bounded: blobly.Timeout after a second
+    print("answer:", answer)                                   # Frame(0x102 [06])
 ```
 
-The simulated ECUs are native (`blobly/sim`) and run in-process.
+Run it from a source checkout ([from a source checkout](docs/scripting_python.md#from-a-source-checkout))
+or a release folder, so the project path resolves. `pip install blobly` installs the package from
+PyPI; the version there today predates `expect` and most of the API below, which ship with the
+next release. The [Python guide](docs/scripting_python.md) and the
+[examples](python/examples/README.md) go on from here.
 
-### Dependencies
-
-`setup_env.sh` installs these for you; the lists are here for anyone building by hand. **The CI
-workflows are the source of truth** — they build from nothing on a clean runner every push, so
-if this drifts, believe them.
-
-**Linux** (Debian/Ubuntu) — mirrors [`ci.yml`](.github/workflows/ci.yml):
-
-```sh
-sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
-```
-
-**Native Windows** — MSYS2 `UCRT64`, mirroring
-[`windows.yml`](.github/workflows/windows.yml). More than the Linux set, because the glyph
-rasterizer and text stack are not system libraries there:
-
-```sh
-pacman -S git mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
-```
-
-**macOS** — Homebrew: `brew install glfw freetype pkg-config`; the steps are under [macOS](#macos).
-
-Plus the V compiler on all of them. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)
-is the full recipe — it runs on every push, so unlike a hand-written walkthrough it cannot quietly
-drift. Or skip building entirely and take the [prebuilt bundle](#get-it).
-
-### macOS
-
-Apple Silicon, built from source; `scripts/setup_env.sh` is Linux-only, so the toolchain is set
-up by hand. The GUI, the engine and the CAN-free transports work: `inproc:`, `udp:` (pinned to
-loopback on macOS), `bridge:` and a CANsub. There is no SocketCAN and no PCAN/Kvaser/Vector driver
-on macOS, so an address of theirs is refused by name.
-
-```sh
-xcode-select --install                     # clang, make, git
-brew install glfw freetype pkg-config      # the GUI's native dependencies
-
-# the V this repository pins (.v-version) and its bootstrap (.vc-version), fetched by commit:
-git clone https://github.com/vlang/v ~/v && cd ~/v
-git checkout --detach "$(cat /path/to/blobly_net/.v-version)"
-git clone https://github.com/vlang/vc vc
-git -C vc checkout --detach "$(cat /path/to/blobly_net/.vc-version)"
-make local=1                               # local=1: do not pull a newer bootstrap
-./v version                                # must name the commit in .v-version
-
-cd /path/to/blobly_net
-export V=~/v/v V_MACOS_V3_NO_FALLBACK=1    # the pinned V, and no silent fallback to another
-scripts/run_gui.sh                         # builds libs/vgui once, then the GUI
-```
-
-Homebrew in another place than `/opt/homebrew` or `/usr/local` (a custom `HOMEBREW_PREFIX`) needs its
-`lib` folder on the linker path: `export LIBRARY_PATH=<prefix>/lib`.
-A V that names another commit is the usual failure: it builds the dependencies and then crashes
-in the compiler. An existing V checkout without an `origin` remote is moved with
-`git fetch https://github.com/vlang/v <commit> && git checkout --detach FETCH_HEAD`.
-`v -enable-globals test blobly/` passes on macOS. The loopback DoIP announcement test skips:
-macOS's loopback has no broadcast, so a loopback entity's announcements cannot be heard
-([known issues](docs/known_issues.md)); DoIP over TCP and asking an entity are unaffected.
-**CANsub discovery on macOS is untested with a real device.** Its mDNS browse shares port 5353
-with mDNSResponder through `SO_REUSEPORT`, which works only if mDNSResponder set it too.
-
-## Headless / scripted (no GUI)
-
-The engine is GUI-free by design, so the whole tool runs without a window — no display, no
-GLFW, nothing to click. This is how it runs in CI.
-
-**Lua test scripts** (diagnostics, raw frames, DBC signals) against a simulated bus and ECU.
-No hardware, no display; non-zero exit if any test fails:
+**3. A Lua test suite.** From a source checkout, headless, with a non-zero exit status on failure:
 
 ```sh
 scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
-# => 12 passed, 0 failed, 0 script error(s)      (the count grows with the suites)
 ```
 
-Point it at a different project with `--project projects/<name>.blobnet`. The full Lua API is
-in the **[scripting & test guide](docs/scripting.md)**.
+The Lua API is in [scripting.md](docs/scripting.md).
 
-**Python** — the engine inside your own Python process (`pip install blobly`; Linux x86_64 and
-Windows x64, CPython 3.11 or newer): load a project, send and receive frames, send and decode DBC
-messages by signal name, and react to traffic with `on_message`, `on_timer` and `run()`. See
-**[scripting_python.md](docs/scripting_python.md)** and the runnable
-**[examples](python/examples/README.md)**. An AI agent driving Blobly Net starts at
-**[agents.md](docs/agents.md)**.
+## What it does
 
-**CLI tools** — each runs standalone via
-`v -enable-globals run cmd/<tool>/<file>.v`:
+![One engine reached from the GUI, Python, Lua, the C ABI and the command-line tools, over CAN, virtual buses, the CAN bridge, Ethernet and LIN](docs/architecture.drawio.svg)
 
-| tool | what | |
+### Buses and hardware
+
+- **CAN and CAN-FD** on SocketCAN (Linux), PCAN, Kvaser and Vector XL (Windows), and CANsub
+  (Linux and Windows, no driver: it is a USB network adapter).
+- **CAN-FD from the address** on PCAN, Kvaser, Vector and CANsub: a data rate
+  (`@500000/2000000`) opens an FD channel. On SocketCAN, FD is the interface's own setting. A
+  classic channel refuses an FD frame instead of cutting it short.
+- **Software buses** `inproc:` and `udp:` carry CAN-FD on every OS and refuse frames no real
+  controller could send, so a test that passes there does not fail on a bench for that reason.
+- **CAN bridge**: `canbridge` offers a Linux host's CAN interfaces over TCP. The Windows app
+  starts it in WSL with one click and uses WSL's `vcan`s; a LAN host can dial in too. The
+  [protocol](docs/bridge_protocol.md) is public, so a board can implement it.
+- **Bus health**: ok, warning, error-passive and BUS-OFF per wire, coloured in the Buses panel,
+  told in the Log, and the worst wire's state on the toolbar. Scripts read the controller's
+  TEC/REC where the backend reports them.
+- **Bus load**: a 60-second strip per wire and the busiest wire on the toolbar.
+- **Lost frames are counted**: dropped, controller-error and undecodable records per wire, and
+  `last RX` says how long another node has been silent.
+- **Discover** lists what is attached (SocketCAN links, vendor channels, CANsub by mDNS, WSL and
+  LAN bridges, DoIP entities) and adds it to the project. Vector channels are assigned there,
+  without Vector Hardware Manager.
+- **Ethernet**: DoIP and SOME/IP (send, call, listen, and a `someip` channel in the trace) over
+  ordinary TCP/UDP sockets.
+
+| adapter | Linux / WSL2 | Windows |
 |---|---|---|
-| `flash` | drive a UDS firmware download against a blobly_emb bootloader | † |
-| `trace_dump` | freeze + dump a target's trace rings and decode the records | † |
-| `dbc_decode` | decode one CAN frame to physical signal values | |
-| `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
-| `loadtest` | data-plane benchmark across many concurrent buses | |
-| `arxml2dbc` | export one CAN cluster of an AUTOSAR ARXML as a DBC (and an `ecu.toml` fragment) | |
-| `canbridge` | offer this host's CAN interfaces to a Blobly Net elsewhere — WSL's `vcan`s to the Windows build, or a LAN machine's | |
-| `restbus` | replay a recording onto live bus(es) with the ECU under test subtracted by DBC sender; several recorded buses onto several live ones from one clock | |
+| **PEAK PCAN** | kernel `peak_usb`, SocketCAN `can0` | `pcan:PCAN_USBBUS1@500000`; FD verified on a bench, cross-vendor, at 1/2/4/8 Mbit/s |
+| **Kvaser** | kernel `kvaser_usb`, SocketCAN `can0` | `kvaser:0@500000`; FD verified on a bench to an 8 Mbit/s data phase (FD arbitration 500k or 1M) |
+| **Vector** (VN16xx) | no mainline driver | `vector:1@500000`; FD verified on a bench with a VN1630A to an 8 Mbit/s data phase; `,silent` for listen-only |
+| **CSS CANsub** | `cansub:<device-id>/1@500000`, found by mDNS | the same string and code; verified on a bench with a CANsub.4, classic and 64-byte FD |
 
-† needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
+On Linux the kernel owns the adapter, so no vendor SDK is involved. On Windows the vendor's own
+DLL is loaded at run time and nothing is bundled: PCAN and Kvaser come with the vendor's driver,
+and Vector's `vxlapi64.dll` is the separate XL Driver Library download. Under WSL2, bind the USB
+adapter with `usbipd-win` and attach it (`scripts/usbip.sh attach <busid>`); the WSL kernel needs
+the CAN drivers. Details: [can_hardware.md](docs/can_hardware.md) and
+[windows_can_hardware.md](docs/windows_can_hardware.md).
 
-**CI** (`.github/workflows/`) runs `v -enable-globals test blobly/` plus
-`scripts/runtests.sh` — no display involved. See [How it's tested](#how-its-tested).
+### Diagnostics
+
+- **UDS client** (ISO 14229): sessions, DIDs, write, reset, clear and read DTCs, routines, IO
+  control, memory, communication control, DTC setting, tester present and raw requests.
+- **Answers matched to their request.** A late duplicate from a CAN retransmission is discarded,
+  and `0x78` is waited out with the P2* the ECU announced.
+- **Typed failures.** A negative response, a timeout, an expired `0x78` and a dead adapter are
+  separate error types in Python and C, and separate messages in Lua.
+- **DTCs as data**: J2012 names, each status bit by name, snapshots and extended data.
+- **Functional addressing**: on CAN one request with an outcome per ECU; on DoIP a request to the
+  functional address.
+- **Security access** `0x27`, with the OEM's key algorithm plugged in as a function, and **`0x29`
+  authentication** as blobly_emb serves it (ISO 14229-1 challenge-response with an Ed25519 key),
+  from Lua, Python and C.
+- **ISO-TP in software** on every adapter and OS: full flow control, messages past 4095 bytes,
+  and CAN-FD frames up to 64 bytes.
+- **DoIP tester** (ISO 13400): routing activation with named refusals, alive checks, discovery,
+  and routing through a gateway to a node behind it.
+- **Simulated DoIP entities** with a VIN and announcements; several on one PC.
+- **Nodes and DIDs by name** from a blobly_emb `system.toml` or an ODX/PDX file, with values
+  decoded through the description's layout ([odx.md](docs/odx.md)).
+- **Diagnostics panel**: a held connection with keep-alive, DTC and DID tabs, a write dialog
+  that states its session and unlock plan first, and a timed log of every exchange.
+- **Copy as Lua** turns a session you clicked through into a runnable regression test.
+- **Flashing** a blobly_emb bootloader from the GUI, `cmd/flash`, Lua, Python or C, with a
+  simulated bootloader to rehearse against.
+
+### Databases
+
+- **DBC** parse, decode and encode: Intel and Motorola, signals up to 64 bits, multiplexing,
+  value tables, extra transmitters, signal groups.
+- **The DBC's send attributes drive the simulation**: cycle time, send type, repetitions, start
+  values, CAN-FD format.
+- **Canonical DBC writer**: a save puts the file in one deterministic order, so after the first
+  save a git diff shows only real changes.
+- **DBC editor** in the GUI: forms, a bit-layout grid, multiplexing, value tables. The trace
+  decodes with your edits.
+- **AUTOSAR ARXML 4.x** read natively, one database per CAN cluster, including systems spread
+  over several files and ExtractEditor `.e3proj` projects. **Import ARXML** turns clusters into
+  project channels.
+- **`arxml2dbc`** exports a cluster as a DBC that records its source files, their hashes and
+  whether the read was partial.
+- **E2E declared in the DBC**: AUTOSAR Profile 1 and Profile 5, several protected windows per
+  frame ([dbc_attributes.md](docs/dbc_attributes.md)).
+- **J1939**: PGN and source address in the trace, BAM and RTS/CTS transfers rejoined and
+  decoded, and address claims ([j1939.md](docs/j1939.md)).
+- **Network management**: who keeps an AUTOSAR CanNm cluster awake, who woke it, and which
+  declared nodes are missing ([nm.md](docs/nm.md)).
+- **Recordings**: `candump` `.log` read and written with a TX/RX direction per line, and a
+  native ASAM MDF4 (`.mf4`) reader.
+
+### Simulation and replay
+
+- **Rest bus from the database** ([above](#rest-bus-simulation), [rest_bus.md](docs/rest_bus.md)),
+  with signal waveforms, live values from a test, E2E, network management and UDS servers.
+- **Generators**: frames sent on a button, a key press or a cycle; **Quick Send** for one-off
+  frames.
+- **E2E checked**: a `verify:` block checks the ECU under test's counter and CRC, live and in
+  recordings.
+- **Fault injection**: drop, bad CRC, frozen counter, out of range, applied in the right order
+  around E2E.
+- **Rest bus from a recording** with the ECU under test removed by DBC sender (J1939 by PGN). A
+  scan shows frame counts per node so you can pick it.
+- **Multi-bus replay** from one clock, because a gateway polices the timing between buses.
+- **Replay panel**: pause, seek, 0.25x to 4x speed, loop.
+- **Large MF4 files stream**: a 397 MB file replays in 34 MB of memory, against 2.9 GB loaded
+  ([streaming_replay.md](docs/streaming_replay.md)).
+- **Demo projects** for simulation, the rest bus, DoIP, E2E, J1939, NM, LIN, ODX and replay, all
+  driver-free.
+
+### Scripting and automation
+
+- **Python**: CPython 3.11+, no dependencies, fully typed. Frames, signals, UDS, DoIP, SOME/IP,
+  flashing, J1939, NM, LIN, E2E, faults, generators, replay and recording
+  ([scripting_python.md](docs/scripting_python.md)).
+- **pytest plugin**: a started project, a fixture per channel and a `diag` client;
+  `--blobly-interface=CAN1=vcan0` runs one suite on the simulation or on a bench.
+- **Lua runner** (`cmd/script`): `--report` writes JSON, `--timeout` ends even an endless loop,
+  and exit codes separate failed, refused, script error and timeout.
+- **The same Lua scripts run in the GUI's Script panel** against a live measurement.
+- **C ABI**: `libblobly` / `blobly.dll` with one header, `bb.h`, shipped in both release bundles.
+- **VS Code as the console**: completion, breakpoints and the Debug Console against a live
+  project ([vscode.md](docs/vscode.md)).
+- **For AI agents**: bounded waits, typed errors and a guide, [agents.md](docs/agents.md).
+
+Command-line tools run from a source checkout (`v -enable-globals run cmd/<tool>`):
+
+| tool | what |
+|---|---|
+| `script` | the headless Lua test runner |
+| `restbus` | replay a recording onto live buses with the ECU under test removed |
+| `arxml2dbc` | export one ARXML CAN cluster as a DBC |
+| `canbridge` | offer this host's CAN interfaces to Blobly Net elsewhere (shipped in the Windows bundle) |
+| `lin_monitor` | watch or run a LIN bus through an LDF |
+| `dbc_decode` / `mf4_dump` | decode one frame / summarise an MDF4 file |
+| `project_scaffold` | turn the attached interfaces into a project's `channels:` block |
+| `crosscheck`, `silentcheck`, `kvasercheck`, `vectorcheck` | check a bench with the same backend code the app uses |
+| `flash` / `trace_dump` | flash a blobly_emb bootloader / dump a blobly_emb target's trace |
+
+### GUI and analysis
+
+- **Dockable panels** (Dear ImGui and ImPlot): arrange them, or tear one out onto another
+  monitor.
+- **Trace**: chronological or grouped by id with cycle time, decoded signals, flags for FD, BRS,
+  RTR and J1939 transfers, filters, and recording.
+- **Signals and Graphics**: live plots with up to three Y axes and a hover readout.
+- **Configuration**: a form for the buses, and a File tab that edits the whole `.blobnet` as text
+  with its comments kept.
+- **Network**, **Network Management**, **Statistics** and **Performance** panels.
+- **Help ▸ Copy diagnostics** puts the version, OS, project and the last Log lines on the
+  clipboard for an issue report.
+- **Offline help**: the docs ship with the app and open in the browser.
+
+### LIN
+
+- **Its own bus type**: master, slave and monitor roles, schedule tables, wakeup and sleep,
+  diagnostic frames, injected faults ([lin.md](docs/lin.md)).
+- **Backends**: `inproc:` on every OS, with bit-wise arbitration; on Linux `tty:` (a UART and a
+  LIN transceiver, any rate including 10417) and `pty:` to link another program.
+- **LDF reader** for LIN 1.3, 2.0, 2.1 and 2.2A, cross-checked against ldfparser.
+- **In projects, the GUI and scripts**: View ▸ LIN, LIN rows in the trace, and LIN from Lua,
+  Python and C.
+- Not yet: PEAK PLIN on Windows, LIN in recordings, and a bench check of `tty:` on a real
+  transceiver.
+
+## Works with blobly_emb
+
+[**blobly_emb**](https://github.com/MartenH/blobly_emb) is the companion embedded stack: an
+automotive ECU stack in V that runs on STM32 targets and on a PC. Blobly Net is its
+integration-test driver, and the wire formats the two share (trace records, SOME/IP, DTC records)
+are pinned by golden vectors on both sides. A simulated ECU can be built from a blobly_emb
+`ecu.toml`, with its real DIDs, session and security gates. Tick **View ▸ blobly_emb panels** for
+four more panels:
+
+- **Trace Chart**: handler, thread and idle lanes per core from the target's trace rings, with
+  both cores on one corrected timeline.
+- **Shell**: a command line to the target over CAN or SOME/IP.
+- **Flash**: firmware download to the blobly_emb bootloader.
+- **System**: the network's `system.toml`, and **Simulate the rest**, which simulates every other
+  node on the selected ECU's buses.
+
+![Two-core trace swimlane from a live STM32H755, with an interactive shell to the target](docs/screenshots/trace-multicore-h755.png)
+
+*A dual-core STM32H755 traced live over SocketCAN, both cores on one timeline, with the Shell
+panel talking to the target below.*
+
+## Get it
+
+- **[Releases](../../releases)**: a Linux `tar.gz` and a self-contained Windows `zip` per
+  version, with demo projects, DBCs, sample logs and the docs.
+- **Python**: `pip install blobly`, wheels for Linux x86_64 and Windows x64.
+- **Linux**: Ubuntu 24.04 or newer (or a glibc as new), plus
+  `sudo apt install libglfw3 libfreetype6 libgl1`.
+- **Windows**: unzip and run.
+- **macOS** (Apple Silicon): from source, with the software buses, the bridge and CANsub.
+
+This page describes `main`. Features landed since the newest release ship with the next one, and
+CI builds of `main` are available in between ([building.md](docs/building.md#between-releases)).
+
+## Build from source
+
+On Linux or WSL2 (Ubuntu 24.04):
+
+```sh
+scripts/setup_env.sh      # V at the pinned commit, GLFW, FreeType, can-utils; builds and tests
+scripts/run_gui.sh        # build and run the GUI
+```
+
+Windows (MSYS2), macOS, the dependency lists and between-release builds are in
+[building.md](docs/building.md). The CI workflows ([`ci.yml`](.github/workflows/ci.yml),
+[`windows.yml`](.github/workflows/windows.yml)) build on a clean runner for every pull request
+and every push to `main`, and are the reference recipe.
 
 ## How it's tested
 
-Worth being explicit, since [maturity varies](#-very-early-in-development) — this is the
-evidence behind that warning.
+The protocol engine (`blobly/`) imports no GUI code, so it is tested on its own.
 
-**Automated on every push:**
+**In CI, on every pull request and push to `main`:**
 
-| layer | what | where |
-|---|---|---|
-| **Unit tests** | every `_test.v` under `blobly/` — 132 files, ~1,800 test functions and ~7,500 assertions at 2026.10.01 | `v -enable-globals test blobly/` |
-| **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
-| **Headless integration** | 14 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
-| **Python package** | the package's tests, its examples and its docs (every public name in the reference, every code block run) under CPython 3.12 on Linux and Windows and 3.11 on Linux, from the source tree and against the installed wheel, and libblobly's C and Python smokes | `ci.yml`, `windows.yml` |
-| **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
+| what | how much |
+|---|---|
+| Unit tests across 30 engine modules | 230 test files, over 2,700 test functions and 11,000 assertions |
+| Golden byte vectors | wire formats pinned to exact bytes, including CANsub's 20 published vendor vectors, E2E vectors from the independent autosar-e2e library, and the formats shared with blobly_emb |
+| Headless Lua suites | every file in `tests/`, run against simulated ECUs, UDS servers, DoIP entities and LIN nodes |
+| Python package | 35 test files, about 950 test cases, every example script and every Python block in the guides; CPython 3.12 on Linux and Windows from source and from the installed wheel, 3.11 on Linux from source; `pyright --verifytypes` at 100% |
+| C ABI | C and ctypes smokes on Linux and Windows |
+| GUI | built on Linux and Windows; the Linux release build runs sim-demo for 240 frames on Xvfb |
+| Command-line tools | every tool type-checked for Linux, Windows and macOS |
 
-**Not automated — done by hand, and worth knowing about:**
+**By hand:**
 
-- **Cross-checked against independent implementations.** Decoders are diffed against cantools
-  (DBC), asammdf (MDF4) and a hand-written Python ECU, so a V decoder is never validated only by
-  the matching V encoder. These are the [oracles in `sut/`](sut/README.md); they are not in CI.
-- **Hardware.** PCAN, Kvaser and Vector adapters are verified on real buses, and target-facing
-  features against STM32 boards on the author's bench. CI runners have none of it, so none of
-  this is gated — and for Vector a runner could not be, since the XL library may not be
-  redistributed. Every vendor ✅ means *verified by hand, on the bench and date named in*
-  [windows_can_hardware.md](docs/windows_can_hardware.md); CI proves those backends compile and
-  link, nothing more.
+- **Hardware**: PCAN, Kvaser, Vector and CANsub on real buses, each with a dated bench record in
+  [windows_can_hardware.md](docs/windows_can_hardware.md); target features on STM32 boards
+  running blobly_emb.
+- **Independent oracles** ([`sut/`](sut/README.md)): an independent DBC decoder, cantools
+  (ARXML), asammdf (MDF4), ldfparser (LDF) and autosar-e2e. The LDF and E2E answers are also
+  frozen into CI as golden vectors.
 
-**The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
-a panel behaves. The Windows job runs the per-platform module tests (`blobly/isotp/`) and
-type-checks every `cmd/` tool for both targets, **not the full unit suite**. And every hardware and oracle check
-above is manual, so a regression there is caught only when someone next runs it.
+**What CI does not cover:** no CI runner has a CAN adapter or a `vcan`, so hardware results are
+by hand. GUI panels have no automated behaviour tests. Windows runs the ISO-TP module and the
+Python suite, not the full unit suite. macOS is type-checked only.
 
 ## Docs
 
 **Using it**
-- [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
-- [scripting_python.md](docs/scripting_python.md) — the engine from Python (`pip install blobly`)
-- [agents.md](docs/agents.md) — for an AI agent driving Blobly Net
-- [dbc_editor.md](docs/dbc_editor.md) — the DBC editor
-- [project_editing.md](docs/project_editing.md) — projects, buses and channels
-- [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration
-- [simulation.md](docs/simulation.md) — simulated ECUs, rest bus, generators, E2E, fault injection
-- [doip.md](docs/doip.md) — DoIP: what works, discovering an entity, the wire
-- [security_access.md](docs/security_access.md) — 0x27 levels and the reference key
-- [j1939.md](docs/j1939.md) — the J1939 read side
-- [wsl_bridge.md](docs/wsl_bridge.md) — the CAN bridge: the Windows build reaching WSL's vcans, and bridges on the LAN
-- [bridge_protocol.md](docs/bridge_protocol.md) — the bridge's wire format, for a board that implements it
+- [rest_bus.md](docs/rest_bus.md): rest-bus simulation, from the database or from a recording
+- [simulation.md](docs/simulation.md): simulated ECUs, generators, E2E, faults and replay in full
+- [scripting_python.md](docs/scripting_python.md): the engine from Python
+- [scripting.md](docs/scripting.md): Lua scripting and the headless runner
+- [vscode.md](docs/vscode.md): VS Code as the console
+- [agents.md](docs/agents.md): for an AI agent driving Blobly Net
+- [project_editing.md](docs/project_editing.md): projects, buses and channels
+- [bus_config_dialog.md](docs/bus_config_dialog.md): bus and hardware configuration
+- [dbc_editor.md](docs/dbc_editor.md): the DBC editor
+- [dbc_attributes.md](docs/dbc_attributes.md): the DBC attributes Blobly Net reads and adds
+- [doip.md](docs/doip.md): DoIP
+- [security_access.md](docs/security_access.md): security access and authentication
+- [odx.md](docs/odx.md): ODX/PDX diagnostic descriptions
+- [j1939.md](docs/j1939.md): J1939
+- [nm.md](docs/nm.md): the Network Management panel
+- [lin.md](docs/lin.md): LIN
+- [wsl_bridge.md](docs/wsl_bridge.md): the CAN bridge to WSL and the LAN
+- [bridge_protocol.md](docs/bridge_protocol.md): the bridge's wire format
+
+**Platform and troubleshooting**
+- [building.md](docs/building.md): building from source on Linux, Windows and macOS
+- [can_hardware.md](docs/can_hardware.md): real CAN adapters
+- [windows_can_hardware.md](docs/windows_can_hardware.md): PCAN, Kvaser, Vector and CANsub, and
+  what is verified on hardware
+- [known_issues.md](docs/known_issues.md): known issues
 
 **Design**
-- [data_path.md](docs/data_path.md) — the map: every carrier from the wire to the panels, scripts and files
-- [ethernet_architecture.md](docs/ethernet_architecture.md) — DoIP / SOME/IP
-- [simulation_architecture.md](docs/simulation_architecture.md) — simulated ECUs
-- [blobly_emb_synergies.md](docs/blobly_emb_synergies.md) — the SUT-side companion project
-
-**Platform & troubleshooting**
-- [can_hardware.md](docs/can_hardware.md) — real CAN adapters ·
-  [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser/Vector on Windows,
-  and what is verified by hand rather than by CI
-- [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / environment / CI)
+- [data_path.md](docs/data_path.md): every carrier from the wire to the panels, scripts and files
+- [ethernet_architecture.md](docs/ethernet_architecture.md): DoIP and SOME/IP
+- [simulation_architecture.md](docs/simulation_architecture.md): simulated ECUs
+- [one_reader_per_wire.md](docs/one_reader_per_wire.md): sharing one adapter channel
+- [streaming_replay.md](docs/streaming_replay.md): replaying recordings larger than memory
+- [blobly_emb_synergies.md](docs/blobly_emb_synergies.md): the tester and the ECU stack together
 
 **Project**
-- [CLAUDE.md](CLAUDE.md) — architecture & decisions (the guide for coding agents)
-- [ROADMAP.md](ROADMAP.md) — what's next, planned, and out of scope
-- [CONTRIBUTING.md](CONTRIBUTING.md) — issues and PRs welcome, and how a PR lands
+- [ROADMAP.md](ROADMAP.md): what is next and what is out of scope
+- [CONTRIBUTING.md](CONTRIBUTING.md): issues and pull requests welcome
+- [releasing.md](docs/releasing.md): how a release is cut
+- [CLAUDE.md](CLAUDE.md): architecture and decisions, the guide for coding agents
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
