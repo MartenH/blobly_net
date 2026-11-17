@@ -16,7 +16,6 @@ module flash
 import os
 import blobly.isotp
 import blobly.uds
-import crypto.ed25519 as ed
 
 pub const boot_magic = u32(0x54424C42) // 'BLBT'
 pub const hdr_size = 64
@@ -120,31 +119,10 @@ pub mut:
 	reset_acknowledged bool
 }
 
-// tester_seed resolves the 0x29 signing seed (the SESSION key, distinct from the
-// image-signing key): empty -> the dev tester seed (examples/keys/tester.seed);
-// 64 hex chars -> parsed; anything else (0x-prefix, truncated CI secret) -> an
-// error, so a misconfigured seed fails fast instead of silently signing wrong.
-pub fn tester_seed(env_val string) ![]u8 {
-	v := env_val.trim_space()
-	if v == '' {
-		mut s := []u8{len: 32}
-		for i in 0 .. 32 {
-			s[i] = u8(0x20 + i) // dev TESTER seed (examples/keys/tester.seed) — 0x29 auth
-		}
-		return s
-	}
-	if v.len != 64 {
-		return error('seed must be 64 hex chars (32 bytes); got ${v.len}')
-	}
-	mut s := []u8{len: 32}
-	for i in 0 .. 32 {
-		hb := v[i * 2..i * 2 + 2]
-		if !is_hex(hb) {
-			return error('seed has non-hex characters')
-		}
-		s[i] = u8(('0x' + hb).u8())
-	}
-	return s
+// tester_seed resolves the 0x29 signing seed (the SESSION key, distinct from the image-signing key):
+// empty -> the dev tester seed, else exactly 64 hex characters — uds.tester_seed, the one rule.
+pub fn tester_seed(text string) ![]u8 {
+	return uds.tester_seed(text)
 }
 
 // auth_seed is the 0x29 seed a session signs with, by the one rule every front end states: with
@@ -175,23 +153,9 @@ pub fn auth_seed(auth bool, seed ?string, seed_file ?string) ![]u8 {
 	}
 }
 
-// tester_seed_file reads a seed file as blobly_emb keeps one (examples/keys/tester.seed: the 64 hex
-// characters on one line). An empty file is an error, never the dev seed: a path was named.
+// tester_seed_file reads a seed file as blobly_emb keeps one — uds.tester_seed_file.
 pub fn tester_seed_file(path string) ![]u8 {
-	text := os.read_file(path) or { return error('seed file ${path}: ${err}') }
-	if text.trim_space() == '' {
-		return error('seed file ${path} is empty')
-	}
-	return tester_seed(text) or { return error('seed file ${path}: ${err}') }
-}
-
-fn is_hex(s string) bool {
-	for c in s {
-		if !((c >= `0` && c <= `9`) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)) {
-			return false
-		}
-	}
-	return true
+	return uds.tester_seed_file(path)
 }
 
 pub fn crc32(data []u8) u32 {
@@ -214,24 +178,19 @@ fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) !string {
 	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29, so flash
 	// without it. If it IS secured, erase/download stay gated, so proceeding here can never
 	// bypass a real gate.
-	cr := c.raw([u8(0x29), 0x01]) or {
+	challenge := c.boot_challenge() or {
 		if err is uds.NegativeResponse {
 			if err.nrc == 0x22 || err.nrc == 0x11 {
 				sink.note('0x29 not required by this boot — flashing without auth')
 				return 'not required'
 			}
 		}
+		if err is uds.UndecodableAnswer {
+			return failed(err.why)
+		}
 		return step_error('request challenge', err)
 	}
-	if cr.len < 2 + 32 {
-		return failed('request challenge: unexpected response ${cr.hex()}')
-	}
-	challenge := cr[2..34].clone()
-	priv := ed.new_key_from_seed(seed)
-	sig := ed.sign(priv, challenge) or { return error('sign challenge: ${err}') }
-	mut proof := [u8(0x29), 0x02]
-	proof << sig
-	ask(mut c, proof, 'send proof')!
+	c.boot_proof(seed, challenge) or { return step_error('send proof', err) }
 	sink.note('authenticated (0x29)')
 	return 'authenticated'
 }

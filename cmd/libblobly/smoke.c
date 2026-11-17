@@ -5,7 +5,8 @@
  * states a UDS handle's timing, retargets a DoIP handle, arms and clears a
  * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
  * callbacks, fires and cycles a generator, then stops and starts again; then LIN, on a bus of its
- * own and on projects/lin-demo's BODY beside it.
+ * own and on projects/lin-demo's BODY beside it; then 0x29 Authentication on projects/auth-demo's
+ * node, over its CAN and its DoIP row.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -208,6 +209,9 @@ static int (*bb_lin_status_id_p)(int, int, bb_lin_id *);
 static int (*bb_lin_status_text_p)(int, int, int, char *, int);
 static int (*bb_lin_diagnostics_p)(int, bb_diagnostics *);
 static int (*bb_lin_close_p)(int);
+static int (*bb_uds_authenticate_p)(int, int, const uint8_t *, int);
+static int (*bb_tester_seed_p)(const char *, uint8_t *, int);
+static int (*bb_uds_session_p)(int, int, uint8_t *, int);
 
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
@@ -770,6 +774,45 @@ static int lin_signal_named(int h, int n, const char *name) {
 	return -1;
 }
 
+/* 0x29 Authentication: projects/auth-demo's node unlocks level 1 with ACR (Ed25519) — over its CAN
+ * row and its DoIP row, the dev key by NULL, a wrong seed refused 0x58 */
+static int auth_on(int row, const char *what) {
+	bb_uds_target t;
+	uint8_t buf[64];
+	int u = bb_uds_open_p(row, NULL, NULL, &t);
+	CHECK(u >= 0, "open %s", what);
+	CHECK(bb_uds_session_p(u, 0x03, buf, sizeof buf) >= 0, "%s: extended session", what);
+	CHECK(bb_uds_read_did_p(u, 0xF1B0, buf, sizeof buf) == BB_ERR_NEGATIVE, "%s: the gated DID before authenticating", what);
+	CHECK(bb_uds_authenticate_p(u, 9, NULL, 0) == BB_ERR, "%s: level 9 must refuse", what);
+	CHECK(bb_uds_authenticate_p(u, 1, NULL, 0) == 0, "%s: authenticate with the dev key", what);
+	CHECK(bb_uds_read_did_p(u, 0xF1B0, buf, sizeof buf) == 14 && memcmp(buf, "SECRET-LEVEL-1", 14) == 0, "%s: the gated DID", what);
+	uint8_t wrong[32], nrc = 0;
+	memset(wrong, 0x11, sizeof wrong);
+	CHECK(bb_uds_authenticate_p(u, 1, wrong, sizeof wrong) == BB_ERR_NEGATIVE && bb_last_nrc_p(&nrc) == 0 && nrc == 0x58,
+		"%s: a wrong seed refused 0x58 (got 0x%02X)", what, nrc);
+	CHECK(bb_uds_close_p(u) == 0, "close %s", what);
+	return 0;
+}
+
+static int auth_steps(const char *sim_project) {
+	static char dir[2048], project[4096];
+	const char *slash = strrchr(sim_project, '/'), *back = strrchr(sim_project, '\\');
+	if (back > slash) slash = back;
+	snprintf(dir, sizeof dir, "%.*s", slash ? (int)(slash - sim_project) : 1, slash ? sim_project : ".");
+	snprintf(project, sizeof project, "%s/auth-demo/auth-demo.blobnet", dir);
+	uint8_t seed[32];
+	CHECK(bb_tester_seed_p("reference", seed, sizeof seed) == 32 && seed[0] == 0x20 && seed[31] == 0x3F, "the dev tester seed by name");
+	CHECK(bb_tester_seed_p("abc", seed, sizeof seed) == BB_ERR, "three hex characters must refuse");
+	CHECK(bb_tester_seed_p("", seed, sizeof seed) == BB_ERR, "an empty key must refuse, not name the dev seed");
+	CHECK(bb_tester_seed_p(NULL, seed, sizeof seed) == 32 && seed[0] == 0x20, "NULL is the dev tester seed");
+	CHECK(bb_load_p(project) == 0, "load auth-demo");
+	CHECK(bb_start_p() == 0, "start auth-demo");
+	if (auth_on(0, "AUTH (CAN)") || auth_on(1, "AUTH_IP (DoIP)")) return 1;
+	CHECK(bb_stop_p() == 0, "stop auth-demo");
+	printf("ok   0x29 Authentication on auth-demo's node, over CAN and DoIP\n");
+	return 0;
+}
+
 /* LIN: a bus of the host's own on an address with no project loaded, then projects/lin-demo's BODY
  * (master, simulating CEM, LSM and RSM on NormalTable): its frames decoded through
  * dbc/lin_demo.ldf, a signal LSM publishes changed, the bus's view, and a tap kept past its run */
@@ -939,6 +982,7 @@ int main(int argc, char **argv) {
 	SYM(bb_lin_frame_name); SYM(bb_lin_frame_id); SYM(bb_lin_signal_info); SYM(bb_lin_signal_text); SYM(bb_lin_header);
 	SYM(bb_lin_set_signal); SYM(bb_lin_schedule); SYM(bb_lin_read_status); SYM(bb_lin_status_id); SYM(bb_lin_status_text);
 	SYM(bb_lin_diagnostics); SYM(bb_lin_close);
+	SYM(bb_uds_authenticate); SYM(bb_tester_seed); SYM(bb_uds_session);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -1088,6 +1132,7 @@ int main(int argc, char **argv) {
 	printf("ok   a DoIP handle kept across a stop refuses as BB_ERR_STATE\n");
 	if (bb_stop_p() != 0) FAIL("stop again");
 	if (lin_steps(argv[2])) return 1;
+	if (auth_steps(argv[2])) return 1;
 	printf("ok   libblobly smoke\n");
 	return 0;
 }

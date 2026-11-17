@@ -1,14 +1,20 @@
 """smoke.py — a ctypes host of libblobly, the shape the Python package will take: the library
 loaded into THIS interpreter, sim-demo brought up, its simulated ECUs heard on inproc:CAN1 from
 the main thread and from a Python thread, a frame sent, CAN1's database (dbc/blobly_net.dbc)
-encoded and decoded, the DoIP entity asked who it is, the run stopped and started again.
+encoded and decoded, the DoIP entity asked who it is, the run stopped and started again; then
+0x29 Authentication on projects/auth-demo's node over its CAN and its DoIP row.
 
     python3 -I cmd/libblobly/smoke.py build/libblobly.so projects/sim-demo.blobnet
 
 Exit 0 only when every step held."""
 import ctypes
+import os
 import sys
 import threading
+
+
+class UdsTarget(ctypes.Structure):
+    _fields_ = [("tx", ctypes.c_uint32), ("rx", ctypes.c_uint32), ("ext", ctypes.c_uint8)]
 
 
 class Frame(ctypes.Structure):
@@ -267,7 +273,37 @@ def main(path, project):
     assert lib.bb_start() == 0, f"start again: {err(lib)}"
     exchange(lib, "second run", 5)
     assert lib.bb_stop() == 0, f"stop again: {err(lib)}"
+    auth_steps(lib, os.path.join(os.path.dirname(project), "auth-demo", "auth-demo.blobnet"))
     print("ok   libblobly smoke (python)")
+
+
+def auth_steps(lib, project):
+    """0x29 Authentication on auth-demo's node: the dev key by NULL, a wrong seed refused 0x58."""
+    lib.bb_uds_open.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(UdsTarget)]
+    lib.bb_uds_session.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    lib.bb_uds_read_did.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    lib.bb_uds_authenticate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    lib.bb_tester_seed.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    lib.bb_last_nrc.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
+    seed = ctypes.create_string_buffer(32)
+    assert lib.bb_tester_seed(b"reference", seed, 32) == 32 and seed.raw == bytes(range(0x20, 0x40)), err(lib)
+    assert lib.bb_load(project.encode()) == 0, f"load auth-demo: {err(lib)}"
+    assert lib.bb_start() == 0, f"start auth-demo: {err(lib)}"
+    for row, what in ((0, "AUTH (CAN)"), (1, "AUTH_IP (DoIP)")):
+        t = UdsTarget()
+        u = lib.bb_uds_open(row, None, None, ctypes.byref(t))
+        assert u >= 0, f"open {what}: {err(lib)}"
+        buf = ctypes.create_string_buffer(64)
+        assert lib.bb_uds_session(u, 0x03, buf, 64) >= 0, f"{what} session: {err(lib)}"
+        assert lib.bb_uds_authenticate(u, 1, None, 0) == 0, f"{what} authenticate: {err(lib)}"
+        n = lib.bb_uds_read_did(u, 0xF1B0, buf, 64)
+        assert buf.raw[:n] == b"SECRET-LEVEL-1", f"{what} gated DID: {err(lib)}"
+        nrc = ctypes.c_uint8()
+        assert lib.bb_uds_authenticate(u, 1, b"\x11" * 32, 32) == -4, f"{what} a wrong seed"
+        assert lib.bb_last_nrc(ctypes.byref(nrc)) == 0 and nrc.value == 0x58, f"{what} NRC {nrc.value:#x}"
+        assert lib.bb_uds_close(u) == 0, f"close {what}: {err(lib)}"
+    assert lib.bb_stop() == 0, f"stop auth-demo: {err(lib)}"
+    print("ok   0x29 Authentication on auth-demo's node, over CAN and DoIP (python)")
 
 
 if __name__ == "__main__":

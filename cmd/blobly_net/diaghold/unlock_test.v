@@ -52,3 +52,12 @@ fn test_every_0x27_passes_one_gate() {
 	// otherwise the session the caller leaves for first is the step's
 	assert unlock_step('a', 'a', '', 0x03).session == 0x03
 }
+
+// a target that unlocks with 0x29: the one refusal, before its key is asked about
+fn test_an_authenticating_target_is_refused_by_one_text() {
+	assert unlock_refusal_by(true, true, false, false, true) == auth_refusal
+	assert unlock_refusal_by(true, false, true, false, true) == auth_refusal
+	assert unlock_refusal_by(false, false, false, false, true) == '' // undescribed: nothing says so
+	assert auth_refusal.contains('0x29') && auth_refusal.contains('diag:authenticate')
+	assert unlock_refusal_by(true, true, false, false, false) == unlock_refusal(true, true, false, false)
+}

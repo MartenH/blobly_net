@@ -441,6 +441,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_write_did', l_uds_write_did)
 	env.st.register('__uds_sec_seed', l_uds_sec_seed)
 	env.st.register('__uds_sec_key', l_uds_sec_key)
+	env.st.register('__uds_authenticate', l_uds_authenticate)
 	env.st.register('__uds_read_dtc', l_uds_read_dtc)
 	env.st.register('__uds_reset', l_uds_reset)
 	env.st.register('__uds_comm_control', l_uds_comm_control)

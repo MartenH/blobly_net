@@ -79,6 +79,10 @@ mut:
 	// what a FUNCTIONAL request is handed to: `handler` unless set_functional_handler says
 	// otherwise — sim hands it uds.Server.handle_functional, which ignores what is physical only
 	functional_handler DiagHandler = unsafe { nil }
+	// called on the serving thread when a tester's connection ends, however it ends (nil = none):
+	// what the entity's server keeps for one connection — a seed or 0x29 challenge, an unlock, the
+	// session it opened — ends with it, as blobly_emb's comm/diag remote_dropped ends it
+	close_handler fn () = unsafe { nil }
 	// The ANNOUNCED VIN, which has to be able to follow the SERVED one: a UDS write to DID
 	// 0xF190 changes what the entity reports over TCP, and a fixed announcement would go on
 	// advertising the VIN it had at startup. Guarded because the write arrives on the TCP
@@ -133,6 +137,12 @@ pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 // before listen: the serving thread reads it.
 pub fn (mut s DoipServer) set_functional_handler(h DiagHandler) {
 	s.functional_handler = h
+}
+
+// set_close_handler: `h` is called on the serving thread each time a tester's connection ends. Set
+// before listen: the serving thread reads it.
+pub fn (mut s DoipServer) set_close_handler(h fn ()) {
+	s.close_handler = h
 }
 
 // is_stopping reports whether close() has been called. Serve loops driven as
@@ -237,6 +247,9 @@ pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 	s.active_mu.unlock()
 	s.serve_connection(mut conn)
 	s.release_active()
+	if s.close_handler != unsafe { nil } {
+		s.close_handler()
+	}
 }
 
 // release_active closes the connection being served, if close() has not already.

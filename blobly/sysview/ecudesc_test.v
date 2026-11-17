@@ -2,6 +2,7 @@ module sysview
 
 import os
 import toml
+import blobly.uds
 
 // A trimmed copy of blobly_emb's examples/system_full (origin/main, 2026-10-06): the system.toml
 // node and signal declarations the diagnostic link reads, and zone_a's ecu.toml with its faults,
@@ -1006,4 +1007,122 @@ fn test_an_isotp_id_that_is_not_an_integer_addresses_nothing() {
 		return
 	}
 	assert false, 'a node whose [isotp] rx_id is a string was reached'
+}
+
+const auth_desc = '
+[uds]
+access    = "authentication"
+auth_keys = { "1" = "reference" }
+
+[[did]]
+id    = 0xF1B0
+ascii = "SECRET"
+read  = { session = ["extended"], security = 1 }
+
+[[did]]
+id    = 0x0110
+bytes = "00"
+write = { session = ["extended"], security = 1 }
+'
+
+// `[uds] access` and `auth_keys` are read as blobly_emb reads them, what loom2v refuses said in errs,
+// and the server a simulation serves authenticates with the same keys
+fn test_an_authenticating_description() {
+	d := parse_ecu_desc(toml.parse_text(auth_desc) or { panic(err) }, map[string][]Field{})
+	assert d.errs == [], d.errs.str()
+	assert d.authenticates() && d.auth_ref[1] && d.auth_keys[1] == uds.dev_tester_public()
+	spec, notes := d.server_spec(false)
+	assert spec.authenticates && spec.auth_key(1) or { []u8{} } == uds.dev_tester_public()
+	assert !notes.any(it.contains('0x27')), notes.str()
+	// over DoIP without allow_bench_key the dev key is refused, as the node refuses it
+	rs, rn := d.server_spec(true)
+	assert rs.auth_key(1) or { []u8{} } != uds.dev_tester_public()
+	assert rn.any(it.contains('0x29 refuses the dev tester key'))
+	// a gated write plans an authenticate, and WriteGated names 0x29
+	w := d.dids.filter(it.id == 0x0110)[0]
+	p := w.plan_write(uds.ConnState{ session: 0x03 }, true)
+	assert p.authenticates && p.steps() == ['authenticate level 1 (0x29 05/06)']
+	g := WriteGated{
+		did:           0x0110
+		level:         1
+		authenticates: true
+	}
+	assert g.msg().contains('0x29') && !g.msg().contains('0x27')
+}
+
+fn test_an_authentication_description_that_cannot_work_is_said() {
+	zero := '00'.repeat(32)
+	for text, want in {
+		auth_desc.replace('"1" = "reference"', '"2" = "reference"'):                           'security level 1 is gated but auth_keys has no key'
+		auth_desc.replace('"1" = "reference"', '"1" = "reference", "2" = "reference"'):        'no gate names security level 2'
+		auth_desc.replace('"reference"', '"abcd"'):                                             'is not 64 hex characters'
+		auth_desc.replace('"reference"', '"${zero}"'):                                          'is all zeros'
+		auth_desc.replace('"reference"', '"02${'00'.repeat(31)}"'):                             'not a curve point'
+		auth_desc.replace('"reference"', '"01${'00'.repeat(31)}"'):                             'is a point of small order'
+		auth_desc.replace('"reference"', '"EE${'FF'.repeat(30)}7F"'):                           'is a point of small order'
+		auth_desc.replace('"1" = ', '"9" = '):                                                  'is not a security level'
+		auth_desc.replace('access    = "authentication"', 'access = "password"'):              'is neither'
+		auth_desc.replace('access    = "authentication"\n', ''):                               'access is "seed_key"'
+		auth_desc.replace('access    = "authentication"', 'access = "authentication"\nsecurity_key = "reference"'): 'security_key is the 0x27 key'
+	} {
+		d := parse_ecu_desc(toml.parse_text(text) or { panic(err) }, map[string][]Field{})
+		assert d.errs.any(it.contains(want)), '${want}: ${d.errs}'
+	}
+}
+
+// a key of small order is refused, in every encoding, and so cannot unlock the simulated node with
+// the forged proof that verifies under it (R = the neutral point, S = 0)
+fn test_a_small_order_auth_key_is_refused() {
+	for h in ['0100000000000000000000000000000000000000000000000000000000000000',
+		'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+		'0000000000000000000000000000000000000000000000000000000000000080',
+		'26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+		'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+		'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'] {
+		d := parse_ecu_desc(toml.parse_text(auth_desc.replace('"reference"', '"${h}"')) or {
+			panic(err)
+		}, map[string][]Field{})
+		assert d.errs.any(it.contains('small order')), '${h}: ${d.errs}'
+		assert 1 !in d.auth_keys
+		spec, _ := d.server_spec(false)
+		mut s := uds.server_from(spec)
+		s.handle([u8(0x10), 0x03])
+		ans := s.handle(uds.auth_challenge_request(1))
+		mut forged := []u8{len: 64}
+		forged[0] = 1
+		assert s.handle(uds.auth_proof_request(forged))[0] != 0x69, '${h}: a forged proof unlocked'
+		assert s.unlocked == 0 && ans[0] == 0x7F // no key for the level: its challenge is refused
+	}
+}
+
+// the dev tester key written as its hex, in either case, IS the bench key: over DoIP without
+// allow_bench_key the level is refused as for "reference"
+fn test_the_dev_key_written_as_hex_is_the_bench_key() {
+	hex := uds.dev_tester_public().hex()
+	for spelling in [hex, hex.to_upper()] {
+		d := parse_ecu_desc(toml.parse_text(auth_desc.replace('"reference"', '"${spelling}"')) or {
+			panic(err)
+		}, map[string][]Field{})
+		assert d.errs == [] && d.auth_ref[1], spelling
+		_, notes := d.server_spec(true)
+		assert notes.any(it.contains('0x29 refuses the dev tester key')), spelling
+	}
+}
+
+// a level whose key the node refuses here verifies NO proof — neither the dev seed's nor any seed's
+// (no stand-in key whose seed is in the source); its challenge is served as the node serves one
+fn test_a_refused_bench_key_verifies_no_proof() {
+	d := parse_ecu_desc(toml.parse_text(auth_desc) or { panic(err) }, map[string][]Field{})
+	spec, _ := d.server_spec(true)
+	assert spec.auth_refused == 0x01
+	for seed in [uds.dev_tester_seed(), []u8{len: 32, init: 0xA5}, []u8{len: 32, init: 0x11}] {
+		mut s := uds.server_from(spec)
+		s.handle([u8(0x10), 0x03])
+		ans := s.handle(uds.auth_challenge_request(1))
+		assert ans[0] == 0x69, 'the challenge of a refused level was not served'
+		ch := ans[uds.auth_answer_challenge_at..uds.auth_answer_challenge_at + uds.auth_challenge_len]
+		proof := uds.app_proof_of(seed, 1, ch) or { panic(err) }
+		assert s.handle(uds.auth_proof_request(proof)) == [u8(0x7F), 0x29, 0x58], 'seed ${seed[0]:02X} unlocked'
+		assert s.unlocked == 0
+	}
 }

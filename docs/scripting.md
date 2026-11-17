@@ -300,6 +300,7 @@ The returned object has:
 | `diag:read_did(did)` | `0x22` ReadDataByIdentifier | the data record (bytes) |
 | `diag:write_did(did, data)` | `0x2E` WriteDataByIdentifier | — |
 | `diag:security_access(level [, keyfn])` | `0x27` SecurityAccess (request seed at `level`, send key at `level+1`) | the seed (bytes) |
+| `diag:authenticate(level [, {key = ...}])` | `0x29` Authentication (ACR, Ed25519) on an ECU that unlocks that way instead of 0x27: `0x29 05` naming `level` (1..8), the tester's signature over the level's application message (a context, the level and the challenge — never the bare challenge; `docs/security_access.md`), `0x29 06` (answered after a responsePending while the ECU verifies). `key`: absent or `"reference"` the dev tester seed, 64 hex characters, or a seed file relative to the script; a `key` that is not a non-empty string (false, a number, a table) is refused before anything is sent | — |
 | `diag:read_dtcs([mask])` | `0x19` sub `0x02` reportDTCByStatusMask (`mask` defaults `0xFF`) | DTC record (bytes) |
 | `diag:dtcs([mask])` | `0x19 02` decoded (`mask` defaults `0xFF`) | array of records: `code`, `name` (`"U0121-00"`), `status`, and one boolean per ISO 14229-1 status bit — `testFailed`, `testFailedThisOperationCycle`, `pendingDTC`, `confirmedDTC`, `testNotCompletedSinceLastClear`, `testFailedSinceLastClear`, `testNotCompletedThisOperationCycle`, `warningIndicatorRequested` |
 | `diag:supported_dtcs()` | `0x19 0A` reportSupportedDTC — every DTC with its whole status | array of records, as `dtcs` |
@@ -346,6 +347,11 @@ server's** demo algorithm (key = seed XOR 0xFF) so it unlocks the sim out of the
 pass your own `keyfn` for a real ECU's algorithm. An all-zero seed (already unlocked) is returned
 without sending a key. `level` is the seed SUB-FUNCTION (`2L-1` for
 level `L`). Levels, the reference key and the NRCs: [security_access.md](security_access.md).
+
+`authenticate(level, opts)` is the other way a blobly_emb node may unlock (`[uds] access =
+"authentication"`): it takes the LEVEL, not a sub-function. A wrong key raises with NRC 0x58 (0x36
+the last allowed), the lockout 0x37 — `check.nrc(0x58, function() d:authenticate(1, { key = k }) end)`.
+See [security_access.md](security_access.md#authentication-0x29).
 
 **Functional addressing** — one request to several ECUs at once (CAN), or to the functional
 address of a DoIP entity:

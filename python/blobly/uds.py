@@ -243,6 +243,35 @@ def _close_orphans() -> None:
         getattr(lib, closer)(h)
 
 
+def _tester_seed(key) -> "bytes | None":
+    """A tester seed as authenticate takes one: None for the dev key, else its 32 bytes. A key that
+    is given names one: an empty one, or one holding a NUL (which the C boundary would cut, naming
+    another key — the dev key for a leading NUL), is refused; a path is encoded as the file system
+    encodes it (os.fsencode), so a name that is not UTF-8 still reaches its file."""
+    if key is None:
+        return None
+    if isinstance(key, (str, os.PathLike)):
+        spec = os.fsencode(key)
+        if b"\0" in spec:
+            raise ValueError("authenticate: the key holds a NUL character, which would cut it short")
+        if spec.strip() == b"":
+            raise ValueError('authenticate: the key is empty — leave it out, or "reference", for the dev tester key')
+        if spec.strip() == b"reference":
+            return None
+        buf = ctypes.create_string_buffer(32)
+        _lib.check(_lib.lib().bb_tester_seed(spec, buf, 32))
+        return buf.raw
+    try:
+        b = _lib.byte_data("authenticate: key", key)
+    except TypeError:
+        raise TypeError(
+            f"authenticate: key must be None, bytes, a str or a path, not {type(key).__name__}"
+        ) from None
+    if len(b) != 32:
+        raise ValueError(f"authenticate: a tester seed is 32 bytes, got {len(b)}")
+    return b
+
+
 def reference_key(seed: ByteData) -> bytes:
     """blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF): the key the simulated
     ECUs accept, and a blobly_emb node whose description names it (docs/security_access.md)."""
@@ -645,6 +674,25 @@ class UdsClient:
                     _callbacks.depth -= 1
             self._call_on(h, _lib.lib().bb_uds_security_key, level + 1, key, len(key))
             return seed
+
+    def authenticate(self, level: int, key: "ByteData | str | os.PathLike[str] | None" = None) -> None:
+        """0x29 Authentication (ACR with Ed25519) on an ECU that unlocks that way instead of 0x27
+        (blobly_emb `[uds] access = "authentication"`): a challenge for `level` (0x29 05), and the
+        tester's Ed25519 signature over the application message (`docs/security_access.md`: a
+        context, the level and the challenge, never the bare challenge) sent back (0x29 06). `key`
+        is the seed: None or
+        "reference" the dev tester key (the one such a node's auth_keys "reference" trusts), 32
+        bytes, 64 hex characters, or a seed file's path. A refusal raises NegativeResponse (NRC 0x58
+        a wrong key, 0x36 the last one, 0x37 the lockout, 0x24 no challenge)."""
+        level = _int("level", level)
+        seed = _tester_seed(key)
+        with self._lock:
+            if self._in_key_fn:
+                raise BloblyError(f"{self!r}: authenticate inside a key_fn", _lib.BB_ERR_STATE)
+            if seed is None:
+                self._call(_lib.lib().bb_uds_authenticate, level, None, 0)
+            else:
+                self._call(_lib.lib().bb_uds_authenticate, level, seed, len(seed))
 
     def reset(self, kind: int = 0x01) -> bytes:
         """0x11 ECUReset: kind 1 hard, 2 key-off-on, 3 soft; returns the answer after its SID."""

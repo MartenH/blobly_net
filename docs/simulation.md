@@ -690,7 +690,8 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   replace a value or add a readable DID.
 - **`io:` and `memory:` from the `uds:` block** — `0x2F` and `0x23`/`0x3D` as above, gated by
   the `[uds] services` table's rows for them like any other service (a stated table without the
-  row is `0x11`); an IO DID reads in every session. A live DID declared under `io:` reads the
+  row is `0x11`; with no table `0x2F` runs in the extended and programming sessions, blobly_emb's
+  default row); an IO DID reads in every session. A live DID declared under `io:` reads the
   value `0x2F` holds (`01`..`03`) and its signal again once control is returned. `0xF186` reads the session unless the
   description or `dids:` declares it.
 

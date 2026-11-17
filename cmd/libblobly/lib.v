@@ -297,6 +297,7 @@ pub mut:
 	described     u8
 	server        u8
 	reference_key u8
+	authenticates u8
 }
 
 pub struct C.bb_reach {

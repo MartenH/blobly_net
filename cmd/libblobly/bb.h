@@ -485,6 +485,8 @@ typedef struct bb_node {
 	uint8_t server;         /* its ecu.toml declares a diagnostic server ([uds], [isotp] or [doip]) */
 	uint8_t reference_key;  /* [uds] security_key = "reference": blobly_net's reference key
 	                           (bb_reference_key) unlocks it */
+	uint8_t authenticates;  /* [uds] access = "authentication": it unlocks its levels with 0x29
+	                           (bb_uds_authenticate) and answers 0x27 serviceNotSupported */
 } bb_node;
 
 /* Where a node is reached on a row of the run (bb_node_target, bb_node_reach): a CAN row named
@@ -874,6 +876,21 @@ int bb_uds_security_seed(int u, int level, uint8_t *unlocked, uint8_t *buf, int 
 int bb_uds_security_key(int u, int level, const uint8_t *key, int n); /* 0x27 at an even level
                                                                          (the seed's + 1; odd
                                                                          refused) */
+int bb_uds_authenticate(int u, int level, const uint8_t *seed, int n);
+                                       /* 0x29 Authentication (ACR, Ed25519) on an ECU that unlocks
+                                          that way (blobly_emb [uds] access = "authentication"):
+                                          0x29 05 naming `level` (1..8), then 0x29 06 carrying the
+                                          tester's Ed25519 signature, with `seed` (32 bytes; NULL and
+                                          0 = the dev tester key, the one auth_keys "reference"
+                                          trusts), over the application message: a context, the
+                                          level and the challenge, never the bare challenge.
+                                          A refusal is BB_ERR_NEGATIVE (NRC 0x58 a wrong key, 0x36
+                                          the last one, 0x37 the lockout) */
+int bb_tester_seed(const char *spec, uint8_t *buf, int cap); /* a tester seed as a key spec names
+                                       it: NULL or "reference" the dev tester seed, 64 hex
+                                       characters, or a seed file's path; the 32 bytes, refused
+                                       with the reason (a hex spec of another length names it;
+                                       "" names no key and is refused) */
 int bb_reference_key(const uint8_t *seed, int n, uint8_t *buf, int cap); /* blobly_net's
                                        reference key for a seed (each byte XOR 0xFF): the key the
                                        simulated ECUs accept */

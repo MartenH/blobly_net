@@ -1,0 +1,27 @@
+# A simulated ECU that unlocks with 0x29 AUTHENTICATION (blobly_emb `[uds] access =
+# "authentication"`: ISO's challenge-response with Ed25519) instead of 0x27 — described by
+# nodes/auth/ecu.toml, which system.toml beside this file names for the node addressed 0x7E0/0x7E8 on
+# CAN and logical address 0x1001 over DoIP. The same node on both carriers: tests/diag_auth.lua and
+# the C, Python and Lua suites authenticate against it (docs/security_access.md "Authentication").
+project:
+  name: Authentication demo
+  version: 8
+
+channels:
+  - name: AUTH
+    type: can
+    interface: inproc:AUTH
+    mode: monitor
+    simulation:
+      - name: auth
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          functional: "0x7DF"
+  - name: AUTH_IP
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1001"
+    simulate:
+      - auth

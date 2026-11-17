@@ -892,6 +892,7 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
 	hst.bind_functional(mut s)
+	hst.bind_close(mut s)
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
 }

@@ -364,7 +364,8 @@ GEN_NAME, GEN_CHANNEL, GEN_MESSAGE, GEN_TRIGGER, GEN_TARGET, GEN_NOTE = range(6)
 class BbNode(ctypes.Structure):
     """bb_node, field for field."""
     _fields_ = [("dids", ctypes.c_int32), ("faults", ctypes.c_int32), ("targets", ctypes.c_int32),
-                ("described", ctypes.c_uint8), ("server", ctypes.c_uint8), ("reference_key", ctypes.c_uint8)]
+                ("described", ctypes.c_uint8), ("server", ctypes.c_uint8), ("reference_key", ctypes.c_uint8),
+                ("authenticates", ctypes.c_uint8)]
 
 
 class BbReach(ctypes.Structure):
@@ -597,6 +598,8 @@ def _declare(lib):
         "bb_uds_security_seed": ([c_int, c_int, P(ctypes.c_uint8), c_char_p, c_int], c_int),
         "bb_uds_security_key": ([c_int, c_int, c_char_p, c_int], c_int),
         "bb_reference_key": ([c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_uds_authenticate": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_tester_seed": ([c_char_p, c_char_p, c_int], c_int),
         "bb_nrc_name": ([c_int, c_char_p, c_int], c_int),
         "bb_last_nrc": ([P(ctypes.c_uint8)], c_int),
         # faults and E2E (faults.py, e2e.py); a uint8_t * is declared c_char_p, its length beside it

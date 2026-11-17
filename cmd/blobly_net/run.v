@@ -1603,6 +1603,7 @@ fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst si
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
 	hst.bind_functional(mut s)
+	hst.bind_close(mut s)
 	// The REAL error. Flattening it to "someone else owns it" sent people looking for a port
 	// conflict when the host was not a local address, the family was unavailable, or the
 	// address was malformed — none of which clear by waiting.

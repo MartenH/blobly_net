@@ -632,6 +632,18 @@ local function connection(h, channel)
     __uds_sec_key(self.handle, level + 1, key)
     return seed
   end
+  -- 0x29 Authentication (ACR, Ed25519) on an ECU that unlocks that way instead of 0x27: a
+  -- challenge for `level` (0x29 05), signed and sent back (0x29 06). opts.key is the tester seed:
+  -- absent or "reference" the dev tester key, 64 hex characters, or a seed file (relative to the
+  -- script). Raises on a refusal (NRC 0x58 a wrong key, 0x36 the last one, 0x37 the lockout).
+  function self:authenticate(level, opts)
+    local key = nil
+    if opts ~= nil then
+      if type(opts) ~= "table" then error("diag:authenticate(level, opts): opts is a table", 2) end
+      key = opts.key
+    end
+    __uds_authenticate(self.handle, level, key)
+  end
   -- the waits, in ms: timeout_ms (the first answer), p2_star_ms (after each 0x78, plus margin_ms)
   -- and pending_budget_ms (one request from its send). timing() reads them as they stand;
   -- set_timing(t) states the ones t names, from the next request on

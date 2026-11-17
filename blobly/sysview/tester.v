@@ -377,8 +377,8 @@ pub fn (x DidDesc) plan_write(st uds.ConnState, can_unlock bool) uds.WritePlan {
 			refusal: 'not writable: ${err.msg()}'
 		}
 	}
-	return uds.write_plan(true, st.session, sessions, u8(x.write_gate.level), st.security.unlocked(),
-		can_unlock)
+	return uds.write_plan_by(true, st.session, sessions, u8(x.write_gate.level), st.security.unlocked(),
+		can_unlock, x.authenticates)
 }
 
 // write_refusal is why the DID cannot be written whatever a connection establishes (no write
@@ -402,12 +402,15 @@ pub:
 	session u8
 	level   u8
 	state   uds.ConnState
+	// the node unlocks by 0x29: the level is earned with authenticate, not 0x27
+	authenticates bool
 }
 
 pub fn (e WriteGated) msg() string {
 	steps := uds.WritePlan{
-		session: e.session
-		unlock:  e.level
+		session:       e.session
+		unlock:        e.level
+		authenticates: e.authenticates
 	}.steps()
 	what := if e.name == '' { '0x${e.did:04X}' } else { '0x${e.did:04X} ${e.name}' }
 	return '0x2E ${what}: not written — this connection has ${e.state.words()}, and its write gate needs it to ${steps.join(', then ')} first'
@@ -432,6 +435,7 @@ pub fn write_described(mut cli uds.Client, x DidDesc, texts []string) ! {
 			session: plan.session
 			level:   plan.unlock
 			state:   cli.state
+			authenticates: plan.authenticates
 		}
 	}
 	cli.write_data_by_identifier(x.id, data)!

@@ -293,3 +293,118 @@ fn test_another_ecu_knows_nothing_of_its_state() {
 	c.another_ecu()
 	assert c.state == ConnState{}
 }
+
+// 0x29 ACR: an answered 05 binds its level, a verified 06 unlocks it, 00 relocks, a refusal or an
+// unanswered proof forgets; the bootloader's 01 / 02 change nothing
+fn test_authentication_is_observed() {
+	mut s := ConnState{}
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x(auth_challenge_request(2), []u8{len: 55}))
+	assert s.auth_level == 2
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+	assert s.security.unlocked() == 2 && s.auth_level == 0
+	s.observe(ok_x([u8(0x29), 0x00], [u8(0x69), 0x00, 0x10]))
+	assert s.security.known && s.security.unlocked() == 0
+	s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+	s.observe(nrc_x(auth_proof_request([]u8{len: 64}), 0x58))
+	assert !s.security.known, 'a failed proof kept the level'
+	s.observe(nrc_x(auth_challenge_request(1), 0x7F))
+	assert s.session == 0, '0x7F did not forget the session'
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(silent_x(auth_proof_request([]u8{len: 64}), true))
+	assert !s.security.known
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x([u8(0x29), 0x01], []u8{len: 34}))
+	s.observe(ok_x([u8(0x29), 0x02], [u8(0x69), 0x02]))
+	assert s.security.known && s.security.unlocked() == 0, "the bootloader's profile moved the level"
+}
+
+// an authenticating node's write plan names 0x29, and its refusal points at authenticate
+fn test_an_authenticating_write_plan_names_0x29() {
+	p := write_plan_by(true, 0x03, [u8(0x03)], 1, 0, true, true)
+	assert p.unlock == 1 && p.authenticates
+	assert p.steps() == ['authenticate level 1 (0x29 05/06)']
+	r := write_plan_by(true, 0x03, [u8(0x03)], 1, 0, false, true)
+	assert r.refusal.contains('0x29 Authentication') && r.refusal.contains('authenticate')
+	assert !r.refusal.contains('0x27')
+	d := write_plan_by(true, 0x01, [default_session], 1, 0, true, true)
+	assert d.refusal.contains('where 0x29 is not served')
+	assert write_plan(true, 0x03, [u8(0x03)], 1, 0, true) == write_plan_by(true, 0x03, [u8(0x03)],
+		1, 0, true, false)
+}
+
+// a 0x29 06 answered positively unlocks only for ownershipVerified (0x12), the value a granted proof
+// returns — another returnValue (69 06 00) leaves the level unknown, a raw exchange alike
+fn test_only_ownership_verified_unlocks() {
+	mut s := ConnState{}
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+	mut other := auth_proof_answer()
+	other[2] = 0x00
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), other))
+	assert !s.security.known && s.security.unlocked() == 0, '69 06 00 was recorded as unlocked'
+	assert s.auth_level == 0
+	s.observe(ok_x(auth_proof_request([]u8{len: 64}), [u8(0x69), 0x06]))
+	assert s.security.unlocked() == 0, 'a 06 answer with no returnValue was recorded as unlocked'
+}
+
+// a 06 refused before the server touched its challenge (0x13, 0x31, 0x14) keeps it outstanding —
+// on the ECU and so in the connection's state — so a corrected retry is recorded as the unlock it
+// is; a refusal that spends the challenge (0x58, 0x36, 0x37, 0x22, 0x24) forgets it
+fn test_a_refusal_that_keeps_the_challenge_keeps_its_level() {
+	for nrc in [u8(0x13), 0x31, 0x14] {
+		mut s := ConnState{}
+		s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+		s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+		s.observe(nrc_x(auth_proof_request([]u8{len: 64}), nrc))
+		assert s.auth_level == 1, '0x${nrc:02X} forgot the challenge the ECU kept'
+		s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+		assert s.security.unlocked() == 1, 'the retry after 0x${nrc:02X} was not recorded as the unlock'
+	}
+	for nrc in [u8(0x58), 0x36, 0x37, 0x22, 0x24] {
+		mut s := ConnState{}
+		s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+		s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+		s.observe(nrc_x(auth_proof_request([]u8{len: 64}), nrc))
+		assert s.auth_level == 0 && !s.security.known, '0x${nrc:02X}'
+	}
+	// a 06 answered 0x14 AFTER its 0x78 was verified (a valid proof whose transport could not carry
+	// ownershipVerified): the challenge is spent, so the level is forgotten
+	mut late := ConnState{}
+	late.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	late.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+	mut after := nrc_x(auth_proof_request([]u8{len: 64}), 0x14)
+	after = Exchange{
+		...after
+		timing: ExchangeTiming{
+			sent:    true
+			pending: 1
+		}
+	}
+	late.observe(after)
+	assert late.auth_level == 0 && !late.security.known, 'a 0x14 after 0x78 kept a spent challenge'
+	// a 05 refused before a new challenge is drawn keeps the one outstanding
+	mut s := ConnState{}
+	s.observe(ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]))
+	s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+	s.observe(nrc_x(auth_challenge_request(2), 0x31))
+	assert s.auth_level == 1
+	s.observe(nrc_x(auth_challenge_request(1), 0x59))
+	assert s.auth_level == 0
+}
+
+// a session entry voids the challenge outstanding: a positive 0x10 or 0x11, and a session forgotten
+fn test_a_session_entry_voids_the_challenge() {
+	enter := ok_x([u8(0x10), 0x03], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4])
+	for ends in [enter, ok_x([u8(0x11), 0x01], [u8(0x51), 0x01]),
+		nrc_x([u8(0x2E), 0x01, 0x02, 0x05], 0x7F), silent_x([u8(0x10), 0x03], true)] {
+		mut s := ConnState{}
+		s.observe(enter)
+		s.observe(ok_x(auth_challenge_request(1), []u8{len: 55}))
+		s.observe(ends)
+		assert s.auth_level == 0, 'the challenge outlived ${ends.req.hex()}'
+		s.observe(ok_x(auth_proof_request([]u8{len: 64}), auth_proof_answer()))
+		assert s.security.unlocked() == 0
+	}
+}

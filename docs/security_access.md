@@ -117,7 +117,7 @@ error. `check.nrc(0x35, function() … end)` expects one. See [scripting.md](scr
 | `0x33` | securityAccessDenied | (on another service) the level it needs is not unlocked |
 | `0x35` | invalidKey | the key is wrong; it counts toward the lockout. From an ECU that does not use the reference key, this is the expected answer. It also happens if another tester asked for a seed between this tester's seed and key |
 | `0x36` | exceededNumberOfAttempts | too many wrong keys: the ECU is now locked out for its delay |
-| `0x37` | requiredTimeDelayNotExpired | the lockout delay (or the delay after power-up) is still running |
+| `0x37` | requiredTimeDelayNotExpired | the lockout delay (or the delay after power-up) is still running — for a seed request, and for a key answering a seed drawn before the lockout began (over the other transport) |
 | `0x7E` / `0x7F` | …NotSupportedInActiveSession | not served in this session (on blobly_emb, any session but extended) |
 
 On blobly_emb the failed-key count since the last correct key survives an ECU reset (and, on a
@@ -125,3 +125,76 @@ target, a power cycle), so a reset after a wrong key costs the lockout delay and
 A count below the limit carries over; after the delay of a count at the limit the level has its
 attempts again, as after any lockout. The count and the delay are per level: one level's lockout
 never delays another level's seed.
+
+## Authentication (0x29)
+
+A blobly_emb node may unlock its levels with **0x29 Authentication** instead of 0x27: its ecu.toml
+says `[uds] access = "authentication"` and gives each gated level the tester's Ed25519 **public**
+key (`auth_keys = { "1" = "reference" }`, or 64 hex characters). It is ISO 14229-1's
+challenge-response (ACR), unidirectional, with Ed25519, and it grants the **same levels** 0x27
+would: the gates, the relock on every session entry, S3 and a reset, and the failed-attempt count
+and lockout are the same. Such a node answers 0x27 serviceNotSupported (0x11), and a seed-key node
+answers 0x29 the same way. A level is unlocked one way per node.
+
+| Request | Bytes | Answer |
+|---|---|---|
+| 05 requestChallengeForAuthentication | `29 05 <level> 06 03 2B 65 70 00…00` (19): the level in communicationConfiguration, the Ed25519 OID as algorithmIndicator | `69 05 00 <alg 16> 00 20 <challenge 32> 00 00` (55) |
+| 06 verifyProofOfOwnershipUnidirectional | `29 06 <alg 16> 00 40 <signature 64> 00 00 00 00` (88): an Ed25519 signature over the application message — `blobly uds 0x29 application v1` and a 0x00 (31 bytes), the level (1 byte), the challenge (32) | first `7F 29 78` (responsePending: blobly_emb verifies a slice per pass), then `69 06 12 <alg 16> 00 00` (21): ownershipVerified, the algorithmIndicator, no session key — ISO 14229-1:2020's layout |
+| 00 deAuthenticate | `29 00` | `69 00 10`: relocked |
+
+The key is the tester's Ed25519 **seed** (32 bytes). By name, `"reference"` (or nothing) is
+blobly_emb's dev tester seed, `examples/keys/tester.seed` — the key a bootloader's `session_key` and
+an application's `auth_keys "reference"` both trust. Like the 0x27 reference key it is public, so a
+`[doip]` node accepts it only with `allow_bench_key = true`. Otherwise the key is 64 hex characters
+(exactly: a hex key of another length is refused, naming its length) or a seed file's path. A key
+that is given names one: an empty key, a key holding a NUL byte, or (Lua) a `key` option that is not
+a string is refused before anything is sent — never read as the dev key. In Python the seed may be
+any byte sequence (`bytes`, a list, a `range`), and a path any `os.PathLike`.
+
+```lua
+local d = uds.open("AUTH", { tx = 0x7E0, rx = 0x7E8 })
+d:session(0x03)                                  -- not served in the default session
+d:authenticate(1)                                -- the dev tester key
+d:authenticate(1, { key = "keys/tester.seed" })  -- a seed file, relative to the script
+d:authenticate(1, { key = string.rep("ab", 32) }) -- 64 hex characters
+```
+
+```python
+with net.channels.AUTH.uds() as d:
+    d.session(0x03)
+    d.authenticate(1)                      # the dev tester key
+    d.authenticate(1, key="tester.seed")   # or 32 bytes, or 64 hex characters
+```
+
+From C, `bb_uds_authenticate(u, level, seed, n)` (NULL and 0: the dev key) and
+`bb_tester_seed(spec, buf, cap)` to resolve a key spec (NULL the dev key, `""` refused). `node.authenticates` (Python, `bb_node`)
+says whether a described node unlocks this way. Both helpers are `uds.Client.authenticate`, which
+signs through `uds.proof_of` — the one signing site, which `blobly/flash` uses too for the
+bootloader's own profile (01 challenge, 02 proof). The two profiles sign **different messages**:
+the bootloader's proof is a signature over the bare 32-byte challenge (what deployed bootloaders
+verify), an application's over `uds.auth_message(level, challenge)` — the context above, the level,
+the challenge (`uds.app_proof_of`). So a bootloader's challenge relayed to a tester doing an
+application unlock yields no proof the bootloader accepts, and a proof for one level is none for
+another level trusting the same key. The golden vector (dev seed, level 1, challenge `00..1F`:
+`9f70abb9…7c7f0d`) is committed byte for byte here (`blobly/uds/auth_vectors_test.v`) and in
+blobly_emb.
+
+| NRC | name | for 0x29 |
+|---|---|---|
+| `0x12` | subFunctionNotSupported | a sub-function other than 00, 05, 06 |
+| `0x13` | incorrectMessageLengthOrInvalidFormat | not the sub-function's exact length, or 06 with a proof length other than 64, a client challenge or an additional parameter |
+| `0x24` | requestSequenceError | a proof with no challenge outstanding — after a session entry, a reset, 00, a new 05, or on a NEW connection (the challenge ends with the connection that asked it) |
+| `0x31` | requestOutOfRange | an algorithm other than Ed25519, or a level the node does not serve (0, above 8, ungated, or with no key) |
+| `0x37` | requiredTimeDelayNotExpired | the level's lockout delay is still running (05 refused; a 06 answering a challenge drawn before the lockout began, over the other transport, refused too — not verified, not counted, the challenge void) |
+| `0x58` | ownershipVerificationFailed | the proof is wrong; it counts toward the lockout like a wrong 0x27 key |
+| `0x36` | exceededNumberOfAttempts | the failed proof that reached the limit: the level's lockout starts. Not in ISO 14229-1's list for 0x29, nor is 0x37: blobly_emb's choice, since the attempt limit and lockout are 0x27's, shared per level, and answered in 0x27's words |
+| `0x59` | challengeCalculationFailed | the ECU's random source failed |
+| `0x14` | responseTooLong | the answer does not fit what the transport carries: before the 0x78 the request is refused and its challenge stays; after it, a valid proof unlocks nothing (its level's wrong-proof count is cleared all the same, the proof being correct) and its challenge is spent |
+| `0x7F` | serviceNotSupportedInActiveSession | not in the default session |
+
+The **simulated** node answers 0x29 as the board does when its description says
+`access = "authentication"` (blobly/uds described.v), and its DoIP entity ends a connection's
+challenge, unlock and session when the tester disconnects (`connection_dropped`), as the board's
+`remote_dropped` does — `projects/auth-demo` is such a node on CAN and DoIP. The Diagnostics panel
+does **not** offer 0x29 yet: its Unlock, and a gated DID write, refuse such a node by one text that
+points at a script; a write plan (`uds.write_plan_by`, a script's `WriteGated`) names the 0x29 step.

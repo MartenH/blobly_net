@@ -1,0 +1,35 @@
+# A node whose diagnostic server unlocks security level 1 with 0x29 Authentication (blobly_emb
+# comm/uds auth.v): a challenge (0x29 05, the level in communicationConfiguration), an Ed25519
+# signature over it (0x29 06); 0x27 is not served. auth_keys "reference" is blobly_net's dev tester
+# key (examples/keys/tester.seed's public half), a bench key: over DoIP it needs allow_bench_key
+# (system.toml). Failed proofs count like wrong keys: three, then a 1 s lockout.
+[uds]
+access            = "authentication"
+auth_keys         = { "1" = "reference" }
+security_delay_ms = 1000
+
+[uds.services]
+"0x10" = {}
+"0x22" = {}
+"0x29" = {}
+"0x2E" = { sessions = ["extended"], security = 1 }
+"0x3E" = {}
+
+[isotp]
+bus   = "can0"
+rx_id = 0x7E0
+tx_id = 0x7E8
+
+[[did]]
+id    = 0xF190
+ascii = "BLOBLYAUTHNODE001"
+
+[[did]]
+id    = 0xF1B0
+ascii = "SECRET-LEVEL-1"
+read  = { session = ["extended"], security = 1 }
+
+[[did]]
+id    = 0x0110
+bytes = "00"
+write = { session = ["extended"], security = 1 }

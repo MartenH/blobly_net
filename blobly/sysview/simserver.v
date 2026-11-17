@@ -61,7 +61,7 @@ fn be_bytes(v i64, w int) []u8 {
 
 // performed_sids are the services a described server performs (uds supported(), less those a
 // description may leave out): a table row for any other is refused, and said.
-const performed_sids = [u8(0x10), 0x11, 0x14, 0x19, 0x22, 0x27, 0x2E, 0x3E, 0x85]
+const performed_sids = [u8(0x10), 0x11, 0x14, 0x19, 0x22, 0x27, 0x29, 0x2E, 0x3E, 0x85]
 
 // declared_sids are served only for what the project declares (IO DIDs, memory ranges), under
 // the table's gates.
@@ -208,6 +208,21 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		notes << '0x10 02 (the programming handoff) is refused with conditionsNotCorrect: no bootloader is simulated'
 	}
 	reference := d.security_key == 'reference' && (!remote || d.allow_bench_key)
+	// 0x29: each level's public key — the dev key ("reference", or its hex) only where the node would
+	// accept it (over DoIP with allow_bench_key, REQ-NET-012); else the level is REFUSED: its challenge
+	// served and no proof verified, since no key stands in for it (auth_refused)
+	mut auth_keys := [][]u8{len: 8}
+	mut auth_refused := u8(0)
+	if d.authenticates() {
+		for l, k in d.auth_keys {
+			if d.auth_ref[l] && remote && !d.allow_bench_key {
+				auth_refused |= u8(1) << (l - 1)
+			} else {
+				auth_keys[l - 1] = k.clone()
+			}
+		}
+	}
+	bench_refused := auth_refused != 0
 	spec := uds.ServerSpec{
 		dids:              dids
 		table:             d.services_table
@@ -225,8 +240,14 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		security_attempts: d.security_attempts
 		security_delay_ms: d.security_delay_ms
 		s3_ms:             d.s3_ms
+		authenticates:     d.authenticates()
+		auth_keys:         auth_keys
+		auth_refused:      auth_refused
 	}
-	if spec.security_mask() != 0 && !reference {
+	if bench_refused {
+		notes << '0x29 refuses the dev tester key over DoIP, as the node does (auth_keys "reference" without `allow_bench_key`)'
+	}
+	if spec.security_mask() != 0 && !reference && !d.authenticates() {
 		notes << '0x27 refuses the reference key, as the node does (no `security_key = "reference"`' +
 			if remote && d.security_key == 'reference' { ' with `allow_bench_key` over DoIP)' } else { ')' }
 	}

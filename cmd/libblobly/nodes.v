@@ -137,6 +137,7 @@ pub fn bb_node_info(n i32, out &C.bb_node) i32 {
 		out.described = u8(node.ecu_err == '')
 		out.server = u8(node.ecu_err == '' && node.desc.server)
 		out.reference_key = u8(node.desc.security_key == 'reference')
+		out.authenticates = u8(node.desc.authenticates())
 	}
 	return ok()
 }
