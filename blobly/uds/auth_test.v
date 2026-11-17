@@ -50,9 +50,11 @@ fn other_seed() []u8 {
 	return []u8{len: 32, init: 0x11}
 }
 
-// a 0x29 06 for a challenge answer, signed with `seed`
+// a 0x29 06 for a level-1 challenge answer, signed with `seed`
 fn proof_for(ans []u8, seed []u8) []u8 {
-	return auth_proof_request(proof_of(seed, challenge_of(ans) or { panic(err) }) or { panic(err) })
+	return auth_proof_request(app_proof_of(seed, 1, challenge_of(ans) or { panic(err) }) or {
+		panic(err)
+	})
 }
 
 fn test_the_key_forms() {

@@ -879,9 +879,11 @@ int bb_uds_security_key(int u, int level, const uint8_t *key, int n); /* 0x27 at
 int bb_uds_authenticate(int u, int level, const uint8_t *seed, int n);
                                        /* 0x29 Authentication (ACR, Ed25519) on an ECU that unlocks
                                           that way (blobly_emb [uds] access = "authentication"):
-                                          0x29 05 naming `level` (1..8), the challenge signed with
-                                          the tester's Ed25519 `seed` (32 bytes; NULL and 0 = the dev
-                                          tester key, the one auth_keys "reference" trusts), 0x29 06.
+                                          0x29 05 naming `level` (1..8), then 0x29 06 carrying the
+                                          tester's Ed25519 signature, with `seed` (32 bytes; NULL and
+                                          0 = the dev tester key, the one auth_keys "reference"
+                                          trusts), over the application message: a context, the
+                                          level and the challenge, never the bare challenge.
                                           A refusal is BB_ERR_NEGATIVE (NRC 0x58 a wrong key, 0x36
                                           the last one, 0x37 the lockout) */
 int bb_tester_seed(const char *spec, uint8_t *buf, int cap); /* a tester seed as a key spec names

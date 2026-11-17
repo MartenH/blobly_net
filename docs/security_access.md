@@ -139,7 +139,7 @@ answers 0x29 the same way. A level is unlocked one way per node.
 | Request | Bytes | Answer |
 |---|---|---|
 | 05 requestChallengeForAuthentication | `29 05 <level> 06 03 2B 65 70 00…00` (19): the level in communicationConfiguration, the Ed25519 OID as algorithmIndicator | `69 05 00 <alg 16> 00 20 <challenge 32> 00 00` (55) |
-| 06 verifyProofOfOwnershipUnidirectional | `29 06 <alg 16> 00 40 <signature 64> 00 00 00 00` (88): an Ed25519 signature over exactly the challenge | first `7F 29 78` (responsePending: blobly_emb verifies a slice per pass), then `69 06 12 <alg 16> 00 00` (21): ownershipVerified, the algorithmIndicator, no session key — ISO 14229-1:2020's layout |
+| 06 verifyProofOfOwnershipUnidirectional | `29 06 <alg 16> 00 40 <signature 64> 00 00 00 00` (88): an Ed25519 signature over the application message — `blobly uds 0x29 application v1` and a 0x00 (31 bytes), the level (1 byte), the challenge (32) | first `7F 29 78` (responsePending: blobly_emb verifies a slice per pass), then `69 06 12 <alg 16> 00 00` (21): ownershipVerified, the algorithmIndicator, no session key — ISO 14229-1:2020's layout |
 | 00 deAuthenticate | `29 00` | `69 00 10`: relocked |
 
 The key is the tester's Ed25519 **seed** (32 bytes). By name, `"reference"` (or nothing) is
@@ -167,7 +167,14 @@ From C, `bb_uds_authenticate(u, level, seed, n)` (NULL and 0: the dev key) and
 `bb_tester_seed(spec, buf, cap)` to resolve a key spec. `node.authenticates` (Python, `bb_node`)
 says whether a described node unlocks this way. Both helpers are `uds.Client.authenticate`, which
 signs through `uds.proof_of` — the one signing site, which `blobly/flash` uses too for the
-bootloader's own profile (01 challenge, 02 proof).
+bootloader's own profile (01 challenge, 02 proof). The two profiles sign **different messages**:
+the bootloader's proof is a signature over the bare 32-byte challenge (what deployed bootloaders
+verify), an application's over `uds.auth_message(level, challenge)` — the context above, the level,
+the challenge (`uds.app_proof_of`). So a bootloader's challenge relayed to a tester doing an
+application unlock yields no proof the bootloader accepts, and a proof for one level is none for
+another level trusting the same key. The golden vector (dev seed, level 1, challenge `00..1F`:
+`9f70abb9…7c7f0d`) is committed byte for byte here (`blobly/uds/auth_vectors_test.v`) and in
+blobly_emb.
 
 | NRC | name | for 0x29 |
 |---|---|---|
@@ -177,7 +184,7 @@ bootloader's own profile (01 challenge, 02 proof).
 | `0x31` | requestOutOfRange | an algorithm other than Ed25519, or a level the node does not serve (0, above 8, ungated, or with no key) |
 | `0x37` | requiredTimeDelayNotExpired | the level's lockout delay is still running (05 refused; a 06 answering a challenge drawn before the lockout began, over the other transport, refused too — not verified, not counted, the challenge void) |
 | `0x58` | ownershipVerificationFailed | the proof is wrong; it counts toward the lockout like a wrong 0x27 key |
-| `0x36` | exceededNumberOfAttempts | the failed proof that reached the limit: the level's lockout starts |
+| `0x36` | exceededNumberOfAttempts | the failed proof that reached the limit: the level's lockout starts. Not in ISO 14229-1's list for 0x29, nor is 0x37: blobly_emb's choice, since the attempt limit and lockout are 0x27's, shared per level, and answered in 0x27's words |
 | `0x59` | challengeCalculationFailed | the ECU's random source failed |
 | `0x14` | responseTooLong | the answer does not fit what the transport carries — a valid proof then unlocks nothing and is not counted |
 | `0x7F` | serviceNotSupportedInActiveSession | not in the default session |

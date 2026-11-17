@@ -755,8 +755,9 @@ fn (mut s Server) d_granted(level u8) {
 
 // d_auth is 0x29 on a described server that authenticates — blobly_emb comm/uds auth.v's layouts
 // and order, through this module's offsets (auth.v): 00 relocks, 05 binds a fresh 32-byte challenge
-// to the level its communicationConfiguration names, 06 verifies the Ed25519 signature over it
-// against that level's public key. A failed proof counts as a wrong key (d_wrong).
+// to the level its communicationConfiguration names, 06 verifies the Ed25519 signature over the
+// application message for that level and challenge (auth_message) against the level's public key.
+// A failed proof counts as a wrong key (d_wrong).
 fn (mut s Server) d_auth(req []u8, now i64) []u8 {
 	if req.len < 2 {
 		return neg(0x29, 0x13)
@@ -827,7 +828,7 @@ fn (mut s Server) d_auth(req []u8, now i64) []u8 {
 	s.seed_lvl = 0
 	s.auth_challenge = []u8{}
 	key := s.spec.auth_key(level) or { []u8{} }
-	ok := key.len == 32 && (ed.verify(key, challenge, req[auth_proof_at..auth_proof_at +
+	ok := key.len == 32 && (ed.verify(key, auth_message(level, challenge), req[auth_proof_at..auth_proof_at +
 		auth_proof_len]) or { false })
 	if !ok {
 		return neg(0x29, s.d_wrong(level, now, nrc_ownership_failed))

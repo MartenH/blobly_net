@@ -9,8 +9,11 @@ import crypto.ed25519 as ed
 //     verifyProofOfOwnershipUnidirectional carrying the signature (`Client.authenticate`);
 //   - the BOOTLOADER's own profile, 01 challenge / 02 proof (`boot_challenge` / `boot_proof`), which
 //     blobly/flash runs.
-// Both sign exactly the 32-byte challenge with the tester's Ed25519 seed (`proof_of`). The layout is
-// blobly_emb comm/uds auth.v's, mirrored here offset by offset; the golden vectors in
+// Both sign with the tester's Ed25519 seed (`proof_of`), but not the same message: the bootloader's
+// proof signs the bare 32-byte challenge (deployed bootloaders verify that), an application's the
+// domain-separated `auth_message` — `auth_context`, the level, the challenge (`app_proof_of`) — so a
+// proof made for one is never a proof for the other, nor for another level sharing a key. The layout
+// is blobly_emb comm/uds auth.v's, mirrored here offset by offset; the golden vectors in
 // auth_vectors_test.v are committed byte for byte in both repos.
 
 pub const sid_authentication = u8(0x29)
@@ -32,6 +35,13 @@ pub const auth_cc_len_at = 84 // 06: lengthOfChallengeClient = 0
 pub const auth_ap_len_at = 86 // 06: lengthOfAdditionalParameter = 0
 pub const auth_answer_challenge_at = 21 // 05 answer: the challenge
 pub const auth_answer_alg_at = 3 // 05 and 06 answers: algorithmIndicator (16), after returnValue
+
+// auth_context: the application proof's context — the ASCII text "blobly uds 0x29 application v1" and
+// a terminating zero, as blobly_emb comm/uds auth.v states it — ahead of the level and the challenge
+pub const auth_context = 'blobly uds 0x29 application v1\0'.bytes()
+
+// auth_message_len: the application message — the context, the level, the challenge
+pub const auth_message_len = 31 + 1 + auth_challenge_len
 
 pub const auth_deauthenticate = u8(0x00)
 pub const auth_request_challenge = u8(0x05)
@@ -123,14 +133,32 @@ fn is_hex_text(v string) bool {
 	return v.len > 0 && v.bytes().all(it.is_hex_digit())
 }
 
-// proof_of signs `challenge` with the tester `seed` (32 bytes): the Ed25519 signature both profiles
-// carry as the proof of ownership
-pub fn proof_of(seed []u8, challenge []u8) ![]u8 {
+// proof_of signs `msg` with the tester `seed` (32 bytes): the Ed25519 signature both profiles carry
+// as the proof of ownership — the bootloader's over the bare challenge (boot_proof), an
+// application's over auth_message (app_proof_of)
+pub fn proof_of(seed []u8, msg []u8) ![]u8 {
 	if seed.len != 32 {
 		return error('0x29: a tester seed is 32 bytes, got ${seed.len}')
 	}
 	priv := ed.new_key_from_seed(seed)
-	return ed.sign(priv, challenge) or { return error('0x29: sign the challenge: ${err}') }
+	return ed.sign(priv, msg) or { return error('0x29: sign the challenge: ${err}') }
+}
+
+// auth_message: what an APPLICATION proof for `level` signs — auth_context, the level (one byte),
+// the 32-byte challenge (blobly_emb comm/udsauth verifies exactly this)
+pub fn auth_message(level u8, challenge []u8) []u8 {
+	mut m := auth_context.clone()
+	m << level
+	m << challenge
+	return m
+}
+
+// app_proof_of: the application proof of `level` for `challenge`, signed with `seed`
+pub fn app_proof_of(seed []u8, level u8, challenge []u8) ![]u8 {
+	if challenge.len != auth_challenge_len {
+		return error('0x29: a challenge is ${auth_challenge_len} bytes, got ${challenge.len}')
+	}
+	return proof_of(seed, auth_message(level, challenge))
 }
 
 // auth_challenge_request: the 0x29 05 request for `level` (19 bytes)
@@ -193,9 +221,9 @@ pub fn verified_of(resp []u8) ! {
 }
 
 // authenticate unlocks `level` (1..8) on an ECU that serves 0x29 ACR (blobly_emb `[uds] access =
-// "authentication"`): 0x29 05 naming the level, the challenge signed with `seed` (the tester's
-// Ed25519 seed, 32 bytes — dev_tester_seed() for a bench node trusting "reference"), 0x29 06 with the
-// proof, and ownershipVerified required. The level and the seed are refused before anything is sent;
+// "authentication"`): 0x29 05 naming the level, the application message for the level and the
+// challenge (auth_message) signed with `seed` (the tester's Ed25519 seed, 32 bytes — dev_tester_seed()
+// for a bench node trusting "reference"), 0x29 06 with the proof, and ownershipVerified required. The level and the seed are refused before anything is sent;
 // a refusal by the ECU is its NegativeResponse (0x58 a wrong proof, 0x36 the last one, 0x37 the
 // lockout, 0x24 no challenge, 0x7F not in this session).
 pub fn (mut c Client) authenticate(level int, seed []u8) ! {
@@ -206,7 +234,7 @@ pub fn (mut c Client) authenticate(level int, seed []u8) ! {
 		return error('0x29: a tester seed is 32 bytes, got ${seed.len}')
 	}
 	ch := challenge_of(c.raw(auth_challenge_request(u8(level)))!)!
-	proof := proof_of(seed, ch)!
+	proof := app_proof_of(seed, u8(level), ch)!
 	verified_of(c.raw(auth_proof_request(proof))!)!
 }
 
@@ -223,7 +251,8 @@ pub fn (mut c Client) boot_challenge() ![]u8 {
 	return resp[2..2 + auth_challenge_len].clone()
 }
 
-// boot_proof sends the bootloader the proof for `challenge`, signed with `seed` (sub-function 02)
+// boot_proof sends the bootloader the proof for `challenge`, signed with `seed` (sub-function 02):
+// its own profile's message, the bare challenge — never auth_message, which no bootloader verifies
 pub fn (mut c Client) boot_proof(seed []u8, challenge []u8) ! {
 	mut req := [sid_authentication, boot_send_proof]
 	req << proof_of(seed, challenge)!

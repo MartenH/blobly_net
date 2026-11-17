@@ -665,8 +665,10 @@ class UdsClient:
 
     def authenticate(self, level: int, key: "ByteData | str | os.PathLike[str] | None" = None) -> None:
         """0x29 Authentication (ACR with Ed25519) on an ECU that unlocks that way instead of 0x27
-        (blobly_emb `[uds] access = "authentication"`): a challenge for `level` (0x29 05), signed
-        with the tester's Ed25519 seed and sent back (0x29 06). `key` is the seed: None or
+        (blobly_emb `[uds] access = "authentication"`): a challenge for `level` (0x29 05), and the
+        tester's Ed25519 signature over the application message (`docs/security_access.md`: a
+        context, the level and the challenge, never the bare challenge) sent back (0x29 06). `key`
+        is the seed: None or
         "reference" the dev tester key (the one such a node's auth_keys "reference" trusts), 32
         bytes, 64 hex characters, or a seed file's path. A refusal raises NegativeResponse (NRC 0x58
         a wrong key, 0x36 the last one, 0x37 the lockout, 0x24 no challenge)."""

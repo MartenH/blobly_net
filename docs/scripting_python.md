@@ -1416,7 +1416,9 @@ unlocked", and no key is sent for it. A wrong key raises `NegativeResponse` (NRC
 
 **Authentication.** `authenticate(level, key=None)` unlocks `level` on an ECU that unlocks with 0x29
 instead of 0x27 (blobly_emb `[uds] access = "authentication"`, `node.authenticates`): a challenge
-(0x29 05), the tester's Ed25519 signature over it (0x29 06) — which blobly_emb answers responsePending
+(0x29 05), the tester's Ed25519 signature over it — over the level's domain-separated application
+message, never the bare challenge a bootloader's proof signs (`docs/security_access.md`) — (0x29 06),
+which blobly_emb answers responsePending
 while it verifies, a slice per pass, and the call waits through. `key` is the tester seed: `None` or
 `"reference"` the dev tester key, 32 bytes, 64 hex characters, or a seed file's path. A wrong key
 raises `NegativeResponse` (NRC 0x58; 0x36 the last allowed, then 0x37 for the lockout delay), a
@@ -2737,7 +2739,7 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.read_did(did)` | 0x22 ReadDataByIdentifier: the DID's value. |
 | `diag.write_did(did, data)` | 0x2E WriteDataByIdentifier. |
 | `diag.security_access(level, key_fn=None)` | 0x27: the seed for `level`, the key from `key_fn(seed)` (the reference key without one) at `level + 1`. Returns the seed; an all-zero seed (unlocked already) sends no key. |
-| `diag.authenticate(level, key=None)` | 0x29 Authentication (ACR, Ed25519) for `level` 1..8: the challenge signed with the tester seed `key` (`None`/`"reference"` the dev key, 32 bytes, 64 hex, or a seed file). |
+| `diag.authenticate(level, key=None)` | 0x29 Authentication (ACR, Ed25519) for `level` 1..8: the level's application message (a context, the level, the challenge — never the bare challenge) signed with the tester seed `key` (`None`/`"reference"` the dev key, 32 bytes, 64 hex, or a seed file). |
 | `diag.reset(kind=0x01)` | 0x11 ECUReset (1 hard, 2 key-off-on, 3 soft). Returns the answer after its SID. |
 | `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
 | `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |

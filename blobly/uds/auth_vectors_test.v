@@ -6,14 +6,23 @@ import crypto.ed25519 as ed
 // The GOLDEN 0x29 vectors, committed byte for byte in blobly_net (here) and blobly_emb
 // (comm/uds/auth_test.v, comm/udsauth/udsauth_test.v): the dev tester seed 20..3F, its public key,
 // the 05 request for level 1, its answer for the challenge 00..1F, the deterministic Ed25519
-// signature of that challenge under the seed (RFC 8032) and the 06 request carrying it. They pin
-// the wire format independently of the offset constants both repos keep.
+// signature (RFC 8032) under the seed of the application message for level 1 and that challenge
+// (auth_context, 01, the challenge) and the 06 request carrying it. They pin the wire format and the
+// signed message independently of the offset constants both repos keep.
 
 const gv_public = [u8(0x29), 0xac, 0xba, 0xe1, 0x41, 0xbc, 0xca, 0xf0, 0xb2, 0x2e, 0x1a, 0x94, 0xd3,
 	0x4d, 0x0b, 0xc7, 0x36, 0x1e, 0x52, 0x6d, 0x0b, 0xfe, 0x12, 0xc8, 0x97, 0x94, 0xbc, 0x93, 0x22,
 	0x96, 0x6d, 0xd7]
 
-const gv_sig = [u8(0xea), 0x92, 0xd2, 0x4e, 0xda, 0x4c, 0x09, 0x9e, 0xa3, 0xc1, 0xaa, 0xa1, 0x0c,
+const gv_sig = [u8(0x9f), 0x70, 0xab, 0xb9, 0x8d, 0x37, 0x4d, 0x2c, 0x24, 0xa6, 0xfa, 0xd6, 0x17,
+	0x91, 0xbb, 0x94, 0xec, 0xb5, 0xbc, 0xab, 0xac, 0xcc, 0x23, 0x60, 0x7d, 0x4a, 0xc1, 0x45, 0x08,
+	0xef, 0xdc, 0x93, 0xb1, 0xe8, 0xa0, 0x80, 0x64, 0x5f, 0xb9, 0xe0, 0x05, 0xf4, 0x71, 0x8c, 0x5f,
+	0x91, 0x88, 0x61, 0xce, 0xf2, 0x5a, 0x6e, 0x28, 0x6b, 0xb8, 0x8d, 0xd3, 0xa0, 0xb1, 0x8c, 0x22,
+	0x7c, 0x7f, 0x0d]
+
+// gv_boot_sig: the bootloader profile's proof of the same challenge — the BARE challenge signed, its
+// message (blobly_emb boot/prog.v); an application refuses it
+const gv_boot_sig = [u8(0xea), 0x92, 0xd2, 0x4e, 0xda, 0x4c, 0x09, 0x9e, 0xa3, 0xc1, 0xaa, 0xa1, 0x0c,
 	0x86, 0xcd, 0x63, 0xe2, 0xa0, 0x43, 0x0a, 0xaf, 0x86, 0x5d, 0xb6, 0xed, 0x60, 0xf8, 0x12, 0x9d,
 	0xe7, 0xa3, 0x63, 0xa6, 0x1c, 0xdc, 0x52, 0x51, 0xb5, 0xc7, 0x4f, 0x07, 0x75, 0x56, 0x39, 0xb3,
 	0x3d, 0xda, 0xd8, 0x69, 0x9e, 0xf8, 0x5b, 0xe6, 0x1c, 0xbe, 0x8d, 0x60, 0x3e, 0x8e, 0x80, 0xaa,
@@ -52,9 +61,14 @@ fn gv_ans06() []u8 {
 
 fn test_the_golden_vectors_are_the_dev_key_s() {
 	assert dev_tester_public() == gv_public
-	assert proof_of(dev_tester_seed(), gv_challenge())! == gv_sig
-	// an independent check of the signature: vlib's verifier
-	assert ed.verify(gv_public, gv_challenge(), gv_sig)!
+	mut ctx := 'blobly uds 0x29 application v1'.bytes()
+	ctx << u8(0)
+	assert auth_context == ctx
+	assert auth_message(1, gv_challenge()).len == auth_message_len
+	assert app_proof_of(dev_tester_seed(), 1, gv_challenge())! == gv_sig
+	assert proof_of(dev_tester_seed(), gv_challenge())! == gv_boot_sig
+	// the signature checked by vlib's verifier (blobly_emb checks the same bytes with its own)
+	assert ed.verify(gv_public, auth_message(1, gv_challenge()), gv_sig)!
 	assert auth_challenge_request(1) == gv_req05
 	assert auth_proof_request(gv_sig) == gv_req06()
 	assert challenge_of(gv_ans05())! == gv_challenge()
@@ -145,6 +159,47 @@ fn test_a_described_server_accepts_the_golden_proof() {
 	assert s.handle(q)[0] == 0x69
 	assert s.handle([u8(0x29), 0x80]) == []u8{}
 	assert s.unlocked == 0
+}
+
+// the application proof is domain-separated: the bootloader's bare-challenge proof of the very
+// challenge is refused (0x58, counted), and a level-1 proof does not unlock level 3 though level 3
+// trusts the same key
+fn test_a_proof_for_another_use_is_refused() {
+	mut s := server_from(ServerSpec{
+		dids:          [
+			DidSpec{
+				id:   0x0102
+				data: [u8(7)]
+				read: GateSpec{
+					sessions: in_extended
+					level:    1
+				}
+			},
+			DidSpec{
+				id:   0x0103
+				data: [u8(8)]
+				read: GateSpec{
+					sessions: in_extended
+					level:    3
+				}
+			},
+		]
+		authenticates: true
+		auth_keys:     [dev_tester_public(), []u8{}, dev_tester_public()]
+	})
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle(gv_req05)[0] == 0x69
+	s.auth_challenge = gv_challenge()
+	assert s.handle(auth_proof_request(gv_boot_sig)) == [u8(0x7F), 0x29, 0x58], "the bootloader's proof unlocked"
+	assert s.unlocked == 0
+	assert s.handle(auth_challenge_request(3))[0] == 0x69
+	s.auth_challenge = gv_challenge()
+	assert s.handle(gv_req06()) == [u8(0x7F), 0x29, 0x58], 'a level-1 proof unlocked level 3'
+	assert s.unlocked == 0
+	assert s.handle(auth_challenge_request(3))[0] == 0x69
+	s.auth_challenge = gv_challenge()
+	assert s.handle(auth_proof_request(app_proof_of(dev_tester_seed(), 3, gv_challenge())!)) == gv_ans06()
+	assert s.unlocked == 3
 }
 
 // auth_server: a described node authenticating level 1 with the dev tester key
