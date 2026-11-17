@@ -202,8 +202,11 @@ fn draw_system(mut app App) {
 			} else {
 				'-'
 			}}    ${if en.trace != 0 { 'trace' } else { 'no-trace' }}')
-			if en.diag_req != 0 {
-				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
+			if en.diag_err != '' {
+				vgui.text_colored(230, 180, 60, 'diag not read: ${en.diag_err}')
+			} else if en.diag_req != 0 || en.diag_rsp != 0 {
+				// in the width it declares, as the id table beside it marks it
+				vgui.text_dim('diag  ${sysview.pair_text(en.diag_req, en.diag_rsp, en.diag_ext, ' / ')}')
 			}
 			if en.desc.faults.len > 0 || en.desc.dids.len > 0 {
 				vgui.text_dim('diagnostics  ${en.desc.faults.len} fault(s), ${en.desc.dids.len} DID(s), ${en.desc.params.len} parameter(s)')

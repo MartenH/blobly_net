@@ -420,6 +420,58 @@ fn test_the_link_is_addressing_then_name() {
 	assert !c.ok && c.notes.len == 0
 }
 
+// The name stands in for the addressing only in the server's own format: a node declared 29-bit on
+// 0x123/0x124 is not what a simulated server on 11-bit 0x123/0x124 of its name answers as — node_for,
+// which the Diagnostics panel asks, finds no node there — and the note says why.
+fn test_the_name_link_keeps_to_the_servers_format() {
+	dir := os.join_path(os.temp_dir(), 'sim_described_format_${os.getpid()}')
+	os.rmdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.mkdir_all(os.join_path(dir, 'nodes', 'n29')) or { panic(err) }
+	os.write_file(os.join_path(dir, 'system.toml'), '[bus.body]\ninterface = "can0"\n\n[[node]]\nname = "n29"\necu = "nodes/n29/ecu.toml"\nbuses = ["body"]\ndiag = { req = 0x123, rsp = 0x124, ext = true }\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(dir, 'nodes', 'n29', 'ecu.toml'), '[uds]\n\n[isotp]\nrx_id = 0x123\ntx_id = 0x124\next = true\n\n[[did]]\nid = 0xF190\nascii = "N29"\n') or {
+		panic(err)
+	}
+	sys := sysview.load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	// 11-bit on the node's numbers, by its name: another frame, not described
+	a := describe(&sys, sysview.TargetAddr{ req: 0x123, rsp: 0x124, bus: 'body' }, 'n29', none,
+		false)
+	assert !a.ok
+	assert a.notes == ['n29: system.toml addresses n29 on 29-bit ids 0x123/0x124, and this simulated server is on 11-bit ids 0x123/0x124; not described as it — served from the project']
+	// 11-bit on other ids, by its name: still the other format
+	b := describe(&sys, sysview.TargetAddr{ req: 0x7E0, rsp: 0x7E8, bus: 'body' }, 'n29', none,
+		false)
+	assert !b.ok && b.notes.len == 1 && b.notes[0].contains('11-bit ids 0x7E0/0x7E8')
+	// 29-bit on the node's numbers: by addressing
+	c := describe(&sys, sysview.TargetAddr{ req: 0x123, rsp: 0x124, bus: 'body', ext: true },
+		'other', none, false)
+	assert c.ok && c.node == 'n29'
+	// 29-bit on other ids, by its name: the same format, so the name holds
+	d := describe(&sys, sysview.TargetAddr{ req: 0x18DA10F1, rsp: 0x18DAF110, bus: 'body' }, 'n29',
+		none, false)
+	assert d.ok && d.node == 'n29'
+	// the simulated servers the project configures: 11-bit, so n29's name does not describe one
+	mut nodes := uds_nodes([project.NodeCfg{
+		name: 'n29'
+		uds:  project.UdsCfg{
+			rx: 0x123
+			tx: 0x124
+		}
+	}])
+	notes := describe_uds_nodes(&sys, mut nodes, [project.NodeCfg{
+		name: 'n29'
+		uds:  project.UdsCfg{
+			rx: 0x123
+			tx: 0x124
+		}
+	}], ['body'], 'inproc:DX_FORMAT')
+	assert nodes[0].described == '' && notes.len == 1 && notes[0].contains('not described as it'), notes.str()
+}
+
 fn test_the_project_block_overlays_values_and_seeds_faults() {
 	sys := dx_load('overlay')
 	cfg := project.UdsCfg{

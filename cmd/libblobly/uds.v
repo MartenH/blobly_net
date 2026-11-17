@@ -94,6 +94,19 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	})
 }
 
+// bb_uds_open_ext is bb_uds_open with the ids' width stated (udsconn.ext_of): -1 none, the ids
+// saying it as bb_uds_open's; 0 11-bit; 1 29-bit whatever their numbers.
+@[export: 'bb_uds_open_ext']
+pub fn bb_uds_open_ext(r i32, tx &i64, rx &i64, ext i32, out &C.bb_uds_target) i32 {
+	if ext < -1 || ext > 1 {
+		return fail(bb_err, 'uds: ext ${ext} is not -1 (the ids say it), 0 (11-bit) or 1 (29-bit)')
+	}
+	return uds_open(r, tx, rx, out, udsconn.Ask{
+		what: 'uds'
+		ext:  udsconn.ext_of(int(ext))
+	})
+}
+
 // uds_open opens a UDS handle on row `r`, an omitted id `dflt`'s.
 fn uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target, dflt udsconn.Ask) i32 {
 	// a row's carrier is the run's (a hosted DoIP row listens on the port the run moved it to), and

@@ -60,6 +60,9 @@ pub mut:
 	diag_rsp u32
 	// the diag ids are 29-bit (`ext = true`, or normal fixed addressing: addressing.v)
 	diag_ext bool
+	// non-empty: its diag was given and could not be read (addressing.v, said in errs) — it then
+	// addresses nothing, and its ecu.toml's [isotp] pair does not stand in for it
+	diag_err string
 	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	testers  []u16  // who may activate routing at that entity (`doip = { testers = [...] }`)
 	address  string // its network address (`endpoint = { address = ... }`, or its `host` on its segment's subnet); '' = none
@@ -208,7 +211,14 @@ pub fn load(path string) !System {
 			}
 		}
 		if dv := nm['diag'] {
-			n.diag_req, n.diag_rsp, n.diag_ext = addressing_of(dv.as_map(), 'req', 'rsp')
+			a := addressing_of(dv.as_map(), 'req', 'rsp')
+			n.diag_req, n.diag_rsp, n.diag_ext = a.req, a.rsp, a.ext
+			for e in a.errs {
+				sys.errs << 'node ${n.name}: diag ${e}'
+			}
+			if a.unreadable {
+				n.diag_err = a.errs.join('; ')
+			}
 		}
 		mut node_bench_key := ?bool(none)
 		if dv := nm['doip'] {

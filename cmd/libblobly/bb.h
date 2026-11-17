@@ -200,7 +200,7 @@ typedef struct bb_signal {
 typedef struct bb_uds_target {
 	uint32_t tx;
 	uint32_t rx;
-	uint8_t  ext;   /* 29-bit: either id is past 0x7FF */
+	uint8_t  ext;   /* 29-bit: stated so (bb_uds_open_ext), or either id is past 0x7FF */
 } bb_uds_target;
 
 /* One request a UDS handle put through (bb_uds_last), answered or not. */
@@ -493,7 +493,9 @@ typedef struct bb_node {
 typedef struct bb_reach {
 	int32_t  row;   /* a bb_channel_* index */
 	uint8_t  doip;  /* the DoIP row's own connection: tx and rx 0 */
-	uint8_t  ext;   /* 29-bit ids: either is past 0x7FF */
+	uint8_t  ext;   /* 29-bit ids: as the node declares them (system.toml's diag, else its ecu.toml's
+	                   [isotp]: ext = true, or normal fixed addressing), or either past 0x7FF — so 1
+	                   for ids at or below 0x7FF too: open them with bb_uds_open_ext and this ext */
 	uint32_t tx;    /* the node's request id */
 	uint32_t rx;    /* its response id */
 } bb_reach;
@@ -753,8 +755,11 @@ int bb_decode_bytes(int row, const bb_frame *f, int m, int s, uint8_t *buf, int 
  * script's uds.open opens by (blobly/udsconn), each call one of its helpers — so a host reads
  * answers decoded and failures typed, and never a UDS payload of its own. `row` is a bb_channel_*
  * index. On a CAN row tx / rx point at the ids to use, NULL for the default (0x7E0 / 0x7E8): an
- * id that is not a CAN identifier is refused, and either past 0x7FF makes both 29-bit. On a DoIP
- * row the addressing is the row's (tester_address / ecu_address), so tx / rx must be NULL; a
+ * id that is not a CAN identifier is refused, and either past 0x7FF makes both 29-bit —
+ * bb_uds_open_ext states the width instead (ext 1: 29-bit whatever the ids' numbers, as a node
+ * declared 29-bit on small ids is, bb_reach.ext; 0: 11-bit, an id past 0x7FF refused; -1: as
+ * bb_uds_open). On a DoIP row the addressing is the row's (tester_address / ecu_address), so tx / rx
+ * must be NULL, and ext -1; a
  * denied routing activation is BB_ERR_ROUTING, and a second handle on a row that has one open in
  * this run is refused — one tester address holds one connection to its entity (ISO 13400-2), so
  * the second's routing activation would be denied. The open is bounded: the TCP connect and the
@@ -783,6 +788,9 @@ int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *ou
                                           rows it opens on (a hosted DoIP row's moved port);
                                           a DoIP handle's calls refuse with it once its run has
                                           stopped */
+int bb_uds_open_ext(int row, const int64_t *tx, const int64_t *rx, int ext, bb_uds_target *out);
+                                       /* bb_uds_open with the ids' width stated: ext -1, 0 or 1,
+                                          anything else BB_ERR */
 int bb_last_nrc(uint8_t *nrc);  /* 0 with *nrc the NRC when the calling thread's last call failed
                                    with BB_ERR_NEGATIVE, BB_NONE otherwise; like bb_last_error it
                                    changes nothing, so it answers after the handle is gone */
@@ -1346,7 +1354,8 @@ int bb_uds_retarget(int u, const int64_t *address);
  * bb_uds_write_described only reads, and may come from any (attached) thread. Strings go into the
  * caller's buffer as bb_message_name's. `n` is 0 .. bb_node_count - 1, `d` 0 .. its dids - 1.
  *
- * bb_node_reach is the target a UDS handle opens on: the node's one target, or the one on `row`
+ * bb_node_reach is the target a UDS handle opens on (bb_uds_open_ext with its tx, rx and ext; a DoIP
+ * target with NULL ids and ext -1): the node's one target, or the one on `row`
  * (-1: wherever it is); refused, saying how the node is reached, when that is no row of the run,
  * and when it is several and none is named. A DID's value is its parts' texts (bb_did_part's kind:
  * an integer in decimal, true / false, a text, bytes in hex): bb_did_text reads part p of a value

@@ -5,6 +5,7 @@ refused with what it needs, DTCs named by the description's faults. Plus what on
 typed errors, a node kept across a stop and a start, and a project the model reaches nowhere."""
 import os
 import shutil
+import threading
 
 import pytest
 
@@ -170,3 +171,60 @@ class TestReachedNowhere:
         with blobly.Project(SIM_DEMO) as net:
             assert net.system is None
             assert len(net.nodes) == 0
+
+
+# a node declared 29-bit on ids at or below 0x7FF, on a bare row of its bus: WideNodeEcu answers it
+WIDE_SYSTEM = """[bus.body]
+interface = "can0"
+
+[[node]]
+name  = "n29"
+ecu   = "nodes/n29/ecu.toml"
+buses = ["body"]
+diag  = { req = 0x700, rsp = 0x708, ext = true }
+"""
+WIDE_PROJECT = """project:
+  name: wide
+  version: 8
+channels:
+  - name: body
+    type: can
+    interface: inproc:PY_NODE_WIDE
+"""
+
+
+class TestDeclaredWidth:
+    def test_a_node_declared_29_bit_on_small_ids_is_opened_29_bit(self, tmp_path):
+        os.makedirs(tmp_path / "nodes" / "n29")
+        (tmp_path / "nodes" / "n29" / "ecu.toml").write_text(
+            "[uds]\n\n[isotp]\nrx_id = 0x700\ntx_id = 0x708\next = true\n", encoding="utf-8")
+        (tmp_path / "system.toml").write_text(WIDE_SYSTEM, encoding="utf-8")
+        (tmp_path / "wide.blobnet").write_text(WIDE_PROJECT, encoding="utf-8")
+        with blobly.Project(tmp_path / "wide.blobnet") as net:
+            n29 = net.nodes.n29
+            [t] = n29.targets
+            assert (t.channel.name, t.tx, t.rx, t.ext) == ("body", 0x700, 0x708, True)
+            ch = net.channels.body
+            ch.look()  # the fake's handle open before the client's first request
+            seen, stop = [], threading.Event()
+
+            def ecu():  # answers TesterPresent in 29-bit only
+                try:
+                    while not stop.is_set():
+                        f = ch.recv(100)
+                        if f is not None and f.id == 0x700:
+                            seen.append(f.ext)
+                            if f.ext and f.data[:3] == b"\x02\x3e\x00":
+                                ch.send(0x708, b"\x02\x7e\x00", ext=True)
+                except blobly.BloblyError:
+                    pass
+            th = threading.Thread(target=ecu, daemon=True)
+            th.start()
+            try:
+                with n29.uds() as diag:
+                    assert (diag.tx, diag.rx, diag.ext) == (0x700, 0x708, True)
+                    diag.tester_present()
+            finally:
+                stop.set()
+                th.join(2)
+            assert seen == [True]

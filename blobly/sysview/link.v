@@ -2,6 +2,7 @@ module sysview
 
 import os
 import blobly.candb
+import blobly.isotp
 import blobly.project
 import blobly.transport
 
@@ -18,8 +19,9 @@ pub:
 	req     u32    // CAN: the request id — what the ECU listens on
 	rsp     u32    // CAN: the response id
 	bus     string // the channel's name: a project made from a system names its channels by its buses
-	// CAN: the ids are 29-bit; ids above 0x7FF are 29-bit whatever this says. A node is addressed
-	// in its own format only (can_ext): an 11-bit and a 29-bit id of one number are two frames
+	// CAN: the ids are 29-bit; ids above 0x7FF are 29-bit whatever this says (isotp.pair_ext). A
+	// node is addressed in its own format only (can_ext): an 11-bit and a 29-bit id of one number
+	// are two frames
 	ext bool
 }
 
@@ -48,7 +50,7 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	addr := if t.doip {
 		'DoIP 0x${t.logical:04X}'
 	} else {
-		'0x${t.req:X}/0x${t.rsp:X}' + if t.ext { ' (29-bit)' } else { '' }
+		pair_text(t.req, t.rsp, t.ext, '/')
 	}
 	if hits.len == 0 {
 		return NodeLink{
@@ -85,8 +87,12 @@ fn (sys &System) serves_on(n &SysNode, t TargetAddr) bool {
 
 // can_ids is the node's diagnostic request and response id: system.toml's `diag` when it states
 // one — the system allocates the ids, and its pair SUPERSEDES the node's — else the node's own
-// `[isotp]`. (0, 0) = none.
+// `[isotp]`. (0, 0) = none, and for a node whose diag could not be read (diag_err): the system gave
+// it no address, so the [isotp] pair is not one either.
 pub fn (n &SysNode) can_ids() (u32, u32) {
+	if n.diag_err != '' {
+		return 0, 0
+	}
 	if n.diag_req != 0 || n.diag_rsp != 0 {
 		return n.diag_req, n.diag_rsp
 	}
@@ -95,11 +101,18 @@ pub fn (n &SysNode) can_ids() (u32, u32) {
 
 // can_ext is the format of the ids can_ids answers: 29-bit where the pair it takes declares so —
 // system.toml's diag (`ext = true`, or normal fixed addressing), else the node's own [isotp] — or
-// where either id is above 0x7FF, which no 11-bit id can be.
+// where either id is above 0x7FF (isotp.pair_ext).
 pub fn (n &SysNode) can_ext() bool {
 	req, rsp := n.can_ids()
 	declared := if n.diag_req != 0 || n.diag_rsp != 0 { n.diag_ext } else { n.desc.isotp_ext }
-	return declared || req > 0x7FF || rsp > 0x7FF
+	return isotp.pair_ext(declared, req, rsp)
+}
+
+// pair_text is a CAN request and response pair as a tester reads it, `sep` between them, its width
+// said where it is 29-bit (isotp.pair_ext): '0x123/0x124 (29-bit)', so an 11-bit and a 29-bit pair
+// of one number read apart. An 11-bit pair reads as its numbers alone.
+pub fn pair_text(req u32, rsp u32, ext bool, sep string) string {
+	return '0x${req:X}${sep}0x${rsp:X}' + if isotp.pair_ext(ext, req, rsp) { ' (29-bit)' } else { '' }
 }
 
 // ChanRef is one of a project's CAN channels: its name and its interface.
@@ -301,7 +314,7 @@ fn (sys &System) addressed(t TargetAddr) []int {
 		}
 		req, rsp := n.can_ids()
 		// ... in the node's format: a target is 29-bit when it says so, or by an id past 0x7FF
-		if req == t.req && rsp == t.rsp && n.can_ext() == (t.ext || t.req > 0x7FF || t.rsp > 0x7FF) {
+		if req == t.req && rsp == t.rsp && n.can_ext() == isotp.pair_ext(t.ext, t.req, t.rsp) {
 			hits << i
 		}
 	}

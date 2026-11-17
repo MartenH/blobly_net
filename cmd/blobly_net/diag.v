@@ -4,6 +4,7 @@ import os
 import blobly.transport
 import blobly.telem
 import blobly.script
+import blobly.sysview
 import hostrule
 import vgui
 
@@ -87,7 +88,8 @@ fn (t DiagTarget) named(who string, where string) DiagTarget {
 	addr := if t.carrier.kind == .doip {
 		'0x${t.carrier.ecu:04X}'
 	} else {
-		'0x${t.rx:X}→0x${t.tx:X}'
+		// the width is part of the target's identity (diag_key_can), so it is part of its name
+		sysview.pair_text(t.rx, t.tx, t.ext, '→')
 	}
 	return DiagTarget{
 		...t

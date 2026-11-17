@@ -624,9 +624,9 @@ fn l_uds_open(l lua.State) i32 {
 // flash.program's 0x7B0/0x7B8, cmd/flash's), pushed as a handle. One body for both, so a flash
 // reaches a channel exactly as a diagnostic does: the ISO-TP channel on the bus the opener gives,
 // framed as the wire declares (a CAN-FD channel stamps its frames FD), or the channel's DoIP
-// connection. Arguments 4 .. 8 are the ISO-TP channel's settings (isotp_settings_arg). `what`
-// names the caller in the refusals; `for_flash` marks a CAN connection as flash.program's, and
-// takes one it opened before on the same ids.
+// connection. Arguments 4 .. 8 are the ISO-TP channel's settings (isotp_settings_arg), argument 9
+// the ids' width (width_arg). `what` names the caller in the refusals; `for_flash` marks a CAN
+// connection as flash.program's, and takes one it opened before on the same ids.
 fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
@@ -640,6 +640,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 	txi := if has_tx { id_arg(l, 2, 'tx', min_i64, max_i64) or { return l.fail('${what}("${name}"): ${err}') } } else { 0 }
 	rxi := if has_rx { id_arg(l, 3, 'rx', min_i64, max_i64) or { return l.fail('${what}("${name}"): ${err}') } } else { 0 }
 	settings := isotp_settings_arg(l, 4) or { return l.fail('${what}("${name}"): ${err}') }
+	ext := width_arg(l, 9) or { return l.fail('${what}("${name}"): ${err}') }
 	ask := udsconn.Ask{
 		what:     what
 		has_tx:   has_tx
@@ -648,6 +649,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 		rx:       rxi
 		dtx:      dtx
 		drx:      drx
+		ext:      udsconn.ext_of(ext)
 		settings: settings
 	}
 	h := env.open_uds(name, ask, for_flash) or {

@@ -838,23 +838,24 @@ class Channel(Bus):
             self._nm = listener
         return listener
 
-    def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
-            p2_star_ms: int | None = None, margin_ms: int | None = None,
+    def uds(self, tx: int | None = None, rx: int | None = None, *, ext: bool | None = None,
+            timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
             pending_budget_ms: int | None = None, keep_alive_ms: int | None = None,
             padding: int | None = 0, block_size: int = 0, stmin_ms: float = 0, tx_dl: int = 8,
             format: FrameFormat | None = None) -> UdsClient:
         """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
         started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
         None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
-        0x7FF makes both 29-bit. On a DoIP row they ride a TCP connection to its entity, from the
-        row's tester_address to its ecu_address, so tx and rx are refused; RoutingDenied when the
+        0x7FF makes both 29-bit; ext=True makes them 29-bit whatever their numbers, ext=False states
+        11-bit (an id past 0x7FF then refused). On a DoIP row they ride a TCP connection to its
+        entity, from the row's tester_address to its ecu_address, so tx, rx and ext are refused; RoutingDenied when the
         entity will not route the tester, and one client at a time holds the row's connection
         (ISO 13400-2: one tester address, one connection) — a second is refused while it is open.
         The timing keywords state the client's waits (UdsClient.timeout_ms ...); None keeps the
         engine's. keep_alive_ms starts its keep-alive (UdsClient.keep_alive). On a CAN row padding,
         block_size, stmin_ms, tx_dl and format are its ISO-TP channel's, as isotp's; refused on a
         DoIP row."""
-        return UdsClient(self, tx, rx, timeout_ms=timeout_ms, p2_star_ms=p2_star_ms, margin_ms=margin_ms,
+        return UdsClient(self, tx, rx, ext=ext, timeout_ms=timeout_ms, p2_star_ms=p2_star_ms, margin_ms=margin_ms,
                          pending_budget_ms=pending_budget_ms, keep_alive_ms=keep_alive_ms, padding=padding,
                          block_size=block_size, stmin_ms=stmin_ms, tx_dl=tx_dl, format=format)
 

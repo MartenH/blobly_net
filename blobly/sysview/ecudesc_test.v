@@ -783,7 +783,7 @@ param = "Trim"
 
 // The format is part of a node's identity (blobly_emb docs/can-tp.md §3.8): three nodes on one bus,
 // one 29-bit on 0x123/0x124, one 11-bit on the same numbers, one on normal fixed addressing — each
-// found by its own format, allocated in it, and reached by a script where a script can open it.
+// found by its own format, allocated in it, and reached by a script in it.
 const fx_formats = '
 [bus.body]
 interface = "can0"
@@ -865,14 +865,13 @@ fn test_a_nodes_id_format_is_part_of_its_address() {
 	}]
 	r11 := sys.reach(n11, rows, -1) or { panic(err) }
 	assert r11.req == 0x123 && !r11.ext
-	// the 29-bit node on 11-bit-sized ids is listed, but a script cannot open it yet
+	// the 29-bit node on 11-bit-sized ids is reached in its width, which the opener is handed
+	// (udsconn.Ask.ext)
 	assert sys.targets(n29, rows).len == 1 && sys.targets(n29, rows)[0].ext
-	if _ := sys.reach(n29, rows, -1) {
-		assert false, 'a 29-bit node on small ids was handed to a script, which opens them as 11-bit'
-	} else {
-		assert err.msg() == 'n29 is reached on 29-bit ids 0x123/0x124, which a script opens as 11-bit (udsconn takes ids at or below 0x7FF as standard): not reachable from a script yet'
-	}
-	sys.reach(n29, rows, 0) or { assert err.msg().contains('not reachable from a script yet') }
+	r29 := sys.reach(n29, rows, -1) or { panic(err) }
+	assert r29.req == 0x123 && r29.rsp == 0x124 && r29.ext
+	r29b := sys.reach(n29, rows, 0) or { panic(err) }
+	assert r29b == r29
 	// normal fixed addressing's ids are past 0x7FF: a script opens them as 29-bit
 	rf := sys.reach(nf, rows, -1) or { panic(err) }
 	assert rf.ext && rf.req == 0x18DA10F1 && rf.rsp == 0x18DAF110
@@ -883,4 +882,128 @@ fn test_a_nodes_id_format_is_part_of_its_address() {
 	assert ql == 0x18DA20F1 && pl == 0x18DAF120 && sys.nodes[nl].can_ext()
 	rl := sys.reach(nl, rows, -1) or { panic(err) }
 	assert rl.ext && rl.req == 0x18DA20F1 && rl.rsp == 0x18DAF120
+}
+
+// A diag or an [isotp] that states ids nothing can read is said, and addresses nothing: a diag's
+// [isotp] pair does not stand in for it (the system gave the node no address), an addressing this
+// reader does not know is not read as normal addressing, and a tester is told why the node has no
+// CAN target.
+const fx_unreadable = '
+[bus.body]
+interface = "can0"
+
+[[node]]
+name  = "half"
+ecu   = "nodes/half/ecu.toml"
+buses = ["body"]
+diag  = { addressing = "normal_fixed", ta = 0xF1 }
+
+[[node]]
+name  = "ext"
+ecu   = "nodes/ext/ecu.toml"
+buses = ["body"]
+diag  = { addressing = "extended", req = 0x7A0, rsp = 0x7A8 }
+
+[[node]]
+name  = "str"
+ecu   = "nodes/str/ecu.toml"
+buses = ["body"]
+diag  = { req = "0x7A0", rsp = "0x7A8" }
+
+[[node]]
+name  = "one"
+ecu   = "nodes/one/ecu.toml"
+buses = ["body"]
+diag  = { rsp = 0x7A8 }
+
+[[node]]
+name  = "own"
+ecu   = "nodes/own/ecu.toml"
+buses = ["body"]
+'
+
+fn test_an_unreadable_addressing_addresses_nothing_and_says_why() {
+	dir := os.join_path(os.temp_dir(), 'sysview_unreadable_${os.getpid()}')
+	os.rmdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	for n, isotp in {
+		'half': 'rx_id = 0x7C0\ntx_id = 0x7C8'
+		'ext':  'rx_id = 0x7D0\ntx_id = 0x7D8'
+		'own':  'addressing = "mixed"\nrx_id = 0x7E0\ntx_id = 0x7E8'
+		'str':  'rx_id = 0x7E0\ntx_id = 0x7E8'
+		'one':  'rx_id = 0x7F0\ntx_id = 0x7F8'
+	} {
+		os.mkdir_all(os.join_path(dir, 'nodes', n)) or { panic(err) }
+		os.write_file(os.join_path(dir, 'nodes', n, 'ecu.toml'), '[isotp]\nbus = "can0"\n${isotp}\n') or {
+			panic(err)
+		}
+	}
+	os.write_file(os.join_path(dir, 'system.toml'), fx_unreadable) or { panic(err) }
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	assert 'node half: diag addressing = "normal_fixed" needs sa (the node\'s own address, 0..255); it addresses nothing' in sys.errs, sys.errs.str()
+	assert 'node ext: diag addressing "extended" is not "normal" or "normal_fixed" (extended and mixed addressing are not supported); it addresses nothing' in sys.errs, sys.errs.str()
+	rows := [RowRef{
+		name: 'body'
+		wire: 'can0'
+	}]
+	assert 'node str: diag req = "0x7A0" is not an integer CAN id; it addresses nothing' in sys.errs, sys.errs.str()
+	assert 'node one: diag gives rsp without req (normal addressing states both); it addresses nothing' in sys.errs, sys.errs.str()
+	for name in ['half', 'ext', 'str', 'one'] {
+		i := sys.node_named(name) or { panic(err) }
+		n := sys.nodes[i]
+		assert n.diag_err != ''
+		// the node's own [isotp] pair is not an address the system gave it
+		q, p := n.can_ids()
+		assert q == 0 && p == 0, name
+		assert sys.can_targets([ChanRef{'body', 'can0'}]).filter(it.node == i).len == 0
+		sys.reach(i, rows, -1) or {
+			assert err.msg().contains('its diag in system.toml could not be read (${n.diag_err})'), err.msg()
+			continue
+		}
+		assert false, '${name} was reached on an address its system never gave it'
+	}
+	// an [isotp] of an addressing not known here: said in its ecu.toml's errors, and no target
+	i := sys.node_named('own') or { panic(err) }
+	own := sys.nodes[i]
+	assert '[isotp] addressing "mixed" is not "normal" or "normal_fixed" (extended and mixed addressing are not supported); it addresses nothing' in own.desc.errs
+	assert own.desc.isotp_err != '' && own.desc.isotp_req == 0 && own.desc.isotp_rsp == 0
+	sys.reach(i, rows, -1) or {
+		assert err.msg().contains('its ecu.toml [isotp] could not be read'), err.msg()
+		return
+	}
+	assert false, 'a node whose [isotp] is mixed addressing was reached with normal addressing'
+}
+
+// An [isotp] id that is not an integer is said in its ecu.toml's errors and addresses nothing, never
+// read as id 0 beside the other.
+fn test_an_isotp_id_that_is_not_an_integer_addresses_nothing() {
+	dir := os.join_path(os.temp_dir(), 'sysview_isotp_str_${os.getpid()}')
+	os.rmdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.mkdir_all(os.join_path(dir, 'nodes', 'ostr')) or { panic(err) }
+	os.write_file(os.join_path(dir, 'nodes', 'ostr', 'ecu.toml'), '[isotp]\nbus = "can0"\nrx_id = "0x7E0"\ntx_id = 0x7E8\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(dir, 'system.toml'), '[bus.body]\ninterface = "can0"\n\n[[node]]\nname = "ostr"\necu = "nodes/ostr/ecu.toml"\nbuses = ["body"]\n') or {
+		panic(err)
+	}
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	i := sys.node_named('ostr') or { panic(err) }
+	n := sys.nodes[i]
+	assert '[isotp] rx_id = "0x7E0" is not an integer CAN id; it addresses nothing' in n.desc.errs, n.desc.errs.str()
+	assert n.desc.isotp_err != ''
+	q, p := n.can_ids()
+	assert q == 0 && p == 0
+	sys.reach(i, [RowRef{
+		name: 'body'
+		wire: 'can0'
+	}], -1) or {
+		assert err.msg().contains('its ecu.toml [isotp] could not be read'), err.msg()
+		return
+	}
+	assert false, 'a node whose [isotp] rx_id is a string was reached'
 }

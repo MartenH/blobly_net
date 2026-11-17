@@ -77,9 +77,12 @@ pub fn carrier_of(ch project.Channel) Carrier {
 
 // Ask is what a caller asked of a connection: the CAN ids it gave, as given (`has_tx` false =
 // omitted: presence is not carried by a sentinel, since 0 is a valid id and a negative one is a
-// mistake to report), and the ids an omitted one defaults to. `what` names the caller in the
-// refusals ('uds.open', 'flash.program'). `settings` are the ISO-TP channel's own choices
-// (isotp.settings_of: its padding, the Flow Control it answers with), a CAN row's alone.
+// mistake to report), the ids an omitted one defaults to, and their width where the caller states
+// it (`ext`: none = inferred from the ids, isotp.pair_ext; true = 29-bit whatever their numbers, as
+// a node declared 29-bit on small ids is; false = 11-bit, an id past 0x7FF then refused). `what`
+// names the caller in the refusals ('uds.open', 'flash.program'). `settings` are the ISO-TP
+// channel's own choices (isotp.settings_of: its padding, the Flow Control it answers with), a CAN
+// row's alone.
 pub struct Ask {
 pub:
 	what     string
@@ -89,7 +92,14 @@ pub:
 	rx       i64
 	dtx      u32 = 0x7E0
 	drx      u32 = 0x7E8
+	ext      ?bool
 	settings isotp.Settings
+}
+
+// ext_of is Ask.ext from the code a binding passes a width in: -1 states none (the ids say it),
+// 0 11-bit, 1 29-bit — the Lua uds.open's `ext` and the C ABI's bb_uds_open_ext alike.
+pub fn ext_of(code int) ?bool {
+	return if code < 0 { none } else { code == 1 }
 }
 
 // Target is what a connection is opened on: a DoIP row's connection, or a CAN row's request and
@@ -117,9 +127,11 @@ pub fn check_ids(a Ask, name string) ! {
 }
 
 // resolve is the target `a` asks for on row `name` of carrier `car`: refused for a SOME/IP row
-// (not a diagnostics carrier) and for ids given to a DoIP row (its addressing is the row's logical
-// pair); on a CAN row an omitted id takes its default, and the ids are 29-bit when either is past
-// 0x7FF, as the server side infers it — opened standard, SocketCAN masks 0x18DA10F1 to 0x0F1.
+// (not a diagnostics carrier) and for ids or a width given to a DoIP row (its addressing is the
+// row's logical pair); on a CAN row an omitted id takes its default, and the ids are 29-bit where
+// the caller states it, else when either is past 0x7FF, as the server side infers it (opened
+// standard, SocketCAN masks 0x18DA10F1 to 0x0F1) — a width stated 11-bit with an id past 0x7FF is
+// refused.
 pub fn resolve(a Ask, name string, car Carrier) !Target {
 	check_ids(a, name)!
 	match car.kind {
@@ -130,6 +142,9 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 		.doip {
 			if a.has_tx || a.has_rx {
 				return error('${a.what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+			}
+			if _ := a.ext {
+				return error('${a.what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop ext')
 			}
 			if !a.settings.is_default() {
 				return error(doip_settings_refusal(a.what, name))
@@ -144,13 +159,18 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 	if tx > 0x1FFF_FFFF || rx > 0x1FFF_FFFF {
 		return error('${a.what}("${name}"): the default ids 0x${a.dtx:X}/0x${a.drx:X} are not CAN identifiers')
 	}
+	ext := a.ext or { isotp.pair_ext(false, tx, rx) }
+	if !ext && isotp.pair_ext(false, tx, rx) {
+		wide := if tx > isotp.std_id_max { 'tx = 0x${tx:X}' } else { 'rx = 0x${rx:X}' }
+		return error('${a.what}("${name}"): ext = false, but ${wide} is past 0x7FF, the largest 11-bit id')
+	}
 	if why := a.settings.row_refusal(car.fd) {
 		return error('${a.what}("${name}"): ${why}')
 	}
 	return Target{
 		tx:       tx
 		rx:       rx
-		ext:      tx > 0x7FF || rx > 0x7FF
+		ext:      ext
 		settings: a.settings
 		fd:       car.fd
 	}

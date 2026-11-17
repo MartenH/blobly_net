@@ -49,12 +49,14 @@ fn l_uds_node(l lua.State) i32 {
 			what: 'uds.node'
 		}
 	} else {
+		// in the node's width, which its ids do not say where it is 29-bit on small ones
 		udsconn.Ask{
 			what:   'uds.node'
 			has_tx: true
 			tx:     t.req
 			has_rx: true
 			rx:     t.rsp
+			ext:    t.ext
 		}
 	}
 	channel := env.chans[t.row].name
