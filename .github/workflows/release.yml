@@ -18,7 +18,7 @@
 # The release binary is run_gui.sh's RELEASE=1 flavour, which ci.yml and windows.yml build on every
 # push: gcc -O2 through -cflags, nothing else changed — the tests themselves run unoptimised. NOT
 # -prod: on a beta compiler, -prod is a different program (`$if prod`, its own GC build) that
-# nothing here runs. Revisit when CI itself builds -prod — and read the FIRST entry in
+# nothing here runs. Revisit when CI itself builds -prod — and read the -prod entry in
 # docs/known_issues.md before you do: -prod plus a Boehm GC mode makes every call out of a frame
 # holding a pointerful array by value cost O(len), which took a 1.23M-frame replay from real
 # time to about thirteen days (~17,000x). Nothing here builds -prod today, which is the only

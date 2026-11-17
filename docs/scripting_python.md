@@ -2,8 +2,8 @@
 
 `blobly` puts the Blobly Net engine inside your own Python process. It is a ctypes package over
 **libblobly**, the engine built as a shared library with a C ABI (`cmd/libblobly`, `bb.h`).
-Loading a project brings up its simulated ECUs, UDS servers, generators and DoIP entities in that
-process, exactly as the headless Lua runner does. Your script then sends and receives on the
+Loading a project brings up its simulated ECUs, UDS servers, generators, DoIP entities and LIN
+buses in that process, exactly as the headless Lua runner does. Your script then sends and receives on the
 project's buses directly.
 
 **Python is the primary scripting interface** ([#507](https://github.com/MartenH/blobly_net/issues/507)).
@@ -196,7 +196,8 @@ with an interface, its databases and the ECUs simulated on it.
   then the script's to drive, [Generators](#generators)), and a DoIP
   entity for a DoIP row that simulates nodes. An entity on a loopback address is moved off the
   project's port onto a free one in 30000..31999, as the headless runner moves it, and `ch.iface`
-  says where. A SOME/IP row gets nothing.
+  says where. A LIN row's bus is started with its simulated nodes and its schedule
+  ([LIN](#lin)). A SOME/IP row gets nothing.
 - **`start()` returns before the CAN loops have opened their buses.** `net.wait_ready(5000)`
   waits for them: each row's simulated nodes, each UDS node, the default UDS server and each
   cyclic generator (up once the bus took its first frame). It raises `BloblyError` naming every
@@ -322,9 +323,9 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 and the rows are reached by position. A row named like a member of the collection (`keys`) is
 reached by `net.channels["keys"]`. `on_message` and `on_health` also take a channel's name as a string.
 
-- `ch.kind` is `"can"` (a CAN-FD row too), `"doip"` or `"someip"`. Only a CAN row carries
-  frames. Sending, receiving or registering a handler on another kind raises `BloblyError`, by
-  name.
+- `ch.kind` is `"can"` (a CAN-FD row too), `"doip"`, `"someip"` or `"lin"`. Only a CAN row carries
+  frames (a LIN row's are `net.lin`'s, [LIN](#lin)). Sending, receiving or registering a handler on
+  another kind raises `BloblyError`, by name.
 - `ch.iface` is the interface the row opens, as the project composes it: with the bitrate for a
   vendor adapter (`pcan:PCAN_USBBUS1@500000`), and with the moved port for a hosted DoIP row
   while the project runs.
@@ -349,6 +350,7 @@ exactly what the GUI and the headless runner open.
 | `cansub:<device id>/<channel>[@<rate>[/<data rate>]]` | A CSS Electronics CANsub, over its USB network interface. | yes | yes |
 | `bridge:<name>/<interface>` | Another host's CAN interface, through `canbridge` ([wsl_bridge.md](wsl_bridge.md)): a WSL distribution's on Windows, or one on the LAN that dials a listener `BLOBLY_BRIDGE_LISTEN` fixes. | the LAN only | yes |
 | `doip:<host>:<port>`, `someip:<host>:<port>` | Ethernet rows (`kind` `"doip"` or `"someip"`). They are listed but carry no frames. | | |
+| `lin:<address>` | A LIN row (`kind` `"lin"`, `adapter: lin`): listed, its frames read through `net.lin` ([LIN](#lin)). | | |
 
 A data rate in the address (`@500000/2000000`) is what opens a vendor adapter as CAN-FD. The
 hardware is described in [can_hardware.md](can_hardware.md) and
@@ -1024,9 +1026,10 @@ background readers:
 - **A channel's error** is a wait with nothing in it, so a bus that fails and comes back is read
   again. One that will not clear while `run()` goes on is raised: the project stopped or
   reloaded (`BloblyError`, code -3), or an error that is not the engine's.
-- **Handlers cannot be removed.** They last as long as their `Project`. Sends that go on outside
-  `run()` are not built either: a periodic frame is `on_timer` plus `send`, inside `run()`, or a
-  generator in the project (`senders:`).
+- **Handlers cannot be removed.** They last as long as their `Project`. A frame that must go on
+  being sent outside `run()` is a background sender ([Sending in the background](#sending-in-the-background))
+  or a generator in the project (`senders:`); one computed afresh each period is `on_timer` plus
+  `send`, inside `run()`.
 
 ```python
 import blobly
@@ -1198,7 +1201,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 A bench usually wants the rest bus as the database describes it with one signal changed: a pedal
 pressed, a door opened. `net.set_signal` holds that one signal at a value, and every other signal,
 the cycle and the alive counter go on as the project makes them. It is Lua's `sim.set`, judged by
-the same rule in the engine.
+the same rule in the engine. [rest_bus.md](rest_bus.md) is the guided path to a rest bus, and
+`python/examples/rest_bus.py` its script.
 
 - `net.set_signal(channel, node, message, signal, value)` holds `signal` (a `Signal` or its name)
   of the simulated `node`'s `message` at the physical `value` from its next frame, until it is
@@ -2197,7 +2201,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered, a raw ISO-TP send whose receiver sent no Flow Control. A `BloblyError`, code -5. |
 | `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
 | `blobly.E2eError` | An `expect` or `expect_signal` with `e2e=True` read a frame of its message that failed its E2E check, or whose message has no E2E (`e.status` `None`): see [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends). A `BloblyError`, code -12. |
-| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. A SOME/IP header field past its width, a nonzero `return_code` or a payload past one datagram on a message sent, a call's timeout under 1 ms. A flash's `base` past 32 bits, a NUL in its `seed_file`, an image past 2 GiB. |
+| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 or Profile 5 cannot be, in `blobly.e2e`, with the engine's reason. A SOME/IP header field past its width, a nonzero `return_code` or a payload past one datagram on a message sent, a call's timeout under 1 ms. A flash's `base` past 32 bits, a NUL in its `seed_file`, an image past 2 GiB. |
 | `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are; `hasattr` and `getattr(c, name, default)` read it as absent. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
@@ -2265,7 +2269,7 @@ the package is named in this section.
 | `blobly.reference_key(seed)` | blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF), the key the simulated ECUs accept. |
 | `blobly.doip_listen(window_ms=1000, *, port=None, ip6=False, channel=None)` | The DoIP announcements heard for `window_ms`, each a `DoipAnnouncement`: on `port` (13400), or on the port of DoIP `channel`'s entity. |
 | `blobly.__version__` | The package's version (`"2026.10.1"`); `"0+source"` in a source checkout. |
-| `blobly.e2e` | The E2E Profile 1 helpers: see Module `blobly.e2e`. |
+| `blobly.e2e` | The E2E Profile 1 and Profile 5 helpers: see Module `blobly.e2e`. |
 | `blobly.someip` | SOME/IP send, call and listen: see Module `blobly.someip`. |
 | `blobly.flash` | Flashing a blobly_emb bootloader: see Module `blobly.flash`. |
 | `blobly.bridge` | The CAN bridge into WSL: see Module `blobly.bridge`. |
@@ -2484,7 +2488,7 @@ makes what the load does not use a refusal (`net.notes`). It is also an `EventLo
 | member | what |
 |---|---|
 | `net.load()` | Reads the project into the engine, which holds one load at a time, and makes its listen-only rows and CAN-FD framing the ones every send is checked against. Returns `net`. `BloblyError` with code -3 while a stopped run is still releasing (`blobly.wait_released`). A reload keeps each channel still at its position under its name, and names the rows whose handlers it dropped in a `RuntimeWarning`. |
-| `net.start()` | Brings the enabled rows up (simulated ECUs, UDS servers, generators, DoIP entities). Reloads first if the engine holds another load. Returns `net`. |
+| `net.start()` | Brings the enabled rows up (simulated ECUs, UDS servers, generators, DoIP entities, LIN buses). Reloads first if the engine holds another load. Returns `net`. |
 | `net.wait_ready(timeout_ms=5000)` | Waits until none of the run's loops that open a bus is still opening (each row's simulated nodes, each UDS node, the default UDS server, each cyclic generator — up once the bus took its first frame; a generator that opens at its first fire is not waited for). Raises `BloblyError` (code -1) naming every loop that failed, a line apiece (`2 of 6 not up:` then `  CAN2: simulated nodes: cannot open ...`); `Timeout` naming those still opening when `timeout_ms` passed (`None` waits for ever); code -3 when not started. Ctrl-C ends the wait within 100 ms. |
 | `net.stop()` | Ends the run. `True` when the process is free for the next start; `False` when a loop outlived the stop's bound (`blobly.wait_released`). Stopping a project that is not started answers whether the process is free. |
 | `with net:` | `start()` on entry, `stop()` on exit; warns (`RuntimeWarning`) when the stop returned `False`. |
@@ -2543,7 +2547,7 @@ after `start()`.
 | member | what |
 |---|---|
 | `ch.name` | The row's name. |
-| `ch.kind` | `"can"`, `"doip"` or `"someip"`. Only a CAN row carries frames. |
+| `ch.kind` | `"can"`, `"doip"`, `"someip"` or `"lin"`. Only a CAN row carries frames (a LIN row's are `net.lin`'s). |
 | `ch.iface` | The interface the row opens: as the project composes it, and while started, as the run has it. |
 | `ch.send(id, data=b"", ext=False, fd=False, brs=False, *, format=None)` | Puts a frame on the wire. `fd`/`brs` left `False` take the declared format: a project channel's own (a `canfd` row's, also on a wire a `can` row shares), else the wire's. `format` (`"classic"`, `"fd"`, `"fd_brs"`) states it instead, whatever the wire declares: a classic frame of more than 8 bytes, or a flag the statement contradicts, is `Refused`. |
 | `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False, format=None)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
@@ -3004,6 +3008,8 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 | `blobly_run` | Ini value: `module` (default), a run per test module, or `session`, one run for the session. |
 | `--blobly-run=SCOPE` | Command line: `module` or `session`; overrides the ini value. |
 | `blobly_channels` | Ini value: `lazy` (default), a row that does not open warned of once per run, or `required`, each test's setup an error. |
+| `blobly_interfaces` | Ini value: rows attached elsewhere than the project says, one `NAME=IFACE` a line (`blobly.Project`'s `interfaces`). |
+| `--blobly-interface=NAME=IFACE` | Command line, repeatable: one row's interface; replaces the ini's for that row. |
 
 ---
 
@@ -3011,15 +3017,17 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
 loop, background senders, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
-the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
-(its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
+the declared E2E stamped on sends, the Profile 1 and Profile 5 helpers), UDS over CAN and DoIP
+(0x27 and 0x29 unlocking, its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
 discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, the NM reading, LIN buses (a project's and one by address), a bus opened by address,
-interface discovery and Vector channel assignment, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+interface discovery and Vector channel assignment, `expect` and a pytest plugin. [#507](https://github.com/MartenH/blobly_net/issues/507)
+planned it in phases; Phases 1 and 2 are done, and what is left is in Phase 3:
 
 **Phase 1: diagnostics from Python.**
-- UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
-  0x14 / 0x28 / 0x85, DTCs with snapshots and extended data, functional addressing, raw and
-  suppressed requests, the exchange timing and typed errors.
+- UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27 and 0x29,
+  resets, 0x14 / 0x28 / 0x85, routines (0x31), I/O control (0x2F), memory by address (0x23 /
+  0x3D), DTCs with snapshots and extended data, functional addressing, raw and suppressed
+  requests, the exchange timing and typed errors.
 - The DoIP tester is here ([DoIP](#11-doip)): UDS over DoIP rows, functional addressing to
   0xE400, `discover` and `doip_listen`, with a denied routing activation and a lost connection
   typed.
@@ -3041,21 +3049,21 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
   not: a frame computed afresh each period is the event loop's `on_timer` and `send`.
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.
-- Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.
 - Targets by node name from `system.toml` (or a row's ODX), and the DID codec from `ecu.toml` (or
   the ODX), are here ([Nodes and their DIDs](#nodes-and-their-dids)): a node reached by its name,
   its DIDs read and written by name through its layout, a gated write refused with what it needs,
   and its DTCs named.
-
 - Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
 - J1939 transport-protocol reassembly and the address directory are here ([J1939](#j1939)).
 - The NM reading is here ([Network management](#network-management)).
 
-**Phase 3: hardening for AI.** A JSON run report and an overall run timeout, an API stability
-policy for this package, and possibly an MCP server.
+**Phase 3: hardening for AI.** A JSON run report and an overall run timeout are the Lua runner's
+(`cmd/script --report`, `--timeout`), beside pytest's own reports here, and the typed package with
+VS Code as its console is here ([vscode.md](vscode.md)). Still planned: an API stability policy
+for this package, and, optionally, a stub generator for a project's channel and message names
+(`blobly stubs`) and an MCP server.
 
 Not planned: Python inside the GUI, or a console panel there. VS Code is the console
 ([vscode.md](vscode.md)), and this package brings a project up in your own process. Also not
-built: removing a handler, and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
-[#506](https://github.com/MartenH/blobly_net/issues/506).
+built: removing a handler, and wheels for platforms other than Linux x86_64 and Windows x64.

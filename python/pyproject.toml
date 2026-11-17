@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blobly"
 dynamic = ["version"]
-description = "Blobly Net's CAN test engine from Python: projects, buses and an event loop over libblobly"
+description = "Blobly Net's automotive test engine from Python: CAN, CAN-FD, LIN, DoIP, SOME/IP, a rest bus from the database, UDS diagnostics and pytest"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

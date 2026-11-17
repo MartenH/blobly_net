@@ -43,7 +43,7 @@ done" is then a fact somebody can check rather than a feeling.
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ❌ the device refuses a PHY PUT on a live channel (measured) |
 | Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ✅ mDNS (#235; bench-verified from Linux/WSL, the Windows half type-checked only) |
-| Honours project timing / sample point | partial (BTR) | ❌ ignored | ✅ `sample_point` / `data_sample_point` on FD; classic through `xlCanSetChannelParams`, not yet bench-verified (#621); `timing{}` not read | refuses non-default |
+| Honours project timing / sample point | refuses a point it cannot place (fixed BTR classic, 80% FD); `timing{}` not read | ❌ ignored | ✅ `sample_point` / `data_sample_point` on FD; classic through `xlCanSetChannelParams`, not yet bench-verified (the check is under *Interface strings*); `timing{}` not read | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
 | Bench record below | ✅ | ✅ | ✅ | ✅ |
 | A monitor reads its own health | ✅ | ✅ | ✅ | ✅ from the receive counter (#241): the firmware starts every channel at **TEC 129 / error-passive** with nothing on the wire — measured alone and even opened listen-only — and a node that never transmits cannot lower that counter, so `state` alone painted a healthy monitor errP for the life of the run |
@@ -138,9 +138,11 @@ holds on a live vehicle: tick **listen-only** on the row before Start there. The
 software-virtual bus in Blobly Net — use `inproc:` for driver-free
 work. (Vector's own virtual channels exist and `cmd/vectorcheck --selftest` uses them.)
 
-A project `Channel` already carries `bitrate`, `fd`, `data_bitrate`, `sample_point`,
-`timing{brp,tseg1,tseg2,sjw}` and `listen_only`; each backend maps those onto its vendor init
-call — PCAN's `TPCANBaudrate` enum for standard rates, or raw `timing{}` for a custom BTR.
+A project `Channel` carries `bitrate`, `fd`, `data_bitrate`, `sample_point`,
+`data_sample_point`, `timing{brp,tseg1,tseg2,sjw}` and `listen_only`. The rates and listen-only
+reach every backend's init call (PCAN's classic rates through its fixed `TPCANBaudrate` codes, its
+FD ones solved into a bit-timing string); a sample point reaches Vector only — PCAN and CANsub
+refuse one they cannot place, Kvaser ignores it — and `timing{}` is read by none yet.
 
 **A sample point on Vector** (#621). `sample_point` (and, for a CAN-FD data phase,
 `data_sample_point`, schema v13; unset it is `sample_point`) reaches the address as
@@ -181,10 +183,10 @@ its own proprietary API.
 Callers depend only on `transport.Bus` (`send`/`recv`/`close`) and `transport.open(iface) !Bus`.
 The dispatcher is per-OS: `open_linux.v` handles `inproc:` / `udp:` / `bridge:` / `cansub:` / SocketCAN;
 `open_windows.v` handles `inproc:` / `udp:` / `bridge:` / `pcan:` / `kvaser:` / `vector:` / `cansub:` and
-errors otherwise. Each DLL backend is one `blobly/transport/<vendor>_windows.v` file — V gates it to
+errors otherwise; `open_macos.v` handles `inproc:` / `udp:` / `bridge:` / `cansub:`. Each DLL backend is one `blobly/transport/<vendor>_windows.v` file — V gates it to
 Windows by the `_windows.v` suffix, as with `socketcan_linux.v` — so a new vendor is additive
 and never compiles off-Windows. CANsub is the exception: HTTP and WebSocket, not a DLL, so it
-is one `cansub.v` that compiles on both platforms.
+is one `cansub.v` that compiles on every platform.
 
 ## No SDK, no MSVC: the DLL is loaded at runtime
 
@@ -234,7 +236,8 @@ Quirks, all of them found by trying:
 
 **Kvaser (CANlib)** — `canlib32.dll` (`canInitializeLibrary`, `canOpenChannel`,
 `canSetBusParams`, `canBusOn`, `canWrite`, `canReadWait`, `canBusOff`, `canClose`).
-`canSetBusParams` takes bitrate plus segment timing, so `timing{}` maps straight onto it.
+`canSetBusParams` takes bitrate plus segment timing, so `timing{}` would map straight onto it —
+it is not passed yet (the first gap above).
 **Software virtual channels** exercise the backend with no bus at all. They are ordinary canlib
 channel numbers — on a bench with a 5-channel adapter fitted they are 5 and 6, on a machine with
 no Kvaser hardware they are 0 and 1 — so `kvasercheck --list` is what tells you which. (`kvaser:virtual0`
@@ -481,7 +484,8 @@ would not describe or does not have, and nothing changes while a run is started
 ([scripting_python.md](scripting_python.md#vector-channel-assignment)).
 
 **From the CLI**, when there is no GUI or you want it scripted. `cmd/vectorcheck` is a **source-tree
-tool and is not in the release bundle** — that ships `blobly_net` only — so build it from a checkout
+tool and is not in the release bundle** — that ships the app, its C library and canbridge, none of
+the bench tools — so build it from a checkout
 first, or use the Discover dialog above, which does the same job and checks more before it writes:
 
 ```sh

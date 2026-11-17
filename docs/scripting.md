@@ -1,13 +1,15 @@
 # Blobly Net scripting & test guide
 
-Blobly Net runs **Lua 5.4** test scripts against a CAN setup — diagnostics (UDS),
-raw frames, and DBC signal decode/encode. The same script runs two ways:
+Blobly Net runs **Lua 5.4** test scripts against a project's buses — CAN, LIN, and DoIP and
+SOME/IP over Ethernet: diagnostics (UDS), raw frames, DBC signal decode/encode and more. The same
+script runs two ways:
 
 - **Headless** from the command line (`scripts/runtests.sh`) — for development and CI.
 - **In the GUI**, against a live measurement (the **Script** panel).
 
-You don't need anything installed: Lua is compiled into Blobly Net, and the headless
-runner brings up a simulated bus + ECU for you (no hardware, no Python, no drivers).
+Lua is compiled into Blobly Net, and the headless runner brings up a simulated bus + ECU for you
+(no hardware, no Python, no drivers). The runner is built from a source checkout, so it needs the
+V toolchain that `./scripts/setup_env.sh` installs; the GUI's Script panel needs nothing more.
 
 To drive the engine from Python instead (`pip install blobly`), see
 [scripting_python.md](scripting_python.md).
@@ -161,9 +163,11 @@ For every **enabled** channel that declares simulated ECUs it starts:
 
 - the **simulated ECUs** (they transmit their cyclic messages and answer requests), and
 - their **diagnostic responders** — one per node that configures `uds:`, on that node's own
-  ids, or a single built-in server on `0x7E0` → `0x7E8` if none does.
+  ids, or a single built-in server on `0x7E0` → `0x7E8` if none does (`builtin_uds: false` on
+  the row turns it off).
 
-and every **cyclic generator** (`senders:` with `trigger: cyclic`), sent as the GUI sends it
+It starts every enabled **LIN** bus too (its simulated nodes, and the schedule a master row
+names), and every **cyclic generator** (`senders:` with `trigger: cyclic`), sent as the GUI sends it
 during a measurement. Every generator, cyclic or not, is then the script's to drive
 ([Generators](#generators)).
 
@@ -1164,6 +1168,10 @@ each with the `dbc/blobly_net.dbc` database and simulated ECUs, and `DoIP1`, a D
 127.0.0.1:13400 serving the same identity as `SUT` (which is what `uds.open` over DoIP and
 `tests/mixed_carriers.lua` use). That's why the example scripts can read a VIN and decode
 `Powertrain` with no hardware.
+
+`projects/restbus-db.blobnet` is a rest bus built from the database alone: every node but the ECU
+under test, named in one `simulate:` line. [rest_bus.md](rest_bus.md) walks through it, and
+`tests/rest_bus.lua` is its suite.
 
 The channel `name:` in the project is the string you pass to `uds.open` / `bus.*` /
 `decode` (e.g. `"CAN1"`). The channel `databases:` provide the DBC used by

@@ -18,17 +18,20 @@ Watch the **release** workflow run. When it finishes, the release is on the
 [Releases page](../../../releases) with two bundles and two wheels, and the wheels are on
 [PyPI](https://pypi.org/project/blobly/) as `blobly` (`pip install blobly`):
 
-- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the application and its payload, for Ubuntu 24.04 or
-  newer. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
-- `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
+- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the application (built gcc `-O2`, `RELEASE=1`), the
+  engine as `libblobly.so` and their payload, for Ubuntu 24.04 or newer. Needs the distro runtime
+  (`sudo apt install libglfw3 libfreetype6 libgl1`)
+- `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained: the application, `blobly.dll`, and the
+  Linux `canbridge` the app starts in a WSL distribution
 - `blobly-X.Y.Z-py3-none-manylinux_*_x86_64.whl` and `blobly-X.Y.Z-py3-none-win_amd64.whl` — the
   Python package with the engine inside (`scripts/build_wheel.py`). The Linux one is built on the
   ubuntu-24.04 job for the tarball's reason: its manylinux tag is the newest glibc its library
   uses, derived from the library and checked by `auditwheel`. The wheel's version is v.mod's
   (`2026.10.01` is `2026.10.1` in PEP 440's spelling), so there is still nothing to bump.
 
-The tarball and the zip carry the demo projects, DBCs, samples, docs, `README.txt`,
-`VERSION.txt`, LICENSE and third-party notices under one top-level folder. **No vendor CAN DLL is
+The tarball and the zip carry the demo projects, DBCs, samples, the Lua tests, docs, the C header
+(`include/bb.h`), `README.txt`, `VERSION.txt`, LICENSE and third-party notices under one
+top-level folder. **No vendor CAN DLL is
 ever included** —
 `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll` come with the vendor's driver installs, and
 the Vector XL terms forbid redistributing theirs.

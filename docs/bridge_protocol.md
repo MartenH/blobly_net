@@ -96,8 +96,8 @@ The bridge's name obeys the same rules.
 ### hello
 
 `newest` and `oldest` are the range of versions the bridge speaks. A bridge that speaks only
-version 3 sends `3, 3`. The token is the app's. `canbridge` takes it with `--token`, and a board
-is configured with it.
+version 3 sends `3, 3`. The token is the app's. `canbridge` takes it with `--token`, or from
+`BLOBLY_BRIDGE_TOKEN` when that is not given, and a board is configured with it.
 
 ### welcome
 
@@ -199,7 +199,8 @@ must not ignore. The hello's range and the welcome agree on the version, so an a
 different versions still work together where their ranges overlap.
 
 A future bus gets its own bus number and record kinds. LIN, for instance, has a different frame,
-checksum model and errors. Nothing about it is defined yet, because the app does not open LIN.
+checksum model and errors. Nothing about it is defined yet, because the app opens LIN buses
+itself and none through a bridge.
 
 ## Security
 

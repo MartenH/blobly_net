@@ -19,6 +19,8 @@ So each one pins a V module to something written by someone else:
 | `uds_server.py` | `blobly/uds` | the behaviour `blobly/uds/server.v` was written to mirror |
 | `doip_server.py` | `blobly/doip` | an independent DoIP peer to talk to |
 | `arxml_oracle.py` | `blobly/candb` (`arxml.v`) | cantools reads the same AUTOSAR system description; `diff` against `cmd/arxml2dbc --dump`. The known differences (E2E offsets, ranges, receivers of signal-less frames) are in its docstring |
+| `e2e_oracle.py` | `blobly/sim` (`e2e.v`) | autosar-e2e computes AUTOSAR E2E Profile 1 and 5 vectors; they are the tables in `e2e_p01_test.v` and `e2e_p05_test.v` |
+| `ldf_oracle.py` | `blobly/lindb` | ldfparser reads the same LDF; diffed against `sut/ldf_dump.v`'s `Ldf.dump()` lines and sample encodes. Where the two are not compared as-is is in its docstring |
 
 They run **at development time**, by hand, when a decoder changes — not in CI, which is V-only.
 `can_sut.py` is stdlib-only; the rest need [`requirements.txt`](requirements.txt).
@@ -26,7 +28,7 @@ They run **at development time**, by hand, when a decoder changes — not in CI,
 The boundary is only the **wire** (CAN frames, sockets, files) — no FFI, fully process-separated.
 
 Python is used here deliberately for its mature automotive stack (python-can, cantools, udsoncan,
-can-isotp, scapy) which we'll lean on as references in later phases. The boundary with the V tester
+can-isotp, scapy, autosar-e2e, ldfparser), which the oracles above lean on as references. The boundary with the V tester
 is only the **wire** (CAN frames) — no FFI, fully process-separated.
 
 ## What `can_sut.py` does (stdlib only)
@@ -43,14 +45,14 @@ is only the **wire** (CAN frames) — no FFI, fully process-separated.
 ./scripts/setup_vcan.sh                 # bring up vcan0 (once)
 python3 sut/can_sut.py                  # start the virtual ECU
 # in another terminal, watch with our tester or can-utils:
-./build/can_smoke dump vcan0            # or: candump vcan0
-./build/can_smoke send vcan0 101 AABB   # poke the request → see 0x102 response
+v -enable-globals run cmd/can_smoke dump vcan0            # or: candump vcan0
+v -enable-globals run cmd/can_smoke send vcan0 101 AABB   # poke the request → see 0x102 response
 ```
 
-## Later (oracle libs, optional)
+## Oracle libraries (optional)
 
-`requirements.txt` lists the reference libraries used in future phases (DBC, UDS, ISO-TP). The SUT
-above needs none of them — install only when those phases start:
+`requirements.txt` lists the reference libraries the oracles above use (cantools, autosar-e2e,
+ldfparser, …). The SUT above needs none of them — install them to run an oracle:
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate && pip install -r sut/requirements.txt
