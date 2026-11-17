@@ -120,4 +120,8 @@ error. `check.nrc(0x35, function() … end)` expects one. See [scripting.md](scr
 | `0x37` | requiredTimeDelayNotExpired | the lockout delay (or the delay after power-up) is still running |
 | `0x7E` / `0x7F` | …NotSupportedInActiveSession | not served in this session (on blobly_emb, any session but extended) |
 
-On blobly_emb the failed-key count survives an ECU reset, so a reset does not buy more guesses.
+On blobly_emb the failed-key count since the last correct key survives an ECU reset (and, on a
+target, a power cycle), so a reset after a wrong key costs the lockout delay and buys no more guesses.
+A count below the limit carries over; after the delay of a count at the limit the level has its
+attempts again, as after any lockout. The count and the delay are per level: one level's lockout
+never delays another level's seed.

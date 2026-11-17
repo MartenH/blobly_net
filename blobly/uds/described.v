@@ -407,7 +407,7 @@ fn (mut s Server) answer_described(req []u8) []u8 {
 	}
 	return match sid {
 		0x10 { s.d_session(req) }
-		0x11 { s.d_reset(req) }
+		0x11 { s.d_reset(req, now) }
 		0x22 { s.d_read(req) }
 		0x2E { s.d_write(req) }
 		0x27 { s.d_security(req, now) }
@@ -455,7 +455,7 @@ fn (mut s Server) d_session(req []u8) []u8 {
 	return [u8(0x50), sub, 0x00, 0x32, 0x01, 0xF4]
 }
 
-fn (mut s Server) d_reset(req []u8) []u8 {
+fn (mut s Server) d_reset(req []u8, now i64) []u8 {
 	if req.len < 2 {
 		return neg(0x11, 0x13)
 	}
@@ -466,11 +466,10 @@ fn (mut s Server) d_reset(req []u8) []u8 {
 		return neg(0x11, 0x13)
 	}
 	s.enter_session(1)
-	if s.sa_failed.any(it > 0) {
-		// a reset between wrong keys costs the delay (comm/uds reset_state), or resets would be
-		// the way around the attempt limit
-		s.sa_delay_until = s.now_ms() + i64(s.sa_delay())
-	}
+	// a reset with a wrong key counted since a served level's last correct key costs that level's
+	// full delay — after a lockout that has ended too, and one during a lockout restarts it — as
+	// comm/uds reset_state does, or resets would be the way around the attempt limit
+	s.sa_restart(now)
 	return [u8(0x51), req[1]]
 }
 
@@ -672,7 +671,7 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 		return neg(0x27, 0x12)
 	}
 	if sub % 2 == 1 {
-		if now < s.sa_delay_until {
+		if now < s.sa_delay_until[level - 1] {
 			return neg(0x27, 0x37)
 		}
 		s.seed_lvl = 0
@@ -697,18 +696,43 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 	s.sec_seed = []u8{}
 	want := if s.spec.reference_key { security_key(seed) } else { oem_key(seed) }
 	if req[2..] != want {
+		limit := s.sa_limit()
+		if s.sa_since[level - 1] < limit {
+			s.sa_since[level - 1]++
+		}
 		s.sa_failed[level - 1]++
-		limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
 		if s.sa_failed[level - 1] >= limit {
 			s.sa_failed[level - 1] = 0
-			s.sa_delay_until = now + i64(s.sa_delay())
+			s.sa_delay_until[level - 1] = now + i64(s.sa_delay())
 			return neg(0x27, 0x36)
 		}
 		return neg(0x27, 0x35)
 	}
 	s.sa_failed[level - 1] = 0
+	s.sa_since[level - 1] = 0
 	s.unlocked = level
 	return [u8(0x67), sub]
+}
+
+// sa_restart: what a reset makes of the 0x27 counts, comm/uds sa_restart's rule (a target's
+// start-up restoring its journal follows it too): per served level with a wrong key counted since
+// its last correct key, the lockout count is that count below the attempt limit, or 0 at or above
+// it — after the delay of a saturated count the level has its attempts again, as after any lockout
+// — and that level's delay runs from `now`; another level's seed is not delayed. Only a served
+// level ever counts (another's seed is refused 0x12 first), and this server keeps no journal.
+fn (mut s Server) sa_restart(now i64) {
+	limit := s.sa_limit()
+	for i in 0 .. 8 {
+		if s.sa_since[i] > 0 {
+			s.sa_failed[i] = if s.sa_since[i] < limit { s.sa_since[i] } else { 0 }
+			s.sa_delay_until[i] = now + i64(s.sa_delay())
+		}
+	}
+}
+
+// sa_limit: the wrong keys a level takes before its lockout (comm/uds attempts_of: 0 = the default 3)
+fn (s &Server) sa_limit() int {
+	return if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
 }
 
 fn (s &Server) sa_delay() int {
