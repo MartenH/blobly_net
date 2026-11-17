@@ -670,9 +670,12 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
 - **0x27** at the levels its gates name (any other is `0x12`), with blobly_net's reference key
   only when the description says `security_key = "reference"` — and over DoIP only with
   `allow_bench_key`. Otherwise the key is one the reference never matches, so the Diagnostics
-  panel and `diag:security_access` are refused as by an OEM node. Wrong keys count
-  (`security_attempts`; `0x36` on the last, then `0x37` for `security_delay_ms`), and every
-  session entry relocks. The session times out after `s3_ms` without a request. A functional
+  panel and `diag:security_access` are refused as by an OEM node. Wrong keys count per level
+  (`security_attempts`; `0x36` on the last, then `0x37` to that level's seed for
+  `security_delay_ms` — another level's seed is not delayed), and every session entry relocks.
+  An ECUReset with a wrong key counted since the level's last correct key costs that level's
+  delay — after a lockout that has ended too — so a suite that resets between security tests
+  ends each with the right key, as blobly_emb's do. The session times out after `s3_ms` without a request. A functional
   0x27 is ignored (SecurityAccess is physical only).
 - **0x2E at the DID's size** — a writable DID takes a record of exactly its declared size
   (`bytes` / `ascii`, a parameter's width); any other length is `0x13`, checked after the write

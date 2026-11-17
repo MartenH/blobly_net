@@ -407,7 +407,7 @@ fn (mut s Server) answer_described(req []u8) []u8 {
 	}
 	return match sid {
 		0x10 { s.d_session(req) }
-		0x11 { s.d_reset(req) }
+		0x11 { s.d_reset(req, now) }
 		0x22 { s.d_read(req) }
 		0x2E { s.d_write(req) }
 		0x27 { s.d_security(req, now) }
@@ -455,7 +455,7 @@ fn (mut s Server) d_session(req []u8) []u8 {
 	return [u8(0x50), sub, 0x00, 0x32, 0x01, 0xF4]
 }
 
-fn (mut s Server) d_reset(req []u8) []u8 {
+fn (mut s Server) d_reset(req []u8, now i64) []u8 {
 	if req.len < 2 {
 		return neg(0x11, 0x13)
 	}
@@ -469,7 +469,7 @@ fn (mut s Server) d_reset(req []u8) []u8 {
 	// a reset with a wrong key counted since a served level's last correct key costs that level's
 	// full delay — after a lockout that has ended too, and one during a lockout restarts it — as
 	// comm/uds reset_state does, or resets would be the way around the attempt limit
-	s.sa_restart(s.now_ms())
+	s.sa_restart(now)
 	return [u8(0x51), req[1]]
 }
 
@@ -696,7 +696,7 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 	s.sec_seed = []u8{}
 	want := if s.spec.reference_key { security_key(seed) } else { oem_key(seed) }
 	if req[2..] != want {
-		limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
+		limit := s.sa_limit()
 		if s.sa_since[level - 1] < limit {
 			s.sa_since[level - 1]++
 		}
@@ -718,16 +718,21 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 // start-up restoring its journal follows it too): per served level with a wrong key counted since
 // its last correct key, the lockout count is that count below the attempt limit, or 0 at or above
 // it — after the delay of a saturated count the level has its attempts again, as after any lockout
-// — and that level's delay runs from `now`; another level's seed is not delayed.
+// — and that level's delay runs from `now`; another level's seed is not delayed. Only a served
+// level ever counts (another's seed is refused 0x12 first), and this server keeps no journal.
 fn (mut s Server) sa_restart(now i64) {
-	mask := s.spec.security_mask()
-	limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
+	limit := s.sa_limit()
 	for i in 0 .. 8 {
-		if s.sa_since[i] > 0 && mask & (u8(1) << i) != 0 {
+		if s.sa_since[i] > 0 {
 			s.sa_failed[i] = if s.sa_since[i] < limit { s.sa_since[i] } else { 0 }
 			s.sa_delay_until[i] = now + i64(s.sa_delay())
 		}
 	}
+}
+
+// sa_limit: the wrong keys a level takes before its lockout (comm/uds attempts_of: 0 = the default 3)
+fn (s &Server) sa_limit() int {
+	return if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
 }
 
 fn (s &Server) sa_delay() int {

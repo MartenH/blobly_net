@@ -206,6 +206,25 @@ fn test_a_delay_is_the_level_s_own() {
 	assert s.handle([u8(0x27), 0x01])[0] == 0x67, 'a reset with level 2 counted delayed level 1'
 }
 
+// a reset during a running lockout restarts that level's delay: 0x37 still when the first delay
+// would have ended, a seed once a whole delay has run from the reset
+fn test_a_reset_during_a_lockout_restarts_its_delay() {
+	mut now := &FakeClock{}
+	mut s := gated(now)
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35]
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x36]
+	now.t += 1500
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	now.t += 1600 // the first delay is over, the one the reset started is not
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x7F), 0x27, 0x37], 'a reset ended the lockout early'
+	now.t += 1500
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+}
+
 fn test_a_functional_security_access_is_ignored_but_keeps_the_session() {
 	mut now := &FakeClock{}
 	mut s := gated(now)
