@@ -439,3 +439,20 @@ fn test_a_live_did_answers_a_value_past_i64() {
 	}
 	assert s.handle([u8(0x22), 0x01, 0x01]) == [u8(0x62), 0x01, 0x01, 0x80, 0, 0, 0, 0, 0, 0, 1]
 }
+
+// with no [uds] services table 0x2F runs where blobly_emb's default row puts it (extended,
+// programming), so a control is refused in the default session and returned by any other entry
+fn test_a_described_server_without_a_table_gates_io_control_as_the_default_row() {
+	mut s := server_from(ServerSpec{
+		dids: [DidSpec{
+			id:   0x0100
+			data: [u8(0)]
+		}]
+	})
+	s.declare_io(0x1234, 1)
+	assert s.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x05]) == [u8(0x7F), 0x2F, 0x7F]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x2F), 0x12, 0x34, 0x03, 0x06])[0] == 0x6F
+	assert s.handle([u8(0x10), 0x04])[0] == 0x50
+	assert s.handle([u8(0x22), 0x12, 0x34]) == [u8(0x62), 0x12, 0x34, 0x00]
+}

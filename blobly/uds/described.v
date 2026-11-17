@@ -149,10 +149,10 @@ pub fn (spec ServerSpec) auth_keyed(level u8) bool {
 }
 
 // default_sessions is where a service runs unless its row says otherwise (comm/uds
-// default_sessions): 0x27, 0x28, 0x29 and 0x85 only outside the default session.
+// default_sessions): 0x27, 0x28, 0x29, 0x2F and 0x85 only outside the default session.
 pub fn default_sessions(sid u8) u8 {
 	return match sid {
-		0x27, 0x28, 0x29, 0x85 { in_extended | in_programming }
+		0x27, 0x28, 0x29, 0x2F, 0x85 { in_extended | in_programming }
 		else { u8(0) }
 	}
 }
