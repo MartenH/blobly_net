@@ -466,11 +466,10 @@ fn (mut s Server) d_reset(req []u8) []u8 {
 		return neg(0x11, 0x13)
 	}
 	s.enter_session(1)
-	if s.sa_failed.any(it > 0) {
-		// a reset between wrong keys costs the delay (comm/uds reset_state), or resets would be
-		// the way around the attempt limit
-		s.sa_delay_until = s.now_ms() + i64(s.sa_delay())
-	}
+	// a reset with a wrong key counted since a served level's last correct key costs that level's
+	// full delay — after a lockout that has ended too, and one during a lockout restarts it — as
+	// comm/uds reset_state does, or resets would be the way around the attempt limit
+	s.sa_restart(s.now_ms())
 	return [u8(0x51), req[1]]
 }
 
@@ -672,7 +671,7 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 		return neg(0x27, 0x12)
 	}
 	if sub % 2 == 1 {
-		if now < s.sa_delay_until {
+		if now < s.sa_delay_until[level - 1] {
 			return neg(0x27, 0x37)
 		}
 		s.seed_lvl = 0
@@ -697,18 +696,38 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 	s.sec_seed = []u8{}
 	want := if s.spec.reference_key { security_key(seed) } else { oem_key(seed) }
 	if req[2..] != want {
-		s.sa_failed[level - 1]++
 		limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
+		if s.sa_since[level - 1] < limit {
+			s.sa_since[level - 1]++
+		}
+		s.sa_failed[level - 1]++
 		if s.sa_failed[level - 1] >= limit {
 			s.sa_failed[level - 1] = 0
-			s.sa_delay_until = now + i64(s.sa_delay())
+			s.sa_delay_until[level - 1] = now + i64(s.sa_delay())
 			return neg(0x27, 0x36)
 		}
 		return neg(0x27, 0x35)
 	}
 	s.sa_failed[level - 1] = 0
+	s.sa_since[level - 1] = 0
 	s.unlocked = level
 	return [u8(0x67), sub]
+}
+
+// sa_restart: what a reset makes of the 0x27 counts, comm/uds sa_restart's rule (a target's
+// start-up restoring its journal follows it too): per served level with a wrong key counted since
+// its last correct key, the lockout count is that count below the attempt limit, or 0 at or above
+// it — after the delay of a saturated count the level has its attempts again, as after any lockout
+// — and that level's delay runs from `now`; another level's seed is not delayed.
+fn (mut s Server) sa_restart(now i64) {
+	mask := s.spec.security_mask()
+	limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
+	for i in 0 .. 8 {
+		if s.sa_since[i] > 0 && mask & (u8(1) << i) != 0 {
+			s.sa_failed[i] = if s.sa_since[i] < limit { s.sa_since[i] } else { 0 }
+			s.sa_delay_until[i] = now + i64(s.sa_delay())
+		}
+	}
 }
 
 fn (s &Server) sa_delay() int {

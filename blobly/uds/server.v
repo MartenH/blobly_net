@@ -48,7 +48,8 @@ pub mut:
 	last_rx_ms     i64
 	rx_seen        bool  // last_rx_ms holds a request's time (a clock may start at 0)
 	sa_failed      [8]int // wrong keys per level
-	sa_delay_until i64
+	sa_since       [8]int // wrong keys per level since its last correct key, rising to the limit
+	sa_delay_until [8]i64 // per level: a level's lockout delays only its own seed
 	sa_state       u32 // the seed generator
 }
 

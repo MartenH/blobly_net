@@ -107,6 +107,105 @@ fn test_a_reset_between_wrong_keys_costs_the_delay() {
 	assert s.handle([u8(0x27), 0x01]) == [u8(0x7F), 0x27, 0x37]
 }
 
+// a reset after a lockout that has ended still costs the full delay (comm/uds reset_state: the
+// count kept is the wrong keys since the last correct key), after which the attempts come again; a
+// correct key clears it, and the next reset does not wait
+fn test_a_reset_after_an_ended_lockout_costs_the_delay() {
+	mut now := &FakeClock{}
+	mut s := gated(now)
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35]
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x36]
+	now.t += 3000 // the lockout has ended
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x7F), 0x27, 0x37], 'a reset after an ended lockout was free'
+	now.t += 3000
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35] // the attempts again
+	seed := s.handle([u8(0x27), 0x01])
+	assert seed[0] == 0x67
+	mut key := [u8(0x27), 0x02]
+	key << security_key(seed[2..])
+	assert s.handle(key) == [u8(0x67), 0x02]
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67, 'a reset after a correct key waited'
+}
+
+// a reset after an ended lockout and more wrong keys: after its delay the level has its full
+// attempts, as a target restoring a saturated count grants them (comm/uds sa_restart)
+fn test_a_reset_after_an_ended_lockout_grants_the_attempts_after_its_delay() {
+	mut now := &FakeClock{}
+	mut s := gated(now)
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35]
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x36]
+	now.t += 3000 // the lockout has ended
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35]
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x7F), 0x27, 0x37]
+	now.t += 3000
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35], 'the reset kept a used attempt'
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67
+	assert s.handle([u8(0x27), 0x02, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x36]
+}
+
+// a delay is its level's (comm/uds): level 2's lockout refuses its own seed and not level 1's, and a
+// reset with level 2 counted delays level 2 alone
+fn test_a_delay_is_the_level_s_own() {
+	mut now := &FakeClock{}
+	mut s := server_from(ServerSpec{
+		dids:              [
+			DidSpec{
+				id:       0x0102
+				data:     [u8(0)]
+				writable: true
+				write:    GateSpec{
+					sessions: in_extended
+					level:    1
+				}
+			},
+			DidSpec{
+				id:       0x0103
+				data:     [u8(0)]
+				writable: true
+				write:    GateSpec{
+					sessions: in_extended
+					level:    2
+				}
+			},
+		]
+		reference_key:     true
+		serves_reset:      true
+		security_attempts: 2
+		security_delay_ms: 3000
+	})
+	s.clock = fn [now] () i64 {
+		return now.t
+	}
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x03])[0] == 0x67
+	assert s.handle([u8(0x27), 0x04, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x35]
+	assert s.handle([u8(0x27), 0x03])[0] == 0x67
+	assert s.handle([u8(0x27), 0x04, 0, 0, 0, 0]) == [u8(0x7F), 0x27, 0x36]
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x7F), 0x27, 0x37]
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67, "level 2's lockout delayed level 1"
+	now.t += 3000
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x7F), 0x27, 0x37], 'a reset with level 2 counted was free'
+	assert s.handle([u8(0x27), 0x01])[0] == 0x67, 'a reset with level 2 counted delayed level 1'
+}
+
 fn test_a_functional_security_access_is_ignored_but_keeps_the_session() {
 	mut now := &FakeClock{}
 	mut s := gated(now)
