@@ -14,6 +14,7 @@ EventLoop is pure: it reaches time, frames and health only through _resolve, _li
 _wait_frame and _health, which Project implements over libblobly and the model test
 (tests/test_events.py) replaces. Handlers are keyed by what _resolve returns — a Channel object
 for a Project, so two rows that share a name stay two rows."""
+import _thread
 import collections
 import math
 import sys
@@ -293,7 +294,7 @@ def _sliced(wait, ms):
             part = min(math.floor(left), SLICE_MS)
 
 
-def _on_thread(call, name="blobly", on_interrupt=None):
+def _on_thread(call, on_interrupt=None):
     """call()'s answer, the call made on a thread of its own and waited for in slices (_sliced),
     so Ctrl-C ends the wait; the call itself is one native exchange, bounded by its own wait. An
     interrupted one finishes on its thread with its answer dropped, or is never made when the
@@ -302,9 +303,10 @@ def _on_thread(call, name="blobly", on_interrupt=None):
     from . import _lib  # this module's rules need no library; the call does
     box = {}
     began, abandoned, done = threading.Event(), threading.Event(), threading.Event()
-    # waited on rather than `done`: Event.wait is Python code around a lock, and Ctrl-C landing
-    # inside it can leave the lock released twice (RuntimeError, not KeyboardInterrupt); a lock's
-    # acquire is one call, interrupted whole or not at all
+    # waited on rather than `done`, and the thread started by _thread rather than threading.Thread
+    # (whose start() waits on an Event): Event.wait is Python code around a lock, and Ctrl-C
+    # landing inside it can leave the lock released twice (RuntimeError, not KeyboardInterrupt);
+    # a lock's acquire, and start_new_thread, are one call each, interrupted whole or not at all
     ended = threading.Lock()
     ended.acquire()
 
@@ -316,19 +318,18 @@ def _on_thread(call, name="blobly", on_interrupt=None):
                 box["answer"] = call()
         except BaseException as e:  # carried to the caller's thread
             box["error"] = e
-        finally:  # the thread's own word: an interrupted join can say a running thread ended
+        finally:  # the thread's own word
             done.set()
             ended.release()
 
     def finished(seconds):
         return done.is_set() or ended.acquire(timeout=seconds)
-    t = threading.Thread(target=run, name=name, daemon=True)
     try:
-        t.start()
+        _thread.start_new_thread(run, ())
         _sliced(lambda part: True if finished(part / 1000) else None, -1)
     except BaseException:
         abandoned.set()
-        given_up = time.monotonic() + 1  # a thread start() was interrupted in may never run
+        given_up = time.monotonic() + 1  # an interrupt before start_new_thread: no thread runs
         while on_interrupt is not None and not done.is_set() and (began.is_set() or time.monotonic() < given_up):
             try:
                 if began.is_set():

@@ -188,7 +188,7 @@ class Generator:
             if rc == _lib.BB_ERR:
                 raise GeneratorRefused(_lib.text(lib.bb_last_error()), rc)
             _lib.check(rc)
-        _on_thread(call, "blobly-fire")
+        _on_thread(call)
 
     def start(self, cycle_ms: int | None = None) -> None:
         """Sends it on its cycle from now: `cycle_ms`, or its own for None or 0 (refused when it has

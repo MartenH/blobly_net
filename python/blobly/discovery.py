@@ -75,7 +75,7 @@ def discover_cansub(window_ms: int = 700) -> list[Interface]:
     if not -2**31 <= window_ms < 2**31:  # a C int: wider would wrap into the range
         raise ValueError(f"discover_cansub: a window is 1 to 10000 ms, not {window_ms}")
     lib = _lib.lib()
-    rows, note = _on_thread(lambda: _read(_lib.check(lib.bb_ifaces_cansub(window_ms))), "blobly-cansub")
+    rows, note = _on_thread(lambda: _read(_lib.check(lib.bb_ifaces_cansub(window_ms))))
     if note:
         warnings.warn(f"CANsub browse: {note}", RuntimeWarning, stacklevel=2)
     return rows

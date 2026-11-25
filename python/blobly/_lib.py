@@ -880,7 +880,7 @@ def lib():
                 raise BloblyError("blobly needs CPython: it detaches a thread from the library "
                                   "as CPython ends it, which " + sys.implementation.name +
                                   " does not promise")
-            if threading.current_thread() is not threading.main_thread():
+            if not on_main():
                 raise BloblyError("load blobly from the main thread first: bb.h requires the "
                                   "library be loaded there (its collector takes the loading thread "
                                   "for the main one)")
@@ -902,9 +902,16 @@ def lib():
     return _lib
 
 
+def on_main():
+    """Whether the calling thread is the main one. By ident, not threading.current_thread(): on a
+    thread the threading module did not start (events._on_thread's), that makes a _DummyThread
+    which stays registered after the thread has ended."""
+    return threading.get_ident() == threading.main_thread().ident
+
+
 def attach():
     """Attaches the calling thread on its first call in, unless it is the main thread."""
-    if threading.current_thread() is threading.main_thread() or getattr(_tls, "held", None):
+    if on_main() or getattr(_tls, "held", None):
         return
     if _lib.bb_thread_attach() != 0:
         raise BloblyError(text(_lib.bb_last_error()))

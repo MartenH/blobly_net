@@ -82,7 +82,10 @@ def main(argv: list[str]) -> int:
     blobly.init()
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:
-        net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
+        try:
+            net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
+        except blobly.BloblyError as e:  # perhaps on a row this example does not use: said, not fatal
+            print(f"note: {e}", file=sys.stderr)
         can = db_channel(net, args.channel)  # a channel's messages exist while the project runs
 
         print(f"{can.name}: {len(can.messages)} message(s)")

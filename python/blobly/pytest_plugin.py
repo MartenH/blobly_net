@@ -28,7 +28,10 @@ Fixtures:
              channels' handles hold queued read away, a handle not open opened, so it hears what
              arrives from then on and nothing an earlier test left queued, while the wire stays
              held; after it, the handlers it registered are dropped, so no later run() calls them,
-             and the faults it armed are cleared.
+             and the faults it armed are cleared. After each start it waits until the run's loops
+             have opened their buses (Project.wait_ready), so a test's first request does not go
+             out before a simulated node listens; a loop that failed is left to the test that uses
+             its row, as a row that does not open is (blobly_channels).
   can1, ...  one per enabled channel, named after it: lowercased, every character that cannot be
              in a Python name made "_", and "_" put before a leading digit ("CAN-1" is can_1). A
              name two channels come to, a Python keyword, or another fixture's (this plugin's,
