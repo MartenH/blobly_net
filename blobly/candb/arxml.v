@@ -1811,6 +1811,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				s.name = given
 			}
 		}
+		send_name := arxml_send_type(info.tx_mode, info.repetitions, info.min_delay_ms)
 		msg := Message{
 			name: fname
 			id: id
@@ -1820,8 +1821,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			tx_nodes: ports.tx_nodes
 			cycle_ms: info.cycle_ms
 			// the first PDU's timing, as a DBC's GenMsg* attributes put it on the model (#339)
-			send_type_name: arxml_send_type(info.tx_mode)
-			send_type: send_type_of(arxml_send_type(info.tx_mode))
+			send_type_name: send_name
+			send_type: send_type_of(send_name)
 			cycle_fast_ms: info.repetition_ms
 			repetitions: info.repetitions
 			delay_ms: info.min_delay_ms
@@ -1881,13 +1882,30 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 }
 
 // arxml_send_type is a transmission mode as a GenMsgSendType choice the writer declares
-// (send_type_choices) and send_type_of reads back to the same SendType: '' for none stated.
-fn arxml_send_type(mode string) string {
+// (send_type_choices) and send_type_of reads back to the same SendType: '' for none stated. The
+// choice names what Vector's enum can: an event burst `spontaneousWithRepetition`, else a
+// minimum delay `...WithDelay`; a delay beside a burst, or repetitions on a mixed PDU, have no
+// choice of their own and are carried by GenMsgDelayTime / GenMsgNrOfRepetition alone.
+fn arxml_send_type(mode string, repetitions int, delay_ms int) string {
 	return match mode {
-		'cyclic' { 'cyclic' }
-		'event' { 'spontaneous' }
-		'mixed' { 'cyclicAndSpontaneous' }
-		else { '' }
+		'cyclic' {
+			'cyclic'
+		}
+		'event' {
+			if repetitions > 0 {
+				'spontaneousWithRepetition'
+			} else if delay_ms > 0 {
+				'spontaneousWithDelay'
+			} else {
+				'spontaneous'
+			}
+		}
+		'mixed' {
+			if delay_ms > 0 { 'cyclicAndSpontaneousWithDelay' } else { 'cyclicAndSpontaneous' }
+		}
+		else {
+			''
+		}
 	}
 }
 

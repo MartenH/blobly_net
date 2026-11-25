@@ -198,11 +198,11 @@ fn test_transmission_timing_is_on_the_message() {
 	assert pt.cyclic_period() == 100 && !pt.on_change()
 	assert pt.delay_ms == 20 && pt.repetitions == 0 && pt.cycle_fast_ms == 0
 	lamp := c.db.lookup(0x200) or { panic('no LampFrame') }
-	assert lamp.send_type_name == 'cyclicAndSpontaneous' && lamp.send_type == .mixed
+	assert lamp.send_type_name == 'cyclicAndSpontaneousWithDelay' && lamp.send_type == .mixed
 	assert lamp.cyclic_period() == 100 && lamp.on_change()
 	assert lamp.delay_ms == 10 && lamp.repetitions == 0
 	wide := c.db.lookup(0x1ABCDE) or { panic('no Wide') }
-	assert wide.send_type_name == 'spontaneous' && wide.send_type == .event
+	assert wide.send_type_name == 'spontaneousWithRepetition' && wide.send_type == .event
 	assert wide.cyclic_period() == 0 && wide.on_change()
 	assert wide.repetitions == 2 && wide.cycle_fast_ms == 20 && wide.delay_ms == 0
 	// a frame with no timing states no send type
@@ -215,10 +215,28 @@ fn test_transmission_timing_is_on_the_message() {
 		// cyclic is the definition's default, so a frame stating none reads back as cyclic
 		want := if m.send_type == .unstated { SendType.cyclic } else { m.send_type }
 		assert r.send_type == want, m.name
+		if m.send_type != .unstated {
+			assert r.send_type_name == m.send_type_name, m.name
+		}
 		assert r.repetitions == m.repetitions, m.name
 		assert r.cycle_fast_ms == m.cycle_fast_ms, m.name
 		assert r.delay_ms == m.delay_ms, m.name
 		assert r.cyclic_period() == m.cyclic_period(), m.name
+	}
+}
+
+// the send type names a burst or a minimum delay where Vector's enum has a choice for it
+fn test_arxml_send_type_names_a_burst_or_a_delay() {
+	assert arxml_send_type('cyclic', 0, 20) == 'cyclic'
+	assert arxml_send_type('event', 0, 0) == 'spontaneous'
+	assert arxml_send_type('event', 0, 10) == 'spontaneousWithDelay'
+	assert arxml_send_type('event', 2, 0) == 'spontaneousWithRepetition'
+	assert arxml_send_type('event', 2, 10) == 'spontaneousWithRepetition'
+	assert arxml_send_type('mixed', 0, 0) == 'cyclicAndSpontaneous'
+	assert arxml_send_type('mixed', 3, 10) == 'cyclicAndSpontaneousWithDelay'
+	assert arxml_send_type('', 2, 10) == ''
+	for name in ['spontaneousWithDelay', 'spontaneousWithRepetition', 'cyclicAndSpontaneousWithDelay'] {
+		assert name in send_type_choices
 	}
 }
 
