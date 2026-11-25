@@ -32,9 +32,9 @@ fn test_cluster_and_nodes() {
 	// the file is complete: nothing dangling
 	assert a.report.unresolved == []
 	assert a.report.notes == [
-		'/PDUs/LampFrame_PDU: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
+		'/PDUs/LampFrame_PDU: event-controlled timing; the simulation sends frame LampFrame on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 		'SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)',
-		'/PDUs/Wide_PDU: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
+		'/PDUs/Wide_PDU: event-controlled timing; the simulation sends frame Wide on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 	]
 	// and the one PDU kind not extracted is counted, not dropped in silence
 	assert a.report.ignored == {
@@ -206,11 +206,8 @@ fn test_transmission_timing_is_on_the_message() {
 	assert wide.cyclic_period() == 0 && wide.on_change()
 	assert wide.repetitions == 2 && wide.cycle_fast_ms == 20 && wide.delay_ms == 0
 	// a frame with no timing states no send type
-	for m in c.db.messages {
-		if m.name == 'DiagReq' {
-			assert m.send_type_name == '' && m.send_type == .unstated
-		}
-	}
+	diag := c.db.lookup(0x7E0) or { panic('no DiagReq') }
+	assert diag.send_type_name == '' && diag.send_type == .unstated
 	// the export writes them through the writer's GenMsg* rules, and they read back
 	back := parse_dbc(c.export_dbc(ArxmlProvenance{}, example_arxml().report)) or { panic(err) }
 	for m in c.db.messages {
@@ -394,7 +391,8 @@ fn test_event_bursts_are_carried_and_named_in_the_fragment() {
 	m := c.db.messages[0]
 	assert m.send_type == .event && m.repetitions == 2 && m.cycle_fast_ms == 20
 	assert !a.report.notes.any(it.contains('repeats a change')), a.report.notes.str()
-	assert a.report.notes.any(it.contains('event-controlled timing; the simulation sends on a change of any of its signals'))
+	// no ECU sends this frame, so nothing is simulated for it and the trigger goes unsaid
+	assert m.sender == '' && !a.report.notes.any(it.contains('event-controlled timing;')), a.report.notes.str()
 	// repetitions with no period are spaced as a change send with no fast cycle, and said
 	bare := burst.replace('<REPETITION-PERIOD><VALUE>0.02</VALUE></REPETITION-PERIOD>', '')
 	b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + bare + arxml_tail) or {
@@ -1247,7 +1245,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert c.export_notes().len == 1 && c.export_notes()[0].contains('UNUSED-BIT-PATTERN 0xFF'), c.export_notes().str()
 	assert c.export_dbc(ArxmlProvenance{}, a.report).contains(' notes=${a.report.notes.len + 1}"')
 	assert c.frame_toml('').contains('# the bits no signal covers are 0xFF (UNUSED-BIT-PATTERN)')
-	assert a.report.notes.any(it.contains('/PDUs/P: event-controlled timing;'))
+	assert c.db.messages[0].send_type == .event
 	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
 	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
 	assert !integral_literal('0xZZ') && !integral_literal('0x1G') && integral_literal('0xfF') // round 38
@@ -1958,9 +1956,9 @@ fn test_report_lines() {
 	assert l[0].starts_with('unresolved reference: ')
 	assert example_arxml().report.lines() == [
 		'ignored: 1 × N-PDU',
-		'note: /PDUs/LampFrame_PDU: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
+		'note: /PDUs/LampFrame_PDU: event-controlled timing; the simulation sends frame LampFrame on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 		'note: SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)',
-		'note: /PDUs/Wide_PDU: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
+		'note: /PDUs/Wide_PDU: event-controlled timing; the simulation sends frame Wide on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 	]
 }
 

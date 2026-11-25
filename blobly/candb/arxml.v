@@ -3,12 +3,13 @@
 // An ARXML is what an OEM hands an AUTOSAR ECU supplier, and often there is no DBC at all —
 // or the DBC is a lossy export with the protection and timing stripped. So this is a SECOND
 // database front end beside dbc.v: it produces the same `Database` the DBC parser does, one
-// per CAN cluster, plus what a DBC has no home for (`ArxmlFrame`): the TX mode and timing of
-// the PDU, its receivers, and the E2E and SecOC layout. It is an EXTRACTOR into the model
+// per CAN cluster, plus what a DBC has no home for (`ArxmlFrame`): the PDU's TX timing as the
+// fragment writes it, its receivers, and the E2E and SecOC layout. It is an EXTRACTOR into the model
 // that already exists, deliberately not a model of ARXML — the schema is enormous and a
 // reader that mirrored it would be maintained forever.
 //
-// The split rule: `Message` carries what a DBC can say (ids, layout, senders, cycle time);
+// The split rule: `Message` carries what a DBC can say (ids, layout, senders, cycle time, and
+// the transmission timing as the GenMsg* attributes say it — send type, repetitions, delay);
 // `ArxmlFrame` carries the rest, keyed by the same identity the rest of candb uses — id and
 // frame kind (`frame_key`), never the SHORT-NAME, which AUTOSAR scopes per package.
 //
@@ -140,7 +141,8 @@ pub:
 	mac_len          int // bytes of MAC (exact when byte_aligned)
 }
 
-// ArxmlFrame is what the system description says about a message that a DBC has no field for.
+// ArxmlFrame is what the system description says about a message that a DBC has no field for,
+// and the TX timing as the fragment writes it (the Message carries it as GenMsg* says it).
 pub struct ArxmlFrame {
 pub mut:
 	pdu           string // the I-SIGNAL-I-PDU short name behind the frame (or the secured PDU's)
@@ -1589,6 +1591,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// kept and the rest are reported rather than letting document order decide silently.
 		mut sigs := []Signal{}
 		mut pdus := 0
+		mut trigger_note := '' // the first PDU's path, where its timing sends on a change
 		mut sig_paths := []string{} // one per entry of `sigs`: named LAST, over the whole message
 		for pm in descendants(frame, 'PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or {
@@ -1727,11 +1730,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				info.repetitions = tm.repetitions
 				info.repetition_ms = tm.repetition_ms
 				if tm.tx_mode in ['event', 'mixed'] {
-					// the timing goes onto the Message (arxml_send_type, below), so the simulation
-					// sends a change and its repetitions as the ECU does (#339); what it cannot
-					// tell is WHICH signals trigger: COM sends on a change of a TRIGGERED signal
-					// only, and TRANSFER-PROPERTY is not read
-					r.report.notes << '${sig_pdu_path}: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read'
+					// said below, once the frame is known to have a sender and signals
+					trigger_note = sig_pdu_path
 				}
 				if tm.repetitions > 0 && tm.repetition_ms <= 0 {
 					// repetitions with no period between them: spaced as the simulation spaces a
@@ -1769,6 +1769,13 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		info.receivers = ports.receivers
+		if trigger_note != '' && sigs.len > 0 && (ports.sender != '' || ports.tx_nodes.len > 0) {
+			// the timing goes onto the Message (arxml_send_type), so the simulation sends a change
+			// and its repetitions as the ECU does (#339); what it cannot tell is WHICH signals
+			// trigger: COM sends on a change of a TRIGGERED signal only, TRANSFER-PROPERTY is not
+			// read, and a frame mapping several PDUs takes the first PDU's timing for all of them
+			r.report.notes << '${trigger_note}: event-controlled timing; the simulation sends frame ${fname} on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read'
+		}
 		// NAMES LAST, over the whole message (round 30): a unique SHORT-NAME is reserved as itself
 		// before any duplicate is qualified — one pass in mapping order gave the duplicate /B/V
 		// the name `B_V` and renamed the signal whose own name is B_V. A signal name is how
@@ -1924,10 +1931,6 @@ fn (mut r ArxmlReader) load_timing(pdu flatxml.MNode, pdu_path string) ArxmlTimi
 		if tp := first(ct, 'TIME-PERIOD') {
 			cycle = r.timing_ms(first_text(tp, 'VALUE'), pdu_path, 'TIME-PERIOD')
 		}
-		if cycle <= 0 {
-			// cyclic in name only: the simulation sends on the cycle, and there is none (round 40)
-			r.report.notes << '${pdu_path}: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends nothing on a cycle for this frame'
-		}
 		if to := first(ct, 'TIME-OFFSET') {
 			offset = r.timing_ms(first_text(to, 'VALUE'), pdu_path, 'TIME-OFFSET')
 		}
@@ -1943,6 +1946,12 @@ fn (mut r ArxmlReader) load_timing(pdu flatxml.MNode, pdu_path string) ArxmlTimi
 		if rp := first(ev, 'REPETITION-PERIOD') {
 			rep_ms = r.timing_ms(first_text(rp, 'VALUE'), pdu_path, 'REPETITION-PERIOD')
 		}
+	}
+	if mode in ['cyclic', 'mixed'] && cycle <= 0 {
+		// cyclic in name only: the simulation sends on the cycle, and there is none (round 40);
+		// a mixed PDU is still sent on a change
+		what := if mode == 'mixed' { 'nothing on a cycle' } else { 'nothing' }
+		r.report.notes << '${pdu_path}: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends ${what} for this frame'
 	}
 	return ArxmlTiming{
 		tx_mode: mode
