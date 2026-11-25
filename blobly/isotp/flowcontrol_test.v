@@ -132,3 +132,28 @@ fn test_pacing_never_shortens_a_wait_and_never_invents_one() {
 		assert pacing_sleep_us(us) % 1000 == 0, '${us} us must land on a whole millisecond'
 	}
 }
+
+// WHAT A FLOW CONTROL WAIT SKIPS is Single and First Frames only: a Consecutive Frame is a stale
+// tail skipped silently, and a Flow Control is the answer itself.
+fn test_only_single_and_first_frames_are_skipped() {
+	mut s := Skipped{}
+	assert !s.skip([]u8{})
+	assert !s.skip([u8(0x21), 1, 2])
+	assert !s.skip([u8(0x30), 0, 0])
+	assert s.note('timeout') == 'timeout', 'nothing skipped adds nothing'
+	assert s.skip([u8(0x03), 0x7F, 0x2E, 0x13])
+	assert s.skip([u8(0x10), 0x14, 1, 2, 3, 4, 5, 6])
+	assert s.skip([u8(0x02), 0x51, 0x01])
+	assert s.singles == 2 && s.firsts == 1
+	note := s.note('timeout')
+	assert note.starts_with('timeout — after 2 Single Frames and 1 First Frame (last 02 51 01) while awaiting Flow Control'), note
+}
+
+// A CAN-FD frame is named by its first eight bytes, so a note stays one line.
+fn test_a_long_skipped_frame_is_cut_in_the_note() {
+	mut s := Skipped{}
+	assert s.skip([]u8{len: 64, init: u8(index)})
+	note := s.note('timeout')
+	assert note.contains('(last 00 01 02 03 04 05 06 07 ...)'), note
+	assert note.contains('1 Single Frame '), note
+}

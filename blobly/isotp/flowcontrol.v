@@ -239,3 +239,51 @@ pub fn (b WaitBudget) spent() bool {
 pub fn exhausted_note(ms int) string {
 	return 'ISO-TP: transfer spent its waiting on the receiver (${ms} ms per 4095 bytes, fc_total_wait_ms) — giving up'
 }
+
+// Skipped is what a segmented send's wait for Flow Control read past: Single and First Frames on
+// its receive id. ISO 15765-2 has a half-duplex sender ignore an N_PDU it does not expect, and the
+// Linux kernel's isotp does; the software channel aborted the send instead, which a stray or
+// duplicated Single Frame from an ECU turned into a failed firmware update on every adapter but
+// SocketCAN (MartenH/blobly_emb#407). Neither is a message: a skipped frame is not delivered.
+pub struct Skipped {
+pub mut:
+	singles int
+	firsts  int
+	last    []u8 // the last skipped frame's bytes as they arrived
+}
+
+// skip records `raw` when it is a Single or First Frame, and says whether it did.
+pub fn (mut s Skipped) skip(raw []u8) bool {
+	if raw.len == 0 {
+		return false
+	}
+	match raw[0] & 0xF0 {
+		0x00 { s.singles++ }
+		0x10 { s.firsts++ }
+		else { return false }
+	}
+	s.last = raw.clone()
+	return true
+}
+
+// note is `msg` with what was skipped named after it, as `orphan_note` does on the receive side:
+// a wait that ended in silence behind a skipped frame says so, since a bare timeout says nothing
+// about what was on the wire. `msg` stays the prefix, so a caller reading the kind still reads it.
+pub fn (s Skipped) note(msg string) string {
+	if s.singles == 0 && s.firsts == 0 {
+		return msg
+	}
+	mut parts := []string{}
+	if s.singles > 0 {
+		parts << '${s.singles} Single Frame${if s.singles == 1 { '' } else { 's' }}'
+	}
+	if s.firsts > 0 {
+		parts << '${s.firsts} First Frame${if s.firsts == 1 { '' } else { 's' }}'
+	}
+	shown := if s.last.len > 8 { s.last[..8] } else { s.last }
+	mut hex := shown.map('${it:02X}').join(' ')
+	if s.last.len > 8 {
+		hex += ' ...'
+	}
+	return '${msg} — after ${parts.join(' and ')} (last ${hex}) while awaiting Flow Control, ignored as ISO 15765-2 has a half-duplex sender do'
+}

@@ -597,10 +597,11 @@ fn send_failure(err IError, ch isotp.Channel, stopping bool, sid u8, discarded i
 }
 
 // allowance_spent: a segmented send gave up waiting for the receiver's Flow Control once the
-// transfer's whole allowance was spent (isotp.exhausted_note) — the receiver's silence.
+// transfer's whole allowance was spent (isotp.exhausted_note, perhaps naming the frames the wait
+// skipped after it) — the receiver's silence.
 fn allowance_spent(ch isotp.Channel, msg string) bool {
 	if ch is isotp.SoftChannel {
-		return msg == isotp.exhausted_note(ch.total_wait_ms)
+		return msg.starts_with(isotp.exhausted_note(ch.total_wait_ms))
 	}
 	return false
 }

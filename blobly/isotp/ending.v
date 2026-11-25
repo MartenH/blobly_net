@@ -24,11 +24,12 @@ pub enum Ending {
 // failed, its message saying why.
 pub fn (c &SoftChannel) ending_of(err IError, sending bool) Ending {
 	m := err.msg()
-	// prefixes: a receive that skipped an orphan Flow Control says so after the note (orphan_note)
+	// prefixes: a receive that skipped an orphan Flow Control says so after the note (orphan_note),
+	// a send that skipped a Single or First Frame while awaiting Flow Control too (Skipped.note)
 	if m.starts_with(abandoned_note) || m.starts_with(abandoned_recv_note) {
 		return .abandoned
 	}
-	if m.starts_with('timeout') || m == stall_note || m == exhausted_note(c.total_wait_ms) {
+	if m.starts_with('timeout') || m == stall_note || m.starts_with(exhausted_note(c.total_wait_ms)) {
 		return .waited_out
 	}
 	if sending && err is transport.NotWritten {

@@ -557,6 +557,120 @@ fn test_a_stale_cf_ahead_of_flow_control_is_skipped() {
 	peer.close()
 }
 
+// A SINGLE FRAME WHERE FLOW CONTROL IS AWAITED IS IGNORED, as ISO 15765-2 has a half-duplex sender
+// do and the kernel's isotp does: the send completes on the Flow Control behind it, and the
+// skipped frame is not delivered as a message (MartenH/blobly_emb#407, where one aborted a flash).
+fn test_a_single_frame_ahead_of_flow_control_is_skipped() {
+	mut peer := transport.open('inproc:isotp-sf-fc') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-sf-fc', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.fc_window_ms = test_fc_window_ms
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x04), 0x71, 0x01, 0x02, 0x03, 0xAA, 0xAA, 0xAA] }) or {
+		assert false, err.msg()
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	msg := s.wait()
+	assert msg == 'sent', msg
+	if got := ch.recv(100) {
+		assert false, 'the skipped Single Frame was delivered: ${got}'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
+	ch.close()
+	peer.close()
+}
+
+// A FIRST FRAME WHERE FLOW CONTROL IS AWAITED IS IGNORED THE SAME WAY: no Flow Control is sent for
+// it, the send completes, and nothing of it is reassembled.
+fn test_a_first_frame_ahead_of_flow_control_is_skipped() {
+	mut peer := transport.open('inproc:isotp-ff-fc') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-ff-fc', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.fc_window_ms = test_fc_window_ms
+	// 20 bytes: a First Frame and two Consecutive Frames
+	mut s := start_send(mut ch, 20)
+	must_read_tx(mut peer, mut s, 0x7E0) or {
+		assert false, 'no First Frame: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 0x14, 1, 2, 3, 4, 5, 6] }) or {
+		assert false, err.msg()
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	for i in 0 .. 2 {
+		cf := must_read_tx(mut peer, mut s, 0x7E0) or {
+			assert false, 'Consecutive Frame ${i + 1} did not arrive: ${err}'
+			return
+		}
+		// a Flow Control here would be the channel answering the skipped First Frame
+		assert (cf.data[0] & 0xF0) == 0x20, 'expected a Consecutive Frame, got 0x${cf.data[0]:02X}'
+	}
+	msg := s.wait()
+	assert msg == 'sent', msg
+	if extra := no_read_tx(mut peer, 0x7E0) {
+		assert false, 'sent past the transfer: 0x${extra.data[0]:02X}'
+	}
+	if got := ch.recv(100) {
+		assert false, 'the skipped First Frame was reassembled: ${got}'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
+	ch.close()
+	peer.close()
+}
+
+// A WAIT THAT ENDS IN SILENCE BEHIND A SKIPPED FRAME NAMES IT, by the per-block window and by the
+// transfer's allowance alike, and still reads as waited out: a bare timeout would say nothing
+// about the Single Frame the peer sent in place of its Flow Control.
+fn test_a_flow_control_timeout_names_the_frames_it_skipped() {
+	mut peer := transport.open('inproc:isotp-sf-timeout') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	for allowance in [false, true] {
+		mut ch := open_software('inproc:isotp-sf-timeout', 0x7E0, 0x7E8, false) or {
+			assert false, 'software channel: ${err}'
+			return
+		}
+		if allowance {
+			ch.fc_window_ms = test_fc_window_ms
+			ch.total_wait_ms = 600
+		} else {
+			ch.fc_window_ms = 600
+		}
+		mut s := start_send(mut ch, 20)
+		must_read_tx(mut peer, mut s, 0x7E0) or {
+			assert false, 'no First Frame: ${err}'
+			return
+		}
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x04), 0x71, 0x01, 0x02, 0x03, 0xAA, 0xAA, 0xAA] }) or {
+			assert false, err.msg()
+		}
+		msg := s.wait()
+		want := if allowance { exhausted_note(600) } else { 'timeout' }
+		assert msg.starts_with(want), msg
+		assert msg.contains('1 Single Frame (last 04 71 01 02 03 AA AA AA) while awaiting Flow Control'), msg
+		assert ch.ending_of(error(msg), true) == .waited_out, msg
+		ch.close()
+	}
+	peer.close()
+}
+
 // recv(0) LOOKS PAST FRAMES FOR OTHER IDS: a shared bus queues them ahead of the reply, and a
 // non-blocking poll must still find it (codex round 12 on #225).
 fn test_a_zero_timeout_looks_past_unrelated_frames() {

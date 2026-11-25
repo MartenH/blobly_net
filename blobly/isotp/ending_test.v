@@ -60,6 +60,13 @@ fn test_each_way_a_raw_send_or_receive_ends() {
 	// a stop after an orphan Flow Control was skipped is still the stop
 	assert c.ending_of(error(orphan_note(abandoned_recv_note, 1, 0x30)), false) == .abandoned
 	assert c.ending_of(error(orphan_note('timeout', 1, 0x30)), false) == .waited_out
+	// a send whose Flow Control wait skipped a Single Frame and then ran out is still waited out
+	skipped := Skipped{
+		singles: 1
+		last:    [u8(0x04), 0x71, 0x01]
+	}
+	assert c.ending_of(error(skipped.note('timeout')), true) == .waited_out
+	assert c.ending_of(error(skipped.note(exhausted_note(c.total_wait_ms))), true) == .waited_out
 }
 
 // on a listen-only wire a send is refused, a Single Frame and a First Frame alike
