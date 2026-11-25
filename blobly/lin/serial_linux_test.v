@@ -9,10 +9,15 @@ import blobly.transport
 
 const serial_ldf = @VMODROOT + '/dbc/lin_demo.ldf'
 
+// slow is the rate the tests that time a slot run at. A pty answers from threads the scheduler
+// may hold back for several milliseconds on a loaded host, longer than a slot at 19200 baud
+// (4 to 9 ms); at 2400 a slot is 31 to 72 ms. 2400 still sends a wakeup as one 0x00 byte.
+const slow = 2400
+
 // raw_open opens a pty end as another program would: raw, no handle.
-fn raw_open(path string) i32 {
+fn raw_open(path string, baud int) i32 {
 	mut got := u32(0)
-	fd := C.bl_ser_open(&char(path.str), 19200, 0, &got)
+	fd := C.bl_ser_open(&char(path.str), i32(baud), 0, &got)
 	assert fd >= 0
 	return fd
 }
@@ -158,7 +163,7 @@ fn test_a_monitor_reads_what_another_program_writes() {
 	mut refused := false
 	mon.header(0x21) or { refused = err is RoleRefused }
 	assert refused
-	fd := raw_open(link.b)
+	fd := raw_open(link.b, default_baud)
 	defer {
 		C.bl_ser_close(fd)
 	}
@@ -207,16 +212,18 @@ fn test_rows_over_a_pty_link_run_a_cluster() {
 	defer {
 		link.close()
 	}
+	// at the slow rate each slot is longer than the table's delay, so the schedule runs a slot
+	// behind its grid, as a master does on a wire
 	mut slave := start_row(RowSpec{
 		name:     'S'
-		address:  'pty:${link.b}'
+		address:  'pty:${link.b}@${slow}'
 		ldf:      serial_ldf
 		role:     .slave
 		simulate: ['LSM']
 	}, RowOpts{})!
 	mut master := start_row(RowSpec{
 		name:     'M'
-		address:  'pty:${link.a}'
+		address:  'pty:${link.a}@${slow}'
 		ldf:      serial_ldf
 		role:     .master
 		simulate: ['CEM']
@@ -257,7 +264,7 @@ fn test_a_header_that_did_not_go_out_leaves_nothing_behind() {
 	}
 	m.set_entry(Entry{ id: 0x10, dir: .publish, len: 2, data: [u8(1), 2] })!
 	m.set_entry(Entry{ id: 0x12, dir: .publish, len: 2, data: [u8(5), 6], one_shot: true })!
-	other := raw_open(path)
+	other := raw_open(path, default_baud)
 	defer {
 		C.bl_ser_close(other)
 	}
@@ -281,12 +288,12 @@ fn test_a_slave_that_could_not_answer_does_not_claim_the_frame() {
 	defer {
 		C.bl_ser_close(mfd)
 	}
-	mut s := open('pty:${path}', Config{ role: .slave, src: .sim })!
+	mut s := open('pty:${path}@${slow}', Config{ role: .slave, src: .sim })!
 	defer {
 		s.close()
 	}
 	s.set_entry(Entry{ id: 0x21, dir: .publish, len: 2, data: [u8(1), 2] })!
-	other := raw_open(path)
+	other := raw_open(path, slow)
 	defer {
 		C.bl_ser_close(other)
 	}
@@ -314,7 +321,7 @@ fn test_bytes_waiting_in_the_port_are_decoded_before_a_header() {
 	defer {
 		m.close()
 	}
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, default_baud)
 	defer {
 		C.bl_ser_close(peer)
 	}
@@ -343,7 +350,7 @@ fn test_a_stray_byte_does_not_hide_the_wakeup_after_it() {
 	defer {
 		mon.close()
 	}
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, default_baud)
 	defer {
 		C.bl_ser_close(peer)
 	}
@@ -399,8 +406,8 @@ fn test_a_header_waits_for_the_slot_before_it() {
 	defer {
 		link.close()
 	}
-	mut m := open('pty:${link.a}', Config{ role: .master, src: .tester })!
-	mut s := open('pty:${link.b}', Config{ role: .slave, src: .sim })!
+	mut m := open('pty:${link.a}@${slow}', Config{ role: .master, src: .tester })!
+	mut s := open('pty:${link.b}@${slow}', Config{ role: .slave, src: .sim })!
 	defer {
 		m.close()
 		s.close()
@@ -534,18 +541,20 @@ fn test_a_response_of_unknown_length_ends_with_its_slot() {
 	defer {
 		link.close()
 	}
-	mut mon := open('pty:${link.a}', Config{ role: .monitor })!
+	mut mon := open('pty:${link.a}@${slow}', Config{ role: .monitor })!
 	defer {
 		mon.close()
 	}
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, slow)
 	defer {
 		C.bl_ser_close(peer)
 	}
 	p := pid(0x22)
 	frame := pty_bytes(true, [u8(0x55), p, 1, 2, checksum(.enhanced, p, [u8(1), 2])])
 	assert C.bl_ser_write(peer, frame.data, i32(frame.len), 100) == 0
-	time.sleep(20 * time.millisecond)
+	// the pulse comes halfway between the slot's end and the idle's: inside the idle, it would
+	// join a frame that waited for the idle; past the slot, it is not part of one that did not
+	time.sleep((frame_ns_max(max_data, slow) + serial_rx_margin_ns(.pty) / 2) * time.nanosecond)
 	assert C.bl_ser_write(peer, [u8(0x00)].data, 1, 100) == 0
 	f := got(mut mon)
 	assert f.id == 0x22 && f.data == [u8(1), 2] && f.errs == Errs.zero(), reading(f)
@@ -616,7 +625,7 @@ fn test_a_lost_port_is_gone_before_what_it_queued() {
 	defer {
 		mon.close()
 	}
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, default_baud)
 	hdrs := pty_bytes(true, [u8(0x55), pid(0x10)])
 	mut bytes := hdrs.clone()
 	bytes << hdrs
@@ -637,7 +646,7 @@ fn test_a_flooded_port_still_closes() {
 		link.close()
 	}
 	mut mon := open('pty:${link.a}', Config{ role: .monitor })!
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, default_baud)
 	defer {
 		C.bl_ser_close(peer)
 	}
@@ -701,7 +710,7 @@ fn test_a_header_from_elsewhere_is_not_a_masters_own() {
 	defer {
 		m.close()
 	}
-	peer := raw_open(link.b)
+	peer := raw_open(link.b, default_baud)
 	defer {
 		C.bl_ser_close(peer)
 	}
@@ -737,28 +746,28 @@ fn test_a_serial_master_times_external_frames_by_the_ldf() {
 	}
 	mut slave := start_row(RowSpec{
 		name:     'S'
-		address:  'pty:${link.b}'
+		address:  'pty:${link.b}@${slow}'
 		ldf:      serial_ldf
 		role:     .slave
 		simulate: ['LSM', 'RSM']
 	}, RowOpts{})!
-	// FastTable gives the 2-byte LSM_Frm1 and RSM_Frm1 5 ms slots: an 8-byte window would
-	// make each of them late
+	// FastTable's 5 ms delays are shorter than any slot at the slow rate, so each header goes out
+	// when the frame before it has had its window: for the 2-byte RSM_Frm1 the LDF's 2-byte one,
+	// not the 8-byte one a frame of unknown length gets
 	mut master := start_row(RowSpec{
 		name:     'M'
-		address:  'pty:${link.a}'
+		address:  'pty:${link.a}@${slow}'
 		ldf:      serial_ldf
 		role:     .master
 		simulate: ['CEM']
 		schedule: 'FastTable'
 	}, RowOpts{})!
 	mut t := master.tap()!
-	// the gap from each RSM_Frm1 header to the LSM_Frm1 header after it: the slot is 5 ms, an
-	// eight-byte window at 19200 baud 9 ms
+	// the gap from each RSM_Frm1 frame to the LSM_Frm1 frame after it
 	mut gaps := []i64{}
 	mut prev := i64(-1)
-	for gaps.len < 15 {
-		f := t.recv(1000)!
+	for gaps.len < 9 {
+		f := t.recv(2000)!
 		if f.id == 0x21 {
 			prev = f.t_ns
 		} else if f.id == 0x11 && prev >= 0 {
@@ -769,7 +778,10 @@ fn test_a_serial_master_times_external_frames_by_the_ldf() {
 	master.stop()
 	slave.stop()
 	gaps.sort()
-	assert gaps[gaps.len / 2] < 7_000_000, 'median gap ${gaps[gaps.len / 2]} ns'
+	two := frame_ns_max(2, slow)
+	eight := frame_ns_max(max_data, slow)
+	median := gaps[gaps.len / 2]
+	assert median < (two + eight) / 2, 'median gap ${median} ns, windows ${two} and ${eight} ns'
 }
 
 
@@ -885,7 +897,7 @@ fn test_a_plain_pty_splits_frames_that_came_in_one_read_and_waits_for_a_late_res
 	defer {
 		C.bl_ser_close(mfd)
 	}
-	mut s := open('pty:${slave},plain', Config{ role: .slave })!
+	mut s := open('pty:${slave}@${slow},plain', Config{ role: .slave })!
 	defer {
 		s.close()
 	}
@@ -898,14 +910,15 @@ fn test_a_plain_pty_splits_frames_that_came_in_one_read_and_waits_for_a_late_res
 	assert C.bl_ser_write(mfd, two.data, i32(two.len), 100) == 0
 	assert reading(got(mut s)) == '0x10 [2] 01 02 cs 0x${cs10:02X} enhanced'
 	assert reading(got(mut s)) == '0x11 [1] 07 cs 0x${cs11:02X} enhanced'
-	// a response 4 ms behind its header: past the quiet, within an 8-byte frame's 9 ms slot
+	// a response 20 ms behind its header: past the quiet (8 ms at the slow rate), within an
+	// 8-byte frame's 72 ms slot
 	s.set_entry(Entry{ id: 0x20, dir: .subscribe, len: 8 })!
 	data := []u8{len: 8, init: u8(index)}
 	cs20 := checksum(.enhanced, pid(0x20), data)
 	time.sleep(30 * time.millisecond)
 	hdr := [u8(0x55), pid(0x20)]
 	assert C.bl_ser_write(mfd, hdr.data, 2, 100) == 0
-	time.sleep(4 * time.millisecond)
+	time.sleep(20 * time.millisecond)
 	mut resp := data.clone()
 	resp << cs20
 	assert C.bl_ser_write(mfd, resp.data, i32(resp.len), 100) == 0
