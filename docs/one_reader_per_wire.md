@@ -1,6 +1,6 @@
 # One reader per shared wire - targeted design for #212
 
-**Status: implemented; hardware acceptance done on PCAN and CANsub.** `cmd/silentcheck` passes all
+**Status: implemented; hardware acceptance done on PCAN and CANsub.** `cmd/silentcheck` ([source checkout only](building.md#command-line-tools-source-checkout-only)) passes all
 five phases through the shared hub on a PCAN-USB Pro FD against a Kvaser USBcan Pro 5xHS — PCAN as
 listener, as the talker's peer, and at a 500k/2M FD data phase; the CANsub run (2026-08-27,
 firmware 02.04.00) is recorded in `windows_can_hardware.md` and is what produced #222 and #223.

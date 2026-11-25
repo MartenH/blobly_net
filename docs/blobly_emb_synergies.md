@@ -13,7 +13,7 @@ philosophy. They are two halves of one world.
 1. **Already wired — blobly_net IS blobly_emb's integration-test driver.**
    `blobly_emb/scripts/integration-test.sh` runs the example ECU on (v)CAN, then
    drives + asserts it with `blobly_net/cmd/script/run.v --project test/vcan.yml
-   test/*.lua`. emb's `diag.lua` uses blobly_net's Lua API (`test`, `check.equal`,
+   test/*.lua` ([source checkout only](building.md#command-line-tools-source-checkout-only)). emb's `diag.lua` uses blobly_net's Lua API (`test`, `check.equal`,
    `uds.open`, `bus.send_message`, `sleep_ms`); `test/vcan.yml` *is* a blobly_net
    project file. **The Lua prelude API + runner CLI are a versioned contract**
    between the repos — drift in blobly_net silently breaks emb's integration suites

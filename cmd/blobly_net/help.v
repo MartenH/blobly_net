@@ -30,6 +30,9 @@ const help_docs = [
 	HelpDoc{'CAN bridge protocol', 'docs/bridge_protocol.md'},
 	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
 	HelpDoc{'Security access', 'docs/security_access.md'},
+	// The guides send a reader here for the cmd/ tools the bundle does not carry, so the link must
+	// land on a page rather than be dropped as a link to a file that is not a Help page.
+	HelpDoc{'Building from source', 'docs/building.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
 

@@ -11,7 +11,8 @@ them.
 3. [Linux and WSL2 from source](#linux-and-wsl2-from-source)
 4. [Native Windows from source](#native-windows-from-source)
 5. [macOS from source](#macos-from-source)
-6. [Dependencies](#dependencies)
+6. [Command-line tools (source checkout only)](#command-line-tools-source-checkout-only)
+7. [Dependencies](#dependencies)
 
 ---
 
@@ -24,7 +25,9 @@ prebuilt compiler. Releases from `v0.1.0` onward are the product.
 
 Both bundles carry the demo projects, DBCs, sample logs, the docs the Help menu renders, the
 engine as a shared library with its header (`bb.h`), a `README.txt` and a `VERSION.txt` under one
-top-level folder.
+top-level folder. They do not carry the command-line tools under `cmd/` (the Lua runner, `restbus`,
+`vectorcheck` and the rest), which the guides mention: those are
+[built from a checkout](#command-line-tools-source-checkout-only).
 
 - **Windows**: the zip is self-contained (MinGW runtime DLLs included). Run the bundled
   `register_blobnet_win.ps1` to make `.blobnet` files open in the app. The bundle also carries
@@ -171,6 +174,57 @@ scripts/run_gui.sh                         # builds libs/vgui once, then the GUI
   entity are unaffected.
 - **CANsub discovery on macOS is untested with a real device.** Its mDNS browse shares port
   5353 with mDNSResponder through `SO_REUSEPORT`, which works only if mDNSResponder set it too.
+
+## Command-line tools (source checkout only)
+
+**A release bundle does not contain these.** It ships the app (`blobly_net`), the engine as a
+library (`libblobly.so` / `blobly.dll`, with `bb.h`) and, on Windows, `canbridge`. Everything
+else under `cmd/` is a tool you build from a checkout of the source, set up as in the sections
+above (on Windows, the MSYS2 `UCRT64` shell). Where a guide names one of them, this is what it
+means. With no checkout, most have a counterpart in what ships: the Discover dialog and the
+`vector` / `blobly.vector` scripting calls do what `vectorcheck --assign` does, the Script panel
+runs Lua tests, the Python package (`pip install blobly`) and the Replay panel cover the rest bus.
+
+Build a tool from the repository root, then run it:
+
+```sh
+v -enable-globals -o build/vectorcheck cmd/vectorcheck     # Windows: -o build/vectorcheck.exe
+build/vectorcheck --list
+```
+
+or build and run in one step with `v -enable-globals run cmd/<tool> [args]`. Each tool's usage
+is the comment at the top of its source file.
+
+| tool | what it does | described in |
+|---|---|---|
+| `cmd/script` | the headless Lua test runner (usually through `scripts/runtests.sh`) | [scripting.md](scripting.md) |
+| `cmd/restbus` | replay a recording onto live buses with the ECU under test subtracted | [rest_bus.md](rest_bus.md), [simulation.md](simulation.md) |
+| `cmd/arxml2dbc` | export an AUTOSAR ARXML as a DBC (and a `[[frame]]` fragment for blobly_emb) | [dbc_attributes.md](dbc_attributes.md) |
+| `cmd/flash` | flash an image through a blobly_emb bootloader over ISO-TP | [scripting.md](scripting.md) |
+| `cmd/lin_monitor` | watch or run a LIN bus, every frame decoded through an LDF | [lin.md](lin.md) |
+| `cmd/mf4_dump` | read an ASAM MF4 recording (count, ids, frames) | [streaming_replay.md](streaming_replay.md) |
+| `cmd/dbc_decode` | load a DBC and decode one frame | [scripting.md](scripting.md) |
+| `cmd/sim_startup_check` | load a project and build its simulated ECUs, with no GUI | [simulation.md](simulation.md) |
+| `cmd/project_scaffold` | fill a project file from the interfaces this machine has | [can_hardware.md](can_hardware.md) |
+| `cmd/canbridge` | offer a Linux host's CAN interfaces to Blobly Net elsewhere; the Windows bundle carries it for WSL, anywhere else build it with `scripts/build_canbridge.sh` | [wsl_bridge.md](wsl_bridge.md) |
+| `cmd/vectorcheck` | bring up a Vector channel, list and assign application channels (Windows) | [windows_can_hardware.md](windows_can_hardware.md) |
+| `cmd/kvasercheck` | bring up Kvaser channels and walk CAN-FD data rates (Windows) | [windows_can_hardware.md](windows_can_hardware.md) |
+| `cmd/silentcheck` | prove a listen-only wire stops acknowledging, on any two adapters | [windows_can_hardware.md](windows_can_hardware.md) |
+| `cmd/crosscheck` | prove two wires are one bus and a frame survives the crossing | [windows_can_hardware.md](windows_can_hardware.md) |
+| `cmd/can_smoke` | dump a bus or send one frame | [windows_can_hardware.md](windows_can_hardware.md) |
+| `cmd/cansub_smoke` | a CANsub on the wire, end to end | its source header |
+| `cmd/doip_smoke` | UDS over DoIP against a local entity, no project needed | [doip.md](doip.md) |
+| `cmd/uds_smoke` | drive the UDS client against an ECU | [scripting.md](scripting.md) |
+| `cmd/sim_smoke` | run the native simulated ECU and check it end to end | [scripting.md](scripting.md) |
+| `cmd/lua_smoke` | the embedded Lua runs a script and calls back into V | [scripting.md](scripting.md) |
+| `cmd/isotp_smoke` | send one ISO-TP PDU over the kernel socket and print the reply | its source header |
+| `cmd/trace_dump` | read a blobly_emb target's trace ring over ISO-TP | its source header |
+| `cmd/loadtest` | a headless benchmark of many concurrent buses | its source header |
+
+`vectorcheck` and `kvasercheck` are Windows tools: on Linux `vector:1` and `kvaser:0` are ordinary
+SocketCAN names, so a Linux build reports a missing interface rather than a missing driver.
+`scripts/docs_tools_check.sh` (CI) holds this list to the guides: a guide naming a `cmd/` tool that
+is neither in the bundle nor in this table fails it.
 
 ## Dependencies
 

@@ -361,7 +361,7 @@ hardware is described in [can_hardware.md](can_hardware.md) and
 - **Vector: assign the channel first.** The XL library opens *application* channels, so a
   physical channel must be mapped to one first: `blobly.vector.assign`
   ([Vector channel assignment](#vector-channel-assignment)), the GUI's Discover dialog or
-  `cmd/vectorcheck`. Then name the application channel in the project, or open it by address.
+  `cmd/vectorcheck` ([source checkout only](building.md#command-line-tools-source-checkout-only)). Then name the application channel in the project, or open it by address.
 - **The vendor DLLs are the drivers' own.** The engine loads `PCANBasic.dll`, `canlib32.dll` and
   `vxlapi64.dll` by name when a channel first opens, and the wheel ships none of them. Under
   Python the "application directory" in Windows' DLL search is `python.exe`'s, not

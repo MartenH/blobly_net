@@ -78,7 +78,7 @@ requirements below:
   (a minimal 24.04 has no `libatomic`, which the old dynamic build needed); it uses the
   distribution's `ip` to list the CAN interfaces and create the vcans. Being musl, it resolves a `--connect` host name through `/etc/hosts` and DNS only (no
   NSS, so no mDNS `.local` names); the app passes a numeric address, `127.0.0.1` unless
-  `BLOBLY_BRIDGE_LISTEN` names another. Built from a checkout with
+  `BLOBLY_BRIDGE_LISTEN` names another. Built from a checkout ([command-line tools](building.md#command-line-tools-source-checkout-only)) with
   `scripts/build_canbridge.sh` (it needs `musl-tools`); a plain `v cmd/canbridge` builds a
   dynamic one, which runs only where the build host's glibc does.
 - **WSL 2 with `networkingMode=mirrored`** in `%UserProfile%\.wslconfig`:

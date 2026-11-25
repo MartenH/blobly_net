@@ -117,7 +117,7 @@ Rules both readers follow:
   - In blobly_emb, `[[frame]].e2e` fields that contradict the DBC are refused unless the table
     says `deviates_from_dbc = true`; a field it leaves out is the DBC's.
 - **Writers emit `"P01"` and `"P05"`.** blobly_net's DBC editor writes the attributes from the
-  model; it never writes `autosar_p01` or `autosar_p05`. `cmd/arxml2dbc` writes `"P01"` only:
+  model; it never writes `autosar_p01` or `autosar_p05`. `cmd/arxml2dbc` ([source checkout only](building.md#command-line-tools-source-checkout-only)) writes `"P01"` only:
   its DBC is what blobly_emb builds from, and blobly_emb refuses any other profile.
 - **From ARXML**, `cmd/arxml2dbc` exports the contract when the frame's E2E protection is
   PROFILE_01 with DATA-ID-MODE ALL-16-BIT, and its CRC and counter are signals at the declared

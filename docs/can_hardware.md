@@ -33,7 +33,7 @@ candump can0            # or: cansend can0 123#DEADBEEF
 `blobly/transport/socketcan_linux.v` handles I/O unchanged, and the new
 `blobly/transport/discover_linux.v` (`ip -details -json link show`) lists `can0`
 as a real `can` interface **with its bitrate** — so `cmd/project_scaffold scan`
-scaffolds it straight into a project channel. This is the cleanest way to validate
+([source checkout only](building.md#command-line-tools-source-checkout-only)) scaffolds it straight into a project channel. This is the cleanest way to validate
 the scaffolder against real hardware.
 
 ## WSL2 — usbipd-win + a kernel rebuild

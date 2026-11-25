@@ -160,7 +160,7 @@ the one thing copied, so Start warns when a row no longer matches the cluster it
 reissued extract can leave it: its CAN-FD setting on any adapter, and its rate and data rate where
 Blobly Net sets them (PCAN, Kvaser, Vector, CANsub; on SocketCAN the rate is `ip link`'s).
 
-For a tool that needs a DBC, `cmd/arxml2dbc` exports one with the E2E contract as attributes
+For a tool that needs a DBC, `cmd/arxml2dbc` ([source checkout only](building.md#command-line-tools-source-checkout-only)) exports one with the E2E contract as attributes
 wherever the DBC attributes can express it (the load notes name any contract it leaves out).
 [simulation.md](simulation.md#the-model-networks-own-the-database) has the reader's rules.
 

@@ -38,7 +38,7 @@ leaves the node unprotected — so the load says each one, with where it sits:
 `unknown key `cycle_msec` in channel "CAN1" / generator "G" (known: name, key, ...)`. Opening the
 project or applying the File tab puts these in the Log; the headless runner and `bb_load` on
 stderr; Python as `net.notes`. A LIN row is stricter: an unknown key there refuses the file. A
-strict load (`cmd/script --strict`, `blobly.Project(path, strict=True)`, `BB_LOAD_STRICT`) refuses
+strict load (`cmd/script --strict` ([source checkout only](building.md#command-line-tools-source-checkout-only)), `blobly.Project(path, strict=True)`, `BB_LOAD_STRICT`) refuses
 every unknown key, and every record of the project's DBCs the reader does not take
 (`u.dbc: not read: SIG_VALTYPE_ × 3, attribute "GenSigSendType" × 40`). A file of a newer schema
 than the build reading it may carry keys that build cannot know: they are said, never refused.

@@ -5,6 +5,11 @@ Blobly Net supports there, how it is addressed, and how far the support has actu
 verified. (On Linux the kernel owns the adapter and everything is SocketCAN — see
 [can_hardware.md](can_hardware.md).)
 
+The bench tools this page names — `vectorcheck`, `kvasercheck`, `silentcheck`, `crosscheck` and
+`can_smoke` — are **not in the release bundle**: they are built from a source checkout
+([command-line tools](building.md#command-line-tools-source-checkout-only)). With the bundle alone, the Discover dialog lists the adapters and
+assigns Vector channels, and a channel's Buses row shows its state.
+
 ## What is supported
 
 | vendor | interface string | library | status |
@@ -485,8 +490,9 @@ would not describe or does not have, and nothing changes while a run is started
 
 **From the CLI**, when there is no GUI or you want it scripted. `cmd/vectorcheck` is a **source-tree
 tool and is not in the release bundle** — that ships the app, its C library and canbridge, none of
-the bench tools — so build it from a checkout
-first, or use the Discover dialog above, which does the same job and checks more before it writes:
+the bench tools — so build it from a checkout first
+([command-line tools](building.md#command-line-tools-source-checkout-only)), or use the Discover dialog above, which does the same job and checks
+more before it writes:
 
 ```sh
 v -enable-globals -o vectorcheck.exe cmd/vectorcheck

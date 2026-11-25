@@ -203,6 +203,14 @@ jobs:
           chmod +x scripts/v_toolchain_test.sh
           ./scripts/v_toolchain_test.sh
 
+      # A guide naming a cmd/ tool the release bundle does not carry sends the reader to
+      # docs/building.md's source-checkout section, which lists it (#198).
+      - name: guides name only tools a reader can find (scripts/docs_tools_check.sh)
+        run: |
+          chmod +x scripts/docs_tools_check.sh scripts/docs_tools_check_test.sh
+          ./scripts/docs_tools_check_test.sh
+          ./scripts/docs_tools_check.sh
+
       # Every docs/*.drawio.svg is what its script in docs/diagrams/ draws, so a diagram is
       # always regenerable and editable from its source.
       - name: diagrams match their scripts (scripts/diagrams_check.sh)

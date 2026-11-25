@@ -63,7 +63,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   element** of that aggregate to snapshot its interior pointers, and past 32 of them it also
   `calloc`s, `GC_add_roots`, `GC_remove_roots` and `free`s per call. So a replay loop sitting in
   a frame that holds a million-frame `[]canlog.LogEntry` pays a million-element walk **per
-  frame sent**. Measured here on a 1.23 M-frame `.mf4`: `cmd/restbus` sent **562 frames in ten
+  frame sent**. Measured here on a 1.23 M-frame `.mf4`: `cmd/restbus` ([source checkout only](building.md#command-line-tools-source-checkout-only)) sent **562 frames in ten
   minutes** instead of 1.07 M in sixty seconds — a ~9 ms cost on every call out of that frame,
   where the same call costs 1 ns. The discriminator is the ELEMENT TYPE and the by-value-ness,
   nothing else: `&[]LogEntry` is free, `[]u64` (pointer-free elements) is free, and removing the

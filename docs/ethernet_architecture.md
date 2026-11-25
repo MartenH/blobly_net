@@ -105,7 +105,7 @@ structural), and the server takes a plain callback. This keeps the dependency ar
 
 ## Verification (oracle-first, same discipline as every module)
 
-1. **V client ↔ V server** over real localhost TCP (`cmd/doip_smoke`): drive `uds.Client` over the
+1. **V client ↔ V server** over real localhost TCP (`cmd/doip_smoke`, [source checkout only](building.md#command-line-tools-source-checkout-only)): drive `uds.Client` over the
    DoIP channel — session (0x10), RDBI VIN (0x22/0xF190), a negative response — plus a UDP discovery
    round-trip. This is the primary hermetic end-to-end.
 2. **scapy oracle** (`sut/doip_server.py`, scapy `automotive.doip`, in a venv): an independent DoIP

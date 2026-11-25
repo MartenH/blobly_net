@@ -8,7 +8,7 @@ the order they come in, and what each side does with them.
 
 The format is version **3**. `blobly/transport/bridge_codec.v` implements it, and
 `blobly/transport/bridge_codec_test.v` pins the exact bytes of every record. The reference bridge
-is `cmd/canbridge`, over `blobly/transport/bridge_server.v`.
+is `cmd/canbridge` ([built from a checkout](building.md#command-line-tools-source-checkout-only) on Linux), over `blobly/transport/bridge_server.v`.
 
 ## The connection
 
