@@ -1222,7 +1222,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		// WHICH ADAPTERS SILENCE THE TRANSCEIVER is asked of the registry, not written out: this
 		// said "only Vector" long after CANsub, PCAN and Kvaser could too.
 		silencing := project.adapters.filter(project.adapter_silences_transceiver(it))
-		cfg_field('listen-only', 'Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On ${silencing.join(', ')} the transceiver is put in silent mode as well, so it does not even acknowledge; on SocketCAN the controller still ACKs what it hears, and the software buses have no ACK.',
+		cfg_field('listen-only', 'Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On ${silencing.join(', ')} the transceiver is put in silent mode as well, so it does not even acknowledge; on SocketCAN (and a CAN bridge) the mode of the controller is set on its host with ip link and only read here — the Buses row says NOT SILENT when it still acknowledges — and the software buses have no ACK.',
 			sc)
 		lo := vgui.checkbox('##lo${i}', ch.listen_only)
 		if lo != ch.listen_only {

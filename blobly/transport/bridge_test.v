@@ -504,6 +504,77 @@ fn test_records_from_a_previous_open_of_a_channel_are_dropped() {
 	s.forget(0, c)
 }
 
+// The bridge reads its interface's controller and states it in its status (canlink.v): a
+// listen-only row on a controller that acknowledges is a declared fault here, with nothing sent
+// or received, and a vcan says nothing (#454).
+fn test_a_bridge_states_its_controller_and_the_mark_is_held_against_it() {
+	ep := bridge_listen()!
+	mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
+	spawn serve_detached(mut c, BridgeServeCfg{
+		token:    ep.token
+		name:     'b-mode'
+		channels: ['can0', 'vcan0']
+		opener:   inproc_opener('bm-')
+		link:     fn (name string) CanLink {
+			return if name == 'can0' {
+				CanLink{
+					kind: 'can'
+					mode: .normal
+				}
+			} else {
+				CanLink{
+					kind: 'vcan'
+					mode: .no_controller
+				}
+			}
+		}
+	})
+	for _ in 0 .. 300 {
+		if _ := bridge_session('b-mode') {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	can := 'bridge:b-mode/can0'
+	vcan := 'bridge:b-mode/vcan0'
+	forget_silence_claims()
+	set_listen_only(can, true)
+	set_listen_only(vcan, true)
+	defer {
+		clear_listen_only()
+		forget_silence_claims()
+	}
+	// opened while the mode is not yet known: nothing to refuse
+	mut a := open(can)!
+	mut v := open(vcan)!
+	defer {
+		a.close()
+		v.close()
+	}
+	mut f := SilenceFault{}
+	for _ in 0 .. 300 {
+		if got := wire_silence_fault(can) {
+			f = got
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert f.want && f.declared, 'no fault arrived: ${f}'
+	assert f.why.contains('can0 on the host of bridge "b-mode"')
+	assert f.why.contains('ip link set can0 type can listen-only on')
+	assert wire_silence_fault(vcan) == none
+	mut refused := false
+	a.send(CanFrame{ id: 1, data: [u8(1)] }) or {
+		refused = true
+		assert err is NotWritten
+	}
+	assert refused
+	// unmarked, the controller agrees: the next send goes out and the fault is gone
+	set_listen_only(can, false)
+	a.send(CanFrame{ id: 1, data: [u8(1)] })!
+	assert wire_silence_fault(can) == none
+}
+
 fn test_each_session_is_its_own_clock_domain() {
 	assert bridge_domain('x', 1) != bridge_domain('x', 2)
 }

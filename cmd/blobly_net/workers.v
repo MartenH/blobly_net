@@ -768,6 +768,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut last_diag := if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
 	a.mu.unlock()
 	mut next_health := i64(0)
+	// What the wire's controller last disagreed with its row about (silence.v): narrated on change,
+	// so a declared fault — a SocketCAN controller set otherwise on its host — is said in the Log
+	// at the first poll of the run, beside the Buses row that shows it.
+	mut last_sf := ?transport.SilenceFault(none)
 	// ASK OFTEN UNTIL THE WIRE HAS ANSWERED ONCE, and only briefly. A driver's first health
 	// sample lands a few hundred ms after open (CANsub: its own first poll, ~260 ms after Start,
 	// measured 2026-08-30), and a first look here that came back `unknown` waited a full second
@@ -812,6 +816,16 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				vgui.wake()
 				last_diag = d
 			}
+			sf := transport.wire_silence_fault(iface)
+			if line := transport.silence_fault_change(iface, last_sf, sf) {
+				a.mu.lock()
+				if a.running && a.row_is_mine_locked(ci, iface, gen) {
+					a.log_append_locked(line)
+				}
+				a.mu.unlock()
+				vgui.wake()
+			}
+			last_sf = sf
 		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).

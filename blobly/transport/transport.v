@@ -192,7 +192,8 @@ mut:
 	// reconcile_silence brings this wire's CONTROLLER into line with the listen-only policy, for
 	// the backends that have a controller to bring. Everything else answers by doing nothing:
 	// a software bus has no acknowledgement to suppress, so refusing to send is already the whole
-	// of listening-only there.
+	// of listening-only there. A SocketCAN or bridged interface, whose mode is set on its host,
+	// is READ and held against the mark instead, a disagreement a declared fault (canlink.v).
 	//
 	// ON THE INTERFACE, for the reason health() is and one more. `SilentBus` wraps every bus `open`
 	// hands out and REFUSES a send on a silenced wire before the backend is reached — so a backend

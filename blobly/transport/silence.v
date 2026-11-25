@@ -324,3 +324,24 @@ pub fn forget_silence_claims() {
 fn silence_word(silent bool) string {
 	return if silent { 'listen-only' } else { 'normal' }
 }
+
+// silence_fault_change is the Log's line for a wire whose silence fault changed between two looks,
+// or none when nothing did: a new or different fault named with what the row asked, a cleared one
+// saying the controller now agrees. The Buses row shows the standing fault; this narrates it, so a
+// declared one (a SocketCAN controller set otherwise on its host, a CANsub that will not
+// reconfigure a live channel) is said where an operator reads.
+pub fn silence_fault_change(iface string, was ?SilenceFault, now ?SilenceFault) ?string {
+	if f := now {
+		if w := was {
+			if w == f {
+				return none
+			}
+		}
+		asked := if f.want { 'marked listen-only' } else { 'transmit-enabled' }
+		return '${iface}: ${asked}, but ${f.why}'
+	}
+	if w := was {
+		return '${iface}: the controller now agrees with the row (${silence_word(w.want)})'
+	}
+	return none
+}

@@ -127,6 +127,8 @@ struct BridgeResult {
 struct BridgeChanState {
 mut:
 	health BusHealth
+	// What the bridge read of the interface's controller (canlink.v).
+	mode ControllerMode
 	// What the bridge reported about its own side of the channel.
 	remote BusDiagnostics
 	// Frames this side dropped because the channel's queue was full.
@@ -142,7 +144,12 @@ mut:
 struct BridgeChan {
 	// This open's number: every record about it carries it, and one carrying another is from a
 	// previous open of the channel, still in the stream.
-	gen     u32
+	gen u32
+	// The channel's address here, and its interface's name on the bridge's host: what a
+	// controller's mode is held against and named by.
+	iface   string
+	host_if string
+	bridge  string
 	rx      chan SharedIngress
 	results chan BridgeResult
 	opened  chan string
@@ -803,6 +810,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 			lock ch.st {
 				ch.st.health = rec.health
 				ch.st.remote = rec.diag
+				ch.st.mode = rec.mode
+			}
+			// a passive listener never sends, so the reading is held against the mark here
+			if mode_holds_against(rec.mode) {
+				apply_controller_mode(ch.iface, ch.host_if, ch.bridge, rec.mode, is_listen_only(ch.iface)) or {}
 			}
 		}
 		.lost {
@@ -948,7 +960,10 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	}
 	ch := u8(idx)
 	mut c := &BridgeChan{
-		gen: s.next_seq()
+		gen:     s.next_seq()
+		iface:   iface
+		host_if: spec.channel
+		bridge:  spec.name
 		rx:      chan SharedIngress{cap: bridge_queue_cap + bridge_ack_reserve}
 		results: chan BridgeResult{cap: 64}
 		opened:  chan string{cap: 1}
@@ -1125,9 +1140,17 @@ fn (mut b BridgeBus) error_counters() ErrorCounters {
 	return ErrorCounters{}
 }
 
-// reconcile_silence — the interface's mode is set on the bridge's host, as for SocketCAN, and a
-// vcan has no transceiver at all.
-fn (mut b BridgeBus) reconcile_silence(_ bool) ! {}
+// reconcile_silence holds the wire's mark against what the bridge READ of its interface's
+// controller (canlink.v) — the mode is set on the bridge's host, as for SocketCAN, and is never
+// changed from here. Unknown until the bridge's first status, and always from an older bridge.
+fn (mut b BridgeBus) reconcile_silence(want bool) ! {
+	mode := rlock b.c.st {
+		b.c.st.mode
+	}
+	if mode_holds_against(mode) {
+		apply_controller_mode(b.iface, b.c.host_if, b.c.bridge, mode, want)!
+	}
+}
 
 fn (mut b BridgeBus) reports_tx_ack() bool {
 	return true

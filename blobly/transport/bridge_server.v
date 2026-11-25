@@ -27,6 +27,8 @@ pub:
 	channels []string
 	// What opens a channel by its name. `open` on the bridge's host by default.
 	opener fn (string) !Bus = open
+	// What reads a channel's controller by its name (canlink.v), carried in its status records.
+	link fn (string) CanLink = can_link_of
 }
 
 struct BridgeServedState {
@@ -38,11 +40,16 @@ mut:
 	// Frame records the pump has received and not yet written. Here rather than in the pump, so a
 	// send writes them ahead of its acknowledgement: they were on the wire before it.
 	pending []u8
+	// A new open of the channel, whose records are numbered anew: the pump states its status again.
+	restate bool
 }
 
 // BridgeServed is one channel the app has open.
 @[heap]
 struct BridgeServed {
+	// what the channel's controller was read in at open; a mode change needs the link down,
+	// which ends the channel
+	mode ControllerMode
 mut:
 	bus Bus
 	st  shared BridgeServedState
@@ -208,6 +215,7 @@ fn (mut srv BridgeServer) open_channel(ch u8, gen u32) ! {
 	if mut s := srv.chans[ch] {
 		lock s.st {
 			s.st.gen = gen
+			s.st.restate = true
 		}
 		srv.write(bridge_encode_opened(ch, gen, ''))!
 		return
@@ -218,7 +226,8 @@ fn (mut srv BridgeServer) open_channel(ch u8, gen u32) ! {
 		return
 	}
 	mut s := &BridgeServed{
-		bus: bus
+		bus:  bus
+		mode: srv.cfg.link(name).mode
 	}
 	lock s.st {
 		s.st.gen = gen
@@ -309,11 +318,13 @@ fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 		bridge_stamp()))!
 }
 
-// pump returns every frame the channel receives, and its health and counts whenever they change,
-// until the channel is closed or fails.
+// pump returns every frame the channel receives, and its health and counts whenever they change —
+// and its status once after each open, so the app learns the controller's mode — until the channel
+// is closed or fails.
 fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 	mut health := BusHealth.unknown
 	mut diag := BusDiagnostics{}
+	mut stated := false
 	for {
 		if !rlock s.st {
 			s.st.running
@@ -350,10 +361,16 @@ fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 		}
 		h := s.bus.health()
 		d := s.bus.diagnostics()
-		if h != health || d != diag {
+		restate := lock s.st {
+			r := s.st.restate
+			s.st.restate = false
+			r
+		}
+		if !stated || restate || h != health || d != diag {
 			health = h
 			diag = d
-			srv.write(bridge_encode_status(ch, served_gen(s), h, d)) or {
+			stated = true
+			srv.write(bridge_encode_status(ch, served_gen(s), h, d, s.mode)) or {
 				srv.fail()
 				return
 			}

@@ -726,7 +726,11 @@ fn (mut app App) set_adapter(i int, a string) {
 		// become the second adapter that silences its controller — a warning telling an operator
 		// something false about what their hardware can do (codex round 14 on #204).
 		can_silence := project.adapters.filter(project.adapter_silences_transceiver(it))
-		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
+		if project.adapter_reads_controller_mode(a) {
+			app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit; ${a} sets no transceiver, so set the interface listen-only on its host with ip link (the Buses row says NOT SILENT while it still ACKs)')
+		} else {
+			app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
+		}
 	}
 	if a == 'doip' || a == 'someip' {
 		app.proj.channels[i].typ = a

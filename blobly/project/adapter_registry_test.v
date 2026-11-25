@@ -235,6 +235,19 @@ fn test_no_vendor_hardware_is_left_unsilenced() {
 	}
 }
 
+// EVERY ADAPTER WITH A CONTROLLER is either silenced by this app or read by it (#454): a SocketCAN
+// interface, local or behind a bridge, has its mode set on its host and only read here. The two
+// sets are disjoint, and the software buses are in neither — they have no ACK to suppress.
+fn test_a_controller_is_silenced_or_read() {
+	for a in adapters {
+		assert !(adapter_silences_transceiver(a) && adapter_reads_controller_mode(a)), a
+	}
+	assert adapter_reads_controller_mode('socketcan') && adapter_reads_controller_mode('bridge')
+	for a in ['virtual', 'vcan', 'udp', 'doip', 'someip'] {
+		assert !adapter_reads_controller_mode(a), a
+	}
+}
+
 
 
 

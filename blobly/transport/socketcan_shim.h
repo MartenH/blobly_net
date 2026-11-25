@@ -16,6 +16,11 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <linux/can/error.h>
+#include <linux/can/netlink.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <linux/if_link.h>
+#include <sys/time.h>
 #ifndef CAN_ERR_CNT
 #define CAN_ERR_CNT 0x00000200U /* TX error counter in data[6], RX in data[7] */
 #endif
@@ -232,5 +237,99 @@ static inline uint32_t ct_eff_flag(void) { return CAN_EFF_FLAG; }
 static inline uint32_t ct_rtr_flag(void) { return CAN_RTR_FLAG; }
 static inline uint32_t ct_sff_mask(void) { return CAN_SFF_MASK; }
 static inline uint32_t ct_eff_mask(void) { return CAN_EFF_MASK; }
+
+// ct_can_link reads what the kernel says about interface `ifname` over rtnetlink (RTM_GETLINK),
+// without changing anything and without root: its link kind (IFLA_LINKINFO -> IFLA_INFO_KIND,
+// "can" for a controller, "vcan"/"vxcan" for a software one) into `kind`, and, for a CAN
+// controller, its ctrlmode flags (IFLA_INFO_DATA -> IFLA_CAN_CTRLMODE) into `*flags`, with
+// `*has_flags` set when the answer carried them. Returns 0 when the link was read (a link with no
+// IFLA_LINKINFO leaves `kind` empty), or -errno. canlink.v reads the answer.
+static inline int ct_can_link(const char *ifname, char *kind, int kind_cap, uint32_t *flags,
+		int *has_flags) {
+	if (kind_cap > 0) kind[0] = 0;
+	*flags = 0;
+	*has_flags = 0;
+	unsigned idx = if_nametoindex(ifname);
+	if (idx == 0) return -(errno ? errno : ENODEV);
+	int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+	if (fd < 0) return -errno;
+	// bounded: the kernel answers a GETLINK at once, and a reader must never hang on this
+	struct timeval tv = { 1, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	struct {
+		struct nlmsghdr nh;
+		struct ifinfomsg ifi;
+	} req;
+	memset(&req, 0, sizeof(req));
+	req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	req.nh.nlmsg_type = RTM_GETLINK;
+	req.nh.nlmsg_flags = NLM_F_REQUEST;
+	req.nh.nlmsg_seq = 1;
+	req.ifi.ifi_family = AF_UNSPEC;
+	req.ifi.ifi_index = (int)idx;
+	struct sockaddr_nl to;
+	memset(&to, 0, sizeof(to));
+	to.nl_family = AF_NETLINK;
+	if (sendto(fd, &req, req.nh.nlmsg_len, 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
+		int e = errno;
+		close(fd);
+		return -e;
+	}
+	// one link's answer: its statistics and attributes, a few KB at most
+	union {
+		struct nlmsghdr align;
+		char b[16384];
+	} ans;
+	char *buf = ans.b;
+	ssize_t n;
+	for (;;) {
+		n = recv(fd, buf, sizeof(ans.b), 0);
+		if (n < 0 && errno == EINTR) continue;
+		break;
+	}
+	int e = errno;
+	close(fd);
+	if (n < 0) return -e;
+	int len = (int)n;
+	for (struct nlmsghdr *nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+		if (nh->nlmsg_seq != 1) continue;
+		if (nh->nlmsg_type == NLMSG_ERROR) {
+			struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
+			return err->error < 0 ? err->error : -EPROTO;
+		}
+		if (nh->nlmsg_type != RTM_NEWLINK) continue;
+		struct ifinfomsg *ifi = (struct ifinfomsg *)NLMSG_DATA(nh);
+		if (ifi->ifi_index != (int)idx) continue;
+		int alen = (int)IFLA_PAYLOAD(nh);
+		for (struct rtattr *a = IFLA_RTA(ifi); RTA_OK(a, alen); a = RTA_NEXT(a, alen)) {
+			if ((a->rta_type & NLA_TYPE_MASK) != IFLA_LINKINFO) continue;
+			int llen = (int)RTA_PAYLOAD(a);
+			for (struct rtattr *li = (struct rtattr *)RTA_DATA(a); RTA_OK(li, llen); li = RTA_NEXT(li, llen)) {
+				int t = li->rta_type & NLA_TYPE_MASK;
+				if (t == IFLA_INFO_KIND && kind_cap > 0) {
+					int klen = (int)RTA_PAYLOAD(li);
+					if (klen > kind_cap - 1) klen = kind_cap - 1;
+					memcpy(kind, RTA_DATA(li), (size_t)klen);
+					kind[klen] = 0;
+					// the attribute carries its NUL; a short copy keeps the string whole
+					kind[strnlen(kind, (size_t)klen)] = 0;
+				} else if (t == IFLA_INFO_DATA) {
+					int dlen = (int)RTA_PAYLOAD(li);
+					for (struct rtattr *d = (struct rtattr *)RTA_DATA(li); RTA_OK(d, dlen); d = RTA_NEXT(d, dlen)) {
+						if ((d->rta_type & NLA_TYPE_MASK) == IFLA_CAN_CTRLMODE
+								&& RTA_PAYLOAD(d) >= sizeof(struct can_ctrlmode)) {
+							struct can_ctrlmode cm;
+							memcpy(&cm, RTA_DATA(d), sizeof(cm));
+							*flags = cm.flags;
+							*has_flags = 1;
+						}
+					}
+				}
+			}
+		}
+		return 0;
+	}
+	return -ENODATA;
+}
 
 #endif // BLOBLY_SOCKETCAN_SHIM_H

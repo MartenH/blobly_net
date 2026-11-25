@@ -36,6 +36,22 @@ as a real `can` interface **with its bitrate** — so `cmd/project_scaffold scan
 ([source checkout only](building.md#command-line-tools-source-checkout-only)) scaffolds it straight into a project channel. This is the cleanest way to validate
 the scaffolder against real hardware.
 
+**Listen-only on SocketCAN is set on the interface, not by the app.** A row ticked listen-only
+stops the app from sending, but only the controller can stop acknowledging, and changing a
+SocketCAN controller's mode means taking the link down as root. So the app reads the mode (over
+rtnetlink, at every open) and says when it disagrees with the row: `NOT SILENT` on the Buses row
+and a Log line when the row is listen-only and the controller is not, `STILL SILENT` when the
+controller is listen-only and the row is meant to transmit (its sends are then refused rather than
+dropped by the kernel). To make the controller listen-only:
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can listen-only on
+sudo ip link set can0 up
+```
+
+A vcan has no controller and nothing to set.
+
 ## WSL2 — usbipd-win + a kernel rebuild
 
 Two requirements, because WSL2 doesn't expose USB by default:

@@ -32,7 +32,9 @@ import sync
 // A backend that can silence its transceiver must therefore do BOTH, and each of them
 // (`vector:...,silent`, `canSetBusOutputControl`, `PCAN_LISTEN_ONLY`) reads this table rather than
 // keeping its own answer. A backend that CANNOT -- the software buses, SocketCAN's `vcan` -- has
-// no ACK to suppress, so software refusal is complete there by construction.
+// no ACK to suppress, so software refusal is complete there by construction. A real SocketCAN
+// controller (local, or behind a CAN bridge) has one, set on its host by `ip link`: it is READ and
+// a disagreement with this table is a declared fault, never a reconfiguration (canlink.v, #454).
 //
 // Each of those backends re-asks PER RECEIVE rather than caching the answer at open, for exactly
 // the reason the send path does: a row can be toggled mid-run and a project replaced, so an answer
