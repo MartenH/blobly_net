@@ -221,8 +221,10 @@ is the comment at the top of its source file.
 | `cmd/trace_dump` | read a blobly_emb target's trace ring over ISO-TP | its source header |
 | `cmd/loadtest` | a headless benchmark of many concurrent buses | its source header |
 
-`vectorcheck` and `kvasercheck` are Windows tools: on Linux `vector:1` and `kvaser:0` are ordinary
-SocketCAN names, so a Linux build reports a missing interface rather than a missing driver.
+`vectorcheck` and `kvasercheck` are Windows tools. A Linux build compiles, but vectorcheck says
+its backend is Windows-only, `--list` finds no driver in either, and an open of `vector:1` or
+`kvaser:0` goes to SocketCAN, where those are ordinary interface names, and fails as a missing
+interface.
 `scripts/docs_tools_check.sh` (CI) holds this list to the guides: a guide naming a `cmd/` tool that
 is neither in the bundle nor in this table fails it.
 
