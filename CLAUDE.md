@@ -150,8 +150,9 @@ PyPI refuses. Bundle payload list:
 `scripts/stage_bundle.sh`, once, for both. Its Linux job is pinned to **ubuntu-24.04**, not
 `ubuntu-latest`: a Linux binary does not bundle glibc, so the build host sets the oldest system it
 runs on, and a floating label raises that floor silently. Ubuntu 24.04 is the supported floor,
-and `ci.yml`'s compiling jobs and canbridge are pinned to the same image, so a PR is tested with
-the compiler the release builds with. Notes =
+and `ci.yml`'s required compiling jobs and canbridge are pinned to the same image (the
+non-required `canary-latest` is the one exception), so a PR is tested with the compiler the
+release builds with. Notes =
 `packaging/RELEASE_HIGHLIGHTS.md` (written per release, its first line naming the tag) +
 generated changelog + `packaging/RELEASE_NOTES_HEADER.md`. Never bundle a vendor CAN DLL
 (ROADMAP has the list and the reason). The maintainer walkthrough is
@@ -447,7 +448,8 @@ BESIDE the mingw jobs, and a `bundle` job joins them where the bundle is publish
 Both use exact keys, rebuild on a miss and save only after a successful dependency build.
 A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
-The Linux release runs on the same `ubuntu-24.04` image as CI's compiling jobs, so it restores the same caches.
+The Linux release runs on the same `ubuntu-24.04` image as CI's required compiling jobs, so it restores the same caches
+(`canary-latest`, on `ubuntu-latest`, keys its own).
 `.github/actions/setup-v-windows` caches the downloaded toolchain zip, keyed by its asset name
 (`v-windows-zip-1-` prefix; bump it after a re-mint under the same name), and on a miss tries
 the download three times. Every job carries a `timeout-minutes`, so a hung step costs that
