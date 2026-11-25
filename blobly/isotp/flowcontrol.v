@@ -241,8 +241,8 @@ pub fn exhausted_note(ms int) string {
 }
 
 // Skipped is what a segmented send's wait for Flow Control read past: Single and First Frames on
-// its receive id. ISO 15765-2 has a half-duplex sender ignore an N_PDU it does not expect, and the
-// Linux kernel's isotp does; the software channel aborted the send instead, which a stray or
+// its receive id. ISO 15765-2 has a half-duplex sender ignore an N_PDU it does not expect, as the
+// Linux kernel's isotp does in its half-duplex mode; the software channel aborted the send instead, which a stray or
 // duplicated Single Frame from an ECU turned into a failed firmware update on every adapter but
 // SocketCAN (MartenH/blobly_emb#407). Neither is a message: a skipped frame is not delivered.
 pub struct Skipped {
