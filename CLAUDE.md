@@ -522,8 +522,9 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   does — reload the Codex extension (pinned by `scripts/codex_local_review_test.sh` in CI).
   One review runs at a time per user (#568: two at once shared codex's state, and one printed
   the other's summary): a second run waits on `~/.codex-local-review.lock`, naming the pid it
-  waits for (`CODEX_REVIEW_NO_WAIT=1` refuses, exit 5), and a summary that does not begin with
-  the reviewed short sha is printed under a WARNING.
+  waits for (`CODEX_REVIEW_NO_WAIT=1` refuses, exit 5), and a summary codex's transcript does
+  not record for this run (its workdir, this run's prompt, the summary's first line) is printed
+  under a WARNING.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the

@@ -20,12 +20,13 @@
 #
 # One review at a time per user (#568): two `codex exec review` runs at once share the user's codex
 # state, and one run once printed the other's summary as its own. A run holds an exclusive lock on
-# ~/.codex-local-review.lock (flock; where flock is missing, the directory ~/.codex-local-review.lock.d
-# holding the holder's pid, removed when the run exits and taken over when that pid has gone) from
-# before the tree is checked until it exits, and says "waiting for another local review (pid N) to
-# finish" while it waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5). --check-codex and
-# --dry-run take no lock. And the summary is bound to the commit: the prompt asks codex to begin its
-# final message with the reviewed short sha, and a summary that does not is printed under a WARNING.
+# ~/.codex-local-review.lock (flock; where flock is missing, the symbolic link ~/.codex-local-review.lock.held
+# whose target is the holder's pid, removed when the run exits and taken over when that pid is not a
+# running review) from before the tree is checked until it exits, and says "waiting for another local
+# review (pid N) to finish" while it waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5).
+# --check-codex and --dry-run take no lock. And the summary is checked against what codex recorded for
+# this run — the transcript's workdir and prompt, and the summary's first line in it — and printed
+# under a WARNING where they disagree.
 #
 # Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (with --check-codex, 0 is a
 # codex found and 3 none, besides the usage and setup exits; a review's own exit can be codex's,
@@ -174,13 +175,21 @@ fi
 # The per-user review lock. Taken before the tree is checked and HEAD read, so a run that waited
 # reviews the branch as it is once its turn comes. Released by release_lock, which every EXIT trap
 # below calls: the flock goes with the process (codex runs with fd 9 closed, so nothing it leaves
-# behind holds it); the directory is removed only by the pid it names.
+# behind holds it); the link is removed only by the pid it names.
 lock_file=$HOME/.codex-local-review.lock
-lock_dir=$lock_file.d
+lock_link=$lock_file.held
 lock_held=
 refuse_busy() { # refuse_busy <holder pid or empty>
 	echo "codex-local-review: another local review (pid ${1:-unknown}) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
 	exit 5
+}
+me=$(basename "$self")
+ps_names=0
+holds_review() { # holds_review <pid>: the pid runs, and (where ps can say) it is a review run
+	kill -0 "$1" 2>/dev/null || return 1
+	[ "$ps_names" = 0 ] && return 0
+	case "$(ps -p "$1" -o command= 2>/dev/null || true)" in *"$me"*) return 0 ;; esac
+	return 1 # a pid reused after a reboot or a kill that skipped the EXIT trap
 }
 take_lock() {
 	local holder said=none
@@ -196,14 +205,20 @@ take_lock() {
 		lock_held=flock
 		return
 	fi
-	while ! mkdir "$lock_dir" 2>/dev/null; do
-		holder=$(tr -cd 0-9 2>/dev/null <"$lock_dir/pid" || true)
-		# a holder killed before its EXIT trap ran leaves the directory behind; two waiters seeing
-		# the same dead pid can both remove it, the one narrow race this fallback keeps
-		if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null &&
-			[ "$(tr -cd 0-9 2>/dev/null <"$lock_dir/pid" || true)" = "$holder" ]; then
-			echo "codex-local-review: removing the lock left by pid $holder, which is no longer running" >&2
-			rm -rf "$lock_dir"
+	# whether ps names a process's command here: asked of this run itself, so a ps that cannot see
+	# processes (a sandbox without /proc) never makes a live holder look like somebody else
+	case "$(ps -p "$$" -o command= 2>/dev/null || true)" in *"$me"*) ps_names=1 ;; esac
+	# where flock is missing: a symbolic link whose target is the holder's pid, made in one step, so
+	# there is never a lock without a pid
+	while ! ln -sn "$$" "$lock_link" 2>/dev/null; do
+		[ -L "$lock_link" ] || continue # released between the two calls
+		holder=$(readlink "$lock_link" 2>/dev/null || true)
+		# a holder killed before its EXIT trap ran leaves the link behind; two waiters seeing the
+		# same stale holder can both remove it, the one narrow race this fallback keeps
+		if { ! [[ $holder =~ ^[0-9]+$ ]] || ! holds_review "$holder"; } &&
+			[ "$(readlink "$lock_link" 2>/dev/null || true)" = "$holder" ]; then
+			echo "codex-local-review: removing the lock left by pid ${holder:-unknown}, which is not a running review" >&2
+			rm -f "$lock_link"
 			continue
 		fi
 		[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
@@ -213,12 +228,11 @@ take_lock() {
 		fi
 		sleep 1
 	done
-	lock_held=dir
-	printf '%s\n' "$$" >"$lock_dir/pid"
+	lock_held=held
 }
 release_lock() {
-	if [ "$lock_held" = dir ] && [ "$(cat "$lock_dir/pid" 2>/dev/null || true)" = "$$" ]; then
-		rm -rf "$lock_dir"
+	if [ "$lock_held" = held ] && [ "$(readlink "$lock_link" 2>/dev/null || true)" = "$$" ]; then
+		rm -f "$lock_link"
 	fi
 	lock_held=
 }
@@ -264,8 +278,6 @@ prompt="Review the changes on this branch: \`git diff $merge_base $head\`.
 Report EVERY defect you find, not only the most important ones. Include minor ones and edge cases: wire-level and protocol behaviour, inputs at or past their limits, timing and deadlines, error paths, data that is accepted and then lost or silently altered, and inconsistencies between what an API accepts and what it can actually do. Do not filter for importance or for how likely the case is; the author triages. Exclude pure style with no behavioural consequence, and values no caller could plausibly pass (an integer near its type's overflow) unless they arrive from outside (a file, the wire, a project).
 
 For each finding give a priority (P1/P2/P3), the file and line range, and a concrete scenario: the input or state, and the wrong result.
-
-Begin your final message with the reviewed commit, \`${head:0:9}\`, alone on its first line; the findings follow it.
 
 $v_note"
 
@@ -321,14 +333,18 @@ if [ ! -s "$findings" ]; then
 fi
 cat "$findings"
 echo
-# the summary names the commit it reviewed, or it may be another run's (#568)
-first=$(grep -m 1 '[^[:space:]]' "$findings" | sed 's/^[[:space:]*`#>]*//' || true)
-case "$first" in
-"${head:0:9}"*) ;;
-*)
+# The summary is the one codex recorded for THIS run (#568), by what codex itself writes: the
+# transcript names this checkout as its workdir and echoes this run's prompt, and the summary's
+# first line is in it (codex prints its final message there too). Nothing asks the model to say so:
+# a review's final message has a fixed shape codex renders itself.
+mismatch=
+grep -qxF -e "workdir: $PWD" -e "workdir: $(pwd -P)" "$out" || mismatch="$mismatch; the transcript is not of this checkout"
+grep -qF "\`git diff $merge_base $head\`" "$out" || mismatch="$mismatch; the transcript does not hold this run's prompt"
+first=$(grep -m 1 '[^[:space:]]' "$findings" || true)
+grep -qxF -- "$first" "$out" || mismatch="$mismatch; the summary is not the transcript's"
+if [ -n "$mismatch" ]; then
 	{
-		echo "codex-local-review: WARNING: this summary does not begin with ${head:0:9}, the commit reviewed;"
-		echo "codex-local-review: WARNING: it may be another review's. Check the transcript: $out"
+		echo "codex-local-review: WARNING: this summary may be another review's, not ${head:0:9}'s: ${mismatch#; }."
+		echo "codex-local-review: WARNING: check the transcript: $out"
 	} >&2
-	;;
-esac
+fi

@@ -8,10 +8,12 @@
 #   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
 # And of a whole review run (#568), in a throwaway repository with a stub codex:
 #   - two runs at once are serialised by the per-user lock, the second saying whose run it waits
-#     for — through flock, and through the lock directory where flock is missing (a lock left by a
-#     pid that has gone is taken over); CODEX_REVIEW_NO_WAIT=1 refuses with exit 5 instead;
-#   - codex runs without the lock's descriptor, and the lock directory is gone after the run;
-#   - a summary that does not begin with the reviewed short sha is printed under a WARNING.
+#     for — through flock, and through the lock link where flock is missing (a lock left by a pid
+#     that has gone, by a pid now running something else, or naming no pid is taken over);
+#     CODEX_REVIEW_NO_WAIT=1 refuses with exit 5 instead;
+#   - codex runs without the lock's descriptor, and the lock link is gone after the run;
+#   - a summary codex's transcript does not record for this run (another checkout, another prompt,
+#     another final message) is printed under a WARNING; the stub writes codex's real shapes.
 # PATH is built from only the tools the check uses, so an installed codex cannot leak in.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
@@ -33,7 +35,7 @@ expect() { # expect <name> <got> <want>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools"
-for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep git tr date mkdir cat tail; do
+for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep git tr date mkdir cat tail ln readlink ps; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
@@ -204,13 +206,17 @@ short=$(git -C "$sbx" rev-parse --short=9 HEAD)
 mkdir -p "$tmp/flock-tool"
 ln -s "$(command -v flock)" "$tmp/flock-tool/flock"
 
-# the stub: logs "start <tag> <its parent, the script>", waits for $STUB_HOLD to exist if set,
-# notes whether fd 9 is open, and writes $STUB_SHA (else HEAD's short sha) as the summary
+# the stub: logs "start <tag> <its parent, the script>", waits for $STUB_HOLD to exist if set, and
+# notes whether fd 9 is open. It writes what codex writes: a transcript on stdout (header with the
+# workdir, the prompt it read, the final message twice) and, as --output-last-message, the final
+# message as codex renders a review's — a verdict, "Full review comments:" and one line per finding.
+# $STUB_WORKDIR stands for another checkout, $STUB_PROMPT for another run's prompt, $STUB_FOREIGN
+# for a final message the transcript lacks.
 cat >"$tmp/review-codex" <<'STUB'
 #!/bin/sh
 if [ "$1" = --version ]; then echo "codex-cli 0.0.0-test"; exit 0; fi
 out=$5
-cat >/dev/null
+prompt=$(cat)
 echo "start $STUB_TAG $PPID" >>"$STUB_LOG"
 if (: >&9) 2>/dev/null; then echo "fd9 $STUB_TAG" >>"$STUB_LOG"; fi # a subshell: dash exits on a bad fd
 if [ -n "${STUB_HOLD:-}" ]; then
@@ -218,7 +224,16 @@ if [ -n "${STUB_HOLD:-}" ]; then
 	while [ ! -e "$STUB_HOLD" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
 fi
 echo "end $STUB_TAG" >>"$STUB_LOG"
-printf '%s\n\nNo findings.\n' "${STUB_SHA:-$(git rev-parse --short=9 HEAD)}" >"$out"
+final="One defect: the probe misreads an empty file.
+
+Full review comments:
+
+- [P2] Refuse an empty file — $PWD/scripts/codex_local_review.sh:1-2
+  An empty candidate is run and exits 0."
+printf 'OpenAI Codex v0.0.0-test\n--------\nworkdir: %s\nmodel: m\n--------\nuser\n%s\ncodex\n%s\n%s\n' \
+	"${STUB_WORKDIR:-$PWD}" "${STUB_PROMPT:-$prompt}" "$final" "$final"
+if [ -n "${STUB_FOREIGN:-}" ]; then final="Another branch: nothing found.$final"; fi
+printf '%s\n' "$final" >"$out"
 STUB
 chmod +x "$tmp/review-codex"
 
@@ -264,33 +279,54 @@ serialise() {
 	b=$?
 	expect "$mode: both runs pass, one after the other" "$a $b|$(cut -d' ' -f1,2 "$home/stub.log" | tr '\n' ' ')" \
 		"0 0|start $mode-A end $mode-A start $mode-B end $mode-B "
-	expect "$mode: the second run prints its own summary" "$(head -1 "$tmp/$mode-B.out")" "$short"
-	expect "$mode: no lock directory is left behind" "$([ -e "$home/.codex-local-review.lock.d" ] && echo left)" ""
+	expect "$mode: the second run prints its own summary, unwarned" "$(head -1 "$tmp/$mode-B.out")|$(grep -c WARNING "$tmp/$mode-B.err")" \
+		"One defect: the probe misreads an empty file.|0"
+	expect "$mode: no lock link is left behind" "$([ -L "$home/.codex-local-review.lock.held" ] && echo left)" ""
 }
 serialise flock "$tmp/flock-tool"
 expect "flock: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 0
 serialise mkdir ""
 
-# a lock directory naming a pid that has gone is taken over
-home=$tmp/lock-stale
-mkdir -p "$home/.codex-local-review.lock.d"
-sh -c 'echo $$' >"$home/.codex-local-review.lock.d/pid" # a pid that ended a moment ago
-review "$home" "" stale
-expect "a lock left by a pid that has gone is taken over" \
-	"$?|$(grep -c 'removing the lock left by pid' "$tmp/stale.err")|$([ -e "$home/.codex-local-review.lock.d" ] && echo left)" "0|1|"
+# a lock link left behind is taken over: its pid gone, its pid reused by something that is not a
+# review, or no pid at all; a link naming a running review is waited for
+stale() { # stale <tag> <link target>: a run with that link in place, its exit, takeover count and leftover
+	local home=$tmp/lock-$1
+	mkdir -p "$home"
+	ln -s "$2" "$home/.codex-local-review.lock.held"
+	review "$home" "" "$1" CODEX_REVIEW_NO_WAIT=1
+	printf '%s|%s|%s' "$?" "$(grep -c 'removing the lock left by pid' "$tmp/$1.err")" \
+		"$([ -L "$home/.codex-local-review.lock.held" ] && echo left)"
+}
+expect "a lock left by a pid that has gone is taken over" "$(stale gone "$(sh -c 'echo $$')")" "0|1|"
+sleep 30 &
+other=$!
+expect "a lock naming a running pid that is not a review is taken over" "$(stale reused "$other")" "0|1|"
+expect "a lock naming no pid is taken over" "$(stale nopid x)" "0|1|"
+kill "$other" 2>/dev/null
+home=$tmp/lock-live
+mkdir -p "$home"
+bash -c 'exec -a codex_local_review.sh sleep 30' &
+live=$!
+ln -s "$live" "$home/.codex-local-review.lock.held"
+review "$home" "" live CODEX_REVIEW_NO_WAIT=1
+expect "a lock naming a running review is refused under CODEX_REVIEW_NO_WAIT=1" "$?|$(grep -c "pid $live) is running" "$tmp/live.err")" "5|1"
+kill "$live" 2>/dev/null
 
-# the summary names the commit it reviewed, or the run warns
+# the summary is the one codex recorded for this run, or the run warns
 home=$tmp/sum
 mkdir -p "$home"
 review "$home" "$tmp/flock-tool" sum-ok
-expect "a summary that begins with the reviewed sha is printed plainly" "$?|$(grep -c WARNING "$tmp/sum-ok.err")" "0|0"
-review "$home" "$tmp/flock-tool" sum-bad STUB_SHA=deadbeef0
-expect "a summary naming another commit is printed under a WARNING" \
-	"$(head -1 "$tmp/sum-bad.out")|$(grep -c "WARNING: this summary does not begin with $short" "$tmp/sum-bad.err")" "deadbeef0|1"
-review "$home" "$tmp/flock-tool" sum-md STUB_SHA="**\`$short\`**"
-expect "markdown around the sha is read through" "$(grep -c WARNING "$tmp/sum-md.err")" 0
+expect "a summary the transcript records for this run is printed plainly" "$?|$(grep -c WARNING "$tmp/sum-ok.err")" "0|0"
+review "$home" "$tmp/flock-tool" sum-foreign STUB_FOREIGN=1
+expect "a summary the transcript does not hold is printed under a WARNING" \
+	"$(head -1 "$tmp/sum-foreign.out")|$(grep -c "WARNING: this summary may be another review's, not $short's: the summary is not the transcript's" "$tmp/sum-foreign.err")" \
+	"Another branch: nothing found.One defect: the probe misreads an empty file.|1"
+review "$home" "$tmp/flock-tool" sum-elsewhere STUB_WORKDIR=/elsewhere
+expect "a transcript of another checkout is warned about" "$(grep -c "the transcript is not of this checkout" "$tmp/sum-elsewhere.err")" 1
+review "$home" "$tmp/flock-tool" sum-prompt STUB_PROMPT='Review the changes on this branch: `git diff 1 2`.'
+expect "a transcript of another run's prompt is warned about" "$(grep -c "the transcript does not hold this run's prompt" "$tmp/sum-prompt.err")" 1
 ARGS=--dry-run review "$home" "$tmp/flock-tool" prompt
-expect "the prompt asks for the sha first" "$(grep -c "Begin your final message with the reviewed commit, \`$short\`" "$tmp/prompt.out")" 1
+expect "the prompt asks nothing of the final message's shape" "$(grep -c "final message" "$tmp/prompt.out")" 0
 
 echo "codex_local_review_test: $pass passed, $fail failed"
 [ "$fail" = 0 ]
