@@ -20,9 +20,9 @@
 #
 # One review at a time per user (#568): two `codex exec review` runs at once share the user's codex
 # state, and one run once printed the other's summary as its own. A run holds an exclusive lock on
-# ~/.codex-local-review.lock (flock; where flock is missing, the symbolic link ~/.codex-local-review.lock.held
-# whose target is the holder's pid, removed when the run exits and taken over when that pid is not a
-# running review) from before the tree is checked until it exits, and says "waiting for another local
+# ~/.codex-local-review.lock.held, a symbolic link whose target is the holder's pid, removed when the
+# run exits and taken over when that pid is not a running review (where flock is present, the runs
+# queue on ~/.codex-local-review.lock first), from before the tree is checked until it exits, and says "waiting for another local
 # review (pid N) to finish" while it waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5).
 # --check-codex and --dry-run take no lock. And the summary is checked against what codex recorded for
 # this run — the transcript's workdir and prompt, and the summary's first line in it — and printed
@@ -175,7 +175,7 @@ fi
 # The per-user review lock. Taken before the tree is checked and HEAD read, so a run that waited
 # reviews the branch as it is once its turn comes. Released by release_lock, which every EXIT trap
 # below calls: the flock goes with the process (codex runs with fd 9 closed, so nothing it leaves
-# behind holds it); the link is removed only by the pid it names.
+# behind holds it); the link is removed only by the pid it names, whichever backend queued the run.
 lock_file=$HOME/.codex-local-review.lock
 lock_link=$lock_file.held
 lock_held=
@@ -193,23 +193,24 @@ holds_review() { # holds_review <pid>: the pid runs, and (where ps can say) it i
 }
 take_lock() {
 	local holder said=none
+	# where flock is present, it queues the runs that have it; the link below is taken by every run
+	# all the same, so a run whose PATH lacks flock and one whose PATH has it exclude each other
 	if command -v flock >/dev/null 2>&1; then
 		exec 9>>"$lock_file"
 		if ! flock -n 9; then
-			holder=$(tr -cd 0-9 2>/dev/null <"$lock_file" || true)
+			# the review running is the link's holder; the flock's may itself be waiting for the link
+			holder=$(readlink "$lock_link" 2>/dev/null || tr -cd 0-9 2>/dev/null <"$lock_file" || true)
 			[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
 			echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
 			flock 9
 		fi
 		printf '%s\n' "$$" >"$lock_file" # the same file, so a waiter can name the holder
-		lock_held=flock
-		return
 	fi
 	# whether ps names a process's command here: asked of this run itself, so a ps that cannot see
 	# processes (a sandbox without /proc) never makes a live holder look like somebody else
 	case "$(ps -p "$$" -o command= 2>/dev/null || true)" in *"$me"*) ps_names=1 ;; esac
-	# where flock is missing: a symbolic link whose target is the holder's pid, made in one step, so
-	# there is never a lock without a pid
+	# the lock every run takes: a symbolic link whose target is the holder's pid, made in one step,
+	# so there is never a lock without a pid
 	while ! ln -sn "$$" "$lock_link" 2>/dev/null; do
 		[ -L "$lock_link" ] || continue # released between the two calls
 		holder=$(readlink "$lock_link" 2>/dev/null || true)

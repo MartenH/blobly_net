@@ -8,7 +8,8 @@
 #   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
 # And of a whole review run (#568), in a throwaway repository with a stub codex:
 #   - two runs at once are serialised by the per-user lock, the second saying whose run it waits
-#     for — through flock, and through the lock link where flock is missing (a lock left by a pid
+#     for — through flock and the lock link, through the link alone where flock is missing, and
+#     across the two when flock is on one run's PATH only (a lock left by a pid
 #     that has gone, by a pid now running something else, or naming no pid is taken over);
 #     CODEX_REVIEW_NO_WAIT=1 refuses with exit 5 instead;
 #   - codex runs without the lock's descriptor, and the lock link is gone after the run;
@@ -253,12 +254,13 @@ wait_for() { # wait_for <file> <text>: up to 15 s for <file> to hold <text>
 	grep -qF -- "$2" "$1" 2>/dev/null
 }
 
-# serialise <mode> <extra PATH>: run A holds the lock until released; run B waits for it, naming
-# A's pid, and starts only once A has ended; run C, with CODEX_REVIEW_NO_WAIT=1, refuses
+# serialise <mode> <extra PATH of A> <extra PATH of B and C>: run A holds the lock until released;
+# run B waits for it, naming A's pid, and starts only once A has ended; run C, with
+# CODEX_REVIEW_NO_WAIT=1, refuses
 serialise() {
-	local mode=$1 extra=$2 home=$tmp/lock-$1 a b c apid
+	local mode=$1 extra_a=$2 extra=$3 home=$tmp/lock-$1 a b c apid
 	mkdir -p "$home"
-	review "$home" "$extra" "$mode-A" STUB_HOLD="$home/release" &
+	review "$home" "$extra_a" "$mode-A" STUB_HOLD="$home/release" &
 	a=$!
 	wait_for "$home/stub.log" "start $mode-A "
 	apid=$(sed -n "s/^start $mode-A //p" "$home/stub.log")
@@ -283,9 +285,12 @@ serialise() {
 		"One defect: the probe misreads an empty file.|0"
 	expect "$mode: no lock link is left behind" "$([ -L "$home/.codex-local-review.lock.held" ] && echo left)" ""
 }
-serialise flock "$tmp/flock-tool"
+serialise flock "$tmp/flock-tool" "$tmp/flock-tool"
 expect "flock: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 0
-serialise mkdir ""
+serialise link "" ""
+# two sessions of one user, flock on the PATH of one only: they exclude each other either way round
+serialise flock-first "$tmp/flock-tool" ""
+serialise flock-second "" "$tmp/flock-tool"
 
 # a lock link left behind is taken over: its pid gone, its pid reused by something that is not a
 # review, or no pid at all; a link naming a running review is waited for
