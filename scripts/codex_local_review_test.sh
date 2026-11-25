@@ -8,11 +8,11 @@
 #   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
 # And of a whole review run (#568), in a throwaway repository with a stub codex:
 #   - two runs at once are serialised by the per-user lock, the second saying whose run it waits
-#     for — through flock and the lock link, through the link alone where flock is missing, and
-#     across the two when flock is on one run's PATH only (a lock left by a pid
-#     that has gone, by a pid now running something else, or naming no pid is taken over);
-#     CODEX_REVIEW_NO_WAIT=1 refuses with exit 5 instead;
-#   - codex runs without the lock's descriptor, and the lock link is gone after the run;
+#     for — through the flock command, through perl's flock where it is missing, and across the
+#     two when the flock command is on one run's PATH only; CODEX_REVIEW_NO_WAIT=1 refuses with
+#     exit 5 instead; a run killed with SIGKILL leaves no lock behind; with neither tool the run
+#     warns and reviews unlocked;
+#   - codex runs without the lock's descriptor;
 #   - a summary codex's transcript does not record for this run (another checkout, another prompt,
 #     another final message) is printed under a WARNING; the stub writes codex's real shapes.
 # PATH is built from only the tools the check uses, so an installed codex cannot leak in.
@@ -204,8 +204,9 @@ git -C "$sbx" init -q
 git -C "$sbx" add -A
 git -C "$sbx" -c user.name=t -c user.email=t@example.invalid commit -q -m sandbox
 short=$(git -C "$sbx" rev-parse --short=9 HEAD)
-mkdir -p "$tmp/flock-tool"
+mkdir -p "$tmp/flock-tool" "$tmp/perl-tool"
 ln -s "$(command -v flock)" "$tmp/flock-tool/flock"
+ln -s "$(command -v perl)" "$tmp/perl-tool/perl"
 
 # the stub: logs "start <tag> <its parent, the script>", waits for $STUB_HOLD to exist if set, and
 # notes whether fd 9 is open. It writes what codex writes: a transcript on stdout (header with the
@@ -283,39 +284,30 @@ serialise() {
 		"0 0|start $mode-A end $mode-A start $mode-B end $mode-B "
 	expect "$mode: the second run prints its own summary, unwarned" "$(head -1 "$tmp/$mode-B.out")|$(grep -c WARNING "$tmp/$mode-B.err")" \
 		"One defect: the probe misreads an empty file.|0"
-	expect "$mode: no lock link is left behind" "$([ -L "$home/.codex-local-review.lock.held" ] && echo left)" ""
 }
 serialise flock "$tmp/flock-tool" "$tmp/flock-tool"
 expect "flock: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 0
-serialise link "" ""
-# two sessions of one user, flock on the PATH of one only: they exclude each other either way round
-serialise flock-first "$tmp/flock-tool" ""
-serialise flock-second "" "$tmp/flock-tool"
+serialise perl "$tmp/perl-tool" "$tmp/perl-tool"
+expect "perl: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-perl/stub.log")" 0
+# two sessions of one user, the flock command on the PATH of one only: one kernel lock either way
+serialise flock-first "$tmp/flock-tool" "$tmp/perl-tool"
+serialise perl-first "$tmp/perl-tool" "$tmp/flock-tool"
 
-# a lock link left behind is taken over: its pid gone, its pid reused by something that is not a
-# review, or no pid at all; a link naming a running review is waited for
-stale() { # stale <tag> <link target>: a run with that link in place, its exit, takeover count and leftover
-	local home=$tmp/lock-$1
-	mkdir -p "$home"
-	ln -s "$2" "$home/.codex-local-review.lock.held"
-	review "$home" "" "$1" CODEX_REVIEW_NO_WAIT=1
-	printf '%s|%s|%s' "$?" "$(grep -c 'removing the lock left by pid' "$tmp/$1.err")" \
-		"$([ -L "$home/.codex-local-review.lock.held" ] && echo left)"
-}
-expect "a lock left by a pid that has gone is taken over" "$(stale gone "$(sh -c 'echo $$')")" "0|1|"
-sleep 30 &
-other=$!
-expect "a lock naming a running pid that is not a review is taken over" "$(stale reused "$other")" "0|1|"
-expect "a lock naming no pid is taken over" "$(stale nopid x)" "0|1|"
-kill "$other" 2>/dev/null
-home=$tmp/lock-live
+# a run killed with SIGKILL, its EXIT trap skipped, leaves no lock: the kernel lets go of it
+home=$tmp/lock-killed
 mkdir -p "$home"
-bash -c 'exec -a codex_local_review.sh sleep 30' &
-live=$!
-ln -s "$live" "$home/.codex-local-review.lock.held"
-review "$home" "" live CODEX_REVIEW_NO_WAIT=1
-expect "a lock naming a running review is refused under CODEX_REVIEW_NO_WAIT=1" "$?|$(grep -c "pid $live) is running" "$tmp/live.err")" "5|1"
-kill "$live" 2>/dev/null
+(review "$home" "$tmp/perl-tool" killed-A STUB_HOLD="$home/release") 2>/dev/null & # bash would report the kill
+wait_for "$home/stub.log" "start killed-A "
+kill -9 "$(sed -n 's/^start killed-A //p' "$home/stub.log")"
+review "$home" "$tmp/flock-tool" killed-B CODEX_REVIEW_NO_WAIT=1
+expect "a run killed with SIGKILL leaves no lock behind" "$?|$(grep -c 'is running' "$tmp/killed-B.err")" "0|0"
+: >"$home/release"
+wait
+
+# with neither the flock command nor perl, the run says so and reviews unlocked
+mkdir -p "$tmp/lock-none"
+review "$tmp/lock-none" "" none
+expect "with no lock tool the run warns and reviews" "$?|$(grep -c 'WARNING: no flock or perl' "$tmp/none.err")" "0|1"
 
 # the summary is the one codex recorded for this run, or the run warns
 home=$tmp/sum

@@ -19,11 +19,10 @@
 # exited 0 with nothing written, and the review failed only as "codex wrote no final message".
 #
 # One review at a time per user (#568): two `codex exec review` runs at once share the user's codex
-# state, and one run once printed the other's summary as its own. A run holds an exclusive lock on
-# ~/.codex-local-review.lock.held, a symbolic link whose target is the holder's pid, removed when the
-# run exits and taken over when that pid is not a running review (where flock is present, the runs
-# queue on ~/.codex-local-review.lock first), from before the tree is checked until it exits, and says "waiting for another local
-# review (pid N) to finish" while it waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5).
+# state, and one run once printed the other's summary as its own. A run holds an exclusive flock(2)
+# on ~/.codex-local-review.lock (the flock command, else perl's flock) from before the tree is
+# checked until it exits, and says "waiting for another local review (pid N) to finish" while it
+# waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5).
 # --check-codex and --dry-run take no lock. And the summary is checked against what codex recorded for
 # this run — the transcript's workdir and prompt, and the summary's first line in it — and printed
 # under a WARNING where they disagree.
@@ -172,71 +171,47 @@ if [ "$check_codex" = 1 ]; then
 	exit 0
 fi
 
-# The per-user review lock. Taken before the tree is checked and HEAD read, so a run that waited
-# reviews the branch as it is once its turn comes. Released by release_lock, which every EXIT trap
-# below calls: the flock goes with the process (codex runs with fd 9 closed, so nothing it leaves
-# behind holds it); the link is removed only by the pid it names, whichever backend queued the run.
+# The per-user review lock: flock(2) on fd 9 over ~/.codex-local-review.lock, through the flock
+# command or, where that is missing, perl's flock — one kernel lock either way, so two runs whose
+# PATHs differ exclude each other, and it goes with the process however that ends (codex runs with
+# fd 9 closed, so nothing it leaves behind holds it). Taken before the tree is checked and HEAD
+# read, so a run that waited reviews the branch as it is once its turn comes.
 lock_file=$HOME/.codex-local-review.lock
-lock_link=$lock_file.held
-lock_held=
-refuse_busy() { # refuse_busy <holder pid or empty>
-	echo "codex-local-review: another local review (pid ${1:-unknown}) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
-	exit 5
-}
-me=$(basename "$self")
-ps_names=0
-holds_review() { # holds_review <pid>: the pid runs, and (where ps can say) it is a review run
-	kill -0 "$1" 2>/dev/null || return 1
-	[ "$ps_names" = 0 ] && return 0
-	case "$(ps -p "$1" -o command= 2>/dev/null || true)" in *"$me"*) return 0 ;; esac
-	return 1 # a pid reused after a reboot or a kill that skipped the EXIT trap
+lock_fd() { # lock_fd nb|wait: 0 locked, 1 held by another run, other: no lock could be asked for
+	if command -v flock >/dev/null 2>&1; then
+		if [ "$1" = nb ]; then flock -n 9 || return 1; else flock 9 || return 2; fi
+	elif command -v perl >/dev/null 2>&1; then
+		# the lock belongs to the open file this shell's fd 9 shares, so it outlives perl
+		perl -e 'use Fcntl qw(:flock); open(my $f, ">&=", 9) or exit 2;
+			flock($f, LOCK_EX | ($ARGV[0] eq "nb" ? LOCK_NB : 0)) or exit($ARGV[0] eq "nb" ? 1 : 2)' "$1"
+	else
+		return 3
+	fi
 }
 take_lock() {
-	local holder said=none
-	# where flock is present, it queues the runs that have it; the link below is taken by every run
-	# all the same, so a run whose PATH lacks flock and one whose PATH has it exclude each other
-	if command -v flock >/dev/null 2>&1; then
-		exec 9>>"$lock_file"
-		if ! flock -n 9; then
-			# the review running is the link's holder; the flock's may itself be waiting for the link
-			holder=$(readlink "$lock_link" 2>/dev/null || tr -cd 0-9 2>/dev/null <"$lock_file" || true)
-			[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
-			echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
-			flock 9
+	local holder rc=0
+	exec 9>>"$lock_file"
+	lock_fd nb || rc=$?
+	if [ "$rc" = 1 ]; then
+		holder=$(tr -cd 0-9 2>/dev/null <"$lock_file" || true)
+		if [ "${CODEX_REVIEW_NO_WAIT:-}" = 1 ]; then
+			echo "codex-local-review: another local review (pid ${holder:-unknown}) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
+			exit 5
 		fi
-		printf '%s\n' "$$" >"$lock_file" # the same file, so a waiter can name the holder
+		echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
+		rc=0
+		lock_fd wait || rc=$?
 	fi
-	# whether ps names a process's command here: asked of this run itself, so a ps that cannot see
-	# processes (a sandbox without /proc) never makes a live holder look like somebody else
-	case "$(ps -p "$$" -o command= 2>/dev/null || true)" in *"$me"*) ps_names=1 ;; esac
-	# the lock every run takes: a symbolic link whose target is the holder's pid, made in one step,
-	# so there is never a lock without a pid
-	while ! ln -sn "$$" "$lock_link" 2>/dev/null; do
-		[ -L "$lock_link" ] || continue # released between the two calls
-		holder=$(readlink "$lock_link" 2>/dev/null || true)
-		# a holder killed before its EXIT trap ran leaves the link behind; two waiters seeing the
-		# same stale holder can both remove it, the one narrow race this fallback keeps
-		if { ! [[ $holder =~ ^[0-9]+$ ]] || ! holds_review "$holder"; } &&
-			[ "$(readlink "$lock_link" 2>/dev/null || true)" = "$holder" ]; then
-			echo "codex-local-review: removing the lock left by pid ${holder:-unknown}, which is not a running review" >&2
-			rm -f "$lock_link"
-			continue
-		fi
-		[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
-		if [ "$holder" != "$said" ]; then
-			echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
-			said=$holder
-		fi
-		sleep 1
-	done
-	lock_held=held
-}
-release_lock() {
-	if [ "$lock_held" = held ] && [ "$(readlink "$lock_link" 2>/dev/null || true)" = "$$" ]; then
-		rm -f "$lock_link"
+	if [ "$rc" = 3 ]; then
+		echo "codex-local-review: WARNING: no flock or perl to take the per-user lock with; reviewing without it" >&2
+		return
+	elif [ "$rc" != 0 ]; then
+		echo "codex-local-review: WARNING: the per-user lock on $lock_file could not be taken; reviewing without it" >&2
+		return
 	fi
-	lock_held=
+	printf '%s\n' "$$" >"$lock_file" # the locked file itself, so a waiter can name the holder
 }
+release_lock() { exec 9>&-; }
 if [ "$dry_run" = 0 ]; then
 	trap release_lock EXIT
 	take_lock
