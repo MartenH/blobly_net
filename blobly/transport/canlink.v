@@ -1,5 +1,7 @@
 module transport
 
+import sync
+
 // canlink.v — what a SocketCAN interface's CONTROLLER is set to, READ and never changed (#454).
 //
 // Listen-only has two halves (listen.v): this process refusing to transmit, and the controller
@@ -126,8 +128,14 @@ fn controller_reason(host_if string, bridge string, st int) SilenceReason {
 // apply_controller_mode holds a controller this app does not configure, read in `mode`, against
 // wire `iface`'s mark `want`, through the one seam (silence.v): a declared fault where they
 // disagree, the wire's record and any fault brought to agreement where they agree, and nothing at
-// all where the mode is not known or there is no controller. Never changes the controller. Its
-// error is a NotWritten: a send on such a wire is refused before the driver, so nothing went out.
+// all where the mode is not known or there is no controller. Never changes the controller.
+//
+// It ERRS only for a transmitting row on a listen-only controller (`cannot_send`), as a NotWritten:
+// a send there is refused before the driver, so nothing went out, and the kernel would otherwise
+// drop the frame while the write reported success. A listen-only row on a controller that
+// acknowledges (`still_acks`) is recorded and answered ok: the open of a listen-only wire is
+// refused when its reconcile errs (shared.v), which would leave the row with no reader after the
+// first open, and SilentBus refuses every send on a listen-only wire anyway.
 fn apply_controller_mode(iface string, host_if string, bridge string, mode ControllerMode, want bool) ! {
 	v := controller_verdict(mode, want)
 	if v == .unread || mode == .no_controller {
@@ -138,7 +146,59 @@ fn apply_controller_mode(iface string, host_if string, bridge string, mode Contr
 		return st
 	}, fn [host_if, bridge] (_ bool, s int) SilenceReason {
 		return controller_reason(host_if, bridge, s)
-	}) or { return not_written(err.msg()) }
+	}) or {
+		if v == .cannot_send {
+			return not_written(err.msg())
+		}
+	}
+}
+
+// controller_send_refusal is the refusal a send on a wire whose held (mode, mark) still disagrees
+// owes without asking anything again: only `cannot_send` refuses (apply_controller_mode).
+fn controller_send_refusal(host_if string, bridge string, mode ControllerMode, want bool) ! {
+	v := controller_verdict(mode, want)
+	if v == .cannot_send {
+		r := controller_refusal(host_if, bridge, v) or { return }
+		return not_written(r.why)
+	}
+}
+
+// ControllerHolders counts the open handles per wire of a backend whose controller this app reads
+// and does not configure (SocketCAN), so the wire's silence record and declared fault are forgotten
+// when its last handle closes: a fault must not outlive the wire it describes (silence.v).
+struct ControllerHolders {
+mut:
+	mu   sync.Mutex
+	refs map[string]int
+}
+
+__global controller_holders = &ControllerHolders{}
+
+// controller_wire_opened counts a handle on `iface`; called before the open reads the controller,
+// so a close racing it cannot forget what that read records.
+fn controller_wire_opened(iface string) {
+	k := wire_key(iface)
+	controller_holders.mu.lock()
+	controller_holders.refs[k] = controller_holders.refs[k] + 1
+	controller_holders.mu.unlock()
+}
+
+// controller_wire_closed uncounts a handle on `iface`, forgetting the wire's silence record and
+// fault when it was the last. The forget is done under the count's lock, so an open counted after
+// it reads afresh and is not erased.
+fn controller_wire_closed(iface string) {
+	k := wire_key(iface)
+	controller_holders.mu.lock()
+	defer {
+		controller_holders.mu.unlock()
+	}
+	n := controller_holders.refs[k] - 1
+	if n > 0 {
+		controller_holders.refs[k] = n
+		return
+	}
+	controller_holders.refs.delete(k)
+	forget_wire_silence(iface)
 }
 
 // mode_holds_against reports whether a controller in `mode` is one apply_controller_mode would hold

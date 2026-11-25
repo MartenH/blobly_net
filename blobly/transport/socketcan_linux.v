@@ -50,6 +50,8 @@ pub fn open_socketcan(iface string) !&SocketCanBus {
 		iface: iface
 		fd:    fd
 	}
+	// counted before the read, so the wire's last close forgets its fault and no later one's
+	controller_wire_opened(iface)
 	// The controller's mode, read at every open: it cannot change while the link is up (a ctrlmode
 	// change needs the link down), and between two opens it may have.
 	b.hold_mark(is_listen_only(iface)) or {}
@@ -239,10 +241,11 @@ pub fn (mut b SocketCanBus) error_counters() ErrorCounters {
 // reconcile_silence holds the wire's listen-only mark against the controller's mode — READ, never
 // set: a SocketCAN interface's mode is chosen by whoever ran `ip link set canX type can listen-only
 // on`, and changing it means taking the link down, which needs root and drops every socket on it
-// (#454, canlink.v). A disagreement is a declared fault the Buses row shows and the Log narrates,
-// and a send on such a wire is refused before the driver: a listen-only row on a controller that
-// acknowledges sends nothing anyway, and a transmitting row on a listen-only controller would have
-// its frames dropped by the kernel while the write reported success. A vcan has no controller.
+// (#454, canlink.v). A disagreement is a declared fault the Buses row shows and the Log narrates.
+// Only a transmitting row on a listen-only controller errs, so its sends are refused before the
+// driver (the kernel would drop the frame while the write reported success); a listen-only row on
+// a controller that acknowledges is answered ok, since SilentBus refuses its sends anyway. A vcan
+// has no controller.
 pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {
 	if b.link.mode == .no_controller {
 		return
@@ -250,11 +253,7 @@ pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {
 	if h := b.held {
 		if h == want {
 			// a standing disagreement still refuses, without asking the kernel again
-			if f := wire_silence_fault(b.iface) {
-				if f.want == want && f.declared {
-					return not_written(f.why)
-				}
-			}
+			controller_send_refusal(b.iface, '', b.link.mode, want)!
 			return
 		}
 	}
@@ -272,6 +271,7 @@ pub fn (mut b SocketCanBus) close() {
 	if b.fd >= 0 {
 		C.ct_can_close(b.fd)
 		b.fd = -1
+		controller_wire_closed(b.iface)
 	}
 }
 

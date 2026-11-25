@@ -563,6 +563,10 @@ fn test_a_bridge_states_its_controller_and_the_mark_is_held_against_it() {
 	assert f.why.contains('can0 on the host of bridge "b-mode"')
 	assert f.why.contains('ip link set can0 type can listen-only on')
 	assert wire_silence_fault(vcan) == none
+	// the wire opens again with the fault standing: a second reader, a tap, a script's handle
+	mut again := open(can)!
+	again.close()
+	assert wire_silence_fault(can) != none
 	mut refused := false
 	a.send(CanFrame{ id: 1, data: [u8(1)] }) or {
 		refused = true
@@ -573,6 +577,70 @@ fn test_a_bridge_states_its_controller_and_the_mark_is_held_against_it() {
 	set_listen_only(can, false)
 	a.send(CanFrame{ id: 1, data: [u8(1)] })!
 	assert wire_silence_fault(can) == none
+	// marked again: the fault is back, and closing the wire's last handle forgets it
+	set_listen_only(can, true)
+	a.send(CanFrame{ id: 1, data: [u8(1)] }) or {}
+	assert wire_silence_fault(can) != none
+	a.close()
+	for _ in 0 .. 300 {
+		if wire_silence_fault(can) == none {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert wire_silence_fault(can) == none, 'the fault outlived the wire'
+}
+
+// A held (mode, mark) pair reaches silence.v once; after that a send costs a lock, and only a
+// transmitting row on a listen-only controller is refused.
+fn test_a_bridge_channel_holds_a_pair_once() {
+	iface := 'inproc:bridge-hold-once'
+	forget_silence_claims()
+	defer {
+		forget_silence_claims()
+	}
+	c := &BridgeChan{
+		iface:   iface
+		host_if: 'can0'
+		bridge:  'pi'
+		rx:      chan SharedIngress{cap: 1}
+		results: chan BridgeResult{cap: 1}
+		opened:  chan string{cap: 1}
+	}
+	// unknown: nothing held
+	c.hold(true)!
+	assert wire_silence_fault(iface) == none
+	lock c.st {
+		c.st.mode = .normal
+	}
+	c.hold(true)!
+	assert wire_silence_fault(iface) != none
+	// the same pair again is not asked again: a record dropped behind its back stays dropped
+	forget_silence_claims()
+	c.hold(true)!
+	assert wire_silence_fault(iface) == none
+	// the mark moves: held afresh
+	c.hold(false)!
+	assert wire_silence_fault(iface) == none
+	lock c.st {
+		c.st.mode = .listen_only
+	}
+	mut refused := 0
+	for _ in 0 .. 2 {
+		c.hold(false) or {
+			assert err is NotWritten
+			refused++
+		}
+	}
+	assert refused == 2, 'a standing cannot_send pair must still refuse'
+	// closed: a status still in the stream records nothing
+	forget_silence_claims()
+	lock c.st {
+		c.st.closed = true
+		c.st.mode = .normal
+	}
+	c.hold(true)!
+	assert wire_silence_fault(iface) == none
 }
 
 fn test_each_session_is_its_own_clock_domain() {

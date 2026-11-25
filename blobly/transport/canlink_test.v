@@ -61,14 +61,9 @@ fn test_a_disagreement_is_a_declared_fault_and_agreement_clears_it() {
 	defer {
 		forget_silence_claims()
 	}
-	// a listen-only row on a controller that acknowledges: a declared fault, and refused unwritten
-	mut refused := false
-	apply_controller_mode(iface, 'can0', '', .normal, true) or {
-		refused = true
-		assert err is NotWritten
-		assert err.msg().contains('not listen-only')
-	}
-	assert refused
+	// a listen-only row on a controller that acknowledges: a declared fault, answered ok — an open
+	// of a listen-only wire is refused when its reconcile errs, and SilentBus refuses its sends
+	apply_controller_mode(iface, 'can0', '', .normal, true)!
 	f := wire_silence_fault(iface) or { panic('no fault recorded') }
 	assert f.want && f.declared && f.why.contains('ip link set can0')
 	// not known: nothing recorded and nothing cleared
@@ -80,8 +75,8 @@ fn test_a_disagreement_is_a_declared_fault_and_agreement_clears_it() {
 	// the controller set listen-only on its host: agreement, the fault goes
 	apply_controller_mode(iface, 'can0', '', .listen_only, true)!
 	assert wire_silence_fault(iface) == none
-	// a transmitting row on a listen-only controller: the other direction
-	refused = false
+	// a transmitting row on a listen-only controller: the other direction, refused unwritten
+	mut refused := false
 	apply_controller_mode(iface, 'can0', '', .listen_only, false) or {
 		refused = true
 		assert err is NotWritten
@@ -110,4 +105,40 @@ fn test_the_log_narrates_a_fault_once_and_its_clearing() {
 	}
 	assert silence_fault_change('can0', acks, mute)? == 'can0: transmit-enabled, but x'
 	assert silence_fault_change('can0', acks, none)? == 'can0: the controller now agrees with the row (listen-only)'
+}
+
+fn test_a_standing_pair_refuses_only_a_transmitting_row_on_a_listen_only_controller() {
+	for mode in all_modes {
+		for want in [false, true] {
+			mut refused := false
+			controller_send_refusal('can0', 'pi', mode, want) or {
+				refused = true
+				assert err is NotWritten
+				assert err.msg().contains('can0 on the host of bridge "pi" is listen-only')
+			}
+			assert refused == (mode == .listen_only && !want), '${mode} want=${want}'
+		}
+	}
+}
+
+fn test_a_wire_s_fault_is_forgotten_when_its_last_handle_closes() {
+	iface := 'inproc:canlink-holders'
+	forget_silence_claims()
+	defer {
+		forget_silence_claims()
+	}
+	controller_wire_opened(iface)
+	controller_wire_opened(iface)
+	apply_controller_mode(iface, 'can0', '', .normal, true)!
+	assert wire_silence_fault(iface) != none
+	controller_wire_closed(iface)
+	assert wire_silence_fault(iface) != none, 'forgotten while a handle is still open'
+	controller_wire_closed(iface)
+	assert wire_silence_fault(iface) == none
+	// a later open counts afresh
+	controller_wire_opened(iface)
+	apply_controller_mode(iface, 'can0', '', .listen_only, false) or {}
+	assert wire_silence_fault(iface) != none
+	controller_wire_closed(iface)
+	assert wire_silence_fault(iface) == none
 }
