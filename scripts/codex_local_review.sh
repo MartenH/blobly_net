@@ -18,10 +18,20 @@
 # interrupted extension update once left a 0-byte copy, which the old newest-first pick ran — it
 # exited 0 with nothing written, and the review failed only as "codex wrote no final message".
 #
+# One review at a time per user (#568): two `codex exec review` runs at once share the user's codex
+# state, and one run once printed the other's summary as its own. A run holds an exclusive lock on
+# ~/.codex-local-review.lock (flock; where flock is missing, the directory ~/.codex-local-review.lock.d
+# holding the holder's pid, removed when the run exits and taken over when that pid has gone) from
+# before the tree is checked until it exits, and says "waiting for another local review (pid N) to
+# finish" while it waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5). --check-codex and
+# --dry-run take no lock. And the summary is bound to the commit: the prompt asks codex to begin its
+# final message with the reviewed short sha, and a summary that does not is printed under a WARNING.
+#
 # Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (with --check-codex, 0 is a
 # codex found and 3 none, besides the usage and setup exits; a review's own exit can be codex's,
-# which may be any number); 4 the review left the tree dirty or HEAD moved; otherwise codex's own
-# failure, with the transcript's tail instead of findings.
+# which may be any number); 4 the review left the tree dirty or HEAD moved; 5 another local review
+# holds the lock and CODEX_REVIEW_NO_WAIT=1; otherwise codex's own failure, with the transcript's
+# tail instead of findings.
 set -eu
 
 # Before the cd below, everything relative is made the caller's: each relative PATH entry (an
@@ -161,12 +171,69 @@ if [ "$check_codex" = 1 ]; then
 	exit 0
 fi
 
+# The per-user review lock. Taken before the tree is checked and HEAD read, so a run that waited
+# reviews the branch as it is once its turn comes. Released by release_lock, which every EXIT trap
+# below calls: the flock goes with the process (codex runs with fd 9 closed, so nothing it leaves
+# behind holds it); the directory is removed only by the pid it names.
+lock_file=$HOME/.codex-local-review.lock
+lock_dir=$lock_file.d
+lock_held=
+refuse_busy() { # refuse_busy <holder pid or empty>
+	echo "codex-local-review: another local review (pid ${1:-unknown}) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
+	exit 5
+}
+take_lock() {
+	local holder said=none
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>>"$lock_file"
+		if ! flock -n 9; then
+			holder=$(tr -cd 0-9 2>/dev/null <"$lock_file" || true)
+			[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
+			echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
+			flock 9
+		fi
+		printf '%s\n' "$$" >"$lock_file" # the same file, so a waiter can name the holder
+		lock_held=flock
+		return
+	fi
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		holder=$(tr -cd 0-9 2>/dev/null <"$lock_dir/pid" || true)
+		# a holder killed before its EXIT trap ran leaves the directory behind; two waiters seeing
+		# the same dead pid can both remove it, the one narrow race this fallback keeps
+		if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null &&
+			[ "$(tr -cd 0-9 2>/dev/null <"$lock_dir/pid" || true)" = "$holder" ]; then
+			echo "codex-local-review: removing the lock left by pid $holder, which is no longer running" >&2
+			rm -rf "$lock_dir"
+			continue
+		fi
+		[ "${CODEX_REVIEW_NO_WAIT:-}" != 1 ] || refuse_busy "$holder"
+		if [ "$holder" != "$said" ]; then
+			echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
+			said=$holder
+		fi
+		sleep 1
+	done
+	lock_held=dir
+	printf '%s\n' "$$" >"$lock_dir/pid"
+}
+release_lock() {
+	if [ "$lock_held" = dir ] && [ "$(cat "$lock_dir/pid" 2>/dev/null || true)" = "$$" ]; then
+		rm -rf "$lock_dir"
+	fi
+	lock_held=
+}
+if [ "$dry_run" = 0 ]; then
+	trap release_lock EXIT
+	take_lock
+fi
+
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
 	echo "codex-local-review: the working tree is not clean; commit or remove these first:" >&2
 	git status --porcelain --untracked-files=normal >&2
 	exit 1
 fi
-if [ "$base" = origin/main ] && ! git fetch -q origin; then
+# without the lock descriptor: an ssh master the fetch leaves running must not hold the lock
+if [ "$base" = origin/main ] && ! git fetch -q origin 9>&-; then
 	echo "codex-local-review: could not fetch origin; refusing to review against a stale origin/main" >&2
 	exit 1
 fi
@@ -197,6 +264,8 @@ prompt="Review the changes on this branch: \`git diff $merge_base $head\`.
 Report EVERY defect you find, not only the most important ones. Include minor ones and edge cases: wire-level and protocol behaviour, inputs at or past their limits, timing and deadlines, error paths, data that is accepted and then lost or silently altered, and inconsistencies between what an API accepts and what it can actually do. Do not filter for importance or for how likely the case is; the author triages. Exclude pure style with no behavioural consequence, and values no caller could plausibly pass (an integer near its type's overflow) unless they arrive from outside (a file, the wire, a project).
 
 For each finding give a priority (P1/P2/P3), the file and line range, and a concrete scenario: the input or state, and the wrong result.
+
+Begin your final message with the reviewed commit, \`${head:0:9}\`, alone on its first line; the findings follow it.
 
 $v_note"
 
@@ -231,13 +300,14 @@ dirty_check() {
 		git status --porcelain --untracked-files=normal >&2
 		rc=4
 	fi
+	release_lock
 	exit "$rc"
 }
 trap dirty_check EXIT
 echo "codex-local-review: $model ($effort) on ${head:0:9} against $base, $codex_version; transcript: $out" >&2
 start=$(date +%s)
 status=0
-printf '%s\n' "$prompt" | "${cmd[@]}" > "$out" 2>&1 || status=$?
+printf '%s\n' "$prompt" | "${cmd[@]}" 9>&- > "$out" 2>&1 || status=$?
 echo "codex-local-review: finished in $(( $(date +%s) - start )) s, exit $status" >&2
 
 if [ "$status" != 0 ]; then
@@ -251,3 +321,14 @@ if [ ! -s "$findings" ]; then
 fi
 cat "$findings"
 echo
+# the summary names the commit it reviewed, or it may be another run's (#568)
+first=$(grep -m 1 '[^[:space:]]' "$findings" | sed 's/^[[:space:]*`#>]*//' || true)
+case "$first" in
+"${head:0:9}"*) ;;
+*)
+	{
+		echo "codex-local-review: WARNING: this summary does not begin with ${head:0:9}, the commit reviewed;"
+		echo "codex-local-review: WARNING: it may be another review's. Check the transcript: $out"
+	} >&2
+	;;
+esac

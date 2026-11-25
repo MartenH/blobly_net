@@ -6,6 +6,12 @@
 #   - otherwise the first candidate that runs wins: every codex on PATH, then the extension copies
 #     newest first, skipping a newer empty or non-executable copy for an older working one;
 #   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
+# And of a whole review run (#568), in a throwaway repository with a stub codex:
+#   - two runs at once are serialised by the per-user lock, the second saying whose run it waits
+#     for — through flock, and through the lock directory where flock is missing (a lock left by a
+#     pid that has gone is taken over); CODEX_REVIEW_NO_WAIT=1 refuses with exit 5 instead;
+#   - codex runs without the lock's descriptor, and the lock directory is gone after the run;
+#   - a summary that does not begin with the reviewed short sha is printed under a WARNING.
 # PATH is built from only the tools the check uses, so an installed codex cannot leak in.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
@@ -27,7 +33,7 @@ expect() { # expect <name> <got> <want>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools"
-for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep; do
+for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep git tr date mkdir cat tail; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
@@ -183,6 +189,108 @@ expect "a silent \$CODEX is called silent" "$(why "$tmp/mute-codex")" "codex-loc
 h=$tmp/h3
 empty "$(ext "$h" 26.930.1)"
 expect "an empty extension copy alone is refused" "$(check "$h" "")" "3|"
+
+# --- a whole review run (#568) ---
+# a repository holding what the script reads, whose .claude/reviews is ignored as the real one is
+sbx=$tmp/sbx
+mkdir -p "$sbx/scripts"
+cp "$repo/scripts/codex_local_review.sh" "$repo/scripts/v_toolchain.sh" "$sbx/scripts/"
+cp "$repo/.v-version" "$repo/.vc-version" "$sbx/"
+printf '.claude/\n' >"$sbx/.gitignore"
+git -C "$sbx" init -q
+git -C "$sbx" add -A
+git -C "$sbx" -c user.name=t -c user.email=t@example.invalid commit -q -m sandbox
+short=$(git -C "$sbx" rev-parse --short=9 HEAD)
+mkdir -p "$tmp/flock-tool"
+ln -s "$(command -v flock)" "$tmp/flock-tool/flock"
+
+# the stub: logs "start <tag> <its parent, the script>", waits for $STUB_HOLD to exist if set,
+# notes whether fd 9 is open, and writes $STUB_SHA (else HEAD's short sha) as the summary
+cat >"$tmp/review-codex" <<'STUB'
+#!/bin/sh
+if [ "$1" = --version ]; then echo "codex-cli 0.0.0-test"; exit 0; fi
+out=$5
+cat >/dev/null
+echo "start $STUB_TAG $PPID" >>"$STUB_LOG"
+if (: >&9) 2>/dev/null; then echo "fd9 $STUB_TAG" >>"$STUB_LOG"; fi # a subshell: dash exits on a bad fd
+if [ -n "${STUB_HOLD:-}" ]; then
+	n=0
+	while [ ! -e "$STUB_HOLD" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
+fi
+echo "end $STUB_TAG" >>"$STUB_LOG"
+printf '%s\n\nNo findings.\n' "${STUB_SHA:-$(git rev-parse --short=9 HEAD)}" >"$out"
+STUB
+chmod +x "$tmp/review-codex"
+
+# review <home> <extra PATH> <tag> [VAR=value...]: a review run of the sandbox (with $ARGS too),
+# stdout and stderr to $tmp/<tag>.out / .err, its exit status returned
+review() {
+	local home=$1 extra=$2 tag=$3
+	shift 3
+	# shellcheck disable=SC2086 # $ARGS is split on purpose: unset, it adds no argument
+	env -i PATH="${extra:+$extra:}$tmp/tools" HOME="$home" CODEX="$tmp/review-codex" \
+		STUB_LOG="$home/stub.log" STUB_TAG="$tag" "$@" \
+		timeout 60 bash "$sbx/scripts/codex_local_review.sh" --base HEAD ${ARGS:-} >"$tmp/$tag.out" 2>"$tmp/$tag.err"
+}
+wait_for() { # wait_for <file> <text>: up to 15 s for <file> to hold <text>
+	local n=0
+	while ! grep -qF -- "$2" "$1" 2>/dev/null && [ $n -lt 150 ]; do sleep 0.1; n=$((n+1)); done
+	grep -qF -- "$2" "$1" 2>/dev/null
+}
+
+# serialise <mode> <extra PATH>: run A holds the lock until released; run B waits for it, naming
+# A's pid, and starts only once A has ended; run C, with CODEX_REVIEW_NO_WAIT=1, refuses
+serialise() {
+	local mode=$1 extra=$2 home=$tmp/lock-$1 a b c apid
+	mkdir -p "$home"
+	review "$home" "$extra" "$mode-A" STUB_HOLD="$home/release" &
+	a=$!
+	wait_for "$home/stub.log" "start $mode-A "
+	apid=$(sed -n "s/^start $mode-A //p" "$home/stub.log")
+	review "$home" "$extra" "$mode-B" &
+	b=$!
+	wait_for "$tmp/$mode-B.err" "waiting for another local review (pid $apid) to finish"
+	expect "$mode: a second run says whose review it waits for" "$(grep -c "waiting for another local review (pid $apid) to finish" "$tmp/$mode-B.err")" 1
+	review "$home" "$extra" "$mode-C" CODEX_REVIEW_NO_WAIT=1
+	c=$?
+	expect "$mode: CODEX_REVIEW_NO_WAIT=1 refuses while another review runs" \
+		"$c|$(cat "$tmp/$mode-C.err")" \
+		"5|codex-local-review: another local review (pid $apid) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait"
+	expect "$mode: nothing else started while the first held the lock" "$(cut -d' ' -f1,2 "$home/stub.log" | tr '\n' ' ')" "start $mode-A "
+	: >"$home/release"
+	wait "$a"
+	a=$?
+	wait "$b"
+	b=$?
+	expect "$mode: both runs pass, one after the other" "$a $b|$(cut -d' ' -f1,2 "$home/stub.log" | tr '\n' ' ')" \
+		"0 0|start $mode-A end $mode-A start $mode-B end $mode-B "
+	expect "$mode: the second run prints its own summary" "$(head -1 "$tmp/$mode-B.out")" "$short"
+	expect "$mode: no lock directory is left behind" "$([ -e "$home/.codex-local-review.lock.d" ] && echo left)" ""
+}
+serialise flock "$tmp/flock-tool"
+expect "flock: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 0
+serialise mkdir ""
+
+# a lock directory naming a pid that has gone is taken over
+home=$tmp/lock-stale
+mkdir -p "$home/.codex-local-review.lock.d"
+sh -c 'echo $$' >"$home/.codex-local-review.lock.d/pid" # a pid that ended a moment ago
+review "$home" "" stale
+expect "a lock left by a pid that has gone is taken over" \
+	"$?|$(grep -c 'removing the lock left by pid' "$tmp/stale.err")|$([ -e "$home/.codex-local-review.lock.d" ] && echo left)" "0|1|"
+
+# the summary names the commit it reviewed, or the run warns
+home=$tmp/sum
+mkdir -p "$home"
+review "$home" "$tmp/flock-tool" sum-ok
+expect "a summary that begins with the reviewed sha is printed plainly" "$?|$(grep -c WARNING "$tmp/sum-ok.err")" "0|0"
+review "$home" "$tmp/flock-tool" sum-bad STUB_SHA=deadbeef0
+expect "a summary naming another commit is printed under a WARNING" \
+	"$(head -1 "$tmp/sum-bad.out")|$(grep -c "WARNING: this summary does not begin with $short" "$tmp/sum-bad.err")" "deadbeef0|1"
+review "$home" "$tmp/flock-tool" sum-md STUB_SHA="**\`$short\`**"
+expect "markdown around the sha is read through" "$(grep -c WARNING "$tmp/sum-md.err")" 0
+ARGS=--dry-run review "$home" "$tmp/flock-tool" prompt
+expect "the prompt asks for the sha first" "$(grep -c "Begin your final message with the reviewed commit, \`$short\`" "$tmp/prompt.out")" 1
 
 echo "codex_local_review_test: $pass passed, $fail failed"
 [ "$fail" = 0 ]
