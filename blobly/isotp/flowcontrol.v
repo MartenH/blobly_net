@@ -240,11 +240,9 @@ pub fn exhausted_note(ms int) string {
 	return 'ISO-TP: transfer spent its waiting on the receiver (${ms} ms per 4095 bytes, fc_total_wait_ms) — giving up'
 }
 
-// Skipped is what a segmented send's wait for Flow Control read past: Single and First Frames on
-// its receive id. ISO 15765-2 has a half-duplex sender ignore an N_PDU it does not expect, as the
-// Linux kernel's isotp does in its half-duplex mode; the software channel aborted the send instead, which a stray or
-// duplicated Single Frame from an ECU turned into a failed firmware update on every adapter but
-// SocketCAN (MartenH/blobly_emb#407). Neither is a message: a skipped frame is not delivered.
+// Skipped counts the Single and First Frames a segmented send's wait for Flow Control reads past on
+// its receive id, and keeps the last one's bytes. ISO 15765-2 has a half-duplex sender ignore an
+// N_PDU it does not expect; a skipped frame is not delivered as a message.
 pub struct Skipped {
 pub mut:
 	singles int
@@ -285,5 +283,5 @@ pub fn (s Skipped) note(msg string) string {
 	if s.last.len > 8 {
 		hex += ' ...'
 	}
-	return '${msg} — after ${parts.join(' and ')} (last ${hex}) while awaiting Flow Control, ignored as ISO 15765-2 has a half-duplex sender do'
+	return '${msg} — after ${parts.join(' and ')} (last ${hex}) while awaiting Flow Control, ignored (ISO 15765-2 half-duplex sender)'
 }

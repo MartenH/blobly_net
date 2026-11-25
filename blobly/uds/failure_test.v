@@ -3,6 +3,7 @@ module uds
 import blobly.doip
 import blobly.isotp
 import blobly.transport
+import time
 
 // FailingChannel answers each recv from `answers` (an error where `errs` has text at that index)
 // and fails a send with `send_err` when set; a drain (recv(0)) finds nothing.
@@ -168,6 +169,54 @@ fn test_a_spent_flow_control_allowance_is_no_answer() {
 	mut c := new_client(ch)
 	c.raw([u8(0x2E), 0xF1, 0x90, 1, 2, 3, 4, 5]) or {
 		assert failure_of(err) == .no_answer, err.msg()
+		return
+	}
+	assert false
+}
+
+// sf_for_fc is a peer that answers the First Frame on 0x700 with a Single Frame on 0x708 and no
+// Flow Control.
+struct Peer {
+mut:
+	bus transport.Bus
+}
+
+fn sf_for_fc(mut p Peer, done chan bool) {
+	mut peer := p.bus
+	deadline := time.ticks() + 2000
+	for time.ticks() < deadline {
+		f := peer.recv(50) or { continue }
+		if f.id == 0x700 && f.data.len > 0 && (f.data[0] & 0xF0) == 0x10 {
+			peer.send(transport.CanFrame{ id: 0x708, data: [u8(0x03), 0x7F, 0x2E, 0x13, 0xAA, 0xAA, 0xAA, 0xAA] }) or {}
+			break
+		}
+	}
+	done <- true
+}
+
+// a spent allowance whose note names a Single Frame skipped in place of the Flow Control is still
+// the receiver's silence
+fn test_a_spent_allowance_naming_a_skipped_frame_is_no_answer() {
+	mut peer := &Peer{
+		bus: transport.open('inproc:FAILURE_FC_SF')!
+	}
+	mut ch := isotp.on_bus(transport.open('inproc:FAILURE_FC_SF')!, 'inproc:FAILURE_FC_SF', 0x700,
+		0x708, false)!
+	ch.total_wait_ms = 600
+	ch.fc_window_ms = 2000
+	done := chan bool{cap: 1}
+	spawn sf_for_fc(mut peer, done)
+	mut c := new_client(ch)
+	c.raw([u8(0x2E), 0xF1, 0x90, 1, 2, 3, 4, 5]) or {
+		_ := <-done
+		peer.bus.close()
+		assert failure_of(err) == .no_answer, err.msg()
+		if err is NoAnswer {
+			assert err.cause.starts_with(isotp.exhausted_note(600)), err.cause
+			assert err.cause.contains('1 Single Frame'), err.cause
+		} else {
+			assert false, 'not a NoAnswer: ${err.msg()}'
+		}
 		return
 	}
 	assert false
