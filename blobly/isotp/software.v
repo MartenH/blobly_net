@@ -319,8 +319,8 @@ fn (mut c SoftChannel) send_segmented(data []u8, dl int, head int) ! {
 // (codex round 11 on #225).
 //
 // SINGLE AND FIRST FRAMES ARE SKIPPED TOO, as ISO 15765-2 has a half-duplex sender ignore an
-// N_PDU it does not expect (the kernel's isotp does in its half-duplex mode): one stray Single
-// Frame aborted a firmware update over every adapter but SocketCAN (MartenH/blobly_emb#407).
+// N_PDU it does not expect (the kernel's isotp does in its half-duplex mode) — another tester
+// on the bus sharing these ids is enough to put one there.
 // Skipping one does not move the window's deadline, so a stream of them cannot hold the send;
 // a wait that then ends in silence names them (`Skipped.note`), a completed send says nothing.
 fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {

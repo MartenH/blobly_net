@@ -558,8 +558,8 @@ fn test_a_stale_cf_ahead_of_flow_control_is_skipped() {
 }
 
 // A SINGLE FRAME WHERE FLOW CONTROL IS AWAITED IS IGNORED, as ISO 15765-2 has a half-duplex sender
-// do and the kernel's isotp does: the send completes on the Flow Control behind it, and the
-// skipped frame is not delivered as a message (MartenH/blobly_emb#407, where one aborted a flash).
+// do and the kernel's isotp does in its half-duplex mode: the send completes on the Flow Control
+// behind it, and the skipped frame is not delivered as a message.
 fn test_a_single_frame_ahead_of_flow_control_is_skipped() {
 	mut peer := transport.open('inproc:isotp-sf-fc') or {
 		assert false, 'in-process bus: ${err}'
