@@ -13,6 +13,8 @@ name: ci
 #   * gui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_net): builds
 #                  the imgui/ImPlot/GLFW/FreeType C deps into libs/vgui/libvgui_c.a, then
 #                  compiles the V frontend against it. It does NOT run the app (no display).
+#   * canary-latest — the GUI, libblobly and one unit part on ubuntu-latest's newer gcc and
+#                  glibc; not required, continue-on-error (#504).
 #
 # The GUI is the imgui frontend (cmd/blobly_net) — the old vlang/gui app (src/main.v)
 # was retired when the migration landed, so there's no gui/vglyph to fetch here, and
@@ -398,6 +400,76 @@ jobs:
           v -cc gcc -path "@vlib|libs|@vmodules" -o /tmp/vgui_standalone \
             libs/vgui/examples/trace_chart/trace_chart.v
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
+
+  # THE CANARY (#504): the compiling jobs above are pinned to ubuntu-24.04, the release floor, so
+  # no other job sees what a NEWER gcc and glibc make of the C the pinned V emits — and a source
+  # builder on a current distribution would find out first. This one floats on ubuntu-latest
+  # (26.04: gcc 14/15) and builds what users build: the release-flavour GUI, libblobly with its
+  # C smoke, and one part of the unit suite, compiled by gcc rather than V's default tcc so the
+  # verdict is the newer compiler's (V passes `-w`, so it is errors and miscompiles, not warnings).
+  #
+  # NOT REQUIRED, and in no verdict's `needs`: continue-on-error keeps a red canary from failing
+  # the run, so a newer compiler's complaint is seen on every PR without blocking any merge. A red
+  # canary is a finding to file, not a PR to hold. Each build reports even when another fails.
+  # Its caches key on ImageOS, gcc and glibc, so it never shares an entry with the 24.04 jobs.
+  canary-latest:
+    name: linux • canary on ubuntu-latest (newer gcc/glibc, not required)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The image this canary ran on
+        run: |
+          cat /etc/os-release
+          gcc --version | head -1
+          g++ --version | head -1
+          ldd --version | head -1
+
+      - name: Set up pinned V (cached)
+        id: v
+        uses: ./.github/actions/setup-v
+
+      - name: V version
+        run: v version
+
+      - name: Native deps (apt)
+        id: apt
+        run: |
+          sh scripts/ci_apt_direct.sh
+          sudo apt-get install -y --no-install-recommends \
+            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+
+      - name: Build GUI dependencies (cached)
+        id: guideps
+        if: ${{ !cancelled() && steps.apt.outcome == 'success' }}
+        uses: ./.github/actions/gui-deps
+
+      - name: Build GUI app (RELEASE=1 RUN=0 scripts/run_gui.sh)
+        if: ${{ !cancelled() && steps.v.outcome == 'success' && steps.guideps.outcome == 'success' }}
+        run: |
+          RELEASE=1 RUN=0 sh scripts/run_gui.sh
+          test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
+
+      - name: libblobly + C smoke (cmd/libblobly)
+        if: ${{ !cancelled() && steps.v.outcome == 'success' }}
+        run: |
+          sh scripts/build_libblobly.sh build
+          gcc -Wall -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread
+          build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
+
+      # Part 1 of as many parts as the `unit` matrix has, read from that matrix so its length
+      # stays stated once. gcc, not tcc: through VFLAGS, which every `v` the test runner spawns
+      # reads.
+      - name: Unit tests, part 1 (gcc)
+        if: ${{ !cancelled() && steps.v.outcome == 'success' }}
+        env:
+          VFLAGS: -nocache -cc gcc
+        run: |
+          n=$(sed -n 's/^ *part: *\[\(.*\)\] *$/\1/p' .github/workflows/ci.yml | head -1 | tr ',' '\n' | grep -c .)
+          [ "$n" -ge 1 ] || { echo "could not read the unit matrix's length"; exit 1; }
+          ./scripts/unit_tests.sh --shard "1/$n"
 
   # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:
   # `needs` the build and the tests' verdict, so a main push whose engine tests failed publishes

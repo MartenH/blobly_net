@@ -463,6 +463,10 @@ The protect-main ruleset requires three check NAMES — `linux • modules + hea
 `linux • GUI (imgui) compile-link`, `mingw (MSYS2) • GUI bundle` — and the first and last
 are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins its verdict's
 `needs`; a verdict renamed or dropped leaves every PR waiting on a check that never reports.
+One job is deliberately in no verdict: `canary-latest` (#504) builds the release GUI, libblobly
+with its C smoke and unit part 1 (gcc, not tcc) on `ubuntu-latest`'s newer gcc and glibc,
+`continue-on-error`, so a newer compiler's verdict on the pinned V's C is seen without blocking
+a merge (a red canary is an issue to file, not a PR to hold).
 
 ## Conventions
 
