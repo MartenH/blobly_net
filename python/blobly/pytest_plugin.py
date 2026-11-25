@@ -53,7 +53,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from . import __version__, init, version
+from . import __version__, _lib, init, version
 from ._lib import BloblyError
 from .events import monotonic_ms
 from .j1939 import _discard as _discard_j1939
@@ -214,12 +214,26 @@ def pytest_report_header(config: pytest.Config) -> str:
 
 
 class _Run:
-    """A run of the suite's project as the fixtures hold it: the project, and the rows whose
-    failure to open has been warned of in it."""
+    """A run of the suite's project as the fixtures hold it: the project, the rows whose failure
+    to open has been warned of in it, and the start whose loops were last waited for."""
 
     def __init__(self, net: Project) -> None:
         self.net = net
         self.said: set[str] = set()
+        self.ready = -1
+
+
+def _wait_ready(run: _Run) -> None:
+    """Once per start, waits until the run's loops have opened their buses (Project.wait_ready),
+    so a test's first request does not go out before a simulated node listens; a loop that failed
+    is left to the test that uses its row, as a row that does not open is (blobly_channels)."""
+    if run.ready == _lib.state["run"]:
+        return
+    run.ready = _lib.state["run"]
+    try:
+        run.net.wait_ready()
+    except BloblyError:
+        pass
 
 
 def _run_scope(fixture_name: str, config: pytest.Config) -> str:
@@ -239,6 +253,7 @@ def project(_blobly_run: _Run, request: pytest.FixtureRequest) -> Iterator[Proje
     net = _blobly_run.net
     if not net.started:  # an earlier test of the run stopped it
         net.start()
+    _wait_ready(_blobly_run)
     _say_unopened(request.config, _blobly_run, _reopen(net))
     yield net
     net._forget()

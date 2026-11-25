@@ -49,6 +49,7 @@ def main(argv: list[str]) -> int:
     blobly.init()  # loads the library, on the main thread
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:  # loaded and started; stopped when the block ends
+        net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
         if args.channel not in net.channels.keys():
             fail(f"no enabled channel named {args.channel!r}; there are: {', '.join(net.channels.keys())}")
         with net.channels[args.channel].uds(tx=args.tx, rx=args.rx) as diag:  # closed when the block ends

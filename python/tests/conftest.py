@@ -43,6 +43,7 @@ def sim_demo(engine):
     for the one test): one run per process, so a test that brings up its own project runs in
     another class."""
     net = blobly.Project(SIM_DEMO).start()
+    net.wait_ready()  # start() returns before the simulated nodes listen
     yield net
     net.stop()
 

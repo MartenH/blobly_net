@@ -302,6 +302,11 @@ def _on_thread(call, name="blobly", on_interrupt=None):
     from . import _lib  # this module's rules need no library; the call does
     box = {}
     began, abandoned, done = threading.Event(), threading.Event(), threading.Event()
+    # waited on rather than `done`: Event.wait is Python code around a lock, and Ctrl-C landing
+    # inside it can leave the lock released twice (RuntimeError, not KeyboardInterrupt); a lock's
+    # acquire is one call, interrupted whole or not at all
+    ended = threading.Lock()
+    ended.acquire()
 
     def run():
         began.set()  # before asking `abandoned`: the caller sets that first, then asks this
@@ -313,10 +318,14 @@ def _on_thread(call, name="blobly", on_interrupt=None):
             box["error"] = e
         finally:  # the thread's own word: an interrupted join can say a running thread ended
             done.set()
+            ended.release()
+
+    def finished(seconds):
+        return done.is_set() or ended.acquire(timeout=seconds)
     t = threading.Thread(target=run, name=name, daemon=True)
     try:
         t.start()
-        _sliced(lambda part: True if done.wait(part / 1000) else None, -1)
+        _sliced(lambda part: True if finished(part / 1000) else None, -1)
     except BaseException:
         abandoned.set()
         given_up = time.monotonic() + 1  # a thread start() was interrupted in may never run
@@ -324,7 +333,7 @@ def _on_thread(call, name="blobly", on_interrupt=None):
             try:
                 if began.is_set():
                     on_interrupt()
-                done.wait(0.02)
+                finished(0.02)
             except KeyboardInterrupt:
                 pass
         raise

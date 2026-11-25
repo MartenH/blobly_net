@@ -58,6 +58,7 @@ def main(argv: list[str]) -> int:
     blobly.init()  # loads the library, on the main thread
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:  # loaded and started; stopped when the block ends
+        net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
         print(f"{len(net.channels)} enabled channel(s):")
         for ch in net.channels:
             print(f"  {ch.name:<10} {ch.kind:<7} {ch.iface}")

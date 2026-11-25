@@ -105,7 +105,14 @@ def test_sleep_and_wakeup(body):
 
 def test_status_counts_per_id(body):
     body.expect("RSM_Frm2", 500)
+    # the cadence is the time between an id's last two frames: wait for two LSM_Frm2 frames sent
+    # on the running table, so it is not the gap across an earlier test's stop of the schedule
+    first = body.status().frames[0x12].count
+    deadline = time.monotonic() + 2
     st = body.status()
+    while st.frames[0x12].count < first + 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+        st = body.status()
     assert (st.name, st.address, st.role, st.schedule, st.schedule_running) == ("BODY", "inproc:body", "master",
                                                                                  "NormalTable", True)
     assert st.frames[0x01].count > 0 and st.frames[0x01].name == "CEM_Frm1"
