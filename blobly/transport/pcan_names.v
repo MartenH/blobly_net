@@ -152,28 +152,13 @@ fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int,
 			brp:   brp
 			tseg1: tseg1
 			tseg2: tseg2
-			sjw:   pcan_sjw(tseg1, tseg2, max_sjw)
+			sjw:   sjw_rule(tseg1, tseg2, max_sjw)
 		}
 	}
 	if have_closest {
 		return error('${bitrate} bit/s divides the ${pcan_fd_clock_hz} Hz clock into too few time quanta to place the sample point at ${sample_point}% — the closest it can manage is ${closest}%')
 	}
 	return error('${pcan_fd_clock_hz} Hz cannot be divided into ${bitrate} bit/s at ${sample_point}% with these registers')
-}
-
-// pcan_sjw is the resynchronisation jump width of one phase: the most the rule allows,
-// min(tseg1, tseg2), held to the phase's register ceiling — the CANsub's rule (cansub_timing.v).
-// A resynchronisation may lengthen phase 1 or shorten phase 2 by at most the SJW, so neither
-// segment may be shorter. A fixed 4 quanta, PEAK's examples' value, shrinks as a fraction of the
-// bit as the quanta per bit grow: at 500 kbit/s this solver takes brp 1 and 160 quanta, where 4
-// is 2.5% of a bit. That fraction on a CANsub beside two STM32 FDCANs cost 20 controller errors
-// a minute, none at SJW = tseg2 (#359).
-fn pcan_sjw(tseg1 int, tseg2 int, max_sjw int) int {
-	mut sjw := if tseg1 < tseg2 { tseg1 } else { tseg2 }
-	if sjw > max_sjw {
-		sjw = max_sjw
-	}
-	return sjw
 }
 
 fn abs_diff(a int, b int) int {

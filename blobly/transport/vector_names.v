@@ -298,19 +298,13 @@ fn vector_split_at(tq int, sample_point f64, phase VectorPhase) ?FdTiming {
 
 // vector_segments is a division of the bit with its resynchronisation jump width.
 //
-// An FD phase's SJW is the most the rule allows, min(tseg1, tseg2), held to the phase's register
-// ceiling — the CANsub's rule (cansub_timing.v): a resynchronisation may lengthen phase 1 or
-// shorten phase 2 by at most the SJW. A fixed 4 shrinks as a fraction of the bit as the quanta
-// grow (4 of 64 is 6.25%); that fraction on a CANsub beside two STM32 FDCANs cost 20 controller
-// errors a minute, none at SJW = tseg2 (#359). A classic channel keeps min(tseg2, 4), what
-// XLchipParams' register holds.
+// An FD phase's SJW is the most the rule allows (sjw_rule), held to the phase's register ceiling.
+// A classic channel keeps min(tseg2, 4), what XLchipParams' register holds.
 fn vector_segments(t1 int, t2 int, phase VectorPhase) FdTiming {
-	mut sjw := t2
-	if phase != .classic && t1 < sjw {
-		sjw = t1
-	}
-	if sjw > phase.sjw_max() {
-		sjw = phase.sjw_max()
+	sjw := if phase == .classic {
+		if t2 < phase.sjw_max() { t2 } else { phase.sjw_max() }
+	} else {
+		sjw_rule(t1, t2, phase.sjw_max())
 	}
 	return FdTiming{
 		tseg1: t1

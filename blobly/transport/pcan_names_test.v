@@ -209,6 +209,6 @@ fn test_sjw_is_the_most_the_rule_allows() {
 	assert field(s, 'nom_sjw') == 32 // brp 1, 160 quanta: tseg2, 20% of the bit
 	assert field(s, 'data_sjw') == field(s, 'data_tseg2')
 	// the ceiling, where a segment is wider than the register
-	assert pcan_sjw(200, 150, pcan_nom_max_sjw) == 128
-	assert pcan_sjw(3, 9, pcan_data_max_sjw) == 3
+	assert sjw_rule(200, 150, pcan_nom_max_sjw) == 128
+	assert sjw_rule(3, 9, pcan_data_max_sjw) == 3
 }
