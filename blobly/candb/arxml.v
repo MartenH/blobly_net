@@ -153,7 +153,7 @@ pub mut:
 	cycle_ms      int
 	min_delay_ms  int
 	repetitions   int // event-controlled: a change is sent 1 + repetitions times …
-	repetition_ms int // … this far apart. blobly_emb sends once; the fragment says so
+	repetition_ms int // … this far apart. Message.repetitions / cycle_fast_ms; blobly_emb sends once, the fragment says so
 	fd            bool // CAN-FRAME-TX-BEHAVIOR / RX-BEHAVIOR = CAN-FD
 	// received in either format (CAN-FRAME-RX-BEHAVIOR = ANY, no TX behaviour): a short one is
 	// not fd, but an FD bus may carry it so
@@ -1726,19 +1726,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				info.min_delay_ms = tm.min_delay_ms
 				info.repetitions = tm.repetitions
 				info.repetition_ms = tm.repetition_ms
-				if tm.repetitions > 0 {
-					// the bench simulates a change as one send; a receiver expecting the
-					// declared burst sees fewer frames than the ECU would send
-					r.report.notes << '${sig_pdu_path}: event-controlled timing repeats a change ${tm.repetitions} more times ${tm.repetition_ms} ms apart; the simulation sends once'
+				if tm.tx_mode in ['event', 'mixed'] {
+					// the timing goes onto the Message (arxml_send_type, below), so the simulation
+					// sends a change and its repetitions as the ECU does (#339); what it cannot
+					// tell is WHICH signals trigger: COM sends on a change of a TRIGGERED signal
+					// only, and TRANSFER-PROPERTY is not read
+					r.report.notes << '${sig_pdu_path}: event-controlled timing; the simulation sends on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read'
 				}
-				if tm.tx_mode == 'event' {
-					// no cycle at all: the simulation sends on a cycle and so sends NOTHING for
-					// this frame, where the ECU sends once per change (codex on #273 round 15)
-					r.report.notes << '${sig_pdu_path}: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame'
-				} else if tm.tx_mode == 'mixed' {
-					// a cycle AND a send per change: the simulation keeps the cycle only, so a
-					// change waits for the next cycle where the ECU sends at once (round 18)
-					r.report.notes << '${sig_pdu_path}: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change'
+				if tm.repetitions > 0 && tm.repetition_ms <= 0 {
+					// repetitions with no period between them: spaced as the simulation spaces a
+					// change send with no fast cycle
+					r.report.notes << '${sig_pdu_path}: event-controlled timing repeats a change ${tm.repetitions} more times with no REPETITION-PERIOD; the simulation spaces them by the MINIMUM-DELAY, else by its default change gap'
 				}
 				if tm.offset_ms > 0 {
 					// the phase between cyclic frames: the simulation starts every cyclic frame at
@@ -1814,6 +1812,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			sender: ports.sender
 			tx_nodes: ports.tx_nodes
 			cycle_ms: info.cycle_ms
+			// the first PDU's timing, as a DBC's GenMsg* attributes put it on the model (#339)
+			send_type_name: arxml_send_type(info.tx_mode)
+			send_type: send_type_of(arxml_send_type(info.tx_mode))
+			cycle_fast_ms: info.repetition_ms
+			repetitions: info.repetitions
+			delay_ms: info.min_delay_ms
 			format: format
 			signals: sigs
 			fill: info.fill
@@ -1869,6 +1873,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	}
 }
 
+// arxml_send_type is a transmission mode as a GenMsgSendType choice the writer declares
+// (send_type_choices) and send_type_of reads back to the same SendType: '' for none stated.
+fn arxml_send_type(mode string) string {
+	return match mode {
+		'cyclic' { 'cyclic' }
+		'event' { 'spontaneous' }
+		'mixed' { 'cyclicAndSpontaneous' }
+		else { '' }
+	}
+}
+
 struct ArxmlTiming {
 	tx_mode       string
 	cycle_ms      int
@@ -1911,7 +1926,7 @@ fn (mut r ArxmlReader) load_timing(pdu flatxml.MNode, pdu_path string) ArxmlTimi
 		}
 		if cycle <= 0 {
 			// cyclic in name only: the simulation sends on the cycle, and there is none (round 40)
-			r.report.notes << '${pdu_path}: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends nothing for this frame'
+			r.report.notes << '${pdu_path}: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends nothing on a cycle for this frame'
 		}
 		if to := first(ct, 'TIME-OFFSET') {
 			offset = r.timing_ms(first_text(to, 'VALUE'), pdu_path, 'TIME-OFFSET')

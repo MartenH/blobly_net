@@ -321,7 +321,10 @@
               <TRANSMISSION-MODE-DECLARATION>
                 <TRANSMISSION-MODE-TRUE-TIMING>
                   <EVENT-CONTROLLED-TIMING>
-                    <NUMBER-OF-REPETITIONS>0</NUMBER-OF-REPETITIONS>
+                    <NUMBER-OF-REPETITIONS>2</NUMBER-OF-REPETITIONS>
+                    <REPETITION-PERIOD>
+                      <VALUE>0.02</VALUE>
+                    </REPETITION-PERIOD>
                   </EVENT-CONTROLLED-TIMING>
                 </TRANSMISSION-MODE-TRUE-TIMING>
               </TRANSMISSION-MODE-DECLARATION>
