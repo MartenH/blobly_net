@@ -43,7 +43,7 @@ fn test_no_sample_point_keeps_the_default_split() {
 	assert t == FdTiming{
 		tseg1: 31
 		tseg2: 8
-		sjw:   4
+		sjw:   8
 	}
 	d := vector_phase_timing(5_000_000, .data, 0) or { panic(err) }
 	assert d.sample_point() == 81.25
@@ -57,7 +57,7 @@ fn test_a_chosen_sample_point_is_placed() {
 	} {
 		t := vector_phase_timing(rate, .arbitration, sp) or { panic(err) }
 		assert t.sample_point() == sp, '${rate} at ${sp}: ${t}'
-		assert t.sjw == if t.tseg2 > 4 { 4 } else { t.tseg2 }
+		assert t.sjw == if t.tseg1 < t.tseg2 { t.tseg1 } else { t.tseg2 }
 	}
 	d := vector_phase_timing(8_000_000, .data, 70) or { panic(err) }
 	assert d.sample_point() == 70.0 && d.tseg1 + d.tseg2 + 1 == 10
@@ -169,4 +169,34 @@ fn test_a_classic_sample_point_fits_the_chip_registers() {
 	if _ := vector_phase_timing(83_333, .classic, 75) {
 		assert false, '83333 divides no 16 MHz prescaler'
 	}
+}
+
+// An FD phase's resynchronisation jump is the most the rule allows, min(tseg1, tseg2), held to
+// the phase's register ceiling — a fixed 4 is 6.25% of a 64-quantum bit (#359); a classic
+// channel's stays min(tseg2, 4), what XLchipParams holds.
+fn test_sjw_is_the_most_the_rule_allows() {
+	for phase in [VectorPhase.arbitration, .data] {
+		for rate in [10_000, 125_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000, 5_000_000,
+			8_000_000] {
+			for sp in [0.0, 50.0, 70.0, 75.0, 80.0, 87.5] {
+				t := vector_phase_timing(rate, phase, sp) or { continue }
+				lim := if t.tseg1 < t.tseg2 { t.tseg1 } else { t.tseg2 }
+				want := if lim > phase.sjw_max() { phase.sjw_max() } else { lim }
+				assert t.sjw == want, '${phase} ${rate} at ${sp}: ${t}'
+			}
+		}
+	}
+	a := vector_phase_timing(1_000_000, .arbitration, 0) or { panic(err) }
+	assert a.sjw == a.tseg2 && a.sjw > 4, '${a}'
+	for rate in [20_000, 125_000, 500_000, 1_000_000] {
+		for sp in [50.0, 75.0, 87.5] {
+			c := vector_phase_timing(rate, .classic, sp) or { continue }
+			assert c.sjw == if c.tseg2 > 4 { 4 } else { c.tseg2 }, '${rate} at ${sp}: ${c}'
+		}
+	}
+	// the ceilings, where a division is wider than the register
+	assert vector_segments(200, 150, .arbitration).sjw == 128
+	assert vector_segments(40, 30, .data).sjw == 16
+	assert vector_segments(3, 9, .data).sjw == 3
+	assert vector_segments(12, 8, .classic).sjw == 4
 }

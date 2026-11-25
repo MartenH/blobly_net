@@ -185,3 +185,30 @@ fn test_the_classic_and_fd_sample_points_differ_at_the_same_rate() {
 	assert (1 + tseg1) * 100 / total == pcan_default_sample_point
 	assert classic != f64(pcan_default_sample_point)
 }
+
+// the resynchronisation jump is the most the rule allows, min(tseg1, tseg2), in both phases, held
+// to each phase's register ceiling — a fixed 4 shrinks as a fraction of the bit (4 of 160 quanta
+// at 500 kbit/s is 2.5%, which on a CANsub cost 20 bus errors a minute; #359)
+fn test_sjw_is_the_most_the_rule_allows() {
+	for nominal in [10_000, 125_000, 250_000, 500_000, 1_000_000] {
+		for data in [1_000_000, 2_000_000, 4_000_000, 5_000_000, 8_000_000] {
+			for sp in [50, 75, 80, 87] {
+				s := pcan_fd_bitrate(nominal, data, sp) or { continue }
+				for p in ['nom', 'data'] {
+					t1 := field(s, '${p}_tseg1')
+					t2 := field(s, '${p}_tseg2')
+					lim := if t1 < t2 { t1 } else { t2 }
+					ceiling := if p == 'nom' { pcan_nom_max_sjw } else { pcan_data_max_sjw }
+					want := if lim > ceiling { ceiling } else { lim }
+					assert field(s, '${p}_sjw') == want, '${nominal}/${data}@${sp}%: ${s}'
+				}
+			}
+		}
+	}
+	s := pcan_fd_bitrate(500_000, 2_000_000, 80)!
+	assert field(s, 'nom_sjw') == 32 // brp 1, 160 quanta: tseg2, 20% of the bit
+	assert field(s, 'data_sjw') == field(s, 'data_tseg2')
+	// the ceiling, where a segment is wider than the register
+	assert pcan_sjw(200, 150, pcan_nom_max_sjw) == 128
+	assert pcan_sjw(3, 9, pcan_data_max_sjw) == 3
+}

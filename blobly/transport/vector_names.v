@@ -176,6 +176,20 @@ fn (p VectorPhase) brp_max() int {
 	}
 }
 
+// sjw_max is the most resynchronisation jump width the phase's register holds. XLcanFdConf's
+// header declares sjwAbr / sjwDbr as plain unsigned ints and states no range, so the FD phases
+// take the common FD controller layout (Bosch M_CAN NBTP.NSJW 7 bits, DBTP.DSJW 4 bits — the
+// ranges PCAN-Basic documents for its FD string too, pcan_names.v): a conservative bound, and
+// one this solver never reaches, since its quanta ceilings (fd_tq_max_*) keep min(tseg1, tseg2)
+// at 31 and 12. A classic channel's is XLchipParams' SJA1000-style register, 1..4.
+fn (p VectorPhase) sjw_max() int {
+	return match p {
+		.arbitration { 128 }
+		.data { 16 }
+		.classic { 4 }
+	}
+}
+
 // fits is whether the phase's segment registers hold `t`; the FD phases' bound is the quanta
 // count alone.
 fn (p VectorPhase) fits(t FdTiming) bool {
@@ -223,7 +237,7 @@ fn vector_phase_timing(rate int, phase VectorPhase, sample_point f64) !FdTiming 
 		}
 		divided = true
 		if sample_point == 0 {
-			d := vector_fd_split(tq)
+			d := vector_fd_split(tq, phase)
 			if phase.fits(d) {
 				return d
 			}
@@ -248,7 +262,7 @@ fn vector_phase_timing(rate int, phase VectorPhase, sample_point f64) !FdTiming 
 }
 
 // vector_fd_split places the sample point at ~80% of a bit divided into `tq` quanta.
-fn vector_fd_split(tq int) FdTiming {
+fn vector_fd_split(tq int, phase VectorPhase) FdTiming {
 	// The bit is 1 (sync) + tseg1 + tseg2 quanta, and the sample point sits at the end of tseg1 —
 	// so (1 + tseg1) / tq is the figure being aimed at. Rounded, and floored at 2 quanta of
 	// tseg2: a single-quantum phase-2 segment leaves no room to shorten on resynchronisation.
@@ -256,7 +270,7 @@ fn vector_fd_split(tq int) FdTiming {
 	if t2 < 2 {
 		t2 = 2
 	}
-	return vector_segments(tq - 1 - t2, t2)
+	return vector_segments(tq - 1 - t2, t2, phase)
 }
 
 // vector_split_at divides a bit of `tq` quanta so it samples nearest `sample_point` percent, of
@@ -267,7 +281,7 @@ fn vector_split_at(tq int, sample_point f64, phase VectorPhase) ?FdTiming {
 	mut best_off := 0.0
 	mut found := false
 	for t1 := tq - 2; t1 >= 1; t1-- {
-		t := vector_segments(t1, tq - 1 - t1)
+		t := vector_segments(t1, tq - 1 - t1, phase)
 		if !phase.fits(t) {
 			continue
 		}
@@ -282,13 +296,26 @@ fn vector_split_at(tq int, sample_point f64, phase VectorPhase) ?FdTiming {
 	return best
 }
 
-fn vector_segments(t1 int, t2 int) FdTiming {
-	// sjw cannot exceed tseg2 — it is the amount phase 2 may be shortened by — and there is
-	// nothing to gain from more than 4.
+// vector_segments is a division of the bit with its resynchronisation jump width.
+//
+// An FD phase's SJW is the most the rule allows, min(tseg1, tseg2), held to the phase's register
+// ceiling — the CANsub's rule (cansub_timing.v): a resynchronisation may lengthen phase 1 or
+// shorten phase 2 by at most the SJW. A fixed 4 shrinks as a fraction of the bit as the quanta
+// grow (4 of 64 is 6.25%); that fraction on a CANsub beside two STM32 FDCANs cost 20 controller
+// errors a minute, none at SJW = tseg2 (#359). A classic channel keeps min(tseg2, 4), what
+// XLchipParams' register holds.
+fn vector_segments(t1 int, t2 int, phase VectorPhase) FdTiming {
+	mut sjw := t2
+	if phase != .classic && t1 < sjw {
+		sjw = t1
+	}
+	if sjw > phase.sjw_max() {
+		sjw = phase.sjw_max()
+	}
 	return FdTiming{
 		tseg1: t1
 		tseg2: t2
-		sjw:   if t2 > 4 { 4 } else { t2 }
+		sjw:   sjw
 	}
 }
 
