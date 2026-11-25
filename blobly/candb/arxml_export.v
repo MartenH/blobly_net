@@ -227,8 +227,8 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 	if fmt.values.len > 0 {
 		x.attrs << fmt
 	}
-	// the E2E attributes only for a profile blobly_emb's build implements: its DBC reader
-	// refuses any other, and its generator stops on that refusal
+	// the E2E attributes only for a profile blobly_emb's build implements (dbc_exports_profile):
+	// its DBC reader refuses any other, and its generator stops on that refusal
 	mut db := Database{
 		...c.db
 		messages: c.db.messages.clone()
@@ -254,10 +254,11 @@ pub fn (c ArxmlCluster) export_notes() []string {
 	return out
 }
 
-// dbc_exports_profile is whether the export writes an E2E profile as DBC attributes: the ones
-// blobly_emb implements (Profile 1). Any other the reader applies stays in the ARXML.
+// dbc_exports_profile is whether the export writes an E2E profile as DBC attributes and as a
+// fragment entry: the ones blobly_emb implements on CAN frames (Profiles 1 and 5). Any other the
+// reader applies stays in the ARXML.
 pub fn dbc_exports_profile(profile string) bool {
-	return profile == 'autosar_p01'
+	return profile in ['autosar_p01', 'autosar_p05']
 }
 
 // frame_toml renders a `[[frame]]` fragment in blobly_emb's ecu.toml dialect for the frames
@@ -339,10 +340,18 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 			// export cannot state exactly is named, never approximated into an entry
 			if _ := c.e2e_signals(m) {
 				// a profile blobly_emb does not implement is named, here and out of the DBC
-				if !dbc_exports_profile(e2e_profile_primitive(e.profile)) {
-					b << "# E2E ${e.profile} (data_id 0x${e.data_id:X}, CRC at byte ${e.crc_byte()}, counter at byte ${e.counter_byte()}): blobly_emb implements Profile 1 only, so neither this fragment nor the exported DBC carries it; blobly_net applies it from the ARXML"
+				primitive := e2e_profile_primitive(e.profile)
+				if !dbc_exports_profile(primitive) {
+					b << "# E2E ${e.profile} (data_id 0x${e.data_id:X}, CRC at byte ${e.crc_byte()}, counter at byte ${e.counter_byte()}): blobly_emb implements Profiles 1 and 5 only, so neither this fragment nor the exported DBC carries it; blobly_net applies it from the ARXML"
 				} else {
-					b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # AUTOSAR ${e.profile}"
+					// a table naming no profile reads the DBC's, P01 here, so only another one is
+					// named; for Profile 5 crc_pos is the CRC's low byte, counter_pos two bytes on
+					profile := if primitive == 'autosar_p01' {
+						''
+					} else {
+						'profile = "${profile_to_dbc(primitive)}", '
+					}
+					b << "e2e  = { ${profile}data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # AUTOSAR ${e.profile}"
 				}
 			} else if e.profile == 'PROFILE_05' && !e.has_offset {
 				b << '# E2E ${e.profile} (data_id 0x${e.data_id:X}): no OFFSET declared, and Profile 5 is laid out from its header OFFSET'

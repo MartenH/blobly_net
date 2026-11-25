@@ -1841,7 +1841,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				r.report.notes << '${fname}: its E2E contract is neither applied by the simulation nor carried as DBC attributes — ${why}; the fragment names the contract'
 			} else if !dbc_exports_profile(e2e_profile_primitive(e.profile)) {
 				// applied here, but the export leaves it out of the DBC blobly_emb builds from
-				r.report.notes << '${fname}: its E2E ${e.profile} contract is applied by the simulation but not exported as DBC attributes — blobly_emb implements Profile 1 only'
+				r.report.notes << '${fname}: its E2E ${e.profile} contract is applied by the simulation but not exported as DBC attributes — blobly_emb implements Profiles 1 and 5 only'
 			}
 		}
 		msgs << msg
