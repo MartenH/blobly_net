@@ -142,3 +142,22 @@ fn test_a_wire_s_fault_is_forgotten_when_its_last_handle_closes() {
 	controller_wire_closed(iface)
 	assert wire_silence_fault(iface) == none
 }
+
+fn test_a_handle_reads_its_controller_again_while_it_disagrees() {
+	s := controller_reread_ns
+	// never held, or the mark moved: read now
+	assert controller_reread_due(.normal, none, false, 0, 0)
+	assert controller_reread_due(.normal, false, true, 0, 0)
+	// an agreeing pair is not read again however long it stands
+	assert !controller_reread_due(.normal, false, false, 0, 100 * s)
+	assert !controller_reread_due(.listen_only, true, true, 0, 100 * s)
+	assert !controller_reread_due(.no_controller, true, true, 0, 100 * s)
+	// a transmitting row on a listen-only controller: once a second, so a corrected controller
+	// lets a transmit-only handle send again without a reopen
+	assert !controller_reread_due(.listen_only, false, false, 0, s - 1)
+	assert controller_reread_due(.listen_only, false, false, 0, s)
+	// a listen-only row on a controller that acknowledges, and a mode not read: the same
+	assert controller_reread_due(.normal, true, true, 5, 5 + s)
+	assert !controller_reread_due(.unknown, true, true, 5, 4 + s)
+	assert controller_reread_due(.unknown, true, true, 5, 5 + s)
+}

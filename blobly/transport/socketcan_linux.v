@@ -36,8 +36,10 @@ mut:
 	// What the interface's controller was read in (canlink.v): the listen-only mark is held
 	// against it, never applied to it.
 	link CanLink
-	// The mark this handle last held the controller to, so a receive asks only when it moves.
-	held ?bool
+	// The mark this handle last held the controller to, so a receive asks only when it moves,
+	// and when (monotonic ns) the controller was read for it (controller_reread_due).
+	held    ?bool
+	read_ns i64
 }
 
 // open_socketcan binds a raw CAN socket to `iface` (e.g. 'vcan0').
@@ -101,12 +103,11 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	mut polled := false
 	mut skipped := 0
 	// A passive listener never sends, so the receive is where a mark is held against the
-	// controller; asked only when the mark moved since this handle last held it. A vcan has no
-	// controller and costs nothing here.
+	// controller; asked when the mark moved since this handle last held it, and once a second
+	// while the two disagree (controller_reread_due). A vcan has no controller and costs nothing.
 	if b.link.mode != .no_controller {
 		want := is_listen_only(b.iface)
-		moved := if h := b.held { h != want } else { true }
-		if moved {
+		if controller_reread_due(b.link.mode, b.held, want, b.read_ns, time.sys_mono_now()) {
 			b.hold_mark(want) or {}
 		}
 	}
@@ -250,12 +251,10 @@ pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {
 	if b.link.mode == .no_controller {
 		return
 	}
-	if h := b.held {
-		if h == want {
-			// a standing disagreement still refuses, without asking the kernel again
-			controller_send_refusal(b.iface, '', b.link.mode, want)!
-			return
-		}
+	if !controller_reread_due(b.link.mode, b.held, want, b.read_ns, time.sys_mono_now()) {
+		// a standing pair refuses as it did, without asking the kernel again inside the second
+		controller_send_refusal(b.iface, '', b.link.mode, want)!
+		return
 	}
 	b.hold_mark(want)!
 }
@@ -264,6 +263,7 @@ pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {
 fn (mut b SocketCanBus) hold_mark(want bool) ! {
 	b.link = can_link_of(b.iface)
 	b.held = want
+	b.read_ns = time.sys_mono_now()
 	apply_controller_mode(b.iface, b.iface, '', b.link.mode, want)!
 }
 

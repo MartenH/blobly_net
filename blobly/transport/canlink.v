@@ -153,6 +153,26 @@ fn apply_controller_mode(iface string, host_if string, bridge string, mode Contr
 	}
 }
 
+// controller_reread_ns is how often a handle reads its controller again while the reading still
+// disagrees with the mark, or said nothing: the mode is set on the host with the link down, which a
+// socket bound to it outlives, so a transmit-only handle would otherwise refuse after the controller
+// was corrected (SocketCAN, canlink_linux.c.v).
+pub const controller_reread_ns = i64(1_000_000_000)
+
+// controller_reread_due is when a handle holding `held` against a controller last read in `mode`
+// at `read_ns` reads it again for mark `want`: whenever the mark moved, and once a second while the
+// pair disagrees or the mode is not known. An agreeing pair is never read again.
+pub fn controller_reread_due(mode ControllerMode, held ?bool, want bool, read_ns i64, now_ns i64) bool {
+	h := held or { return true }
+	if h != want {
+		return true
+	}
+	if controller_verdict(mode, want) == .agrees {
+		return false
+	}
+	return now_ns - read_ns >= controller_reread_ns
+}
+
 // controller_send_refusal is the refusal a send on a wire whose held (mode, mark) still disagrees
 // owes without asking anything again: only `cannot_send` refuses (apply_controller_mode).
 fn controller_send_refusal(host_if string, bridge string, mode ControllerMode, want bool) ! {
