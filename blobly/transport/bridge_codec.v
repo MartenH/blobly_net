@@ -26,15 +26,18 @@
 //     senderr (bridge -> app)  u8 channel, u32 seq, u8 definite, str error — a frame the app sent
 //                              failed; `definite` when it certainly did not reach the wire
 //     status  (bridge -> app)  u8 channel, u32 gen, u8 health, u64 dropped, u64 bus errors,
-//                              u64 decode errors
+//                              u64 decode errors, u8 controller (read only when present)
 //     lost    (bridge -> app)  u8 channel, u32 gen, str error — the channel failed on the bridge
 //
 // Integers are little-endian. A frame's `id` is the bare identifier, at most 0x7FF, or 0x1FFFFFFF
 // when extended, never SocketCAN's can_id with its flag bits. Its `flags` are bits: 0x01 extended
 // id, 0x02 remote, 0x04 FD, 0x08 bit-rate switch, 0x10 error-state indicator, 0x20 tx (below); its
 // `len` is the payload's, at most 64, a remote frame's payload zeroes of its requested length. A
-// status's `health` is 0 unknown, 1 ok, 2 warning, 3 error-passive, 4 bus-off. A channel is named
-// by its place in the hello's list.
+// status's `health` is 0 unknown, 1 ok, 2 warning, 3 error-passive, 4 bus-off; its `controller`
+// is what the bridge READ of the interface's controller (canlink.v) — 0 unknown, 1 no controller
+// (a vcan), 2 normal, 3 listen-only — added after v3 under the trailing-bytes rule below, so a
+// status without it (an older bridge) reads as unknown and an older app skips it. A channel is
+// named by its place in the hello's list.
 //
 // `gen` is the app's number for one OPEN of a channel, carried by every record about that open, so
 // a record still in the stream from a previous open of the same channel is told apart by value
@@ -126,6 +129,7 @@ pub:
 	// status
 	health BusHealth
 	diag   BusDiagnostics
+	mode   ControllerMode // what the bridge read of the interface's controller
 }
 
 fn bridge_put_u16(mut b []u8, v u16) {
@@ -267,13 +271,14 @@ pub fn bridge_encode_refused(why string) []u8 {
 	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_status(ch u8, gen u32, h BusHealth, d BusDiagnostics) []u8 {
+pub fn bridge_encode_status(ch u8, gen u32, h BusHealth, d BusDiagnostics, mode ControllerMode) []u8 {
 	mut b := [u8(BridgeKind.status), ch]
 	put_u32_le(mut b, gen)
 	b << u8(h)
 	bridge_put_u64(mut b, d.dropped)
 	bridge_put_u64(mut b, d.bus_errors)
 	bridge_put_u64(mut b, d.decode_errors)
+	b << u8(mode)
 	return bridge_wrap(b)
 }
 
@@ -483,12 +488,18 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 				bus_errors:    r.u64()
 				decode_errors: r.u64()
 			}
+			// a later field: absent from an older bridge's status, unknown when it says nothing
+			mut m := if !r.short && r.i < r.b.len { r.u8() } else { u8(ControllerMode.unknown) }
+			if m > u8(ControllerMode.listen_only) {
+				m = u8(ControllerMode.unknown)
+			}
 			BridgeRecord{
 				kind:    .status
 				channel: ch
 				gen:     gen
 				health:  unsafe { BusHealth(h) }
 				diag:    d
+				mode:    unsafe { ControllerMode(m) }
 			}
 		}
 		else {

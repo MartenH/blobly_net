@@ -81,7 +81,7 @@ value, not by where it falls. A channel is named by its index in the hello's lis
 | 4 | close | app → bridge | u8 channel |
 | 5 | frame | both | u8 channel, u32 gen, u8 flags, u32 seq, u32 id, i64 stamp ns, u8 len, len bytes |
 | 6 | senderr | bridge → app | u8 channel, u32 seq, u8 definite, str error |
-| 7 | status | bridge → app | u8 channel, u32 gen, u8 health, u64 dropped, u64 bus errors, u64 decode errors |
+| 7 | status | bridge → app | u8 channel, u32 gen, u8 health, u64 dropped, u64 bus errors, u64 decode errors, u8 controller |
 | 8 | lost | bridge → app | u8 channel, u32 gen, str error |
 
 A **channel** entry in the hello is `u16 length`, then `str name, u8 bus`. Bus 1 is CAN, which is
@@ -159,8 +159,8 @@ The app never sends a remote frame, or one no controller could send. That rules 
 
 ### status
 
-A status carries the channel's controller state and running counts. The bridge sends one whenever
-any of them changes; the app reads none of them any other way. Where the controller's driver
+A status carries the channel's controller state and running counts. The bridge sends one after
+each `opened` and whenever any of them changes; the app reads none of them any other way. Where the controller's driver
 reports its error state, pass that on; the counter thresholds below are for a bridge that has only
 the counters.
 
@@ -177,6 +177,22 @@ All three counts run from the open:
   overflowed;
 - `bus errors` is error records the controller reported;
 - `decode errors` is records from the interface the bridge could not read.
+
+`controller` is what the bridge read of the interface's controller mode. The app holds the row's
+listen-only mark against it and says on its Buses row when they disagree; it never asks the
+bridge to change the mode, which is set on the bridge's host (`ip link set can0 type can
+listen-only on`). It was added after version 3 under the trailing-bytes rule: a status without it
+reads as unknown, and an app that predates it skips it.
+
+| controller | meaning |
+|---|---|
+| 0 | unknown: not read |
+| 1 | no controller (a vcan): nothing to acknowledge with |
+| 2 | normal: transmits and acknowledges |
+| 3 | listen-only: neither transmits nor acknowledges |
+
+`canbridge` reads it over rtnetlink when the channel opens (the link kind, and a CAN link's
+ctrlmode). A mode change needs the interface down, which ends the channel with `lost`.
 
 ### lost
 

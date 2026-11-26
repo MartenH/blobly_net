@@ -2243,10 +2243,21 @@ pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'do
 //
 // The software and kernel adapters are not here and never will be: `inproc:`/`udp:` have no
 // transceiver at all, and a SocketCAN interface is brought up by `ip link` by whoever chose its
-// mode.
+// mode — which this app READS instead (adapter_reads_controller_mode).
 pub fn adapter_silences_transceiver(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
 		'vector', 'cansub', 'pcan', 'kvaser' { true }
+		else { false }
+	}
+}
+
+// adapter_reads_controller_mode reports whether this app reads the adapter's controller mode and
+// says when it disagrees with the row's listen-only mark, without changing it (#454,
+// transport/canlink.v): a SocketCAN interface, and one behind a CAN bridge, whose mode is set on
+// its host with `ip link`.
+pub fn adapter_reads_controller_mode(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'socketcan', 'bridge' { true }
 		else { false }
 	}
 }

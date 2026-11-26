@@ -46,8 +46,8 @@ fn test_control_records_round_trip() {
 		dropped:       1
 		bus_errors:    2
 		decode_errors: 3
-	}))
-	assert st.health == .error_passive && st.gen == 42
+	}, .listen_only))
+	assert st.health == .error_passive && st.gen == 42 && st.mode == .listen_only
 	assert st.diag == BusDiagnostics{
 		dropped:       1
 		bus_errors:    2
@@ -78,7 +78,7 @@ fn test_frame_round_trips_every_flag() {
 fn test_decoder_follows_any_read_boundary() {
 	mut stream := bridge_encode_frame(1, 1, CanFrame{ id: 0x123, data: [u8(1), 2, 3] }, 9, false,
 		42)
-	stream << bridge_encode_status(1, 1, .ok, BusDiagnostics{})
+	stream << bridge_encode_status(1, 1, .ok, BusDiagnostics{}, .unknown)
 	stream << bridge_encode_opened(0, 1, '')
 	mut d := BridgeDecoder{}
 	mut got := []BridgeRecord{}
@@ -175,10 +175,12 @@ fn test_what_a_reader_does_not_know_is_skipped() {
 	// a flag bit and a health
 	frame[6] |= 0x80 // the flags, after kind, channel and gen
 	assert bridge_decode_body(frame)!.frame == f.frame
-	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{ dropped: 4 })[4..].clone()
+	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{ dropped: 4 }, .normal)[4..].clone()
 	st[6] = 9 // the health byte, after kind, channel and gen
+	st[31] = 9 // the controller byte, the last
+	st << [u8(0xee), 0xee] // and fields a later bridge adds after it
 	s := bridge_decode_body(st)!
-	assert s.health == .unknown && s.diag.dropped == 4
+	assert s.health == .unknown && s.diag.dropped == 4 && s.mode == .unknown
 }
 
 fn test_parse_bridge_iface() {
@@ -225,11 +227,18 @@ fn test_records_are_the_documented_bytes() {
 	assert bridge_encode_senderr(3, 2, true, '') == [u8(9), 0, 0, 0, 6, 3, 2, 0, 0, 0, 1, 0, 0]
 	assert bridge_encode_lost(3, 1, '') == [u8(8), 0, 0, 0, 8, 3, 1, 0, 0, 0, 0, 0]
 	assert bridge_encode_refused('no') == [u8(5), 0, 0, 0, 9, 2, 0, `n`, `o`]
-	mut status := [u8(31), 0, 0, 0, 7, 3, 1, 0, 0, 0, 3]
+	mut status := [u8(32), 0, 0, 0, 7, 3, 1, 0, 0, 0, 3]
 	status << [u8(4), 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0]
+	status << u8(3) // the controller: listen-only
 	assert bridge_encode_status(3, 1, .error_passive, BusDiagnostics{
 		dropped:       4
 		bus_errors:    5
 		decode_errors: 6
-	}) == status
+	}, .listen_only) == status
+	assert one(status).mode == .listen_only
+	// an older bridge's status, without the controller byte, reads as not known
+	mut older := status[..status.len - 1].clone()
+	older[0] = 31
+	o := one(older)
+	assert o.mode == .unknown && o.diag.decode_errors == 6
 }

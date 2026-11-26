@@ -127,6 +127,11 @@ struct BridgeResult {
 struct BridgeChanState {
 mut:
 	health BusHealth
+	// What the bridge read of the interface's controller (canlink.v).
+	mode ControllerMode
+	// The (mode, mark) pair last held against the wire (BridgeChan.hold); unknown when none was.
+	held_mode ControllerMode
+	held_want bool
 	// What the bridge reported about its own side of the channel.
 	remote BusDiagnostics
 	// Frames this side dropped because the channel's queue was full.
@@ -142,7 +147,14 @@ mut:
 struct BridgeChan {
 	// This open's number: every record about it carries it, and one carrying another is from a
 	// previous open of the channel, still in the stream.
-	gen     u32
+	gen u32
+	// The channel's address here, and its interface's name on the bridge's host: what a
+	// controller's mode is held against and named by.
+	iface   string
+	host_if string
+	bridge  string
+	// Serialises BridgeChan.hold, so two holds of different pairs reach silence.v in order.
+	hold_mu &sync.Mutex = sync.new_mutex()
 	rx      chan SharedIngress
 	results chan BridgeResult
 	opened  chan string
@@ -803,7 +815,10 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 			lock ch.st {
 				ch.st.health = rec.health
 				ch.st.remote = rec.diag
+				ch.st.mode = rec.mode
 			}
+			// a passive listener never sends, so the reading is held against the mark here
+			ch.hold(is_listen_only(ch.iface)) or {}
 		}
 		.lost {
 			lock ch.st {
@@ -948,7 +963,10 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	}
 	ch := u8(idx)
 	mut c := &BridgeChan{
-		gen: s.next_seq()
+		gen:     s.next_seq()
+		iface:   iface
+		host_if: spec.channel
+		bridge:  spec.name
 		rx:      chan SharedIngress{cap: bridge_queue_cap + bridge_ack_reserve}
 		results: chan BridgeResult{cap: 64}
 		opened:  chan string{cap: 1}
@@ -1125,9 +1143,43 @@ fn (mut b BridgeBus) error_counters() ErrorCounters {
 	return ErrorCounters{}
 }
 
-// reconcile_silence — the interface's mode is set on the bridge's host, as for SocketCAN, and a
-// vcan has no transceiver at all.
-fn (mut b BridgeBus) reconcile_silence(_ bool) ! {}
+// reconcile_silence holds the wire's mark against what the bridge READ of its interface's
+// controller (canlink.v) — the mode is set on the bridge's host, as for SocketCAN, and is never
+// changed from here. Unknown until the bridge's first status, and always from an older bridge.
+fn (mut b BridgeBus) reconcile_silence(want bool) ! {
+	b.c.hold(want)!
+}
+
+// hold holds `want` against the controller mode the bridge last stated: through
+// apply_controller_mode only when the (mode, mark) pair moved since it was last held, so a send on
+// a wire whose pair stands costs a lock and no record; a pair that still disagrees refuses as the
+// first hold did (controller_send_refusal). Nothing once the channel is closed, so a status still
+// in the stream cannot record a fault after the close forgot the wire's.
+fn (c &BridgeChan) hold(want bool) ! {
+	mut hm := c.hold_mu
+	hm.@lock()
+	defer {
+		hm.unlock()
+	}
+	mut mode := ControllerMode.unknown
+	mut moved := false
+	lock c.st {
+		if !c.st.closed {
+			mode = c.st.mode
+			moved = c.st.held_mode != mode || c.st.held_want != want
+			c.st.held_mode = mode
+			c.st.held_want = want
+		}
+	}
+	if !mode_holds_against(mode) {
+		return
+	}
+	if moved {
+		apply_controller_mode(c.iface, c.host_if, c.bridge, mode, want)!
+		return
+	}
+	controller_send_refusal(c.host_if, c.bridge, mode, want)!
+}
 
 fn (mut b BridgeBus) reports_tx_ack() bool {
 	return true
@@ -1144,4 +1196,11 @@ fn (mut b BridgeBus) close() {
 	}
 	b.sess.forget(b.ch, b.c)
 	b.sess.write(bridge_encode_close(b.ch)) or {}
+	// the wire's last handle has gone (a shared driver closes once): a fault about its controller
+	// must not outlive it, and the next open holds the mark afresh. Taken under the hold's lock, so
+	// a hold in progress finishes first and a later one sees the channel closed.
+	mut hm := b.c.hold_mu
+	hm.@lock()
+	forget_wire_silence(b.iface)
+	hm.unlock()
 }

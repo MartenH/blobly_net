@@ -361,13 +361,20 @@ fn draw_buses(mut app App, chans []Chan, model_en []bool) {
 				// both as the first (codex round 4 on #219). A refused SILENCE is a wire that keeps
 				// acknowledging on a bus it was told to observe; a refused NORMAL is a wire that
 				// cannot transmit at all, which is not "still acknowledging" — it is the reverse.
+				// A DECLARED fault is the device's own setting or rule, which retrying does not
+				// change: its reason says what does (a SocketCAN controller's `ip link`, #454).
+				again := if f.declared {
+					'Read from the device, not set by this app: the reason says how to change it.'
+				} else {
+					'Retried on every receive.'
+				}
 				vgui.same_line()
 				if f.want {
 					vgui.text_colored(u8(240), u8(150), u8(60), 'NOT SILENT')
-					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is marked listen-only, but the transceiver is still acknowledging every frame it sees — on a bus with one other node that is the difference between its frames succeeding and it going error-passive. Retried on every receive.')
+					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is marked listen-only, but the transceiver is still acknowledging every frame it sees — on a bus with one other node that is the difference between its frames succeeding and it going error-passive. ${again}')
 				} else {
 					vgui.text_colored(u8(240), u8(150), u8(60), 'STILL SILENT')
-					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is transmit-enabled, but the transceiver will not leave listen-only — so nothing sent on this wire reaches the bus, however much this app reports as sent. Retried on every receive.')
+					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is transmit-enabled, but the transceiver will not leave listen-only — so nothing sent on this wire reaches the bus. ${again}')
 				}
 			}
 			// own line, wrapped: the channel row is narrow and would clip it

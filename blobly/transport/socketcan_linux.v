@@ -33,6 +33,13 @@ mut:
 	counters ErrorCounters
 	// The last receive stamp this socket accepted: what in_order_stamp holds the next one against.
 	last_stamp i64
+	// What the interface's controller was read in (canlink.v): the listen-only mark is held
+	// against it, never applied to it.
+	link CanLink
+	// The mark this handle last held the controller to, so a receive asks only when it moves,
+	// and when (monotonic ns) the controller was read for it (controller_reread_due).
+	held    ?bool
+	read_ns i64
 }
 
 // open_socketcan binds a raw CAN socket to `iface` (e.g. 'vcan0').
@@ -41,10 +48,16 @@ pub fn open_socketcan(iface string) !&SocketCanBus {
 	if fd < 0 {
 		return error('open ${iface}: ${cerr(-fd)}')
 	}
-	return &SocketCanBus{
+	mut b := &SocketCanBus{
 		iface: iface
 		fd:    fd
 	}
+	// counted before the read, so the wire's last close forgets its fault and no later one's
+	controller_wire_opened(iface)
+	// The controller's mode, read at every open: it cannot change while the link is up (a ctrlmode
+	// change needs the link down), and between two opens it may have.
+	b.hold_mark(is_listen_only(iface)) or {}
+	return b
 }
 
 pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
@@ -89,6 +102,15 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
 	mut polled := false
 	mut skipped := 0
+	// A passive listener never sends, so the receive is where a mark is held against the
+	// controller; asked when the mark moved since this handle last held it, and once a second
+	// while the two disagree (controller_reread_due). A vcan has no controller and costs nothing.
+	if b.link.mode != .no_controller {
+		want := is_listen_only(b.iface)
+		if controller_reread_due(b.link.mode, b.held, want, b.read_ns, time.sys_mono_now()) {
+			b.hold_mark(want) or {}
+		}
+	}
 	for {
 		mut raw_id := u32(0)
 		mut fflags := u8(0)
@@ -120,7 +142,12 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 		if dlc <= -1000 {
 			e := -(dlc + 1000)
 			msg := 'recv on ${b.iface}: ${cerr(e)}' // the errno names the culprit
-			return if carrier_errno(e) { carrier_gone(msg) } else { error(msg) }
+			if carrier_errno(e) {
+				// the link went down: its mode may be set anew before it comes back
+				b.held = none
+				return carrier_gone(msg)
+			}
+			return error(msg)
 		}
 		if dlc < 0 {
 			return carrier_gone('recv failed on ${b.iface}')
@@ -212,15 +239,39 @@ pub fn (mut b SocketCanBus) error_counters() ErrorCounters {
 	return b.counters
 }
 
-// reconcile_silence — a SocketCAN interface's mode is chosen outside this app, by whoever ran
-// `ip link set canX type can listen-only on`. There is nothing here that may revise it, and
-// `vcan` has no transceiver at all.
-pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {}
+// reconcile_silence holds the wire's listen-only mark against the controller's mode — READ, never
+// set: a SocketCAN interface's mode is chosen by whoever ran `ip link set canX type can listen-only
+// on`, and changing it means taking the link down, which needs root and drops every socket on it
+// (#454, canlink.v). A disagreement is a declared fault the Buses row shows and the Log narrates.
+// Only a transmitting row on a listen-only controller errs, so its sends are refused before the
+// driver (the kernel would drop the frame while the write reported success); a listen-only row on
+// a controller that acknowledges is answered ok, since SilentBus refuses its sends anyway. A vcan
+// has no controller.
+pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {
+	if b.link.mode == .no_controller {
+		return
+	}
+	if !controller_reread_due(b.link.mode, b.held, want, b.read_ns, time.sys_mono_now()) {
+		// a standing pair refuses as it did, without asking the kernel again inside the second
+		controller_send_refusal(b.iface, '', b.link.mode, want)!
+		return
+	}
+	b.hold_mark(want)!
+}
+
+// hold_mark reads the controller afresh and holds `want` against it (apply_controller_mode).
+fn (mut b SocketCanBus) hold_mark(want bool) ! {
+	b.link = can_link_of(b.iface)
+	b.held = want
+	b.read_ns = time.sys_mono_now()
+	apply_controller_mode(b.iface, b.iface, '', b.link.mode, want)!
+}
 
 pub fn (mut b SocketCanBus) close() {
 	if b.fd >= 0 {
 		C.ct_can_close(b.fd)
 		b.fd = -1
+		controller_wire_closed(b.iface)
 	}
 }
 
