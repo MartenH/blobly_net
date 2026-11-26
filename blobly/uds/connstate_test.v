@@ -213,7 +213,7 @@ fn test_a_granted_key_or_a_zero_seed_unlocks_its_level() {
 	assert !s.security.known && s.session == 0x03
 }
 
-fn test_a_refused_unlock_or_write_forgets_what_its_code_says() {
+fn test_a_refused_unlock_write_or_routine_forgets_what_its_code_says() {
 	base := ConnState{
 		session:  0x03
 		security: security_unlocked(1)
@@ -233,6 +233,15 @@ fn test_a_refused_unlock_or_write_forgets_what_its_code_says() {
 	mut e := base
 	e.observe(nrc_x([u8(0x2E), 0x01, 0x10, 0], 0x31))
 	assert e == base // about the DID, not the connection
+	mut g := base
+	g.observe(nrc_x([u8(0x31), 0x01, 0x02, 0x03], 0x33))
+	assert g.session == 0x03 && !g.security.known
+	mut h := base
+	h.observe(nrc_x([u8(0x31), 0x01, 0x02, 0x03], 0x7F))
+	assert h.session == 0 && !h.security.known
+	mut i := base
+	i.observe(nrc_x([u8(0x31), 0x01, 0x02, 0x03], 0x22))
+	assert i == base // about the routine, not the connection
 	// a key sent and unanswered may have been processed
 	mut f := base
 	f.observe(silent_x([u8(0x27), 0x02, 0], true))

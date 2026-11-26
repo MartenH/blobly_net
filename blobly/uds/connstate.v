@@ -88,9 +88,9 @@ pub enum Forget {
 	session  // the session is gone, and the level with it (0x7F serviceNotSupportedInActiveSession)
 }
 
-// write_refusal_forgets: what a 0x2E refused with `nrc` says the ECU took back on its own (a reset,
-// an S3 or security timeout), so the next write plans that again rather than skipping it on a
-// stale belief and being refused the same way. Only what the code names: 0x22 conditionsNotCorrect
+// write_refusal_forgets: what a gated request (0x2E, 0x31) refused with `nrc` says the ECU took back
+// on its own (a reset, an S3 or security timeout), so the next write or routine plans that again
+// rather than skipping it on a stale belief and being refused the same way. Only what the code names: 0x22 conditionsNotCorrect
 // is about the DID's own conditions as often as anything, and forgetting the session on it would
 // stop a keep-alive and lose the session it never said was lost.
 pub fn write_refusal_forgets(nrc u8) Forget {
@@ -149,8 +149,8 @@ pub fn (s ConnState) words() string {
 // observe updates the state from one exchange that ended: a positive 0x10 establishes its session,
 // locked (ISO 14229-1 relocks on every transition), a positive 0x11 the default session, locked —
 // either voiding a 0x29 challenge outstanding, as forgetting the session does; a
-// granted 0x27 key, or an all-zero seed, its level; a 0x27 or 0x2E refusal forgets what its code
-// says (unlock_refusal_forgets, write_refusal_forgets). A session change or a 0x27 the ECU may have
+// granted 0x27 key, or an all-zero seed, its level; a 0x27, 0x2E or 0x31 refusal forgets what its
+// code says (unlock_refusal_forgets, write_refusal_forgets). A session change or a 0x27 the ECU may have
 // acted on without answering leaves that state unknown; a request that never went out changes
 // nothing.
 pub fn (mut s ConnState) observe(x Exchange) {
@@ -203,7 +203,7 @@ pub fn (mut s ConnState) observe(x Exchange) {
 		sid_authentication {
 			s.observe_auth(x, sub, answered)
 		}
-		sid_write_data_by_identifier {
+		sid_write_data_by_identifier, sid_routine_control {
 			if x.negative && x.resp.len == 3 {
 				s.forget(write_refusal_forgets(x.resp[2]))
 			}
