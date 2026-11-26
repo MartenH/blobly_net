@@ -6,42 +6,49 @@ import blobly.canlog
 import blobly.mf4
 import blobly.player
 
-// The size, in MiB, from which an `.mf4` replays a chunk at a time (player.Chunker) instead of
-// from memory: BLOBLY_MF4_STREAM_MB, this when unset. 0 streams every `.mf4`. A candump `.log`
-// always loads whole (docs/streaming_replay.md, "The switch").
+// The size, in MiB, from which a recording replays a chunk at a time (player.Chunker) instead
+// of from memory: an `.mf4` from BLOBLY_MF4_STREAM_MB, a candump `.log` from
+// BLOBLY_LOG_STREAM_MB, these when unset; 0 streams every file of its kind
+// (docs/streaming_replay.md, "The switch").
 pub const stream_mb_default = 64
+pub const log_stream_mb_default = 64
 
-// stream_mb is the threshold in force: BLOBLY_MF4_STREAM_MB when it is a whole number, else the
-// default.
+// stream_mb is the `.mf4` threshold in force: BLOBLY_MF4_STREAM_MB when it is a whole number,
+// else the default.
 pub fn stream_mb() i64 {
-	return stream_mb_of(os.getenv('BLOBLY_MF4_STREAM_MB'))
+	return stream_mb_of(os.getenv('BLOBLY_MF4_STREAM_MB'), stream_mb_default)
 }
 
-// stream_mb_of reads a threshold as BLOBLY_MF4_STREAM_MB spells it.
-pub fn stream_mb_of(v string) i64 {
+// log_stream_mb is the candump `.log` threshold in force: BLOBLY_LOG_STREAM_MB when it is a
+// whole number, else the default.
+pub fn log_stream_mb() i64 {
+	return stream_mb_of(os.getenv('BLOBLY_LOG_STREAM_MB'), log_stream_mb_default)
+}
+
+// stream_mb_of reads a threshold as the variables spell it, `dflt` when it is not one.
+pub fn stream_mb_of(v string, dflt i64) i64 {
 	t := v.trim_space()
 	if t == '' || !t.bytes().all(it.is_digit()) || t.len > 9 {
-		return stream_mb_default
+		return dflt
 	}
 	return t.i64()
 }
 
+// threshold_mb is the threshold in force for `path`'s kind.
+fn threshold_mb(path string) i64 {
+	return if is_mdf(path) { stream_mb() } else { log_stream_mb() }
+}
+
 // streams says whether a recording of `size` bytes replays in chunks under a threshold of `mb`
-// MiB: an MDF file (`is_mdf`) at or above it.
-pub fn streams(mdf bool, size u64, mb i64) bool {
-	return mdf && size >= u64(mb) << 20
+// MiB: at or above it.
+pub fn streams(size u64, mb i64) bool {
+	return size >= u64(mb) << 20
 }
 
 // is_mdf says whether `path` is an MDF file — by its identification block, whatever it is
 // called, as mf4.load_recording reads it; a file that cannot be read by its name.
 pub fn is_mdf(path string) bool {
-	mut f := os.open(path) or { return path.to_lower().ends_with('.mf4') }
-	defer {
-		f.close()
-	}
-	mut id := []u8{len: 8}
-	n := f.read(mut id) or { 0 }
-	return n == 8 && mf4.is_mdf_id(id)
+	return mf4.is_mdf_file(path)
 }
 
 // Source is a recording opened for a replay: its buses, and either the recording itself (`log`)
@@ -53,43 +60,43 @@ pub:
 	streamed bool
 	log      canlog.Log // the whole recording; empty when streamed
 	note     string     // why a file above the threshold plays from memory, if it does
-	size     u64 // a streamed file's size and modification time at the survey: prepare
-	mtime    i64 // refuses a file that no longer matches both
+	size     u64 // a streamed file's size and modification time at the survey (a candump
+	mtime    i64 // file: the bytes surveyed, and 0) — prepare refuses a file that no longer matches
 	// asked while a streamed source is read before it plays (open and prepare); true gives the
 	// read up with `stopped`
 	stop fn () bool = unsafe { nil }
 }
 
-// open_recording opens `path` for a replay under the threshold in force.
+// open_recording opens `path` for a replay under the threshold in force for its kind.
 pub fn open_recording(path string) !Source {
-	return open_recording_at(path, stream_mb(), unsafe { nil })
+	return open_recording_at(path, threshold_mb(path), unsafe { nil })
 }
 
 // open_recording_until is open_recording, given up once `stop` answers true.
 pub fn open_recording_until(path string, stop fn () bool) !Source {
-	return open_recording_at(path, stream_mb(), stop)
+	return open_recording_at(path, threshold_mb(path), stop)
 }
 
 // open_recording_at opens `path` for a replay under a threshold of `mb` MiB: surveyed when it
 // streams, loaded otherwise — and loaded, with a note, when the stream would not reproduce the
-// loader's rows (stream_differs).
+// loader's rows (stream_differs, log_stream_differs).
 pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 	mut note := ''
-	size := os.file_size(path)
-	mtime := os.file_last_mod_unix(path)
-	if streams(is_mdf(path), size, mb) {
+	mdf := is_mdf(path)
+	mtime := if mdf { os.file_last_mod_unix(path) } else { i64(0) }
+	mut size := os.file_size(path)
+	if streams(size, mb) {
 		mut sink := StopSink{
 			stop: stop
 		}
-		sv := mf4.survey_file_into(path, mut sink)!
-		if sv.frames == 0 {
-			return error('${os.base(path)} holds no frames')
-		}
-		why := stream_differs(sv)
+		buses, why, read := survey_for(path, mut sink)!
 		if why == '' {
+			if !mdf {
+				size = read // a candump file still being written plays as the survey read it
+			}
 			return Source{
 				path:     path
-				buses:    sv.buses
+				buses:    buses
 				streamed: true
 				stop:     stop
 				size:     size
@@ -108,6 +115,45 @@ pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 	}
 }
 
+// survey_for surveys `path` through the stream of its kind, handing every row to `sink`: its
+// buses as the loader reports them, why the stream would differ from the loader ('' when it
+// would not), and the bytes a candump file's survey read (0 for an MF4 file).
+fn survey_for(path string, mut sink StreamSink) !([]mf4.BusInfo, string, u64) {
+	if is_mdf(path) {
+		sv := mf4.survey_file_into(path, mut sink)!
+		if sv.frames == 0 {
+			return error('${os.base(path)} holds no frames')
+		}
+		return sv.buses, stream_differs(sv), u64(0)
+	}
+	sv := canlog.survey_file_into(path, mut sink)!
+	why := log_stream_differs(sv)
+	if why != '' {
+		return []mf4.BusInfo{}, why, sv.size
+	}
+	if sv.frames == 0 {
+		return error('${os.base(path)} holds no frames')
+	}
+	return survey_buses(sv), '', sv.size
+}
+
+// survey_buses is a candump survey's buses as the loader reports them (log_buses).
+pub fn survey_buses(sv canlog.Survey) []mf4.BusInfo {
+	mut counts := map[string]int{}
+	for i, l in sv.labels {
+		if i < sv.counts.len && sv.counts[i] > 0 {
+			counts[l] = sv.counts[i]
+		}
+	}
+	return log_buses(counts)
+}
+
+// StreamSink is what both surveys hand their rows to (mf4.RowSink, canlog.RowSink).
+interface StreamSink {
+mut:
+	row(labels &canlog.Log, r canlog.Row) bool
+}
+
 // stream_differs says how the stream's rows would differ from the loader's, '' when they would
 // not: rows out of time order (only the loader's sort places them), or frames whose payload the
 // stream could not hold until they were decoded.
@@ -117,6 +163,18 @@ pub fn stream_differs(sv mf4.Survey) string {
 	}
 	if sv.unresolved > 0 || sv.evicted > 0 {
 		return '${sv.unresolved + sv.evicted} frames whose payload the stream cannot hold'
+	}
+	return ''
+}
+
+// log_stream_differs is stream_differs for a candump file: rows the line stream could not put
+// in the loader's time order (canlog.time_ordered), or lines too long for it to read.
+pub fn log_stream_differs(sv canlog.Survey) string {
+	if sv.out_of_order > 0 {
+		return '${sv.out_of_order} rows the stream could not put in time order'
+	}
+	if sv.long_lines > 0 {
+		return '${sv.long_lines} lines longer than the stream reads'
 	}
 	return ''
 }
@@ -150,7 +208,7 @@ mut:
 // the same Planner over the same rows, so both decide the same.
 pub fn (s &Source) prepare(specs []player.BusSpec) !Prepared {
 	if s.streamed {
-		mut c := player.open_chunker_until(s.path, specs, player.chunk_rows, s.stop)!
+		mut c := player.open_chunker_upto(s.path, specs, player.chunk_rows, s.stop, s.size)!
 		if c.size != s.size || c.mtime != s.mtime {
 			c.close()
 			return error('${s.path} changed since it was opened')
@@ -201,22 +259,19 @@ pub fn (mut p Prepared) close() {
 // (player.NodeCensus): the Replay panel's preview. A streamed source is read once, the census
 // taken as the survey passes; nothing of the recording is kept.
 pub fn scan(path string, db candb.Database) !([]mf4.BusInfo, map[string]player.NodeCensus) {
-	return scan_at(path, db, stream_mb())
+	return scan_at(path, db, threshold_mb(path))
 }
 
 // scan_at is scan under a threshold of `mb` MiB.
 pub fn scan_at(path string, db candb.Database, mb i64) !([]mf4.BusInfo, map[string]player.NodeCensus) {
 	mut cens := map[string]player.NodeCensus{}
-	if streams(is_mdf(path), os.file_size(path), mb) {
+	if streams(os.file_size(path), mb) {
 		mut sink := CensusSink{
 			db: db
 		}
-		sv := mf4.survey_file_into(path, mut sink)!
-		if sv.frames == 0 {
-			return error('${os.base(path)} holds no frames')
-		}
-		if stream_differs(sv) == '' {
-			for b in sv.buses {
+		buses, why, _ := survey_for(path, mut sink)!
+		if why == '' {
+			for b in buses {
 				i := sink.labels.index(b.iface)
 				cens[b.iface] = if i >= 0 && i < sink.by.len {
 					sink.by[i].done()
@@ -224,7 +279,7 @@ pub fn scan_at(path string, db candb.Database, mb i64) !([]mf4.BusInfo, map[stri
 					player.new_census(db).done()
 				}
 			}
-			return sv.buses, cens
+			return buses, cens
 		}
 	}
 	log, buses := load(path)!

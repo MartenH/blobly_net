@@ -10,7 +10,7 @@
 > recording a chunk at a time; and (step 4) every replay — the GUI's Replay panel and Scan,
 > `cmd/restbus`, Lua's `replay.*`, the C ABI and Python's `net.replay` — opens its recording
 > through `replay.open_recording`, which streams an `.mf4` from `BLOBLY_MF4_STREAM_MB` (64 MiB)
-> up. **This shipped differently from *The shape* below**: no window ring, no decoder thread
+> up, and (#571, *A candump .log* below) a candump `.log` from `BLOBLY_LOG_STREAM_MB` (64 MiB). **This shipped differently from *The shape* below**: no window ring, no decoder thread
 > filling one and no cursor interface (items 3–8); step 3's reader thread queuing chunks replaced
 > them. Written after #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the
 > arena took the collector's pause length down with it; what remained was a recording that does
@@ -271,7 +271,8 @@ import (whole-file by design, 2000-row cap).
    too — one pass, nothing kept), `cmd/restbus` (whose single-bus path is now the one-mapping
    plan) and `replay.plan_for`/`start` (Lua, the C ABI, Python) all go through it.
    - **The switch**: an `.mf4` of at least `BLOBLY_MF4_STREAM_MB` MiB (default 64; `0` streams
-     every `.mf4`) streams; below it, and for every candump `.log`, the whole file loads. A file
+     every `.mf4`) streams; below it the whole file loads (a candump `.log` streams too since #571,
+     under its own threshold: *A candump .log* below). A file
      whose stream would differ from the loader's rows (`replay.stream_differs`: rows out of time
      order, or frames whose payload the stream could not hold — `unresolved`, `evicted`) loads
      whole and says so. The Replay panel marks a streamed group. Both reads before the first
@@ -318,9 +319,55 @@ import (whole-file by design, 2000-row cap).
      past the first MiB of a file ended in `file not opened`. The samples `chunked_test.v` plays
      are 8 KB, which is how it survived. `mf4.open_file_source` puts the source on the heap, and
      `replay/source_test.v` streams a 2 MB recording it writes.
-   - **Not handled**: a candump `.log` loads whole (a 96 MB file measured 931 MB); streaming one
-     needs a line reader with the loader's time-order rule, which `.log` files do not promise.
-     The opening reads ask for a stop per 4096 rows YIELDED, so a long run of records that
+   - **Not handled**: the opening reads ask for a stop per 4096 rows YIELDED, so a long run of records that
      yield none (invalidated frames) is read through before a stop is seen, about a second per
      100 MB. No sidecar cache for the survey and no seek index: a seek in a streamed file costs a read
      up to its target (~1 M rows/s), the clock held meanwhile.
+
+## A candump .log
+
+Built after the four steps (#571). A candump `.log` loaded whole costs about ten times its size
+(a 96 MB file, 2 M frames: 895 MB peak RSS), and its lines do not promise time order (a merged or
+hand-edited capture), which the loader answers by sorting: `canlog.Log.time_ordered`, time
+order with one time's rows in file order, is what `replay.load` loads.
+
+- **The line stream** (`canlog/stream.v`, `LineStream`) reads the file 1 MiB at a time, splits
+  lines where `split_into_lines` does (a CR, an LF or both), parses each with `parse_line` and
+  interns its label in file order — so the label table is the loader's — then holds the rows in
+  a heap keyed (time, line) and hands out the earliest once it is `lookahead_s` (2 s) behind the
+  latest time read, or once `readahead_rows` (131,072 rows of 88 bytes, about 12 MB) are held
+  (`forced`). A row handed out after a later one is `out_of_order`, and so is a row whose time is
+  not a number, which no order places. With none, the rows handed out are the loader's exactly:
+  they rise in time, and one time's rows leave the heap by line. A line longer than `max_line`
+  (64 KiB) is skipped and counted (`long_lines`), so a binary file or one with no line breaks
+  costs the stream no memory. It reads no further than the size the file had when it was
+  opened, and a file that ends short of it was cut since: an error, not a clean end.
+- **The survey** (`canlog.survey_file`) is one pass of the stream: the labels with their counts,
+  the span, and the counters, with `max_queued` and `max_disorder_s` (how far a line fell behind
+  the latest time before it). `replay.survey_for` turns it into the loader's bus list
+  (`survey_buses` over `log_buses`: sorted, unnamed — what `cmd/restbus --list` prints too),
+  with the bytes it read (`Survey.size`), and `log_stream_differs` sends a file with any row out of order,
+  or any line too long, to the loader, with a note — before a survey with no rows is refused,
+  since a line too long may be the file's only frame. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`, saying
+  when it skipped lines too long rather than calling the file empty.
+- **The chunker** reads through `player.RowReader` (`rows.v`): an MF4 stream or a line stream,
+  chosen by the identification block (`mf4.is_mdf_file`, which `replay.is_mdf` now asks), and
+  refuses a file with any row the reader could not read where the loader reads it
+  (`RowReader.unplaced`: out of order, or a line too long). Every pass of a `.log` reads the
+  bytes its survey read (`open_chunker_upto`, `canlog.open_line_stream_upto`) and its
+  modification time is not checked (`RowReader.mtime` 0): candump writes by appending, so a
+  capture still being recorded replays as it was when it was opened, and only a file now shorter
+  than that is refused. An `.mf4` keeps the size-and-mtime check.
+- **The switch**: `BLOBLY_LOG_STREAM_MB`, a sibling of the MF4 threshold, 64 MiB by default, 0
+  streams every `.log`; `replay.threshold_mb` picks the variable by the file's kind.
+- **Measured** (gcc -O2, a synthetic 96 MB log of 2 M frames on four buses, every fourth line
+  50 ms early): in memory, first frame 3.2 s and 895 MB peak RSS; streamed, first frame 4.8 s
+  (two reads of ~2–3 s each) and 39 MB, the output hashed identical. The line stream reads
+  about 700 k lines a second, the cost of each read before the first frame and of a seek.
+- **The tests**: `canlog/stream_test.v` holds the stream to `time_ordered` over the tracked
+  samples and synthetic files (directions, FD with its flags, remote frames, an escaped label,
+  comments and malformed lines, CR and CRLF, ties across buses, disorder within the look-ahead),
+  at read chunks from one byte up, and counts disorder past it, a time that is no number, a
+  full heap and lines past `max_line`; `replay/source_test.v` plays a 1.4 MB log out of order within the look-ahead and a
+  repeated J1939 BAM log streamed and loaded through the same drive, and loads one out of order
+  past it with its note.

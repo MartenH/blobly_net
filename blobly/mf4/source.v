@@ -172,3 +172,15 @@ fn le_at(mut src ByteSource, off u64, n int) u64 {
 	}
 	return v
 }
+
+// is_mdf_file says whether `path` is an MDF file — by its identification block, whatever it is
+// called; a file that cannot be read by its name. A replay's choice of reader.
+pub fn is_mdf_file(path string) bool {
+	mut f := os.open(path) or { return path.to_lower().ends_with('.mf4') }
+	defer {
+		f.close()
+	}
+	mut id := []u8{len: 8}
+	n := f.read(mut id) or { 0 }
+	return n == 8 && is_mdf_id(id)
+}

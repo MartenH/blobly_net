@@ -105,32 +105,20 @@ pub fn load(source string) !(canlog.Log, []mf4.BusInfo) {
 		}
 		return rec.log, rec.buses.clone()
 	}
-	mut log := canlog.load_log(source)!
+	log := canlog.load_log(source)!.time_ordered()
 	if log.len() == 0 {
 		return error('${os.base(source)} holds no frames')
-	}
-	// a plan keeps file order, and the player's schedule needs it in time: a hand-edited or merged
-	// file whose times fall back is put in time order, equal times as the file has them
-	if !in_time_order(&log) {
-		rows := log.rows
-		mut order := []int{len: rows.len, init: index}
-		order.sort_with_compare(fn [rows] (a &int, b &int) int {
-			ta, tb := rows[*a].t_s, rows[*b].t_s
-			if ta != tb {
-				return if ta < tb { -1 } else { 1 }
-			}
-			return *a - *b
-		})
-		// the rows themselves, permuted: a row carries its payload, so nothing else is copied
-		log = canlog.Log{
-			rows:   order.map(rows[it])
-			labels: log.labels
-		}
 	}
 	mut counts := map[string]int{}
 	for i in 0 .. log.len() {
 		counts[log.iface(i)]++
 	}
+	return log, log_buses(counts)
+}
+
+// log_buses is a candump recording's buses from its frames per label: sorted by label, unnamed
+// (the format names a bus by its interface alone). The loader's and the survey's.
+fn log_buses(counts map[string]int) []mf4.BusInfo {
 	mut ifs := counts.keys()
 	ifs.sort()
 	mut buses := []mf4.BusInfo{}
@@ -140,16 +128,7 @@ pub fn load(source string) !(canlog.Log, []mf4.BusInfo) {
 			frames: counts[name]
 		}
 	}
-	return log, buses
-}
-
-fn in_time_order(log &canlog.Log) bool {
-	for i in 1 .. log.len() {
-		if log.t_s(i) < log.t_s(i - 1) {
-			return false
-		}
-	}
-	return true
+	return buses
 }
 
 // resolve_bus is the label of the recorded bus `want` names (player.resolve_bus over `buses`).

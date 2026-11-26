@@ -353,7 +353,7 @@ restbus --source capture.mf4 --exclude SUT_ECU \
 Several buses replay from **one clock**, so the cross-bus timing a gateway polices survives. An
 `--exclude` naming a node that no mapped database declares is refused, because a typo would
 subtract nothing; a node that only some of the databases declare is noted for the buses whose
-database lacks it. A large `.mf4` is streamed from the file rather than loaded. Lua's
+database lacks it. A large `.mf4` or candump `.log` is streamed from the file rather than loaded. Lua's
 `replay.start` and Python's `net.replay` play a recording onto a running project's row the same
 way.
 

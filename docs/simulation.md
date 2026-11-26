@@ -1219,14 +1219,18 @@ DBC does not define are counted separately and replay regardless (the same polic
 itself applies — the preview and the subtraction share one attribution, `player.census`
 beside the `Decider`). Scan is display-only: Start opens the recording for itself either way.
 
-**A large `.mf4` is streamed.** From `BLOBLY_MF4_STREAM_MB` MiB (64 by default; `0` streams every
-`.mf4`) a recording is not loaded: Start and Scan read it once for its buses and census, and it
+**A large recording is streamed.** From `BLOBLY_MF4_STREAM_MB` MiB for an `.mf4` and
+`BLOBLY_LOG_STREAM_MB` MiB for a candump `.log` (64 by default each; `0` streams every file of its
+kind) a recording is not loaded: Start and Scan read it once for its buses and census, and it
 plays from the file a chunk at a time, so memory stays near 30 MB whatever the file's size (a
 397 MB recording costs 2.9 GB loaded). The subtraction, the per-bus report and the playback are
 the loaded path's exactly. What differs: the first frame comes after two reads of the file
 (about a second per million frames), and a **seek re-reads the recording up to its target**,
-the clock held meanwhile; the Replay panel marks a streamed group. A candump `.log` always
-loads whole. The same rule applies to `cmd/restbus` and to a script's replay.
+the clock held meanwhile; the Replay panel marks a streamed group. A candump `.log` whose lines
+fall back in time by more than two seconds loads whole, with a note in the Log, since only a
+sort of the whole file can place them. A streamed `.log` still being recorded replays as it was
+when Start opened it. The same rule applies to `cmd/restbus` and to a script's
+replay.
 
 **The panel shows the grouping before it exists.** While stopped, the Replay panel lists the
 replay channels grouped **by recording** — the spawner's own canonical-path key — with the

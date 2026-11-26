@@ -637,7 +637,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 
 	// Opened ONCE for the whole group, however many channels read from it: loaded, or surveyed
-	// and then streamed when it is a large .mf4 (replay.streams).
+	// and then streamed when it is large (replay.streams).
 	// A large file is read twice before it plays; Stop gives either read up.
 	ended_run := fn [app, gen] () bool {
 		mut x := unsafe { app }
@@ -1307,7 +1307,7 @@ mut:
 // scan_replay_source reads a recording off the UI thread and files the result under mu.
 // The census runs the SAME attribution the rest-bus subtraction applies (player.Census sits
 // beside the Decider), so what the row previews is what Start will do; the bus list comes from
-// the same opening Start uses (replay.scan: the survey for a streamed .mf4, else the loader),
+// the same opening Start uses (replay.scan: the survey for a streamed recording, else the loader),
 // for the same reason.
 //
 // `mine` is the entry this worker was started for, and BOTH write-backs compare pointers
