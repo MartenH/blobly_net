@@ -495,8 +495,8 @@ Supported services are `0x10` session control, `0x11` ECU reset, `0x14` clear DT
 `0x19` read DTCs (sub-functions `0x01` count, `0x02` by status mask, `0x0A` all supported,
 `0x03` snapshot ids, `0x04` snapshot by DTC, `0x06` extended data by DTC),
 `0x22`/`0x2E` read/write by identifier, `0x27` security access, `0x3E` tester present, and
-`0x85` DTC setting — plus `0x2F` and `0x23`/`0x3D` where the block declares what they reach
-(below). Anything else answers `serviceNotSupported`.
+`0x85` DTC setting — plus `0x2F`, `0x23`/`0x3D` and `0x31` where the block declares what they
+reach (below). Anything else answers `serviceNotSupported`.
 
 **DID `0xF186`** (the active diagnostic session) reads the session the server is in — `01` at
 start, `03` after `10 03` — unless `dids:` lists `0xF186`, which then serves that value. Writing
@@ -527,6 +527,20 @@ range; memory is zeros at start, at most 1 MiB a range. An undeclared IO DID or 
 unknown control parameter or a format nibble of 0 answers `requestOutOfRange`; a wrong length
 `0x13`. With no `io:` the server answers `0x2F` with `serviceNotSupported`, and with no `memory:`
 `0x23`/`0x3D` likewise. A project using either key declares `version: 13`.
+
+**Routines** are declared in the block too, each with the record each of its controls answers
+past `71 <control> <id>` (hex bytes, quoted — unquoted, YAML reads `00` or `0100` as a number,
+and the node is not started — `""` for none):
+
+```yaml
+          routines:
+            - { id: "0x203", start: "00", stop: "", results: "01 00 2A" }
+```
+
+`31 01 02 03 ...` then answers `71 01 02 03 00`, whatever option record the request carries; a
+control the entry does not give answers `subFunctionNotSupported`, an undeclared routine
+`requestOutOfRange`, and with no `routines:` `0x31` is `serviceNotSupported`. An answer longer than
+the carrier takes is said at Start and that control not served. A project using the key declares `version: 15`.
 
 **`functional:`** gives the ECU a functional id to answer as well, typically `0x7DF` on an 11-bit
 bus, shared by every ECU there. A request arriving on it is one Single Frame, and the answer
@@ -696,7 +710,7 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   availability mask `0x7F`; `0x14` puts them back there. The `uds:` block's `dtcs:` set a
   status, so a test can seed a fault (one that failed gets its `freeze` snapshot), and its `dids:`
   replace a value or add a readable DID.
-- **`io:` and `memory:` from the `uds:` block** — `0x2F` and `0x23`/`0x3D` as above, gated by
+- **`io:`, `memory:` and `routines:` from the `uds:` block** — `0x2F`, `0x23`/`0x3D` and `0x31` as above, gated by
   the `[uds] services` table's rows for them like any other service (a stated table without the
   row is `0x11`; with no table `0x2F` runs in the extended and programming sessions, blobly_emb's
   default row); an IO DID reads in every session. A live DID declared under `io:` reads the
@@ -1369,10 +1383,10 @@ See [scripting.md](scripting.md) for the test API.
 
 - **Diagnostics are stateless between requests beyond session and security state.** A
   simulated ECU serves the DIDs and DTCs the project — or its description — gives it; it does
-  not model routines
-  (`0x31`) or transfer (`0x34`-`0x37`); memory (`0x23`/`0x3D`) and IO control (`0x2F`) reach
-  only what its `uds:` block declares, and neither writing a DID nor adjusting an IO DID affects
-  the signals the ECU transmits.
+  not model transfer (`0x34`-`0x37`); routines (`0x31`), memory (`0x23`/`0x3D`) and IO control
+  (`0x2F`) reach only what its `uds:` block declares — a routine answers the fixed record given
+  for each control, whatever the request carries — and neither writing a DID nor adjusting an IO
+  DID affects the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
 - **LIN is its own kind of row.** A LIN bus is a project row (`adapter: lin`, schema v12) that

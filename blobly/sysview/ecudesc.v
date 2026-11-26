@@ -9,7 +9,7 @@ import crypto.ed25519 as ed
 // identifier with a size and a layout where the file determines one, each `[[param]]` is a coded
 // value with its fields. blobly_emb's ecucheck validates the file; this reads what it finds and
 // says (`errs`) what it could not use, so a tester never refuses a node for one odd entry.
-// (The format has no RoutineControl: ISO 0x31 routines are out of blobly_emb's scope.)
+// Its `[[routine]]` tables (RoutineControl, 0x31) are not read yet, and said in `errs`.
 
 // Field is one typed field of a signal or a parameter: `u8`/`u16`/`u32`, `i8`/`i16`/`i32`, `bool`.
 pub struct Field {
@@ -196,6 +196,9 @@ pub mut:
 	faults []FaultDesc
 	dids   []DidDesc
 	params []ParamDesc
+	// its routine controls (routines.v): an imported description's (ODX); an ecu.toml's
+	// [[routine]] is not read yet (said in errs)
+	routines []RoutineDesc
 	// the node's own ISO-TP ids ([isotp] rx_id / tx_id): its request and response
 	isotp_req u32
 	isotp_rsp u32
@@ -239,13 +242,16 @@ pub mut:
 }
 
 // security_levels is every 0x27 level the description's gates name — the DIDs' read and write
-// gates and the `[uds] services` rows — each once, lowest first.
+// gates, the routines' and the `[uds] services` rows — each once, lowest first.
 pub fn (d &EcuDesc) security_levels() []int {
 	mut out := []int{}
 	mut all := d.service_levels.clone()
 	for x in d.dids {
 		all << x.read_gate.level
 		all << x.write_gate.level
+	}
+	for r in d.routines {
+		all << r.gate.level
 	}
 	for l in all {
 		if l > 0 && l !in out {
@@ -611,6 +617,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			ranges:   field_ranges(pm, 'range')
 		}
 	}
+	// its routines are not read yet: said, so an empty listing is not taken for none declared
+	routines := tarr(doc, 'routine')
+	if routines.len > 0 {
+		d.errs << '${routines.len} [[routine]] not read (not yet: a tester runs them by identifier with routine)'
+	}
 	for f in tarr(doc, 'fault') {
 		fm := f.as_map()
 		name := tstr(fm, 'name')
@@ -844,6 +855,9 @@ fn (mut d EcuDesc) check_access() {
 	}
 	for mut x in d.dids {
 		x.authenticates = d.authenticates()
+	}
+	for mut r in d.routines {
+		r.authenticates = d.authenticates()
 	}
 	if !d.authenticates() {
 		if d.auth_keys.len > 0 {

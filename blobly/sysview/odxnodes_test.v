@@ -1,6 +1,7 @@
 module sysview
 
 import os
+import blobly.isotp
 import blobly.odx
 import blobly.project
 import blobly.uds
@@ -265,4 +266,130 @@ fn test_an_odx_node_is_reached_on_the_wire_of_the_row_naming_it() {
 	chans := [ChanRef{'CAN1', 'inproc:a'}, ChanRef{'CAN1', 'inproc:b'}]
 	assert sys.can_targets(chans).map('${it.node}:${it.iface}') == ['${body_n}:inproc:a',
 		'${door_n}:inproc:b']
+}
+
+fn body_routine(name string) RoutineDesc {
+	sys, _ := odx_system([body('BodyController_Base')])
+	return sys.nodes[0].desc.listed_routine(name) or { panic(err) }
+}
+
+fn test_routines_are_listed_with_their_records() {
+	sys, notes := odx_system([body('BodyController_Base')])
+	d := sys.nodes[0].desc
+	assert d.routines.map(it.name) == ['Start_SelfTest', 'Stop_SelfTest', 'RequestResults_SelfTest',
+		'Start_CheckDependencies']
+	start := body_routine('Start_SelfTest')
+	assert start.id == 0x0203 && control_name(start.control) == 'start'
+	assert start.gate.sessions == ['extended'] && start.gate.level == 0
+	assert start.option_parts().map(it.label) == ['Level']
+	assert start.answer_parts().map(it.kind) == [PartKind.label]
+	assert start.encode_option(['5'])! == [u8(5)]
+	assert start.answer_texts([u8(1)])! == ['Passed']
+	stop := body_routine('Stop_SelfTest')
+	assert stop.option_parts().len == 0 && stop.answer_parts().len == 0
+	assert stop.encode_option([])! == []u8{}
+	results := body_routine('RequestResults_SelfTest')
+	assert !results.gate.declared && record_by_label(results.answer)
+	assert results.answer_texts([u8(1), 0, 42])! == ['Passed', '42']
+	// one part alone reads as it does among the rest
+	assert results.answer_part([u8(1), 0, 42], 1)! == '42'
+	assert body_routine('Start_CheckDependencies').answer_part([u8(0xAB)], 0)! == 'AB'
+	if _ := stop.answer_part([]u8{}, 0) {
+		assert false, 'a part of an answer of none'
+	}
+	// an answer not the size the description gives, or one where it gives none, is undecodable
+	if _ := results.answer_texts([u8(1)]) {
+		assert false, 'an answer of the wrong size decoded'
+	} else {
+		assert err is uds.UndecodableAnswer
+	}
+	if _ := stop.answer_texts([u8(1)]) {
+		assert false, 'an answer where the description gives none decoded'
+	} else {
+		assert err is uds.UndecodableAnswer && err.msg().contains('the description says none')
+	}
+	// an answer the description does not give is bytes of no fixed size
+	deps := body_routine('Start_CheckDependencies')
+	assert deps.answer_parts().map(it.kind) == [PartKind.bytes] && deps.answer.size == -1
+	assert deps.answer_texts([u8(0xAB), 0xCD])! == ['AB CD']
+	assert notes.any(it.contains('Start_CheckDependencies') && it.contains('no POS-RESPONSE'))
+	if _ := d.listed_routine('Nope') {
+		assert false, 'a routine the description does not list was found'
+	} else {
+		assert err.msg().contains('there are: "Start_SelfTest"')
+	}
+}
+
+fn serve_body(mut ch isotp.SoftChannel, srv uds.Server, stop chan bool) {
+	mut s := srv
+	s.serve(mut ch, stop)
+	ch.close()
+}
+
+fn test_a_routine_is_run_by_name_through_its_gate() {
+	iface := 'inproc:sysview-routine'
+	mut srv_ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { panic(err) }
+	mut cli_ch := isotp.open_software(iface, 0x7E0, 0x7E8, false) or { panic(err) }
+	mut srv := uds.Server{}
+	srv.declare_routine(0x0203, 1, [u8(0)])
+	srv.declare_routine(0x0203, 3, [u8(1), 0, 42])
+	stop := chan bool{cap: 1}
+	th := spawn serve_body(mut srv_ch, srv, stop)
+	defer {
+		stop <- true
+		th.wait()
+		cli_ch.close()
+	}
+	mut cli := uds.new_client(cli_ch)
+	start := body_routine('Start_SelfTest')
+	// a value the codec refuses, and a gate the connection has not met: nothing sent
+	if _ := run_described(mut cli, start, ['300']) {
+		assert false, 'a value the codec refuses was sent'
+	} else {
+		assert err.msg() == '0x31 01 0x0203 Start_SelfTest: not sent — Level: 300 is outside 0..255'
+	}
+	if _ := run_described(mut cli, start, ['1']) {
+		assert false, 'a gated routine ran before its session'
+	} else {
+		assert err is WriteGated
+		g := err as WriteGated
+		assert g.session == uds.extended_session && g.level == 0
+		assert err.msg() == '0x31 01 0x0203 Start_SelfTest: not sent — this connection has no session known, security unknown, and its gate needs it to switch to the extended session (0x10 03) first'
+	}
+	assert cli.sent_count == 0
+	cli.diagnostic_session(uds.extended_session) or { panic(err) }
+	assert start.answer_texts(run_described(mut cli, start, ['1'])!)! == ['Running']
+	// no gate: runs in any session
+	results := body_routine('RequestResults_SelfTest')
+	cli.diagnostic_session(uds.default_session) or { panic(err) }
+	assert results.answer_texts(run_described(mut cli, results, [])!)! == ['Passed', '42']
+}
+
+// a routine's gate is planned by a write's rule and refused in a run's words
+fn test_a_routine_gate_that_cannot_be_met_is_refused_as_a_run() {
+	contradicts := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared: true
+			sessions: ['default']
+			level:    1
+		}
+	}
+	assert contradicts.plan(uds.ConnState{}, true).refusal == 'not run: its gate needs security level 1 but names only the default session, where 0x27 is not served (ISO 14229-1) — the description contradicts itself'
+	unknown := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared: true
+			sessions: ['vendor']
+		}
+	}
+	assert unknown.plan(uds.ConnState{}, true).refusal == 'not run: served in the "vendor" session, which no tester here knows'
+	unresolved := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared:   true
+			unresolved: 'two levels'
+		}
+	}
+	assert unresolved.plan(uds.ConnState{}, true).refusal == 'not run: its gate is not known: two levels'
 }

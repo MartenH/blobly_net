@@ -3,9 +3,10 @@
 // for one base or ECU variant (its parents' services and DTCs inherited, a NOT-INHERITED service
 // left out) it finds the ReadDataByIdentifier (0x22) and WriteDataByIdentifier (0x2E) services,
 // lays out each DID's value from its parameters' data object properties and structures (a LINEAR,
-// SCALE-LINEAR or TEXTTABLE compu method carried for the codec), reads the sessions and security
-// level each service asks for from its state-chart preconditions, and lists the DTCs of its
-// DTC-DOPs. What it does not read is SAID, never read as 0: every service of
+// SCALE-LINEAR or TEXTTABLE compu method carried for the codec), reads the RoutineControl (0x31)
+// services with the records their requests carry and their answers return, laid out alike, reads
+// the sessions and security level each service asks for from its state-chart preconditions, and
+// lists the DTCs of its DTC-DOPs. What it does not read is SAID, never read as 0: every service of
 // another kind, every job and every layer element it does not use is counted (`Variant.notes`), a
 // DID whose value it cannot lay out is kept as bytes of its size with the reason, and a value it
 // cannot read at all (a malformed number) is refused by element and value.
@@ -96,6 +97,28 @@ pub:
 	parts []Part
 }
 
+// Record is what a routine's request carries after its identifier, or what its positive answer
+// returns after it: `size` bytes (-1 when the description does not fix it), laid out as `parts`
+// back to back from byte 0 when the reader lays out every one — empty when it does not, and the
+// record is bytes of `size`. A record of size 0 carries nothing.
+pub struct Record {
+pub:
+	size  int = -1
+	parts []Part
+}
+
+// Routine is one RoutineControl (0x31) service: the routine it controls, how (1 start, 2 stop, 3
+// request results), the preconditions it asks for, and its option and answer records.
+pub struct Routine {
+pub:
+	name    string // the service's SHORT-NAME
+	id      u16    // the routine identifier
+	control u8
+	gate    Gate
+	option  Record // the request's record after `31 <control> <id>`
+	answer  Record // the positive answer's record after `71 <control> <id>`
+}
+
 // Dtc is one DTC of a DTC-DOP: its SHORT-NAME, its 24-bit TROUBLE-CODE, its display form and text.
 pub struct Dtc {
 pub:
@@ -111,7 +134,9 @@ pub:
 	name  string
 	layer string // BASE-VARIANT or ECU-VARIANT
 	dids  []Did
-	dtcs  []Dtc
+	// its 0x31 services, by routine identifier, then control, then name
+	routines []Routine
+	dtcs     []Dtc
 	// what the reader did not read, or read only in part: each said once
 	notes []string
 }
@@ -352,9 +377,19 @@ pub fn (db &Db) variant(name string) !Variant {
 	states := db.state_meanings(svcs, mut r)
 	mut found := map[u16]Did{}
 	mut clash := map[u16]bool{} // DIDs two services lay out differently: never written
+	mut routines := []Routine{}
 	for svc in svcs {
-		db.service(svc, states, mut r, mut found, mut clash)
+		db.service(svc, states, mut r, mut found, mut clash, mut routines)
 	}
+	routines.sort_with_compare(fn (a &Routine, b &Routine) int {
+		if a.id != b.id {
+			return int(a.id) - int(b.id)
+		}
+		if a.control != b.control {
+			return int(a.control) - int(b.control)
+		}
+		return compare_strings(a.name, b.name)
+	})
 	mut dids := found.values()
 	dids.sort(a.id < b.id)
 	mut notes := r.notes.clone()
@@ -366,9 +401,10 @@ pub fn (db &Db) variant(name string) !Variant {
 	return Variant{
 		name:  name
 		layer: top.name()
-		dids:  dids
-		dtcs:  db.dtcs(r, mut notes)
-		notes: notes
+		dids:     dids
+		routines: routines
+		dtcs:     db.dtcs(r, mut notes)
+		notes:    notes
 	}
 }
 
@@ -491,10 +527,10 @@ fn snref_of(n flatxml.Node) string {
 	return ''
 }
 
-// service reads one DIAG-SERVICE: a 0x22 or 0x2E of one DID is a DID read or written, any other
-// service is counted by its service id. A DID two services lay out differently is in `clash` and
-// stays unwritten whatever service follows.
-fn (db &Db) service(svc flatxml.Node, states map[string]StateMeaning, mut r Resolve, mut found map[u16]Did, mut clash map[u16]bool) {
+// service reads one DIAG-SERVICE: a 0x22 or 0x2E of one DID is a DID read or written, a 0x31 a
+// routine control, any other service is counted by its service id. A DID two services lay out
+// differently is in `clash` and stays unwritten whatever service follows.
+fn (db &Db) service(svc flatxml.Node, states map[string]StateMeaning, mut r Resolve, mut found map[u16]Did, mut clash map[u16]bool, mut routines []Routine) {
 	sn := short_name(svc)
 	req := db.ref(svc.child('REQUEST-REF')) or {
 		r.notes << 'service ${sn}: no REQUEST; not read'
@@ -505,15 +541,22 @@ fn (db &Db) service(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 		r.notes << 'service ${sn}: no service id at byte 0; not read'
 		return
 	}
-	if sid != 0x22 && sid != 0x2E {
+	if sid != 0x22 && sid != 0x2E && sid != 0x31 {
 		r.ignored['DIAG-SERVICE 0x${sid:02X}']++
 		return
 	}
-	// what of a DID's service could state a gate beside its state-chart preconditions
+	// what of a DID's or a routine's service could state a gate beside its state-chart
+	// preconditions
 	for c in ['AUDIENCE', 'SDGS'] {
 		if svc.child(c).ok() {
 			r.ignored['DIAG-SERVICE/${c}']++
 		}
+	}
+	if sid == 0x31 {
+		if rt := db.routine(svc, params, states, mut r) {
+			routines << rt
+		}
+		return
 	}
 	id := const_at(params, 1, 16, mut r, sn) or {
 		r.notes << 'service ${sn} (0x${sid:02X}): no single 16-bit DID at byte 1 (a TABLE-KEY, or several DIDs); not read'
@@ -604,6 +647,83 @@ fn (db &Db) service(svc flatxml.Node, states map[string]StateMeaning, mut r Reso
 		parts:      parts
 		read_gate:  if sid == 0x22 { gate } else { Gate{} }
 		write_gate: if sid == 0x2E { gate } else { Gate{} }
+	}
+}
+
+// routine reads one 0x31 service: its control at byte 1 (the suppress-positive-response bit
+// apart), its routine identifier at byte 2, the option record its request carries from byte 4 and
+// the record its positive response returns from byte 4, each laid out as a DID's value is; none,
+// said, for a control none of start, stop and results or an identifier that is not one 16-bit
+// constant.
+fn (db &Db) routine(svc flatxml.Node, params []flatxml.Node, states map[string]StateMeaning, mut r Resolve) ?Routine {
+	sn := short_name(svc)
+	raw := const_at(params, 1, 8, mut r, sn) or {
+		r.notes << 'service ${sn} (0x31): no routine control at byte 1; not read'
+		return none
+	}
+	control := u8(raw) & 0x7F
+	if control < 1 || control > 3 {
+		r.notes << 'service ${sn} (0x31): routine control 0x${control:02X} is none of start (1), stop (2) and results (3); not read'
+		return none
+	}
+	id := const_at(params, 2, 16, mut r, sn) or {
+		r.notes << 'service ${sn} (0x31 ${control:02X}): no single 16-bit routine identifier at byte 2; not read'
+		return none
+	}
+	what := 'routine 0x${id:04X} (${sn})'
+	option := db.record(params, what, 'its request', mut r)
+	// each positive response it may answer with, once each; alternatives laid out unlike one
+	// another leave the answer bytes of no fixed size
+	mut answers := []Record{}
+	mut seen := map[string]bool{}
+	for rref in kids(svc.child('POS-RESPONSE-REFS'), 'POS-RESPONSE-REF') {
+		resp := db.ref(rref) or { continue }
+		if seen[node_key(resp)] {
+			continue
+		}
+		seen[node_key(resp)] = true
+		answers << db.record(kids(resp.child('PARAMS'), 'PARAM'), what, 'its answer', mut r)
+	}
+	mut answer := Record{}
+	if answers.len == 0 {
+		r.notes << '${what}: no POS-RESPONSE, so its answer is not known; read as bytes of no fixed size'
+	} else if answers.any(it != answers[0]) {
+		r.notes << '${what}: its ${answers.len} POS-RESPONSEs lay the answer out differently; read as bytes of no fixed size'
+	} else {
+		answer = answers[0]
+	}
+	return Routine{
+		name:    sn
+		id:      u16(id)
+		control: control
+		gate:    db.gate_of(svc, states, mut r, 'service ${sn} (0x31 ${control:02X} 0x${id:04X})')
+		option:  option
+		answer:  answer
+	}
+}
+
+// record lays out a routine's request or answer from byte 4, past `31|71 <control> <id>`: its
+// parts, or — said, with the reason — bytes of its size.
+fn (db &Db) record(params []flatxml.Node, what string, whose string, mut r Resolve) Record {
+	mut lay := Layout{}
+	db.lay_out(params, 4, 0, mut lay, r, 0)
+	lay.finish()
+	for w in lay.said {
+		r.notes << '${what}: ${whose}: ${w}'
+	}
+	if lay.why.len > 0 {
+		r.notes << '${what}: ${whose}: ${lay.why.join('; ')} — read as ${if lay.size >= 0 {
+			'${lay.size} bytes'
+		} else {
+			'bytes of no fixed size'
+		}}'
+		return Record{
+			size: lay.size
+		}
+	}
+	return Record{
+		size:  lay.size
+		parts: lay.parts.clone()
 	}
 }
 

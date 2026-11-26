@@ -441,6 +441,8 @@ enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge
 | `d:did(did)` | one DID: `did` its name (a string: `"SteerLimit"`, ISO's `"ECU serial number"`) or its identifier (a number: `0x0110`) | as `dids` |
 | `d:read(did)` | `0x22`, decoded by the layout | its one part's value (an integer, a boolean, a float for a scaled value, a string for a text or a label, bytes), or a table by part label when `by_label` (several fields, or a parameter status, whose parts are its parameters) |
 | `d:write(did, value)` | `0x2E`, encoded by the layout; `value` as `read` returns it | — |
+| `d:routines()` | its routine controls: an ODX node's `0x31` services (an ecu.toml's `[[routine]]` is not read yet) | array of `{name, id, control, option, answer, option_size, answer_size, gate}` — `control` `"start"`, `"stop"` or `"results"`; `option` / `answer` the parts its request carries past the identifier and its answer returns, as a DID's `parts` (empty: the record carries nothing); a size nil when not known; `gate` `{sessions, level}`, nil where none is declared (any session) |
+| `d:run_routine(name, value)` | `0x31` of the routine control `name`, its option encoded from `value` as `write` encodes a value (nil for a request of no record; a table by label for several parts) and refused as `write` is | its answer decoded: nothing for a record of no parts, its one part's value, or a table by part label |
 | `d:dtcs()`, `d:supported_dtcs()`, `d:snapshot_ids()`, `d:snapshot(...)`, `d:extended(...)` | as on `uds.open`, each record also carrying `fault`, the name of its `[[fault]]` (nil for a DTC the description does not declare) | |
 
 **A write is refused, nothing sent,** when the layout does not hold the value (`deg: 400 is
@@ -460,7 +462,9 @@ variant's 0x22 / 0x2E data identifiers (`kind` `"fields"`, `"text"` or `"data"`,
 bytes), its faults the variant's DTCs. A value the ODX scales linearly is a `"number"` part (a float
 in its unit, written as a number), one it maps by a text table a `"label"` part (its labels); its
 read and write gates are its services' state-chart preconditions, so `d:write` raises until
-`d:session()` and `d:security_access()` have established what the gate asks for. `tests/odx_nodes.lua` runs it against `projects/odx-demo.blobnet`.
+`d:session()` and `d:security_access()` have established what the gate asks for. Its `0x31`
+services are its routine controls, run by name with `d:run_routine("Start_SelfTest", 3)` and gated
+the same way. `tests/odx_nodes.lua` runs it against `projects/odx-demo.blobnet`.
 
 ### Raw ISO-TP
 

@@ -27,7 +27,7 @@ import strconv
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 14
+pub const schema_version = 15
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -41,6 +41,17 @@ pub const schema_version = 14
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v15 — a simulated ECU's routines (a node's `uds:` `routines:`, #638), which an older build
+	// drops on its next structured save, and 0x31 goes unanswered
+	for c in p.channels {
+		for n in c.nodes {
+			if u := n.uds {
+				if u.routines.len > 0 {
+					return 15
+				}
+			}
+		}
+	}
 	// v14 — a stated fill for the bits no signal covers (`fill:`, on a row or a generator, #671),
 	// which an older build drops on its next structured save, and the bits go out as 0 again; and a
 	// simulated ECU answering in frames longer than 8 bytes (a node's `uds:` `tx_dl`, #679), which
@@ -328,6 +339,49 @@ pub mut:
 	// The length of the frames it answers a long message in (isotp.tx_dls; above 8 CAN-FD, v14),
 	// 0 = not stated: 8. Wide like `session`, so validation sees a value that is not one.
 	tx_dl u32
+	// routine controls it answers through 0x31 (v15)
+	routines []RoutineCfg
+}
+
+// RoutineCfg is one routine a simulated ECU answers (0x31): the record after `71 <control> <id>`
+// each of its controls answers — start, stop, request results — a control not given answered
+// subFunctionNotSupported. `id` wide, like IoCfg's, so validation sees an out-of-range value.
+pub struct RoutineCfg {
+pub mut:
+	id      u32
+	start   ?[]u8
+	stop    ?[]u8
+	results ?[]u8
+	// a control's answer where it is not quoted whole hex bytes, by control name, as YAML text a
+	// Save writes back verbatim (`yaml_as_written`): the entry stays malformed, never bytes it was
+	// not
+	bad map[string]string
+	// the id as written where it is not a clean hex id (the entry is malformed; an empty or missing
+	// id is ''), written back as given, never the id `parse_id_wide` made of it
+	id_text ?string
+}
+
+// controls are the routine's controls given, each with its answer record: (1 start, 2 stop, 3
+// results).
+pub fn (r RoutineCfg) controls() []RoutineAnswer {
+	mut out := []RoutineAnswer{}
+	if a := r.start {
+		out << RoutineAnswer{1, a}
+	}
+	if a := r.stop {
+		out << RoutineAnswer{2, a}
+	}
+	if a := r.results {
+		out << RoutineAnswer{3, a}
+	}
+	return out
+}
+
+// RoutineAnswer is one control of a RoutineCfg and the record it answers.
+pub struct RoutineAnswer {
+pub:
+	control u8
+	answer  []u8
 }
 
 // IoCfg is one IO DID a simulated ECU controls (0x2F), zeros of `size` bytes at start. Both wide,
@@ -1651,6 +1705,34 @@ fn parse_node(n yaml.Any) !NodeCfg {
 				}
 			}
 		}
+		if rs := u.value_opt('routines') {
+			for x in rs.array() {
+				id_text := x.value('id').str()
+				mut rc := RoutineCfg{
+					id: clamp_u32(parse_id_wide(id_text))
+				}
+				if !hex_id_is_clean(id_text) {
+					ucfg.malformed << 'routine ${id_text}'
+					rc.id_text = id_text
+				}
+				for key in ['start', 'stop', 'results'] {
+					v := x.value_opt(key) or { continue }
+					// a quoted string of whole hex bytes only: YAML has made an unquoted 0100 a
+					// number, whose text is not the digits written
+					bs := answer_bytes(v) or {
+						ucfg.malformed << 'routine ${id_text} ${key} answer ${v.str()} (quoted hex bytes, as "01 00")'
+						rc.bad[key] = yaml_as_written(v)
+						continue
+					}
+					match key {
+						'start' { rc.start = bs }
+						'stop' { rc.stop = bs }
+						else { rc.results = bs }
+					}
+				}
+				ucfg.routines << rc
+			}
+		}
 		node.uds = ucfg
 	}
 	if ps := n.value_opt('protect') {
@@ -1822,6 +1904,31 @@ fn parse_gencfg(s yaml.Any, dflt_typ string) GenCfg {
 		modulo:    s.value('modulo').f64()
 		count:     s.value('count').f64()
 		base:      s.value('base').f64()
+	}
+}
+
+// answer_bytes reads a YAML string of whole hex bytes, spaced or not ("01 00 2A", "01002A", ""
+// for none); none for anything else — an odd digit, a character that is not hex, or a value YAML
+// read as something other than a string.
+fn answer_bytes(v yaml.Any) ?[]u8 {
+	if v !is string {
+		return none
+	}
+	t := v.str().replace(' ', '')
+	if t.len % 2 != 0 || !t.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return parse_hex_bytes(t)
+}
+
+// yaml_as_written is a value as YAML text of its own kind: a string quoted, a number or bool bare,
+// a list or map in flow form — so a Save keeps a value that was not a string from reading back as
+// one.
+fn yaml_as_written(v yaml.Any) string {
+	return match v {
+		string { yaml_flow_scalar(v) }
+		[]yaml.Any, map[string]yaml.Any { v.to_json() }
+		else { v.str() }
 	}
 }
 

@@ -1,7 +1,8 @@
 // io_memory.v — what a simulated server answers beyond its DID and DTC tables: DID 0xF186 from the
-// session it is in, 0x2F InputOutputControlByIdentifier on the IO DIDs it declares, and 0x23 /
-// 0x3D memory by address inside the ranges it declares. With nothing declared 0x2F, 0x23 and 0x3D
-// stay serviceNotSupported.
+// session it is in, 0x2F InputOutputControlByIdentifier on the IO DIDs it declares, 0x23 / 0x3D
+// memory by address inside the ranges it declares, and 0x31 RoutineControl with the answer each
+// routine control it declares gives. With nothing declared 0x2F, 0x23, 0x3D and 0x31 stay
+// serviceNotSupported.
 module uds
 
 // did_active_session is ISO 14229-1's ActiveDiagnosticSessionDataIdentifier.
@@ -14,6 +15,7 @@ pub const did_active_session = u16(0xF186)
 pub const did_answer_header = 3
 pub const io_answer_header = 4
 pub const memory_answer_header = 1
+pub const routine_answer_header = 4
 
 // did_value_max is the longest DID value a 0x22 answer of at most `cap` bytes carries.
 pub fn did_value_max(cap int) int {
@@ -23,6 +25,11 @@ pub fn did_value_max(cap int) int {
 // io_value_max is the longest IO DID value a 0x2F answer of at most `cap` bytes carries.
 pub fn io_value_max(cap int) int {
 	return cap - io_answer_header
+}
+
+// routine_answer_max is the longest record a 0x31 answer of at most `cap` bytes carries.
+pub fn routine_answer_max(cap int) int {
+	return cap - routine_answer_header
 }
 
 // memory_read_max is the most bytes one 0x23 answer of at most `cap` bytes carries.
@@ -216,5 +223,36 @@ fn (mut s Server) write_memory(req []u8) []u8 {
 	}
 	mut resp := [u8(0x7D)]
 	resp << req[1..m.next]
+	return resp
+}
+
+// declare_routine makes control `control` (1 start, 2 stop, 3 request results) of routine `id`
+// answered positively, `answer` the record after `71 <control> <id>`.
+pub fn (mut s Server) declare_routine(id u16, control u8, answer []u8) {
+	s.routines[u32(id) << 8 | u32(control)] = answer.clone()
+	s.routine_ids[id] = true
+}
+
+// routine_control answers 0x31 in blobly_emb comm/uds's order: the length to the control (0x13),
+// the control (0x12), the length to the identifier (0x13), the identifier (0x31), a control the
+// routine does not declare (0x12); a declared one answers its record, whatever option record the
+// request carries.
+fn (s &Server) routine_control(req []u8) []u8 {
+	if req.len < 2 {
+		return neg(0x31, 0x13)
+	}
+	if req[1] < routine_start || req[1] > routine_results {
+		return neg(0x31, 0x12)
+	}
+	if req.len < 4 {
+		return neg(0x31, 0x13)
+	}
+	id := u16(req[2]) << 8 | u16(req[3])
+	if id !in s.routine_ids {
+		return neg(0x31, 0x31)
+	}
+	answer := s.routines[u32(id) << 8 | u32(req[1])] or { return neg(0x31, 0x12) }
+	mut resp := [u8(0x71), req[1], req[2], req[3]]
+	resp << answer
 	return resp
 }

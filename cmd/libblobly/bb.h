@@ -544,7 +544,22 @@ enum bb_part_kind {
 	BB_PART_LABEL = 5
 };
 
-/* What a gated write needs first (bb_uds_write_described, BB_ERR_GATED). */
+/* A routine control a node describes (bb_routine_info): one 0x31 service of an ODX node. Its name
+ * is bb_routine_name's, its gate's sessions bb_routine_session's. */
+typedef struct bb_routine {
+	uint16_t id;           /* the routine identifier */
+	uint8_t  control;      /* 1 start, 2 stop, 3 request results */
+	uint8_t  gated;        /* a gate is declared (else it runs in any session, unlocked) */
+	int32_t  sessions;     /* the sessions it runs in, by name: none = any */
+	int32_t  level;        /* the security level it runs at; 0 = none */
+	int32_t  option_size;  /* the request's record past `31 <control> <id>`, in bytes; -1: not fixed */
+	int32_t  option_parts; /* what that record is written as: bb_routine_part's p, answer 0 */
+	int32_t  answer_size;  /* the positive answer's record past `71 <control> <id>`; -1: not fixed */
+	int32_t  answer_parts; /* what that record is read as: bb_routine_part's p, answer 1 */
+} bb_routine;
+
+/* What a gated write or routine run needs first (bb_uds_write_described,
+ * bb_uds_routine_described, BB_ERR_GATED). */
 typedef struct bb_write_needs {
 	uint8_t session;  /* the session to switch to (0x10); 0 = the one the connection is in */
 	uint8_t level;    /* the security level to unlock (0x27 2L-1 / 2L); 0 = none */
@@ -580,7 +595,8 @@ typedef struct bb_write_needs {
                                      pass, so every host's codes are one list */
 #define BB_ERR_GATED        (-13) /* bb_uds_write_described: not sent, since the connection has not
                                      established the session or the security level the DID's
-                                     write gate needs; bb_write_needs says which */
+                                     write gate needs (bb_uds_routine_described: the routine's
+                                     gate); bb_write_needs says which */
 #define BB_ERR_CANCELLED    (-14) /* a UDS call ended by bb_uds_cancel from another thread: the
                                      request may have gone out, and its answer is not waited for;
                                      on DoIP the connection is let go (the next call opens another);
@@ -1403,6 +1419,26 @@ int bb_did_text(int n, int d, const uint8_t *data, int len, int p, char *buf, in
                                                         the value checked alone, answering "" */
 int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
+/* A node's routine controls (an ODX node's 0x31 services; an ecu.toml's [[routine]] is not read yet), `k`
+ * 0 .. bb_routine_count - 1: each its routine identifier, its control, its gate and the records its
+ * request carries and its positive answer returns, laid out as a DID's value (bb_routine_part's
+ * kind, as bb_did_part's). bb_uds_routine_described runs routine control k with the `cnt` texts of
+ * every option part, encoded and gated as bb_uds_write_described writes — BB_ERR for a text the
+ * layout does not hold or a gate the description leaves unresolved, BB_ERR_GATED, nothing sent and
+ * *needs filled, for one the connection has not met — and answers its record's bytes past the
+ * echoed control and identifier (>= 0: the whole length, as bb_uds_routine's; bb_uds_data copies a
+ * cut one), which bb_routine_text reads part p of — BB_ERR_UNDECODABLE when it is not what the
+ * description lays out; p -1: the record checked alone, answering "". */
+int bb_routine_count(int n);                         /* >= 0 */
+int bb_routine_info(int n, int k, bb_routine *out);
+int bb_routine_name(int n, int k, char *buf, int cap); /* >= 0: the length of its service's name */
+int bb_routine_session(int n, int k, int j, char *buf, int cap); /* the j-th session of its gate */
+int bb_routine_part(int n, int k, int answer, int p, int *kind, char *buf, int cap); /* answer 0:
+                                                        the option's part p, 1: the answer's */
+int bb_routine_hint(int n, int k, int answer, int p, char *buf, int cap);
+int bb_routine_text(int n, int k, const uint8_t *data, int len, int p, char *buf, int cap);
+int bb_uds_routine_described(int u, int n, int k, const char *const *texts, int cnt,
+                             bb_write_needs *needs, uint8_t *buf, int cap);
 #endif /* BB_FROM_V */
 
 /* Interfaces (docs/scripting_python.md "Interfaces"): what is present to open, as the GUI's

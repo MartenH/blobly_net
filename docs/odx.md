@@ -22,7 +22,8 @@ channels:
 (29-bit past 0x7FF). A project with `diagnostics:` is schema v13. The same node may be named on
 several rows (one node, reached on each); a name another node already has is refused at Start, an
 enabled row's entry read before a disabled row's.
-`projects/odx-demo.blobnet` is a working example, `dbc/odx_demo.odx-d` its hand-made description.
+`projects/odx-demo.blobnet` is a working example, `dbc/odx_demo.odx-d` its hand-made description;
+its simulated BodyECU answers the DIDs and the self-test routine the description lays out.
 
 ## What is read
 
@@ -66,6 +67,18 @@ included. A layer reached on two ways passes on what either way passes on.
   pair is **unresolved**. A write is then refused until the connection has
   switched and unlocked as the gate asks (`WriteGated` in Python, the error's words in Lua); no
   precondition is no gate (a write service's: written in any session).
+- **Routines** — every `DIAG-SERVICE` whose request is `0x31` RoutineControl, with its control
+  (start `01`, stop `02`, request results `03`; the suppress bit apart) at byte 1 and one 16-bit
+  routine identifier at byte 2, is a **routine control** named by the service's `SHORT-NAME`: the
+  record its request carries from byte 4 (`option`) and the one its positive response returns from
+  byte 4 (`answer`) are laid out as a DID's value is (the parameter types, structures, scaling and
+  what is read as bytes all alike), and its gate is its `PRE-CONDITION-STATE-REFS`, read as a DID
+  service's. A tester runs one by name (`d:run_routine` in Lua, `NodeClient.run_routine` in
+  Python, `bb_uds_routine_described` in C): the option encoded by its layout, refused as a gated
+  write is until the connection has the gate's session and level, the answer decoded by its
+  layout. A routine control with no `POS-RESPONSE`, or several laid out differently, answers bytes of no
+  fixed size, said; a control none
+  of the three, or an identifier that is not one 16-bit constant, is said and not read.
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
   DTC records then carry that name as their `fault`.
 - **Files** — a `.pdx` is a ZIP (stored or deflated entries, a deflated one refused as soon as it inflates past the size the archive states for it; ZIP64 and encryption are refused), of
@@ -108,8 +121,10 @@ These are later steps (#638):
   not read as a gate;
 - **other compu methods** — `RAT-FUNC`, `SCALE-RAT-FUNC`, `TAB-INTP`, `COMPUCODE`, and a scaled
   value's constraints;
-- **routines and I/O control** by short name (`0x31`, `0x2F`), and DIDs a service reads several
-  of, or through a `TABLE`;
+- **I/O control** by short name (`0x2F`), and DIDs a service reads several of, or through a
+  `TABLE` (a routine identifier given by a `TABLE-KEY` too);
+- **negative responses by name** — a refused routine or DID raises the NRC; what a description's
+  `NEG-RESPONSES` lay out past it is not read;
 - **variant identification** — choosing the ECU variant from what the ECU answers;
 - **DoIP** — a node named on a DoIP row, by its logical address;
 - **the GUI's Diagnostics panel** — it names nodes from the system.toml only; a script started

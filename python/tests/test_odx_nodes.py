@@ -1,8 +1,8 @@
 """A node a project row names by its ODX description, from Python, against projects/odx-demo:
 BodyController of dbc/odx_demo.odx-d on CAN1, whose simulated BodyECU answers at its ids — the
 coverage tests/odx_nodes.lua has: the node by name, its DIDs listed with the layout and gates the
-ODX gives them, read and written by name (scaled values as numbers, text tables as labels), and its
-DTCs named by the variant's DTC list."""
+ODX gives them, read and written by name (scaled values as numbers, text tables as labels), its
+routine controls run by name through their gates, and its DTCs named by the variant's DTC list."""
 import os
 
 import pytest
@@ -86,3 +86,36 @@ class TestOdxNode:
 
     def test_dtcs_are_named_by_the_variant(self, diag):
         assert [d.fault for d in diag.dtcs()] == ["LampOpenCircuit", "SupplyLow"]
+
+    def test_routines_are_listed_with_their_records(self, net):
+        rs = net.nodes.BodyController.routines
+        assert rs.keys() == ["Start_SelfTest", "Stop_SelfTest", "RequestResults_SelfTest",
+                             "Start_CheckDependencies"]
+        start = rs.Start_SelfTest
+        assert (start.id, start.control, start.option_size, start.answer_size) == (0x0203, "start", 1, 1)
+        assert start.option == (blobly.DidPart("Level", "int", "u8 0..255"),)
+        assert start.answer == (blobly.DidPart("Status", "label", "one of Running, Passed, Failed"),)
+        assert start.gate == blobly.Gate(("extended",), 0)
+        assert rs.Stop_SelfTest.option == () and rs.Stop_SelfTest.answer_size == 0
+        assert rs.RequestResults_SelfTest.gate is None
+        deps = rs.Start_CheckDependencies
+        assert deps.answer_size is None and [p.kind for p in deps.answer] == ["bytes"]
+
+    def test_a_routine_is_run_by_name_through_its_gate(self, diag):
+        diag.session(0x01)
+        with pytest.raises(blobly.WriteGated) as gated:
+            diag.run_routine("Start_SelfTest", 3)
+        assert (gated.value.session, gated.value.level) == (0x03, 0)
+        with pytest.raises(blobly.Refused, match="outside 0..255"):
+            diag.run_routine("Start_SelfTest", 300)
+        with pytest.raises(TypeError, match="carries nothing"):
+            diag.run_routine("Stop_SelfTest", 1)
+        diag.session(0x03)
+        assert diag.run_routine("Start_SelfTest", Level=3) == "Running"
+        assert diag.run_routine("Stop_SelfTest") is None
+        assert diag.run_routine("RequestResults_SelfTest") == {"Status": "Passed", "Passes": 42}
+        with pytest.raises(KeyError):
+            diag.run_routine("Nope")
+        # a number is no name: it would pick a routine by position
+        with pytest.raises(TypeError, match="named by a string"):
+            diag.run_routine(1)

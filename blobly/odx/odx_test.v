@@ -648,3 +648,84 @@ fn test_a_request_did_of_implicit_position_follows_the_service_id() {
 	d := did_of(db.variant('Base')!, 5)
 	assert d.readable && d.size == 1 && d.parts.map(it.name) == ['Narrow']
 }
+
+fn routine_of(v Variant, name string) Routine {
+	for r in v.routines {
+		if r.name == name {
+			return r
+		}
+	}
+	assert false, 'no routine ${name}'
+	return Routine{}
+}
+
+fn test_routines_carry_their_records_and_gates() {
+	v := load(fixture)!.variant('BodyController_Base')!
+	assert v.routines.map(it.name) == ['Start_SelfTest', 'Stop_SelfTest', 'RequestResults_SelfTest',
+		'Start_CheckDependencies']
+	start := routine_of(v, 'Start_SelfTest')
+	assert start.id == 0x0203 && start.control == 1
+	assert start.gate == Gate{true, [u8(0x03)], 0, []}
+	assert start.option == Record{1, [pt('Level', .unsigned, 0, 1)]}
+	assert start.answer.size == 1 && start.answer.parts.len == 1
+	assert start.answer.parts[0].name == 'Status' && start.answer.parts[0].compu.labels.len == 3
+	stop := routine_of(v, 'Stop_SelfTest')
+	assert stop.control == 2 && stop.option == Record{0, []} && stop.answer == Record{0, []}
+	results := routine_of(v, 'RequestResults_SelfTest')
+	assert results.control == 3 && results.gate == Gate{}
+	assert results.answer.size == 3 && results.answer.parts.map(it.name) == ['Status', 'Passes']
+	// a routine whose answer the description does not give is bytes of no fixed size, said
+	deps := routine_of(v, 'Start_CheckDependencies')
+	assert deps.id == 0xFF01 && deps.answer == Record{-1, []}
+	assert v.notes.any(it.contains('routine 0xFF01 (Start_CheckDependencies): no POS-RESPONSE'))
+	// a 0x31 service is read, not counted as one of another kind
+	assert !v.notes.any(it.contains('DIAG-SERVICE 0x31'))
+	// inherited by the ECU variant
+	assert load(fixture)!.variant('BodyController_V2')!.routines.len == 4
+}
+
+fn test_a_routine_record_not_laid_out_is_bytes_and_said() {
+	v := variant_with('routine_bitpos', fn (s string) string {
+		return s.replace('<SHORT-NAME>Level</SHORT-NAME>
+                <BYTE-POSITION>4</BYTE-POSITION>', '<SHORT-NAME>Level</SHORT-NAME>
+                <BYTE-POSITION>4</BYTE-POSITION>
+                <BIT-POSITION>2</BIT-POSITION>')
+	})!
+	start := routine_of(v, 'Start_SelfTest')
+	assert start.option.parts.len == 0 && start.option.size == 2
+	assert v.notes.any(it.contains('routine 0x0203 (Start_SelfTest): its request:')
+		&& it.contains('BIT-POSITION'))
+}
+
+fn test_a_routine_control_or_identifier_that_is_none_is_refused_never_zero() {
+	v := variant_with('routine_ctl', fn (s string) string {
+		return s.replace('<SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>3</CODED-VALUE>', '<SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>4</CODED-VALUE>')
+	})!
+	assert v.routines.map(it.name) == ['Start_SelfTest', 'Stop_SelfTest', 'Start_CheckDependencies']
+	assert v.notes.any(it.contains('RequestResults_SelfTest (0x31): routine control 0x04'))
+	w := variant_with('routine_rid', fn (s string) string {
+		return s.replace('<CODED-VALUE>65281</CODED-VALUE>', '<CODED-VALUE>0xZZ</CODED-VALUE>')
+	})!
+	assert !w.routines.any(it.name == 'Start_CheckDependencies')
+	assert w.notes.any(it.contains('CODED-VALUE "0xZZ" is not an integer'))
+}
+
+fn test_routine_answers_laid_out_differently_are_bytes_and_said() {
+	v := variant_with('routine_alt', fn (s string) string {
+		return s.replace('<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />', '<POS-RESPONSE-REF ID-REF="PR_SelfTest_Stop" />
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />')
+	})!
+	results := routine_of(v, 'RequestResults_SelfTest')
+	assert results.answer == Record{-1, []}
+	assert v.notes.any(it.contains('routine 0x0203 (RequestResults_SelfTest): its 2 POS-RESPONSEs lay the answer out differently'))
+	// one response named twice is one layout
+	w := variant_with('routine_twice', fn (s string) string {
+		return s.replace('<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />', '<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />')
+	})!
+	assert routine_of(w, 'RequestResults_SelfTest').answer.size == 3
+}

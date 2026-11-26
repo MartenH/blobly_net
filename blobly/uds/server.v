@@ -2,7 +2,7 @@
 // It rides an isotp.Channel (e.g. the software ISO-TP over the in-process bus), so
 // a simulated ECU can answer diagnostic requests with no Python and no kernel
 // ISO-TP. Mirrors uds_server.py: 0x10 session control, 0x22 RDBI (DID table),
-// 0x3E tester present (and 0xF186, 0x2F, 0x23 and 0x3D: io_memory.v); unknown service/DID →
+// 0x3E tester present (and 0xF186, 0x2F, 0x23, 0x3D and 0x31: io_memory.v); unknown service/DID →
 // negative response. Also 0x11 (the diagnostic state
 // back to power-on), 0x19 01/02/0A (the DTC table: count, by status mask, all) and 03/04/06 (its
 // snapshots and extended data, shaped as blobly_emb's fault memory answers them), 0x14 (clears it)
@@ -22,6 +22,10 @@ pub mut:
 	// memory ranges 0x23/0x3D reach (io_memory.v); empty = the service is not supported
 	io_start map[u16][]u8
 	memory   []MemRange
+	// the routine controls 0x31 answers, each one's record by `id << 8 | control`, and the routines
+	// any is declared of (io_memory.v); empty = the service is not supported
+	routines    map[u32][]u8
+	routine_ids map[u16]bool
 	// the IO DIDs a tester holds (a 0x2F other than returnControlToECU, not yet returned): a
 	// live one reads the held value rather than its signal
 	io_held map[u16]bool
@@ -227,6 +231,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 		}
 		0x3D {
 			return if s.memory.len > 0 { s.write_memory(req) } else { neg(sid, 0x11) }
+		}
+		0x31 {
+			return if s.routines.len > 0 { s.routine_control(req) } else { neg(sid, 0x11) }
 		}
 		0x11 { // ECUReset: the diagnostic state back to power-on (a simulated ECU has no core to restart)
 			if req.len < 2 {

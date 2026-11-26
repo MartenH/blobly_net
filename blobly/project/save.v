@@ -221,6 +221,28 @@ pub fn (p Project) to_yaml() string {
 							b.writeln('            - { address: ${addr}, size: ${m.size} }')
 						}
 					}
+					if u.routines.len > 0 {
+						b.writeln('          routines:')
+						for r in u.routines {
+							mut kv := [if text := r.id_text {
+								'id: ${yaml_flow_scalar(text)}'
+							} else {
+								'id: "0x${r.id:X}"'
+							}]
+							for name, a in {
+								'start':   r.start
+								'stop':    r.stop
+								'results': r.results
+							} {
+								if bs := a {
+									kv << '${name}: "${bs.map('${it:02X}').join(' ')}"'
+								} else if text := r.bad[name] {
+									kv << '${name}: ${text}'
+								}
+							}
+							b.writeln('            - { ${kv.join(', ')} }')
+						}
+					}
 				}
 				// Protection MUST be written back. A field the parser reads and the writer drops
 				// is worse than one that was never supported: the project loads protected, saves

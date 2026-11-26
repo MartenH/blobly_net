@@ -88,9 +88,9 @@ pub enum Forget {
 	session  // the session is gone, and the level with it (0x7F serviceNotSupportedInActiveSession)
 }
 
-// write_refusal_forgets: what a 0x2E refused with `nrc` says the ECU took back on its own (a reset,
-// an S3 or security timeout), so the next write plans that again rather than skipping it on a
-// stale belief and being refused the same way. Only what the code names: 0x22 conditionsNotCorrect
+// write_refusal_forgets: what a gated request (0x2E, 0x31) refused with `nrc` says the ECU took back
+// on its own (a reset, an S3 or security timeout), so the next write or routine plans that again
+// rather than skipping it on a stale belief and being refused the same way. Only what the code names: 0x22 conditionsNotCorrect
 // is about the DID's own conditions as often as anything, and forgetting the session on it would
 // stop a keep-alive and lose the session it never said was lost.
 pub fn write_refusal_forgets(nrc u8) Forget {
@@ -149,8 +149,8 @@ pub fn (s ConnState) words() string {
 // observe updates the state from one exchange that ended: a positive 0x10 establishes its session,
 // locked (ISO 14229-1 relocks on every transition), a positive 0x11 the default session, locked —
 // either voiding a 0x29 challenge outstanding, as forgetting the session does; a
-// granted 0x27 key, or an all-zero seed, its level; a 0x27 or 0x2E refusal forgets what its code
-// says (unlock_refusal_forgets, write_refusal_forgets). A session change or a 0x27 the ECU may have
+// granted 0x27 key, or an all-zero seed, its level; a 0x27, 0x2E or 0x31 refusal forgets what its
+// code says (unlock_refusal_forgets, write_refusal_forgets). A session change or a 0x27 the ECU may have
 // acted on without answering leaves that state unknown; a request that never went out changes
 // nothing.
 pub fn (mut s ConnState) observe(x Exchange) {
@@ -203,7 +203,7 @@ pub fn (mut s ConnState) observe(x Exchange) {
 		sid_authentication {
 			s.observe_auth(x, sub, answered)
 		}
-		sid_write_data_by_identifier {
+		sid_write_data_by_identifier, sid_routine_control {
 			if x.negative && x.resp.len == 3 {
 				s.forget(write_refusal_forgets(x.resp[2]))
 			}
@@ -291,12 +291,27 @@ pub fn write_plan(declared bool, session u8, allowed []u8, level u8, unlocked u8
 // description says `[uds] access = "authentication"`, so its levels are unlocked with 0x29 05/06 and
 // it answers 0x27 serviceNotSupported. The ONE rule; write_plan is its seed-key case.
 pub fn write_plan_by(declared bool, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool, authenticates bool) WritePlan {
-	svc := if authenticates { '0x29' } else { '0x27' }
 	if !declared {
 		return WritePlan{
 			refusal: 'not writable: the description declares no write gate for it'
 		}
 	}
+	return gate_plan(GateWords{'its write gate', 'not writable'}, session, allowed, level, unlocked,
+		can_unlock, authenticates)
+}
+
+// GateWords is how a gate_plan refusal names the gate and what it refuses: a DID's write ('its
+// write gate', 'not writable'), a routine's run ('its gate', 'not run').
+pub struct GateWords {
+pub:
+	gate    string
+	refused string
+}
+
+// gate_plan is write_plan_by's rule for a DECLARED gate, whatever it gates (a 0x2E, a 0x31): the
+// session to switch to and the level to unlock first, a refusal worded by `words`.
+pub fn gate_plan(words GateWords, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool, authenticates bool) WritePlan {
+	svc := if authenticates { '0x29' } else { '0x27' }
 	// a gated write is sent where its level can be unlocked: never the default session, which
 	// serves no 0x27 — the unlock would leave it, and the write would go out of its gate
 	mut ok := allowed.clone()
@@ -304,7 +319,7 @@ pub fn write_plan_by(declared bool, session u8, allowed []u8, level u8, unlocked
 		ok = allowed.filter(it != default_session)
 		if ok.len == 0 {
 			return WritePlan{
-				refusal: 'not writable: its write gate needs security level ${level} but names only the default session, where ${svc} is not served (ISO 14229-1) — the description contradicts itself'
+				refusal: '${words.refused}: ${words.gate} needs security level ${level} but names only the default session, where ${svc} is not served (ISO 14229-1) — the description contradicts itself'
 			}
 		}
 	}

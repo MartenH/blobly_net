@@ -416,3 +416,43 @@ channels:
 	assert twice.channels[0].verify[0].window_malformed
 	assert twice.version == 13
 }
+
+fn test_routines_round_trip() {
+	y := 'project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          routines:
+            - { id: "0x203", start: "00", stop: "", results: "01 00 2A" }
+            - { id: "0xFF0G", results: "01" }
+            - { id: "0x204", start: 00, results: "1G" }
+            - { id: "0x205", start: 0100, stop: 1234, results: 0x0A }
+            - { id: "", start: "00" }
+'
+	p := parse(y) or { panic(err) }
+	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
+	assert u.routines.len == 5 && u.routines[0].id == 0x203
+	assert u.routines[0].controls() == [RoutineAnswer{1, [u8(0)]}, RoutineAnswer{2, []},
+		RoutineAnswer{3, [u8(1), 0, 0x2A]}]
+	assert u.routines[1].controls() == [RoutineAnswer{3, [u8(1)]}]
+	// an answer YAML read as a number is never its digits: an unquoted 00 is 0, 0100 is 64
+	hint := '(quoted hex bytes, as "01 00")'
+	assert u.malformed == ['routine 0xFF0G', 'routine 0x204 start answer 0 ${hint}',
+		'routine 0x204 results answer 1G ${hint}', 'routine 0x205 start answer 64 ${hint}',
+		'routine 0x205 stop answer 1234 ${hint}', 'routine 0x205 results answer 10 ${hint}',
+		'routine ']
+	assert u.routines[2].controls() == [] && u.routines[3].controls() == []
+	assert version_for(p) == 15
+	again := parse(p.to_yaml()) or { panic(err) }
+	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
+	assert v.routines[0].controls() == u.routines[0].controls(), 'routines lost on save'
+	// what is malformed stays malformed through a Save: the id as written, a number still a number
+	assert v.malformed == u.malformed, 'a malformed entry is written back as written'
+	assert again.version == 15
+}

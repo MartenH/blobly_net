@@ -2,7 +2,8 @@
 -- odx_nodes.lua — a node a project row names by its ODX description (diagnostics: on CAN1): its
 -- DIDs listed and read and written by name through the layout the ODX gives them (scaled values
 -- as numbers, text tables as labels, writes gated by the sessions and level its services ask for),
--- and its DTCs named by the variant's DTC list. The simulated BodyECU answers at the node's ids.
+-- its routine controls run by name (option and answer laid out alike, gated as writes are), and its
+-- DTCs named by the variant's DTC list. The simulated BodyECU answers at the node's ids.
 --   scripts/runtests.sh tests/odx_nodes.lua
 
 test("the row's ODX names the node", function()
@@ -70,4 +71,31 @@ test("DTCs are named by the variant's DTC list", function()
   check.equal(#recs, 2)
   check.equal(recs[1].fault, "LampOpenCircuit")
   check.equal(recs[2].fault, "SupplyLow")
+end)
+
+test("routines are listed and run by name through their gate", function()
+  local d = uds.node("BodyController")
+  local rs = d:routines()
+  check.equal(#rs, 4)
+  check.equal(rs[1].name, "Start_SelfTest")
+  check.equal(rs[1].id, 0x0203)
+  check.equal(rs[1].control, "start")
+  check.equal(rs[1].option[1].label, "Level")
+  check.equal(rs[1].answer[1].kind, "label")
+  check.equal(rs[1].gate.sessions[1], "extended")
+  check.equal(rs[3].gate, nil)
+  check.equal(rs[4].answer_size, nil)
+  d:session(0x01)
+  local ok, err = pcall(d.run_routine, d, "Start_SelfTest", 3)
+  check.truthy(not ok and string.find(tostring(err), "extended session", 1, true), tostring(err))
+  ok, err = pcall(d.run_routine, d, "Start_SelfTest", 300)
+  check.truthy(not ok and string.find(tostring(err), "outside 0..255", 1, true), tostring(err))
+  d:session(0x03)
+  check.equal(d:run_routine("Start_SelfTest", 3), "Running")
+  check.equal(d:run_routine("Stop_SelfTest"), nil)
+  local res = d:run_routine("RequestResults_SelfTest")
+  check.equal(res.Status, "Passed")
+  check.equal(res.Passes, 42)
+  ok, err = pcall(d.run_routine, d, "Nope")
+  check.truthy(not ok and string.find(tostring(err), "no routine", 1, true), tostring(err))
 end)

@@ -285,7 +285,7 @@ fn test_malformed_ids_and_bad_session_do_not_start() {
 		uds:  project.UdsCfg{ rx: 0x71, tx: 0x7E9, malformed: ['rx 0x7G1'] }
 	}
 	assert uds_nodes([bad]).len == 0
-	assert validate_uds([bad]).any(it.contains('not a valid identifier'))
+	assert validate_uds([bad]).any(it.contains('is not valid — the node is not started'))
 
 	sess := project.NodeCfg{
 		name: 'Sess'

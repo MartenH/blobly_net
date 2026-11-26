@@ -183,9 +183,9 @@ pub const max_memory_range = 1 << 20
 // VIN it serves, and only a 0x2E write keeps the announcement with it (doip_host.v).
 const io_refused_vin = u32(0xF190)
 
-// declare_io_memory gives a server the block's IO DIDs (0x2F) and memory ranges (0x23/0x3D), the
-// ones validate_content does not refuse, for answers of at most `cap` bytes. Shared by the
-// project's servers and the described ones.
+// declare_io_memory gives a server the block's IO DIDs (0x2F), memory ranges (0x23/0x3D) and
+// routine controls (0x31), the ones validate_content does not refuse, for answers of at most `cap`
+// bytes. Shared by the project's servers and the described ones.
 fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 	max_io := uds.io_value_max(cap)
 	for x in cfg.io {
@@ -201,6 +201,19 @@ fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 			continue // reported by validate_content
 		}
 		srv.declare_memory(m.address, int(m.size))
+	}
+	max_rt := uds.routine_answer_max(cap)
+	mut seen_rt := map[u32]bool{}
+	for r in cfg.routines {
+		if r.id > 0xFFFF || r.id in seen_rt {
+			continue // reported by validate_content: the first entry of an id is served
+		}
+		seen_rt[r.id] = true
+		for c in r.controls() {
+			if c.answer.len <= max_rt {
+				srv.declare_routine(u16(r.id), c.control, c.answer)
+			}
+		}
 	}
 }
 
@@ -273,6 +286,27 @@ fn validate_content(name string, cfg project.UdsCfg, cap int, carrier string) []
 		}
 		seen_io[x.id] = true
 	}
+	max_rt := uds.routine_answer_max(cap)
+	mut seen_rt := map[u32]bool{}
+	for r in cfg.routines {
+		if r.id > 0xFFFF {
+			warns << 'uds on "${name}": routine 0x${r.id:X} is above the 16-bit range — ignored'
+			continue
+		}
+		if r.id in seen_rt {
+			warns << 'uds on "${name}": routine 0x${r.id:X} is declared more than once — the first is served'
+		}
+		seen_rt[r.id] = true
+		cs := r.controls()
+		if cs.len == 0 {
+			warns << 'uds on "${name}": routine 0x${r.id:X} gives no start, stop or results — ignored'
+		}
+		for c in cs {
+			if c.answer.len > max_rt {
+				warns << 'uds on "${name}": routine 0x${r.id:X} ${['', 'start', 'stop', 'results'][c.control]} answers ${c.answer.len} bytes — over the ${max_rt}-byte ${carrier} limit, ignored'
+			}
+		}
+	}
 	for i, m in cfg.memory {
 		if m.address_text != '' {
 			continue // malformed: reported with the identifiers
@@ -312,7 +346,7 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 			warns << 'uds on "${n.name}": tx_dl is ignored on a DoIP channel — a DoIP message is not cut into CAN frames'
 		}
 		for m in cfg.malformed {
-			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
+			warns << 'uds on "${n.name}": ${m} is not valid — the node is not started'
 		}
 		warns << validate_content(n.name, cfg, max_response_doip, 'DoIP payload')
 		mut usable_dtcs := 0
@@ -471,7 +505,7 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 		warns << validate_content(n.name, cfg, max_response, 'ISO-TP')
 		for m in cfg.malformed {
 			// a stripped character yields a different VALID id, so no range check can see it
-			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
+			warns << 'uds on "${n.name}": ${m} is not valid — the node is not started'
 		}
 		for t in cfg.dtcs {
 			if t.status > 0xFF {
