@@ -173,9 +173,10 @@ fi
 
 # The per-user review lock: flock(2) on fd 9 over ~/.codex-local-review.lock, through the flock
 # command or, where that is missing, perl's flock — one kernel lock either way, so two runs whose
-# PATHs differ exclude each other, and it goes with the process however that ends (codex runs with
-# fd 9 closed, so nothing it leaves behind holds it). Taken before the tree is checked and HEAD
-# read, so a run that waited reviews the branch as it is once its turn comes.
+# PATHs differ exclude each other, and the kernel lets go of it however the run ends. codex inherits
+# fd 9, so a codex that outlives a killed run keeps the lock until it ends too; the fetch does not,
+# since an ssh master it leaves running would hold the lock for good. Taken before the tree is
+# checked and HEAD read, so a run that waited reviews the branch as it is once its turn comes.
 lock_file=$HOME/.codex-local-review.lock
 lock_fd() { # lock_fd nb|wait: 0 locked, 1 held by another run, other: no lock could be asked for
 	if command -v flock >/dev/null 2>&1; then
@@ -194,11 +195,16 @@ take_lock() {
 	lock_fd nb || rc=$?
 	if [ "$rc" = 1 ]; then
 		holder=$(tr -cd 0-9 2>/dev/null <"$lock_file" || true)
+		holder="pid ${holder:-unknown}"
+		# the run that took it has gone: what holds it is a process the run started (its codex)
+		if [ "$holder" != "pid unknown" ] && ! kill -0 "${holder#pid }" 2>/dev/null; then
+			holder="$holder, ended; a process it started holds $lock_file"
+		fi
 		if [ "${CODEX_REVIEW_NO_WAIT:-}" = 1 ]; then
-			echo "codex-local-review: another local review (pid ${holder:-unknown}) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
+			echo "codex-local-review: another local review ($holder) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
 			exit 5
 		fi
-		echo "codex-local-review: waiting for another local review (pid ${holder:-unknown}) to finish" >&2
+		echo "codex-local-review: waiting for another local review ($holder) to finish" >&2
 		rc=0
 		lock_fd wait || rc=$?
 	fi
@@ -295,7 +301,7 @@ trap dirty_check EXIT
 echo "codex-local-review: $model ($effort) on ${head:0:9} against $base, $codex_version; transcript: $out" >&2
 start=$(date +%s)
 status=0
-printf '%s\n' "$prompt" | "${cmd[@]}" 9>&- > "$out" 2>&1 || status=$?
+printf '%s\n' "$prompt" | "${cmd[@]}" > "$out" 2>&1 || status=$?
 echo "codex-local-review: finished in $(( $(date +%s) - start )) s, exit $status" >&2
 
 if [ "$status" != 0 ]; then

@@ -10,9 +10,9 @@
 #   - two runs at once are serialised by the per-user lock, the second saying whose run it waits
 #     for — through the flock command, through perl's flock where it is missing, and across the
 #     two when the flock command is on one run's PATH only; CODEX_REVIEW_NO_WAIT=1 refuses with
-#     exit 5 instead; a run killed with SIGKILL leaves no lock behind; with neither tool the run
-#     warns and reviews unlocked;
-#   - codex runs without the lock's descriptor;
+#     exit 5 instead; a run killed with SIGKILL leaves the lock held while its codex runs (named
+#     as such) and free once that ends; with neither tool the run warns and reviews unlocked;
+#   - codex holds the lock's descriptor;
 #   - a summary codex's transcript does not record for this run (another checkout, another prompt,
 #     another final message) is printed under a WARNING; the stub writes codex's real shapes.
 # PATH is built from only the tools the check uses, so an installed codex cannot leak in.
@@ -274,34 +274,42 @@ serialise() {
 	expect "$mode: CODEX_REVIEW_NO_WAIT=1 refuses while another review runs" \
 		"$c|$(cat "$tmp/$mode-C.err")" \
 		"5|codex-local-review: another local review (pid $apid) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait"
-	expect "$mode: nothing else started while the first held the lock" "$(cut -d' ' -f1,2 "$home/stub.log" | tr '\n' ' ')" "start $mode-A "
+	expect "$mode: nothing else started while the first held the lock" "$(grep -v '^fd9' "$home/stub.log" | cut -d' ' -f1,2 | tr '\n' ' ')" "start $mode-A "
 	: >"$home/release"
 	wait "$a"
 	a=$?
 	wait "$b"
 	b=$?
-	expect "$mode: both runs pass, one after the other" "$a $b|$(cut -d' ' -f1,2 "$home/stub.log" | tr '\n' ' ')" \
+	expect "$mode: both runs pass, one after the other" "$a $b|$(grep -v '^fd9' "$home/stub.log" | cut -d' ' -f1,2 | tr '\n' ' ')" \
 		"0 0|start $mode-A end $mode-A start $mode-B end $mode-B "
 	expect "$mode: the second run prints its own summary, unwarned" "$(head -1 "$tmp/$mode-B.out")|$(grep -c WARNING "$tmp/$mode-B.err")" \
 		"One defect: the probe misreads an empty file.|0"
 }
 serialise flock "$tmp/flock-tool" "$tmp/flock-tool"
-expect "flock: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 0
+expect "flock: codex holds the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-flock/stub.log")" 2
 serialise perl "$tmp/perl-tool" "$tmp/perl-tool"
-expect "perl: codex runs without the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-perl/stub.log")" 0
+expect "perl: codex holds the lock's descriptor" "$(grep -c '^fd9' "$tmp/lock-perl/stub.log")" 2
 # two sessions of one user, the flock command on the PATH of one only: one kernel lock either way
 serialise flock-first "$tmp/flock-tool" "$tmp/perl-tool"
 serialise perl-first "$tmp/perl-tool" "$tmp/flock-tool"
 
-# a run killed with SIGKILL, its EXIT trap skipped, leaves no lock: the kernel lets go of it
+# a run killed with SIGKILL, its EXIT trap skipped: its codex, still running, keeps the lock, and
+# the kernel lets go of it once that ends
 home=$tmp/lock-killed
 mkdir -p "$home"
 (review "$home" "$tmp/perl-tool" killed-A STUB_HOLD="$home/release") 2>/dev/null & # bash would report the kill
 wait_for "$home/stub.log" "start killed-A "
-kill -9 "$(sed -n 's/^start killed-A //p' "$home/stub.log")"
+kpid=$(sed -n 's/^start killed-A //p' "$home/stub.log")
+kill -9 "$kpid"
+while kill -0 "$kpid" 2>/dev/null; do sleep 0.1; done
 review "$home" "$tmp/flock-tool" killed-B CODEX_REVIEW_NO_WAIT=1
-expect "a run killed with SIGKILL leaves no lock behind" "$?|$(grep -c 'is running' "$tmp/killed-B.err")" "0|0"
+expect "a killed run's codex still holds the lock, said as such" "$?|$(cat "$tmp/killed-B.err")" \
+	"5|codex-local-review: another local review (pid $kpid, ended; a process it started holds $home/.codex-local-review.lock) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait"
 : >"$home/release"
+wait_for "$home/stub.log" "end killed-A"
+n=0
+while ! review "$home" "$tmp/flock-tool" killed-C CODEX_REVIEW_NO_WAIT=1 && [ $n -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+expect "the lock is free once that codex has ended" "$(grep -c 'is running' "$tmp/killed-C.err")" 0
 wait
 
 # with neither the flock command nor perl, the run says so and reviews unlocked

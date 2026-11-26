@@ -522,8 +522,8 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   does — reload the Codex extension (pinned by `scripts/codex_local_review_test.sh` in CI).
   One review runs at a time per user (#568: two at once shared codex's state, and one printed
   the other's summary): a second run waits on a flock(2) of `~/.codex-local-review.lock` (the
-  `flock` command, else perl's flock — one kernel lock, released however a run ends), naming the
-  pid it waits for (`CODEX_REVIEW_NO_WAIT=1` refuses, exit 5), and a summary codex's transcript does
+  `flock` command, else perl's flock — one kernel lock, held while the run or its codex lives),
+  naming the pid it waits for (`CODEX_REVIEW_NO_WAIT=1` refuses, exit 5), and a summary codex's transcript does
   not record for this run (its workdir, this run's prompt, the summary's first line) is printed
   under a WARNING.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
