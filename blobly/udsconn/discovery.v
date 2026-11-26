@@ -34,7 +34,8 @@ pub:
 // row named `from` — that row's bind host, port, group and interface. A port, a group or an
 // interface differing from the row's is refused, not overruled; a row with no group is a unicast
 // listener, so a group asked of it differs too, and a row joining on the default interface
-// differs from one named.
+// differs from one named. An interface is compared as the one it names on this host
+// (transport.same_netif), so its name and an address it holds are one.
 pub fn someip_listener(port int, group string, group_iface string, from string, row ?Carrier) !SomeipListen {
 	car := row or {
 		return SomeipListen{
@@ -50,7 +51,8 @@ pub fn someip_listener(port int, group string, group_iface string, from string, 
 		joins := if car.group == '' { 'joins no multicast group' } else { 'joins ${car.group}' }
 		return error('group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
 	}
-	if group_iface != '' && group_iface != car.group_iface {
+	if group_iface != '' && !(car.group_iface != ''
+		&& transport.same_netif(group_iface, car.group_iface, car.group)) {
 		on := if car.group == '' {
 			'joins no multicast group'
 		} else if car.group_iface == '' {

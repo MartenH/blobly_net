@@ -79,7 +79,7 @@ fn parse_netifaces(text string) []NetIface {
 pub fn join_index(ifaces []NetIface, spec string, v6 bool) !u32 {
 	mut hit := []NetIface{}
 	for f in ifaces {
-		if f.name == spec || (f.alias != '' && f.alias == spec) || addr_names(f.addr, spec) {
+		if f.name == spec || (f.alias != '' && f.alias == spec) || addr_names(ifaces, f.addr, spec) {
 			if !hit.any(it.name == f.name) {
 				hit << f
 			}
@@ -106,14 +106,19 @@ pub fn join_index(ifaces []NetIface, spec string, v6 bool) !u32 {
 }
 
 // addr_names is whether the interface address `addr` (as getnameinfo spells it) is the one `spec`
-// names: an IPv6 address by value, whatever its spelling, its `%scope` compared where both give one.
-fn addr_names(addr string, spec string) bool {
+// names: an IPv6 address by value, whatever its spelling, its `%scope` compared as the interface
+// index it names where both give one (a zone by name or by number, scope_index).
+fn addr_names(ifaces []NetIface, addr string, spec string) bool {
 	if addr == '' {
 		return false
 	}
 	a, s := addr.all_before('%'), spec.all_before('%')
-	if addr.contains('%') && spec.contains('%') && addr.all_after('%') != spec.all_after('%') {
-		return false
+	if addr.contains('%') && spec.contains('%') {
+		za := scope_index(ifaces, addr.all_after('%')) or { return false }
+		zs := scope_index(ifaces, spec.all_after('%')) or { return false }
+		if za != zs {
+			return false
+		}
 	}
 	if a == s {
 		return true
@@ -123,6 +128,38 @@ fn addr_names(addr string, spec string) bool {
 	}
 	ka := ip6_text(a) or { return false }
 	return ip6_text(s) or { return false } == ka
+}
+
+// scope_index is the interface index an IPv6 zone names: a number as itself, else the IPv6 index
+// of the interface of that name (or Windows' GUID); none for a zone no interface answers to.
+fn scope_index(ifaces []NetIface, zone string) ?u32 {
+	if zone != '' && zone.bytes().all(it.is_digit()) {
+		return u32(zone.u64())
+	}
+	for f in ifaces {
+		if f.name == zone || (f.alias != '' && f.alias == zone) {
+			return f.index6
+		}
+	}
+	return none
+}
+
+// same_join is whether `a` and `b` name one interface to join a group of the family `v6` on —
+// two spellings of it, a name and an address it holds; false where either names none.
+pub fn same_join(ifaces []NetIface, a string, b string, v6 bool) bool {
+	if a == b {
+		return true
+	}
+	ia := join_index(ifaces, a, v6) or { return false }
+	return join_index(ifaces, b, v6) or { return false } == ia
+}
+
+// same_netif is same_join over this host's interfaces, for a group `group`.
+pub fn same_netif(a string, b string, group string) bool {
+	if a == b {
+		return true
+	}
+	return same_join(local_netifaces() or { return false }, a, b, group.contains(':'))
 }
 
 // ip6_text is an IPv6 literal in one spelling, none for a string that is not one.

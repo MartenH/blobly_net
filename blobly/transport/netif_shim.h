@@ -22,6 +22,19 @@
 #include <netdb.h>
 #endif
 
+#ifdef __linux__
+#ifdef IP_MULTICAST_ALL
+#define CT_IP_MULTICAST_ALL IP_MULTICAST_ALL
+#else
+#define CT_IP_MULTICAST_ALL 49
+#endif
+#ifdef IPV6_MULTICAST_ALL
+#define CT_IPV6_MULTICAST_ALL IPV6_MULTICAST_ALL
+#else
+#define CT_IPV6_MULTICAST_ALL 29
+#endif
+#endif
+
 #ifndef NI_MAXHOST
 #define NI_MAXHOST 1025
 #endif
@@ -105,7 +118,8 @@ static int ct_netif_list(char *buf, int cap) {
 
 // ct_netif_join joins the multicast group `group` (a socket address of `len` bytes, as vlib's
 // net.Addr is) on interface `ifindex` with MCAST_JOIN_GROUP, the call Linux, macOS and Windows
-// all take for either family. Returns 0, or a negative error code (errno, or Windows' WSA code).
+// all take for either family; on Linux the socket then hears the group on that interface only
+// (IP_MULTICAST_ALL / IPV6_MULTICAST_ALL off). Returns 0, or a negative error code (errno, or Windows' WSA code).
 static int ct_netif_join(long long fd, int v6, const void *group, int len, unsigned ifindex) {
 	struct group_req g;
 	memset(&g, 0, sizeof(g));
@@ -118,6 +132,13 @@ static int ct_netif_join(long long fd, int v6, const void *group, int len, unsig
 #else
 	if (setsockopt((int)fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, MCAST_JOIN_GROUP, &g,
 		(socklen_t)sizeof(g)) != 0) return -errno;
+#ifdef __linux__
+	// Linux delivers a group's datagrams from every interface any socket on the host joined it
+	// on unless the socket says otherwise: only this socket's own joins count once it is off.
+	int off = 0;
+	if (setsockopt((int)fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? CT_IPV6_MULTICAST_ALL
+		: CT_IP_MULTICAST_ALL, &off, (socklen_t)sizeof(off)) != 0) return -errno;
+#endif
 #endif
 	return 0;
 }

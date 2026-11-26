@@ -78,6 +78,32 @@ fn test_an_ipv6_address_names_its_interface_in_any_spelling() {
 	assert join_index(lo6, '0:0:0:0:0:0:0:1', true)! == 1
 }
 
+// a zone is the interface index it names, given by number or by name, on either side
+fn test_an_ipv6_zone_names_its_interface_by_number_or_by_name() {
+	f := sample_ifaces()
+	assert join_index(f, 'fe80::1e36:cc8d:9811:d04d%2', true)! == 2
+	if _ := join_index(f, 'fe80::1e36:cc8d:9811:d04d%3', true) {
+		assert false, 'a zone of another interface'
+	}
+	win := [NetIface{
+		index4: 12
+		index6: 12
+		name:   'Ethernet 2'
+		addr:   'fe80::1%12'
+	}]
+	assert join_index(win, 'fe80::1%Ethernet 2', true)! == 12
+	assert join_index(win, 'fe80::1%12', true)! == 12
+}
+
+// two spellings of one interface name one join; an unknown one names none
+fn test_two_spellings_of_one_interface_are_one_join() {
+	f := sample_ifaces()
+	assert same_join(f, 'eth1', '192.168.0.191', false)
+	assert same_join(f, 'fe80::1e36:cc8d:9811:d04d', 'eth1', true)
+	assert !same_join(f, 'eth1', 'tap1', false)
+	assert !same_join(f, 'eth1', 'eth9', false)
+}
+
 fn test_an_interface_the_host_does_not_have_is_refused_naming_those_it_has() {
 	join_index(sample_ifaces(), 'eth9', false) or {
 		assert err.msg() == 'no network interface "eth9" on this host (by name or address; it has lo, eth1, tap1, tap2, Ethernet 2, wg0)'
@@ -166,7 +192,7 @@ fn bound_port(mut c net.UdpConn) int {
 }
 
 // Linux joins a group on `lo` (by name or by its address) and delivers what is sent out of it;
-// a group joined on another interface hears none of it.
+// a group joined on another interface hears none of it, though another socket joined it on `lo`.
 fn test_a_group_joined_on_loopback_hears_what_loopback_carries() ! {
 	$if !linux {
 		return
@@ -195,10 +221,20 @@ fn test_a_group_joined_on_loopback_hears_what_loopback_carries() ! {
 		c.close() or {}
 	}
 	port := bound_port(mut c)
+	// another socket on the port joins the group on loopback: the host is a member there now
+	mut lo := udp_bind('0.0.0.0:${port}', group, 'lo')!
+	defer {
+		lo.close() or {}
+	}
 	send_to_group(group, port, 'hi'.bytes())!
 	if d := udp_read(mut c, 300) {
 		assert false, 'a group joined on ${other[0].name} heard loopback: ${d.data}'
 	}
+	got := udp_read(mut lo, 1000) or {
+		assert false, 'nothing heard on ${group}:${port} joined on lo'
+		return
+	}
+	assert got.data == 'hi'.bytes()
 }
 
 // an IPv6 group is joined on an interface by name (its index) as an IPv4 one is

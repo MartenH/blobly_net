@@ -1940,7 +1940,13 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	a.chans[ci].running = true
 	a.chans[ci].spawning = false
 	if a.running {
-		grp := if group != '' { ', group ${group}' } else { '' }
+		grp := if group == '' {
+			''
+		} else if group_iface != '' {
+			', group ${group} on ${group_iface}'
+		} else {
+			', group ${group}'
+		}
 		a.log_append_locked('${chname}: SOME/IP listening on ${addr}${grp}')
 	}
 	a.mu.unlock()

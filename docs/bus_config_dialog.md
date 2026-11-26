@@ -100,8 +100,10 @@ v15): the interface's name (`eth1`; on Windows its name as the network settings 
 host's default-route interface, so on a machine with more than one interface (a bench NIC beside
 a WSL or VPN one) a service offering on the other NIC is not heard until the row names it. An
 interface this host does not have fails the row at ▶ Start, naming the interfaces it has, and so
-does an address two interfaces hold. Binding the specific address instead does not select a NIC
-and is refused: a socket bound to one address receives no multicast at all.
+does an address two interfaces hold. A named interface is the only one the row hears the group
+on, even where another program on the host joined it elsewhere. Binding the specific address
+instead does not select a NIC and is refused: a socket bound to one address receives no multicast
+at all.
 
 **A bound UDP port is not an owned one.** This V sets `SO_REUSEADDR` on every UDP socket before
 it binds, and nothing in its public API turns that off, so a second listener on the same port

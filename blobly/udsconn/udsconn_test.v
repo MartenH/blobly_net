@@ -278,6 +278,21 @@ fn test_a_someip_listener_takes_the_rows_group_interface() {
 	assert false, 'another interface than the row'
 }
 
+// an interface asked by an address it holds is the row's interface named by name
+fn test_a_someip_listener_takes_another_spelling_of_the_rows_interface() {
+	$if !linux {
+		return
+	}
+	row := Carrier{
+		kind:        .someip
+		port:        30490
+		group:       '239.1.1.1'
+		group_iface: 'lo'
+	}
+	a := someip_listener(0, '', '127.0.0.1', 'SD', row)!
+	assert a.group_iface == 'lo'
+}
+
 fn test_a_someip_listener_refuses_an_interface_a_default_row_does_not_name() {
 	row := Carrier{
 		kind:  .someip
