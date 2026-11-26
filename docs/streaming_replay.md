@@ -348,7 +348,8 @@ order with one time's rows in file order, is what `replay.load` loads.
   (`survey_buses` over `log_buses`: sorted, unnamed — what `cmd/restbus --list` prints too),
   with the bytes it read (`Survey.size`), and `log_stream_differs` sends a file with any row out of order,
   or any line too long, to the loader, with a note — before a survey with no rows is refused,
-  since a line too long may be the file's only frame. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`.
+  since a line too long may be the file's only frame. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`, saying
+  when it skipped lines too long rather than calling the file empty.
 - **The chunker** reads through `player.RowReader` (`rows.v`): an MF4 stream or a line stream,
   chosen by the identification block (`mf4.is_mdf_file`, which `replay.is_mdf` now asks), and
   refuses a file with any row the reader could not read where the loader reads it
