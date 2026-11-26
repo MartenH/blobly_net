@@ -147,8 +147,7 @@ def send(to: str, msgs: SomeipMessage | Iterable[SomeipMessage], *, port: int | 
     keep: list = []
     arr = (_lib.BbSomeipOut * max(len(items), 1))(*[_out(m, keep) for m in items])
     lib = _lib.lib()
-    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_send(p, dest, arr, len(items), window))),
-                      "blobly-someip")
+    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_send(p, dest, arr, len(items), window))))
 
 
 def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms: float = 1000) -> SomeipMessage:
@@ -166,8 +165,7 @@ def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms
     keep: list = []
     req = _out(request, keep)
     lib = _lib.lib()
-    heard = _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_call(p, dest, ctypes.byref(req), wait))),
-                       "blobly-someip")
+    heard = _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_call(p, dest, ctypes.byref(req), wait))))
     return heard.messages[0]
 
 
@@ -198,4 +196,4 @@ def listen(window_ms: float = 1000, *, port: int | None = None, group: str | Non
             host = _lib.string(lambda buf, cap: lib.bb_someip_listener(channel._index, p, g, buf, cap,
                                                                        ctypes.byref(use_port), use_group, 256))
         host, p, g = host.encode(), use_port.value, use_group.value
-    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, window))), "blobly-someip")
+    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, window))))

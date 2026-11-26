@@ -49,6 +49,10 @@ def main(argv: list[str]) -> int:
     blobly.init()  # loads the library, on the main thread
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:  # loaded and started; stopped when the block ends
+        try:
+            net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
+        except blobly.BloblyError as e:  # perhaps on a row this example does not use: said, not fatal
+            print(f"note: {e}", file=sys.stderr)
         if net.system is None:
             fail("no system.toml describes the project: it names no nodes")
         print(f"system model: {net.system}, nodes: {', '.join(net.nodes.keys())}")

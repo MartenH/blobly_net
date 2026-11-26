@@ -676,8 +676,9 @@ class TestDatabases:
             assert can1.decode(blobly.Frame(0x100, rtr=True, length=8)) is None, "a remote frame"
             # a short payload carries the signals it holds whole, and no value it lacks the bits for
             assert can1.decode(blobly.Frame(0x100, b"\x70\x17")) == {"EngineSpeed": 1500}
-            heard = can1.recv(1000)
-            assert heard is not None
+            # a frame the simulation sent of a DBC message (the first frame heard may be the cyclic
+            # generator's 0x123, a raw frame of no message)
+            heard = can1.expect(can1.messages.Powertrain, timeout_ms=2000)
             assert isinstance(can1.decode(heard), dict), f"the simulation sent {heard}"
 
     def test_a_message_sent_is_answered_and_decoded(self):
@@ -786,13 +787,16 @@ class TestExpect:
     def test_the_timeout_is_one_deadline_on_a_busy_bus(self):
         with blobly.Project(SIM_DEMO) as net:
             can1 = net.channels.CAN1  # about 90 frames a second, none of them 0x555
+            net.wait_ready()  # start() returns before the simulated nodes send
+            can1.expect(0x300, timeout_ms=2000)  # WheelSpeeds, every 20 ms: the bus is busy from here
             t0 = time.monotonic()
+            # a second of it, so a slow runner's stall of a few hundred ms still leaves frames in it
             with pytest.raises(blobly.Timeout, match=r"\d+ other frames came: \d+ of 0x"):
-                can1.expect(0x555, timeout_ms=300)
+                can1.expect(0x555, timeout_ms=1000)
             took = (time.monotonic() - t0) * 1000
             # a coarse clock (Windows) may read a little short; a per-frame timeout would never end
-            assert took > 250
-            assert took < 2000, "the wait ran past its deadline"
+            assert took > 950
+            assert took < 3000, "the wait ran past its deadline"
             t0 = time.monotonic()
             with pytest.raises(blobly.Timeout):
                 can1.expect(0x555, timeout_ms=0)  # one look

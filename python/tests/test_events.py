@@ -15,6 +15,7 @@ late, timers whose callbacks are slow or run() themselves). It asserts:
      when it fired.
 The same rules, and the same model, as the Lua run() (blobly/script/events_test.v)."""
 import random
+import threading
 import time
 from unittest import mock
 
@@ -402,6 +403,27 @@ class TestSliced:
             asked.clear()
             assert events._sliced(lambda part: asked.append(part) or next(answers), -1) == "frame"
             assert asked == [100, 100, 100], "a wait for ever is not asked in slices"
+
+
+class TestOnThread:
+    def test_the_call_runs_on_a_thread_threading_did_not_start_and_leaves_nothing_registered(self):
+        # threading.Thread.start() waits on an Event, which a Ctrl-C can break into RuntimeError
+        # (#712), and _lib.on_main() asks by ident, so the worker leaves no _DummyThread behind
+        seen = {}
+
+        def call():
+            seen["ident"], seen["main"] = threading.get_ident(), _lib.on_main()
+            return 42
+        before = len(threading.enumerate())
+        with mock.patch.object(_lib, "lib", lambda: None), \
+                mock.patch.object(threading.Thread, "start", side_effect=AssertionError("Thread.start")):
+            assert events._on_thread(call) == 42
+            with pytest.raises(ValueError, match="carried"):
+                events._on_thread(lambda: (_ for _ in ()).throw(ValueError("carried")))
+        assert seen["ident"] != threading.get_ident() and seen["main"] is False
+        assert _lib.on_main()
+        assert seen["ident"] not in {t.ident for t in threading.enumerate()}
+        assert len(threading.enumerate()) == before
 
 
 class TestSpentLook:

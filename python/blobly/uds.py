@@ -209,14 +209,14 @@ def _cancellable(handles: Sequence[int], work: Callable[[], object]):
     call began is not its) and KeyboardInterrupt raised. Elsewhere, where Python raises no
     interrupt, it runs in place."""
     lib = _lib.lib()  # on this thread: its rules (a flash's progress callback) are this thread's
-    if threading.current_thread() is not threading.main_thread():
+    if not _lib.on_main():
         return work()
     from .events import _on_thread
 
     def cancel() -> None:
         for h in handles:
             lib.bb_uds_cancel(h)
-    return _on_thread(work, "blobly-uds", cancel)
+    return _on_thread(work, cancel)
 
 
 def _put(fn, *args) -> bytes:

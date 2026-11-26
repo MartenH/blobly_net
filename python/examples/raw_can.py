@@ -58,6 +58,10 @@ def main(argv: list[str]) -> int:
     blobly.init()  # loads the library, on the main thread
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:  # loaded and started; stopped when the block ends
+        try:
+            net.wait_ready(5000)  # start() returns before the simulated nodes have opened their bus
+        except blobly.BloblyError as e:  # perhaps on a row this example does not use: said, not fatal
+            print(f"note: {e}", file=sys.stderr)
         print(f"{len(net.channels)} enabled channel(s):")
         for ch in net.channels:
             print(f"  {ch.name:<10} {ch.kind:<7} {ch.iface}")

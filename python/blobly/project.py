@@ -6,7 +6,6 @@ import math
 import numbers
 import os
 import sys
-import threading
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -1224,10 +1223,10 @@ class Message:
             h = self.channel._handle()  # first: a channel that will not open uses no counter
             row, m = self.channel._index, self._index
             _lib.check(lib.bb_e2e_stamp_payload(row, m, ctypes.byref(p)))
-        if self.j1939 and p.len > 8 and threading.current_thread() is threading.main_thread():
+        if self.j1939 and p.len > 8 and _lib.on_main():
             # a BAM takes up to 12.75 s, a connection its answers: on a thread of its own, so
             # Ctrl-C cancels it (events._on_thread)
-            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p), tmo)), "blobly-send",
+            _on_thread(lambda: _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p), tmo)),
                        lambda: lib.bb_message_cancel(h))
         else:
             _lib.check(lib.bb_message_send(h, row, m, ctypes.byref(p), tmo))
