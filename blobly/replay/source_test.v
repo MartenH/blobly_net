@@ -8,7 +8,9 @@ import blobly.mf4
 import blobly.player
 import blobly.transport
 
-const mf4_samples = ['two_buses.mf4', 'both_dirs.mf4', 'demo.mf4']
+
+// every tracked sample, the candump ones last
+const all_samples = ['two_buses.mf4', 'both_dirs.mf4', 'demo.mf4', 'demo.log', 'j1939-bam.log']
 
 const src_repo = os.join_path(os.dir(@FILE), '..', '..')
 
@@ -30,11 +32,12 @@ fn frames_on(mut b transport.Bus, quiet_ms int) int {
 	return n
 }
 
-fn test_the_switch_streams_an_mf4_from_the_threshold_and_never_a_log() {
-	assert streams(true, 64 << 20, 64)
-	assert !streams(true, (64 << 20) - 1, 64)
-	assert streams(true, 0, 0), '0 streams every .mf4'
-	assert !streams(false, 1 << 40, 0), 'a candump .log always loads'
+fn test_the_switch_streams_from_the_threshold_of_the_kind() {
+	assert streams(64 << 20, 64)
+	assert !streams((64 << 20) - 1, 64)
+	assert streams(0, 0), '0 streams every file'
+	assert threshold_mb(sample('demo.mf4')) == stream_mb()
+	assert threshold_mb(sample('demo.log')) == log_stream_mb()
 	assert is_mdf(sample('demo.mf4')) && !is_mdf(sample('demo.log'))
 	renamed := os.join_path(os.temp_dir(), 'replay_mdf_${os.getpid()}.dat')
 	os.cp(sample('two_buses.mf4'), renamed) or { panic(err) }
@@ -56,16 +59,16 @@ fn test_the_switch_streams_an_mf4_from_the_threshold_and_never_a_log() {
 
 	_, buses := load(renamed) or { panic(err) }
 	assert buses.len == 2
-	assert stream_mb_of('') == stream_mb_default
-	assert stream_mb_of(' 0 ') == 0
-	assert stream_mb_of('128') == 128
-	assert stream_mb_of('-1') == stream_mb_default
-	assert stream_mb_of('lots') == stream_mb_default
+	assert stream_mb_of('', 64) == 64
+	assert stream_mb_of(' 0 ', 64) == 0
+	assert stream_mb_of('128', 64) == 128
+	assert stream_mb_of('-1', 32) == 32
+	assert stream_mb_of('lots', 32) == 32
 }
 
 fn test_a_streamed_scan_is_the_loaded_scan() {
 	db := src_dbc()
-	for name in mf4_samples {
+	for name in all_samples {
 		got_buses, got := scan_at(sample(name), db, 0) or { panic(err) }
 		want_buses, want := scan_at(sample(name), db, 1 << 20) or { panic(err) }
 		assert got_buses == want_buses, name
@@ -129,7 +132,7 @@ fn drive(mut p player.Player) []string {
 
 fn test_a_streamed_replay_decides_and_plays_as_the_loaded_one() {
 	mut withheld := 0
-	for name in mf4_samples {
+	for name in all_samples {
 		mem := open_recording_at(sample(name), 1 << 20, unsafe { nil }) or { panic(err) }
 		str := open_recording_at(sample(name), 0, unsafe { nil }) or { panic(err) }
 		assert !mem.streamed && str.streamed && str.log.len() == 0
@@ -401,6 +404,120 @@ fn test_a_streamed_j1939_bus_is_subtracted_as_the_loaded_one() {
 		assert got == want, '${exclude}'
 	}
 	assert gone > 0 && pgn > 0 && tp > 0
+}
+
+// write_log writes a candump file of `n` frames cycling through `pats`, frame k on bus
+// can(k % buses) `step_s` seconds apart, every fourth one written `late_s` early — out of the
+// file's order by that much.
+fn write_log(path string, n int, pats []Pat, buses int, step_s f64, late_s f64) {
+	mut lines := []string{cap: n}
+	for k in 0 .. n {
+		pt := pats[k % pats.len]
+		t := step_s * f64(k + 1) - if k % 4 == 0 { late_s } else { 0.0 }
+		lines << canlog.format_line(canlog.LogEntry{
+			t_s:   t
+			iface: 'can${k % buses}'
+			frame: transport.CanFrame{
+				id:       pt.id
+				extended: pt.ext
+				data:     pt.data
+			}
+		})
+	}
+	os.write_file(path, lines.join('\n') + '\n') or { panic(err) }
+}
+
+fn big_pats() []Pat {
+	mut pats := []Pat{}
+	for id in [u32(0x100), 0x200, 0x101, 0x300, 0x555, 0x102, 0x400] {
+		pats << Pat{
+			id:   id
+			data: []u8{len: 8, init: u8(index)}
+		}
+	}
+	return pats
+}
+
+fn test_a_large_log_out_of_order_within_the_look_ahead_streams_as_loaded() {
+	path := os.join_path(os.temp_dir(), 'replay_big_${os.getpid()}.log')
+	write_log(path, 32_000, big_pats(), 2, 0.0005, 0.3) // 1.4 MB: past one read of the file
+	defer {
+		os.rm(path) or {}
+	}
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	assert str.streamed && str.note == '' && str.buses == mem.buses && mem.buses.len == 2
+	mut a := mem.prepare(specs_for(&mem, ['SUT'])) or { panic(err) }
+	mut b := str.prepare(specs_for(&str, ['SUT'])) or { panic(err) }
+	assert b.buses == a.buses
+	assert a.buses.all(it.report.withheld_excluded > 0 && it.report.kept > 0)
+	mut pa := a.player(1.0, false)
+	mut pb := b.player(1.0, false)
+	want := drive(mut pa)
+	got := drive(mut pb)
+	assert b.read_error() == ''
+	b.close()
+	assert got == want
+	assert want.len > 160 + 16_000
+}
+
+fn test_a_log_out_of_order_past_the_look_ahead_loads_with_a_note() {
+	path := os.join_path(os.temp_dir(), 'replay_late_${os.getpid()}.log')
+	write_log(path, 4000, big_pats(), 2, 0.01, 2.5)
+	defer {
+		os.rm(path) or {}
+	}
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	assert !str.streamed && str.note.contains('out of time order past the 2 s look-ahead')
+	log, buses := load(path) or { panic(err) }
+	assert str.log.rows == log.rows && str.buses == buses
+	got, _ := scan_at(path, src_dbc(), 0) or { panic(err) }
+	assert got == buses
+}
+
+// The j1939-bam.log pattern repeated as a candump file: BAM transfers straddle chunk boundaries
+// at every offset, and the streamed subtraction decides what the loaded one does.
+fn test_a_streamed_j1939_log_is_subtracted_as_the_loaded_one() {
+	path := os.join_path(os.temp_dir(), 'replay_j1939_${os.getpid()}.log')
+	mut pats := []Pat{}
+	for line in os.read_lines(sample('j1939-bam.log')) or { panic(err) } {
+		e := canlog.parse_line(line) or { continue }
+		pats << Pat{
+			id:   e.frame.id
+			ext:  true
+			data: e.frame.data
+		}
+	}
+	write_log(path, 8 * 1001, pats, 1, 0.01, 0.0)
+	defer {
+		os.rm(path) or {}
+	}
+	db := candb.load_dbc_file(os.join_path(src_repo, 'dbc', 'j1939_demo.dbc')) or { panic(err) }
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	assert str.streamed && str.buses == mem.buses
+	mut tp := 0
+	for exclude in [['Engine'], ['Body']] {
+		specs := [
+			player.BusSpec{
+				src:     mem.buses[0].iface
+				dst:     'live'
+				db:      db
+				exclude: exclude
+			},
+		]
+		mut a := mem.prepare(specs) or { panic(err) }
+		mut b := str.prepare(specs) or { panic(err) }
+		assert b.buses == a.buses, '${exclude}'
+		tp += a.buses[0].report.tp_attributed
+		mut pa := a.player(1.0, false)
+		mut pb := b.player(1.0, false)
+		want := drive(mut pa)
+		got := drive(mut pb)
+		b.close()
+		assert got == want, '${exclude}'
+	}
+	assert tp > 0
 }
 
 fn test_a_streamed_open_and_plan_are_given_up_when_asked() {

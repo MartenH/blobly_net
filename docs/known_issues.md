@@ -424,8 +424,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   10 → 4, heap peak 757 → 463 MB, 99.4% of frames within 1 ms, worst 21 ms.
   **What remains is 🟡**: a pause every ~15 s of 150–350 ms, from the ~210 MB of live set that is
   not the rows — a second load of the file by the Replay panel's census scan. A recording that does
-  not fit in memory at all streams instead: an `.mf4` from `BLOBLY_MF4_STREAM_MB` (64 MiB) up plays
-  a chunk at a time from disk, its Scan a census taken as the survey reads
+  not fit in memory at all streams instead: an `.mf4` from `BLOBLY_MF4_STREAM_MB` (64 MiB) up, and
+  a candump `.log` from `BLOBLY_LOG_STREAM_MB` (64 MiB), plays a chunk at a time from disk, its Scan a census taken as the survey reads
   (`docs/streaming_replay.md`). A `-gc boehm_incr_opt` build was tried and does not help.
   **How it was found is the part to keep**: three earlier diagnoses were wrong (the collector
   itself, the `-prod` scope pin, "confine the recording to a helper"), each plausible from

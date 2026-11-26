@@ -1,16 +1,17 @@
 module player
 
 import blobly.canlog
-import blobly.mf4
 import os
 import time
 
-// Chunker plays an MF4 recording a chunk at a time instead of loading it whole, so memory no
-// longer grows with the file (a loaded recording costs about fifteen times its size).
+// Chunker plays a recording — an MF4 file or a candump `.log` — a chunk at a time instead of
+// loading it whole, so memory no longer grows with the file (a loaded recording costs about
+// ten to fifteen times its size).
 //
-// A reader thread reads the stream, decides each row with the same Planner build_multi_log uses,
-// and queues chunks of rows for the Player. Reading happens off the playback tick because one
-// read can take tens of milliseconds (a compressed block is inflated whole).
+// A reader thread reads the stream (open_rows), decides each row with the same Planner
+// build_multi_log uses, and queues chunks of rows for the Player. Reading happens off the
+// playback tick because one read can take tens of milliseconds (a compressed block is inflated
+// whole).
 //
 // The planner's state depends on every row before it (J1939 sessions span chunks), so a seek
 // starts a new reader that plans from the top of the file and skips rows before the target.
@@ -65,13 +66,12 @@ pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () boo
 	if rows <= 0 {
 		return error('chunk size must be positive, not ${rows}')
 	}
-	mut src := mf4.open_source(path)!
+	mut s := open_rows(path)!
 	defer {
-		src.close()
+		s.close()
 	}
-	size := src.size()
+	size := s.size()
 	mtime := os.file_last_mod_unix(path)
-	mut s := mf4.open_stream(mut src)!
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
 	mut kept := 0
@@ -87,11 +87,11 @@ pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () boo
 			kept++
 		}
 	}
-	if s.err != '' {
-		return error(s.err)
+	if s.failure() != '' {
+		return error(s.failure())
 	}
-	if s.out_of_order > 0 {
-		return error('${s.out_of_order} rows out of time order; not streamable')
+	if s.disorder() > 0 {
+		return error('${s.disorder()} rows out of time order; not streamable')
 	}
 	mut c := &Chunker{
 		path:  path
@@ -222,13 +222,13 @@ fn read_passes(job ReadJob, ch chan Chunk, more chan bool) {
 		for {
 			ck := r.next(ch) or { break }
 			if !offer(ch, ck) {
-				r.src.close()
+				r.reader.close()
 				return
 			}
 		}
-		r.src.close()
+		r.reader.close()
 		// A read error ends this pass; the next pass replays the readable part again.
-		if !offer(ch, Chunk{ end: true, before: r.counted, err: r.stream.err }) {
+		if !offer(ch, Chunk{ end: true, before: r.counted, err: r.reader.failure() }) {
 			return
 		}
 		skip = 0
@@ -247,8 +247,7 @@ struct Pass {
 	t0   f64
 	skip f64 // rows earlier than this many seconds into the recording are planned, not played
 mut:
-	src     &mf4.FileSource // on the heap: `stream` reads through it
-	stream  mf4.Stream
+	reader  RowReader
 	raw     canlog.Log // the stream's labels, kept across chunks; the rows of the chunk being read
 	planner Planner
 	counted int // rows kept so far, played or skipped
@@ -257,21 +256,16 @@ mut:
 
 // open_pass opens the file for one pass; a file changed since the census is refused.
 fn open_pass(job ReadJob, skip f64) !Pass {
-	mut src := mf4.open_file_source(job.path)!
-	if src.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
-		src.close()
+	mut rows := open_rows(job.path)!
+	if rows.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
+		rows.close()
 		return error('${job.path} changed since it was opened')
-	}
-	s := mf4.open_stream(mut src) or {
-		src.close()
-		return err
 	}
 	return Pass{
 		rows:    job.rows
 		t0:      job.t0
 		skip:    skip
-		src:     src
-		stream:  s
+		reader:  rows
 		planner: new_planner(job.specs)
 	}
 }
@@ -295,7 +289,7 @@ fn (mut r Pass) next(ch chan Chunk) ?Chunk {
 		mut before := 0
 		// Read up to `rows` rows, planning each and selecting those at or after the skip point.
 		for r.raw.rows.len < r.rows {
-			row := r.stream.next(mut r.raw) or {
+			row := r.reader.next(mut r.raw) or {
 				r.eof = true
 				break
 			}

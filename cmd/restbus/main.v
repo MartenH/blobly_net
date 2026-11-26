@@ -27,6 +27,7 @@
 module main
 
 import blobly.candb
+import blobly.canlog
 import blobly.mf4
 import os
 import blobly.player
@@ -54,25 +55,30 @@ fn main() {
 	player.raise_timer_resolution()
 	o := parse_args() or {
 		eprintln('restbus: ${err}')
-		eprintln('usage: restbus --source <file.mf4> --bus <name|iface> --dbc <file.dbc> --exclude <NODE> --iface <iface>')
-		eprintln('       restbus --source <file.mf4> --list')
+		eprintln('usage: restbus --source <file.mf4|.log> --bus <name|iface> --dbc <file.dbc> --exclude <NODE> --iface <iface>')
+		eprintln('       restbus --source <file.mf4|.log> --list')
 		exit(2)
 	}
 	if o.list {
 		// Through the SURVEY, not the loader: one pass over the stream, nothing of the recording
 		// retained, so a file that does not fit in memory can still say what buses it has —
 		// which is the question a bench asks first. The survey's buses are the loader's
-		// (pinned by test); what it adds is what the stream had to do to read the file. A candump
-		// .log has no survey: it is read whole, as it is replayed.
+		// (pinned by test); what it adds is what the stream had to do to read the file.
 		if !replay.is_mdf(o.source) {
-			_, buses := replay.load(o.source) or {
+			lv := canlog.survey_file(o.source) or {
 				eprintln('restbus: ${o.source}: ${err}')
 				exit(1)
 			}
+			println('${o.source}: ${lv.frames} frames, earliest ${lv.t0:.3f} s to latest ${lv.end:.3f} s')
 			println('${'bus':-14} frames')
-			for b in buses {
-				println('${b.iface:-14} ${b.frames}')
+			mut order := []int{len: lv.labels.len, init: index}
+			order.sort_with_compare(fn [lv] (a &int, b &int) int {
+				return compare_strings(lv.labels[*a], lv.labels[*b])
+			})
+			for i in order {
+				println('${lv.labels[i]:-14} ${lv.counts[i]}')
 			}
+			println('stream: read-ahead high-water ${lv.max_queued} rows, writer disorder ${lv.max_disorder_s * 1000.0:.1f} ms, forced ${lv.forced}, out of order ${lv.out_of_order}')
 			return
 		}
 		sv := mf4.survey_file(o.source) or {
@@ -87,8 +93,8 @@ fn main() {
 		println('stream: read-ahead high-water ${sv.max_queued} rows / ${sv.max_ahead_s * 1000.0:.1f} ms, writer disorder ${sv.max_disorder_s * 1000.0:.1f} ms, clock steps ${sv.clock_steps}, forced ${sv.forced}, evicted ${sv.evicted}, refused ${sv.refused}, unresolved ${sv.unresolved}, out of order ${sv.out_of_order}')
 		return
 	}
-	// Loaded whole, or surveyed and then streamed a chunk at a time when it is a large .mf4
-	// (replay.streams, BLOBLY_MF4_STREAM_MB).
+	// Loaded whole, or surveyed and then streamed a chunk at a time when it is large
+	// (replay.streams; BLOBLY_MF4_STREAM_MB, BLOBLY_LOG_STREAM_MB).
 	rec := replay.open_recording(o.source) or {
 		eprintln('restbus: ${o.source}: ${err}')
 		exit(1)

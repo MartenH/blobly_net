@@ -356,8 +356,8 @@ a wire-visible feature, the matching host support usually lands here in the same
   clock, and the **Replay panel** is the live transport surface (pause / seek / speed / loop,
   position-preserving via `player.set_speed`)
 - ✅ **Streaming replay** (#172) — a recording that does not fit in memory: an `.mf4` from
-  `BLOBLY_MF4_STREAM_MB` (64 MiB) up is read a chunk at a time by a reader thread
-  (`mf4.Stream`, `player.Chunker`), held to the in-memory playback by golden tests, in the GUI,
+  `BLOBLY_MF4_STREAM_MB` (64 MiB) up, and a candump `.log` from `BLOBLY_LOG_STREAM_MB` (#571), is
+  read a chunk at a time by a reader thread (`mf4.Stream`, `canlog.LineStream`, `player.Chunker`), held to the in-memory playback by golden tests, in the GUI,
   `cmd/restbus`, Lua, the C ABI and Python ([docs/streaming_replay.md](docs/streaming_replay.md))
 - ✅ **Rest bus from a recording** (#98) — the ECU under test subtracted by DBC sender
   (`replay.exclude`), several recorded buses of one `.mf4` mapped onto several live channels

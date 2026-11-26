@@ -637,7 +637,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 
 	// Opened ONCE for the whole group, however many channels read from it: loaded, or surveyed
-	// and then streamed when it is a large .mf4 (replay.streams).
+	// and then streamed when it is large (replay.streams).
 	// A large file is read twice before it plays; Stop gives either read up.
 	ended_run := fn [app, gen] () bool {
 		mut x := unsafe { app }
