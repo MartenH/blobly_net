@@ -317,6 +317,12 @@ fn (mut c SoftChannel) send_segmented(data []u8, dl int, head int) ! {
 // send, see `send`) can still be arriving when the caller sends the next request, and the first frame met while waiting
 // for Flow Control was one of them — "expected Flow Control" for a peer that had not answered yet
 // (codex round 11 on #225).
+//
+// SINGLE AND FIRST FRAMES ARE SKIPPED TOO, as ISO 15765-2 has a half-duplex sender ignore an
+// N_PDU it does not expect (the kernel's isotp does in its half-duplex mode) — another tester
+// on the bus sharing these ids is enough to put one there.
+// Skipping one does not move the window's deadline, so a stream of them cannot hold the send;
+// a wait that then ends in silence names them (`Skipped.note`), a completed send says nothing.
 fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 	// COUNTED PER WAIT, not per transfer, which is what ISO's N_WFTmax bounds: a receiver that
 	// asks to wait, is given time, then accepts a block, has done nothing wrong — and a counter
@@ -327,6 +333,7 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 	// the total, spent only by time spent BLOCKED ON THE PEER — never by our own STmin pacing,
 	// which is the receiver's to ask for and can legally run to 74 seconds.
 	mut waits := 0
+	mut skipped := Skipped{}
 	for {
 		deadline := time.ticks() + c.fc_window_ms
 		mut raw := []u8{}
@@ -336,13 +343,13 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 			}
 			rem := int(deadline - time.ticks())
 			if rem <= 0 {
-				return error('timeout')
+				return error(skipped.note('timeout'))
 			}
 			// The shorter of this block's remaining window and the transfer's remaining
 			// allowance, so neither bound can be overrun by the other's read.
 			allow := budget.window_ms(rem)
 			if allow <= 0 {
-				return error(exhausted_note(c.total_wait_ms))
+				return error(skipped.note(exhausted_note(c.total_wait_ms)))
 			}
 			// WHICH BOUND SHORTENED THIS READ decides which bound a failure names. When the
 			// allowance is the shorter one the read ends early BY OUR CHOICE, while the
@@ -379,12 +386,18 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 				// peer for an adapter somebody unplugged (self-review). A bound may rename a
 				// timeout; it may not rename a fault.
 				if err.msg() == 'timeout' && (clamped || budget.spent()) {
-					return error(exhausted_note(c.total_wait_ms))
+					return error(skipped.note(exhausted_note(c.total_wait_ms)))
+				}
+				if err.msg() == 'timeout' {
+					return error(skipped.note('timeout'))
 				}
 				return err
 			}
 			budget.spend_ns(time.sys_mono_now() - t0)
 			if raw.len >= 1 && (raw[0] & 0xF0) == 0x20 {
+				continue
+			}
+			if skipped.skip(raw) {
 				continue
 			}
 			break
