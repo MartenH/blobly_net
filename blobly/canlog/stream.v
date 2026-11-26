@@ -15,9 +15,14 @@ import os
 // the disorder a file may have and still stream in the loader's order.
 pub const lookahead_s = 2.0
 
-// readahead_rows bounds the rows held (80 bytes each): past it the earliest is handed out
-// whatever its time, counted in `forced`.
+// readahead_rows bounds the rows held (88 bytes each with the line position, about 12 MB):
+// at it the earliest is handed out whatever its time, counted in `forced`.
 pub const readahead_rows = 1 << 17
+
+// max_line is the longest line read: a candump line is a few hundred bytes, and a longer one
+// (a binary file, a file with no line breaks) is skipped and counted, so the stream's memory
+// stays bounded where the loader would read it.
+pub const max_line = 1 << 16
 
 const read_chunk = 1 << 20
 
@@ -37,6 +42,7 @@ pub mut:
 	err            string // the read that failed; the stream ends there
 	out_of_order   int    // rows handed out after a later one, or whose time is not a number
 	forced         int    // rows handed out because the heap was full, not because time had passed
+	long_lines     int    // lines past max_line, not read
 	max_queued     int    // the most rows held at once
 	max_disorder_s f64    // the furthest a row was behind the latest time read before it
 mut:
@@ -44,6 +50,7 @@ mut:
 	f      os.File
 	buf    []u8
 	carry  []u8 // the part of a line the last chunk ended in
+	long   bool // the line being read is past max_line
 	pos    int
 	n      int
 	eof    bool // every line has been read into the heap
@@ -95,7 +102,7 @@ pub fn (mut s LineStream) next(mut l Log) ?Row {
 	for s.err == '' {
 		if s.heap.len > 0 {
 			by_time := s.latest - s.heap[0].row.t_s >= lookahead_s
-			if s.eof || by_time || s.heap.len > s.cap {
+			if s.eof || by_time || s.heap.len >= s.cap {
 				if !s.eof && !by_time {
 					s.forced++
 				}
@@ -110,12 +117,15 @@ pub fn (mut s LineStream) next(mut l Log) ?Row {
 	return none
 }
 
-// read_row reads lines until one is a row, which goes into the heap, or the file ends.
+// read_row reads lines until one is a row, which goes into the heap, or the file ends. A line
+// longer than `max_line` is not read but counted (`long_lines`).
 fn (mut s LineStream) read_row(mut l Log) {
 	for {
 		if s.pos >= s.n && !s.fill() {
 			s.eof = true
-			if s.err == '' && s.carry.len > 0 {
+			if s.long {
+				s.long_lines++
+			} else if s.err == '' && s.carry.len > 0 {
 				line := s.carry.bytestr()
 				s.carry.clear()
 				s.hold(line, mut l)
@@ -128,12 +138,23 @@ fn (mut s LineStream) read_row(mut l Log) {
 		for i < s.n && s.buf[i] != `\n` && s.buf[i] != `\r` {
 			i++
 		}
+		if !s.long && s.carry.len + i - start > max_line {
+			s.long = true
+			s.carry.clear()
+		}
 		if i == s.n {
-			s.carry << s.buf[start..i]
+			if !s.long {
+				s.carry << s.buf[start..i]
+			}
 			s.pos = i
 			continue
 		}
 		s.pos = i + 1
+		if s.long {
+			s.long = false
+			s.long_lines++
+			continue
+		}
 		mut line := ''
 		if s.carry.len > 0 {
 			s.carry << s.buf[start..i]
@@ -276,6 +297,7 @@ pub mut:
 	end            f64
 	out_of_order   int
 	forced         int
+	long_lines     int
 	max_queued     int
 	max_disorder_s f64
 }
@@ -332,6 +354,7 @@ pub fn survey_file_into(path string, mut sink RowSink) !Survey {
 	sv.labels = log.labels
 	sv.out_of_order = s.out_of_order
 	sv.forced = s.forced
+	sv.long_lines = s.long_lines
 	sv.max_queued = s.max_queued
 	sv.max_disorder_s = s.max_disorder_s
 	return sv

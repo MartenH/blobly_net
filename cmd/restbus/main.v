@@ -69,6 +69,10 @@ fn main() {
 				eprintln('restbus: ${o.source}: ${err}')
 				exit(1)
 			}
+			if lv.frames == 0 {
+				eprintln('restbus: ${o.source}: holds no frames')
+				exit(1)
+			}
 			println('${o.source}: ${lv.frames} frames, earliest ${lv.t0:.3f} s to latest ${lv.end:.3f} s')
 			println('${'bus':-14} frames')
 			mut order := []int{len: lv.labels.len, init: index}
@@ -78,7 +82,7 @@ fn main() {
 			for i in order {
 				println('${lv.labels[i]:-14} ${lv.counts[i]}')
 			}
-			println('stream: read-ahead high-water ${lv.max_queued} rows, writer disorder ${lv.max_disorder_s * 1000.0:.1f} ms, forced ${lv.forced}, out of order ${lv.out_of_order}')
+			println('stream: read-ahead high-water ${lv.max_queued} rows, writer disorder ${lv.max_disorder_s * 1000.0:.1f} ms, forced ${lv.forced}, out of order ${lv.out_of_order}, lines too long ${lv.long_lines}')
 			return
 		}
 		sv := mf4.survey_file(o.source) or {

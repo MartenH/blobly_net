@@ -8,7 +8,6 @@ import blobly.mf4
 import blobly.player
 import blobly.transport
 
-
 // every tracked sample, the candump ones last
 const all_samples = ['two_buses.mf4', 'both_dirs.mf4', 'demo.mf4', 'demo.log', 'j1939-bam.log']
 
@@ -468,7 +467,7 @@ fn test_a_log_out_of_order_past_the_look_ahead_loads_with_a_note() {
 		os.rm(path) or {}
 	}
 	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
-	assert !str.streamed && str.note.contains('out of time order past the 2 s look-ahead')
+	assert !str.streamed && str.note.contains('rows the stream could not put in time order')
 	log, buses := load(path) or { panic(err) }
 	assert str.log.rows == log.rows && str.buses == buses
 	got, _ := scan_at(path, src_dbc(), 0) or { panic(err) }

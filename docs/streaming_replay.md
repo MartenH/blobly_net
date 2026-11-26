@@ -335,15 +335,18 @@ order with one time's rows in file order, is what `replay.load` loads.
   lines where `split_into_lines` does (a CR, an LF or both), parses each with `parse_line` and
   interns its label in file order — so the label table is the loader's — then holds the rows in
   a heap keyed (time, line) and hands out the earliest once it is `lookahead_s` (2 s) behind the
-  latest time read, or once `readahead_rows` (131,072, about 12 MB) are held (`forced`). A row
-  handed out after a later one is `out_of_order`, and so is a row whose time is not a number,
-  which no order places. With none, the rows handed out are the loader's exactly: they rise in
-  time, and one time's rows leave the heap by line.
+  latest time read, or once `readahead_rows` (131,072 rows of 88 bytes, about 12 MB) are held
+  (`forced`). A row handed out after a later one is `out_of_order`, and so is a row whose time is
+  not a number, which no order places. With none, the rows handed out are the loader's exactly:
+  they rise in time, and one time's rows leave the heap by line. A line longer than `max_line`
+  (64 KiB) is skipped and counted (`long_lines`), so a binary file or one with no line breaks
+  costs the stream no memory.
 - **The survey** (`canlog.survey_file`) is one pass of the stream: the labels with their counts,
   the span, and the counters, with `max_queued` and `max_disorder_s` (how far a line fell behind
   the latest time before it). `replay.survey_for` turns it into the loader's bus list
-  (`log_buses`: sorted, unnamed), and `log_stream_differs` sends a file with any row out of order
-  to the loader, with a note. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`.
+  (`log_buses`: sorted, unnamed), and `log_stream_differs` sends a file with any row out of order,
+  or any line too long, to the loader, with a note; a file with no rows is refused before that,
+  as the loader refuses it. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`.
 - **The chunker** reads through `player.RowReader` (`rows.v`): an MF4 stream or a line stream,
   chosen by the identification block (`mf4.is_mdf_file`, which `replay.is_mdf` now asks). Passes,
   seeks and the size-and-mtime check are unchanged.
@@ -356,7 +359,7 @@ order with one time's rows in file order, is what `replay.load` loads.
 - **The tests**: `canlog/stream_test.v` holds the stream to `time_ordered` over the tracked
   samples and synthetic files (directions, FD with its flags, remote frames, an escaped label,
   comments and malformed lines, CR and CRLF, ties across buses, disorder within the look-ahead),
-  at read chunks from one byte up, and counts disorder past it, a time that is no number and a
-  full heap; `replay/source_test.v` plays a 1.4 MB log out of order within the look-ahead and a
+  at read chunks from one byte up, and counts disorder past it, a time that is no number, a
+  full heap and lines past `max_line`; `replay/source_test.v` plays a 1.4 MB log out of order within the look-ahead and a
   repeated J1939 BAM log streamed and loaded through the same drive, and loads one out of order
   past it with its note.

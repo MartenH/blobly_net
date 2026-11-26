@@ -128,9 +128,25 @@ fn test_a_full_heap_hands_out_its_earliest_and_counts_it() {
 		os.rm(path) or {}
 	}
 	got, s := streamed(path, 16, 8)
-	assert s.forced > 0 && s.out_of_order == 0 && s.max_queued == 9
+	assert s.forced > 0 && s.out_of_order == 0 && s.max_queued == 8
 	want := parse_log(text).time_ordered()
 	assert got.rows == want.rows, 'one time throughout: file order, forced or not'
+}
+
+fn test_a_line_past_the_longest_is_skipped_and_counted() {
+	text := '(1.0) can0 100#01\n' + 'x'.repeat(max_line + 1) + '\r\n(2.0) can0 100#02\n' +
+		'y'.repeat(max_line) + '\n(3.0) can0 100#03\n' + 'z'.repeat(3 * max_line)
+	path := stream_tmp('long', text)
+	defer {
+		os.rm(path) or {}
+	}
+	for chunk in [7, 4096, read_chunk] {
+		got, s := streamed(path, chunk, readahead_rows)
+		assert s.long_lines == 2 && s.carry.cap <= 2 * max_line + chunk, 'chunk=${chunk}'
+		assert got.rows == parse_log(text).rows
+	}
+	sv := survey_file(path) or { panic(err) }
+	assert sv.long_lines == 2 && sv.frames == 3
 }
 
 fn test_a_missing_file_is_an_error() {

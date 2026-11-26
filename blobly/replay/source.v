@@ -155,10 +155,13 @@ pub fn stream_differs(sv mf4.Survey) string {
 }
 
 // log_stream_differs is stream_differs for a candump file: rows the line stream could not put
-// in the loader's time order (canlog.time_ordered) within its look-ahead.
+// in the loader's time order (canlog.time_ordered), or lines too long for it to read.
 pub fn log_stream_differs(sv canlog.Survey) string {
 	if sv.out_of_order > 0 {
-		return '${sv.out_of_order} rows out of time order past the ${canlog.lookahead_s:.0f} s look-ahead'
+		return '${sv.out_of_order} rows the stream could not put in time order'
+	}
+	if sv.long_lines > 0 {
+		return '${sv.long_lines} lines longer than the stream reads'
 	}
 	return ''
 }
