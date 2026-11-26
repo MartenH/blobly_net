@@ -27,7 +27,7 @@ import strconv
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 14
+pub const schema_version = 15
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -41,6 +41,17 @@ pub const schema_version = 14
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v15 — a simulated ECU's routines (a node's `uds:` `routines:`, #638), which an older build
+	// drops on its next structured save, and 0x31 goes unanswered
+	for c in p.channels {
+		for n in c.nodes {
+			if u := n.uds {
+				if u.routines.len > 0 {
+					return 15
+				}
+			}
+		}
+	}
 	// v14 — a stated fill for the bits no signal covers (`fill:`, on a row or a generator, #671),
 	// which an older build drops on its next structured save, and the bits go out as 0 again; and a
 	// simulated ECU answering in frames longer than 8 bytes (a node's `uds:` `tx_dl`, #679), which
@@ -328,6 +339,42 @@ pub mut:
 	// The length of the frames it answers a long message in (isotp.tx_dls; above 8 CAN-FD, v14),
 	// 0 = not stated: 8. Wide like `session`, so validation sees a value that is not one.
 	tx_dl u32
+	// routine controls it answers through 0x31 (v15)
+	routines []RoutineCfg
+}
+
+// RoutineCfg is one routine a simulated ECU answers (0x31): the record after `71 <control> <id>`
+// each of its controls answers — start, stop, request results — a control not given answered
+// subFunctionNotSupported. `id` wide, like IoCfg's, so validation sees an out-of-range value.
+pub struct RoutineCfg {
+pub mut:
+	id      u32
+	start   ?[]u8
+	stop    ?[]u8
+	results ?[]u8
+}
+
+// controls are the routine's controls given, each with its answer record: (1 start, 2 stop, 3
+// results).
+pub fn (r RoutineCfg) controls() []RoutineAnswer {
+	mut out := []RoutineAnswer{}
+	if a := r.start {
+		out << RoutineAnswer{1, a}
+	}
+	if a := r.stop {
+		out << RoutineAnswer{2, a}
+	}
+	if a := r.results {
+		out << RoutineAnswer{3, a}
+	}
+	return out
+}
+
+// RoutineAnswer is one control of a RoutineCfg and the record it answers.
+pub struct RoutineAnswer {
+pub:
+	control u8
+	answer  []u8
 }
 
 // IoCfg is one IO DID a simulated ECU controls (0x2F), zeros of `size` bytes at start. Both wide,
@@ -1649,6 +1696,26 @@ fn parse_node(n yaml.Any) !NodeCfg {
 					address: address
 					size:    clamp_i64_u32(m.value('size').default_to(i64(0)).i64())
 				}
+			}
+		}
+		if rs := u.value_opt('routines') {
+			for x in rs.array() {
+				if !hex_id_is_clean(x.value('id').str()) {
+					ucfg.malformed << 'routine ${x.value('id').str()}'
+				}
+				mut rc := RoutineCfg{
+					id: clamp_u32(parse_id_wide(x.value('id').str()))
+				}
+				if v := x.value_opt('start') {
+					rc.start = parse_hex_bytes(v.str())
+				}
+				if v := x.value_opt('stop') {
+					rc.stop = parse_hex_bytes(v.str())
+				}
+				if v := x.value_opt('results') {
+					rc.results = parse_hex_bytes(v.str())
+				}
+				ucfg.routines << rc
 			}
 		}
 		node.uds = ucfg

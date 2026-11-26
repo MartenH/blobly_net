@@ -23,8 +23,9 @@
 // names), so sysview fills a ServerSpec and this builds from it. What a simulated ECU cannot do it
 // refuses rather than acknowledges: 0x28 is serviceNotSupported (nothing here gates the simulated
 // traffic), and the programming handoff (0x10 02) is conditionsNotCorrect once its gates pass —
-// there is no bootloader to hand the ECU to. 0x2F and 0x23/0x3D are served for the IO DIDs and
-// memory ranges a project declares (io_memory.v), behind their table rows like any service.
+// there is no bootloader to hand the ECU to. 0x2F, 0x23/0x3D and 0x31 are served for the IO DIDs,
+// memory ranges and routine controls a project declares (io_memory.v), behind their table rows like
+// any service.
 module uds
 
 import time
@@ -387,6 +388,7 @@ fn (s &Server) supported(sid u8) bool {
 		0x29 { s.spec.security_mask() != 0 && s.spec.authenticates }
 		0x2F { s.io_start.len > 0 }
 		0x23, 0x3D { s.memory.len > 0 }
+		0x31 { s.routines.len > 0 }
 		else { false }
 	}
 }
@@ -482,6 +484,7 @@ fn (mut s Server) answer_described(req []u8) []u8 {
 		0x2F { s.io_control(req) }
 		0x23 { s.read_memory(req) }
 		0x3D { s.write_memory(req) }
+		0x31 { s.routine_control(req) }
 		else { neg(sid, 0x11) }
 	}
 }

@@ -2,7 +2,8 @@
 <!-- A hand-made ODX 2.2 description for blobly/odx's tests: one BodyController base variant with
      a DID of each layout the reader holds (text, a structure of integers, a signed integer,
      bytes, a LINEAR, a SCALE-LINEAR and a TEXTTABLE value), session and security state charts
-     whose preconditions gate the writes, a service of another kind, and an ECU variant that
+     whose preconditions gate the writes, a self-test routine (start with an option, stop, results)
+     and a routine whose answer is not described, a service of another kind, and an ECU variant that
      inherits all of it but a NOT-INHERITED service and adds a DID and a DTC. -->
 <ODX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" MODEL-VERSION="2.2.0">
   <DIAG-LAYER-CONTAINER ID="DLC_BodyController">
@@ -207,6 +208,38 @@
               </DIAG-CODED-TYPE>
               <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
             </DATA-OBJECT-PROP>
+            <DATA-OBJECT-PROP ID="DOP_ROUTINESTATUS">
+              <SHORT-NAME>RoutineStatus</SHORT-NAME>
+              <COMPU-METHOD>
+                <CATEGORY>TEXTTABLE</CATEGORY>
+                <COMPU-INTERNAL-TO-PHYS>
+                  <COMPU-SCALES>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>0</LOWER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>Running</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>1</LOWER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>Passed</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                    <COMPU-SCALE>
+                      <LOWER-LIMIT>2</LOWER-LIMIT>
+                      <COMPU-CONST>
+                        <VT>Failed</VT>
+                      </COMPU-CONST>
+                    </COMPU-SCALE>
+                  </COMPU-SCALES>
+                </COMPU-INTERNAL-TO-PHYS>
+              </COMPU-METHOD>
+              <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                <BIT-LENGTH>8</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
+            </DATA-OBJECT-PROP>
           </DATA-OBJECT-PROPS>
           <STRUCTURES>
             <STRUCTURE ID="STRUCT_Lamp">
@@ -365,6 +398,37 @@
           <DIAG-SERVICE ID="DS_HardReset">
             <SHORT-NAME>HardReset</SHORT-NAME>
             <REQUEST-REF ID-REF="RQ_HardReset" />
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_SelfTest_Start">
+            <SHORT-NAME>Start_SelfTest</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ_SelfTest_Start" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Start" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_SelfTest_Stop">
+            <SHORT-NAME>Stop_SelfTest</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S_Extended" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ_SelfTest_Stop" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Stop" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_SelfTest_Results">
+            <SHORT-NAME>RequestResults_SelfTest</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_SelfTest_Results" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS_Dependencies_Start">
+            <SHORT-NAME>Start_CheckDependencies</SHORT-NAME>
+            <REQUEST-REF ID-REF="RQ_Dependencies_Start" />
           </DIAG-SERVICE>
         </DIAG-COMMS>
         <REQUESTS>
@@ -724,6 +788,127 @@
               </PARAM>
             </PARAMS>
           </REQUEST>
+          <REQUEST ID="RQ_SelfTest_Start">
+            <SHORT-NAME>RQ_SelfTest_Start</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>49</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>1</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <CODED-VALUE>515</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Level</SHORT-NAME>
+                <BYTE-POSITION>4</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_UINT8" />
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_SelfTest_Stop">
+            <SHORT-NAME>RQ_SelfTest_Stop</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>49</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>2</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <CODED-VALUE>515</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_SelfTest_Results">
+            <SHORT-NAME>RQ_SelfTest_Results</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>49</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>3</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <CODED-VALUE>515</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ_Dependencies_Start">
+            <SHORT-NAME>RQ_Dependencies_Start</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>49</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>1</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <CODED-VALUE>65281</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
         </REQUESTS>
         <POS-RESPONSES>
           <POS-RESPONSE ID="PR_VIN_Read">
@@ -967,6 +1152,96 @@
                 <SHORT-NAME>SupplyVoltage</SHORT-NAME>
                 <BYTE-POSITION>3</BYTE-POSITION>
                 <DOP-REF ID-REF="DOP_VOLTAGE" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_SelfTest_Start">
+            <SHORT-NAME>PR_SelfTest_Start</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>113</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>1</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <REQUEST-BYTE-POS>2</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Status</SHORT-NAME>
+                <BYTE-POSITION>4</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_ROUTINESTATUS" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_SelfTest_Stop">
+            <SHORT-NAME>PR_SelfTest_Stop</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>113</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>1</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <REQUEST-BYTE-POS>2</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR_SelfTest_Results">
+            <SHORT-NAME>PR_SelfTest_Results</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>113</CODED-VALUE>
+                <DIAG-CODED-TYPE xsi:type="STANDARD-LENGTH-TYPE" BASE-DATA-TYPE="A_UINT32">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="SUBFUNCTION">
+                <SHORT-NAME>RoutineControlType</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>1</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM" SEMANTIC="ID">
+                <SHORT-NAME>RoutineIdentifier</SHORT-NAME>
+                <BYTE-POSITION>2</BYTE-POSITION>
+                <REQUEST-BYTE-POS>2</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Status</SHORT-NAME>
+                <BYTE-POSITION>4</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_ROUTINESTATUS" />
+              </PARAM>
+              <PARAM xsi:type="VALUE" SEMANTIC="DATA">
+                <SHORT-NAME>Passes</SHORT-NAME>
+                <BYTE-POSITION>5</BYTE-POSITION>
+                <DOP-REF ID-REF="DOP_UINT16" />
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>

@@ -330,6 +330,19 @@ pub mut:
 	level   u8
 }
 
+pub struct C.bb_routine {
+pub mut:
+	id           u16
+	control      u8
+	gated        u8
+	sessions     i32
+	level        i32
+	option_size  i32
+	option_parts i32
+	answer_size  i32
+	answer_parts i32
+}
+
 // a UDS handle's timing (udstiming.v)
 pub struct C.bb_uds_timing {
 pub mut:

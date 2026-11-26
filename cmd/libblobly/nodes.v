@@ -1,12 +1,14 @@
 // nodes.v — bb.h's "system model" block: the run's system.toml and its nodes' descriptions
 // (headless.Run.sys, what the simulated servers answer by), a node reached by name
-// (sysview.System.reach) and its DIDs read and written through their layout (sysview's codec and
-// write_described), so a host names a node and a DID and never lays out bytes of its own.
+// (sysview.System.reach), its DIDs read and written through their layout (sysview's codec and
+// write_described) and its routine controls run through theirs (run_described), so a host names a
+// node, a DID and a routine and never lays out bytes of its own.
 module main
 
 import blobly.headless
 import blobly.project
 import blobly.sysview
+import blobly.uds
 import blobly.udsconn
 
 const bb_err_gated = i32(C.BB_ERR_GATED)
@@ -263,17 +265,22 @@ pub fn bb_did_part(n i32, d i32, p i32, kind &i32, buf &char, cap i32) i32 {
 	part := did_part(n, d, p) or { return refused(err) }
 	if !isnil(kind) {
 		unsafe {
-			*kind = match part.kind {
-				.integer { i32(C.BB_PART_INTEGER) }
-				.boolean { i32(C.BB_PART_BOOLEAN) }
-				.text { i32(C.BB_PART_TEXT) }
-				.bytes { i32(C.BB_PART_BYTES) }
-				.number { i32(C.BB_PART_NUMBER) }
-				.label { i32(C.BB_PART_LABEL) }
-			}
+			*kind = part_kind_code(part.kind)
 		}
 	}
 	return put(part.label, buf, cap)
+}
+
+// part_kind_code is a part's kind as bb.h numbers it, mapped by name.
+fn part_kind_code(k sysview.PartKind) i32 {
+	return match k {
+		.integer { i32(C.BB_PART_INTEGER) }
+		.boolean { i32(C.BB_PART_BOOLEAN) }
+		.text { i32(C.BB_PART_TEXT) }
+		.bytes { i32(C.BB_PART_BYTES) }
+		.number { i32(C.BB_PART_NUMBER) }
+		.label { i32(C.BB_PART_LABEL) }
+	}
 }
 
 @[export: 'bb_did_hint']
@@ -297,52 +304,211 @@ pub fn bb_did_text(n i32, d i32, data &u8, len i32, p i32, buf &char, cap i32) i
 
 @[export: 'bb_uds_write_described']
 pub fn bb_uds_write_described(u i32, n i32, d i32, texts &&char, k i32, needs &C.bb_write_needs) i32 {
-	if k < 0 || (k > 0 && isnil(texts)) {
-		return fail(bb_err, 'write_described: ${k} texts, and no array of them')
-	}
-	mut parts := []string{}
-	for i in 0 .. int(k) {
-		t := unsafe { texts[i] }
-		if isnil(t) {
-			return fail(bb_err, 'write_described: text ${i} is NULL')
-		}
-		parts << unsafe { cstring_to_vstring(t) }
-	}
+	parts := texts_in('write_described', texts, k) or { return fail(bb_err, err.msg()) }
 	v := run_sys() or { return refused(err) }
 	x := v.did(n, d) or { return refused(err) }
 	if why := x.write_refusal() {
 		return fail(bb_err, '0x2E ${x.label()}: ${why}')
 	}
-	ts := v.sys.targets(int(n), v.refs())
-	node := v.sys.nodes[int(n)].name
-	run := v.run
-	// the logical address a DoIP row's entity has: a handle retargeted elsewhere reaches another ECU
-	ecus := v.rows.map(u32(udsconn.carrier_of(it).ecu))
-	return exchange(u, fn [x, parts, ts, node, run, ecus, needs] (mut hd UdsHandle) !i32 {
-		// bytes laid out by one node's description go to that node: a handle of this run on one of
-		// its targets
-		if hd.run != run || !ts.any(it.row == int(hd.row) && it.doip == hd.doip
-			&& (it.doip || (it.req == hd.conn.ch.tx_id && it.rsp == hd.rx && it.ext == hd.ext))) {
-			return error("UDS handle on ${hd.row_name} does not reach ${node} in this run; open it with ${node}'s target (bb_node_reach)")
-		}
+	reach := v.reaches(n)
+	return exchange(u, fn [x, parts, reach, needs] (mut hd UdsHandle) !i32 {
+		reach.check(hd)!
 		// a text the layout refuses is refused before a lost connection is opened again
 		x.encode(parts) or { return error('0x2E ${x.label()}: not written — ${err.msg()}') }
 		mut cl := hd.cli()!
-		if hd.doip && hd.conn.ch.rx_id != ecus[int(hd.row)] {
-			return error('UDS handle on ${hd.row_name} is retargeted to 0x${hd.conn.ch.rx_id:04X}, not ${node}; retarget it back first')
-		}
+		reach.on_node(hd)!
 		sysview.write_described(mut cl, x, parts) or {
 			if err is sysview.WriteGated {
-				if !isnil(needs) {
-					unsafe {
-						needs.session = err.session
-						needs.level = err.level
-					}
-				}
+				put_needs(err, needs)
 				return error_with_code(err.msg(), int(bb_err_gated))
 			}
 			return err
 		}
 		return ok()
+	})
+}
+
+// texts_in is the `k` texts a host passed.
+fn texts_in(what string, texts &&char, k i32) ![]string {
+	if k < 0 || (k > 0 && isnil(texts)) {
+		return error('${what}: ${k} texts, and no array of them')
+	}
+	mut parts := []string{}
+	for i in 0 .. int(k) {
+		t := unsafe { texts[i] }
+		if isnil(t) {
+			return error('${what}: text ${i} is NULL')
+		}
+		parts << unsafe { cstring_to_vstring(t) }
+	}
+	return parts
+}
+
+fn put_needs(g sysview.WriteGated, needs &C.bb_write_needs) {
+	if !isnil(needs) {
+		unsafe {
+			needs.session = g.session
+			needs.level = g.level
+		}
+	}
+}
+
+// Reach is where node `node` is in run `run`: the bytes its description lays out go to it alone.
+struct Reach {
+	node string
+	run  u64
+	ts   []sysview.RowTarget
+	// the logical address each row's DoIP entity has: a handle retargeted elsewhere reaches another ECU
+	ecus []u32
+}
+
+fn (v SysView) reaches(n i32) Reach {
+	return Reach{
+		node: v.sys.nodes[int(n)].name
+		run:  v.run
+		ts:   v.sys.targets(int(n), v.refs())
+		ecus: v.rows.map(u32(udsconn.carrier_of(it).ecu))
+	}
+}
+
+// check refuses a handle that is not of this run on one of the node's targets.
+fn (r Reach) check(hd &UdsHandle) ! {
+	if hd.run != r.run || !r.ts.any(it.row == int(hd.row) && it.doip == hd.doip
+		&& (it.doip || (it.req == hd.conn.ch.tx_id && it.rsp == hd.rx && it.ext == hd.ext))) {
+		return error("UDS handle on ${hd.row_name} does not reach ${r.node} in this run; open it with ${r.node}'s target (bb_node_reach)")
+	}
+}
+
+// on_node refuses a DoIP handle retargeted away from its row's entity.
+fn (r Reach) on_node(hd &UdsHandle) ! {
+	if hd.doip && hd.conn.ch.rx_id != r.ecus[int(hd.row)] {
+		return error('UDS handle on ${hd.row_name} is retargeted to 0x${hd.conn.ch.rx_id:04X}, not ${r.node}; retarget it back first')
+	}
+}
+
+// routine is routine control k of node n.
+fn (v SysView) routine(n i32, k i32) !sysview.RoutineDesc {
+	node := v.node(n)!
+	rs := node.desc.routines
+	if k < 0 || int(k) >= rs.len {
+		return error('${node.name} has no routine ${k} (it describes ${rs.len})')
+	}
+	return rs[int(k)]
+}
+
+fn node_routine(n i32, k i32) !sysview.RoutineDesc {
+	v := run_sys()!
+	return v.routine(n, k)
+}
+
+// routine_part is part p of routine control k's option record (answer 0) or answer record.
+fn routine_part(n i32, k i32, answer i32, p i32) !sysview.Part {
+	r := node_routine(n, k)!
+	ps := if answer != 0 { r.answer_parts() } else { r.option_parts() }
+	if p < 0 || int(p) >= ps.len {
+		return error('routine ${r.label()}: its ${if answer != 0 { 'answer' } else { 'option' }} has no part ${p} (it has ${ps.len})')
+	}
+	return ps[int(p)]
+}
+
+@[export: 'bb_routine_count']
+pub fn bb_routine_count(n i32) i32 {
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
+	ok()
+	return i32(node.desc.routines.len)
+}
+
+@[export: 'bb_routine_info']
+pub fn bb_routine_info(n i32, k i32, out &C.bb_routine) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'routine_info: nowhere to put it')
+	}
+	r := node_routine(n, k) or { return refused(err) }
+	unsafe {
+		out.id = r.id
+		out.control = r.control
+		out.gated = u8(r.gate.declared)
+		out.sessions = i32(r.gate.sessions.len)
+		out.level = i32(r.gate.level)
+		out.option_size = i32(r.option.size)
+		out.option_parts = i32(r.option_parts().len)
+		out.answer_size = i32(r.answer.size)
+		out.answer_parts = i32(r.answer_parts().len)
+	}
+	return ok()
+}
+
+@[export: 'bb_routine_name']
+pub fn bb_routine_name(n i32, k i32, buf &char, cap i32) i32 {
+	r := node_routine(n, k) or { return refused(err) }
+	return put(r.name, buf, cap)
+}
+
+@[export: 'bb_routine_session']
+pub fn bb_routine_session(n i32, k i32, j i32, buf &char, cap i32) i32 {
+	r := node_routine(n, k) or { return refused(err) }
+	if j < 0 || int(j) >= r.gate.sessions.len {
+		return fail(bb_err, "routine ${r.label()}'s gate has no session ${j} (it names ${r.gate.sessions.len})")
+	}
+	return put(r.gate.sessions[int(j)], buf, cap)
+}
+
+@[export: 'bb_routine_part']
+pub fn bb_routine_part(n i32, k i32, answer i32, p i32, kind &i32, buf &char, cap i32) i32 {
+	part := routine_part(n, k, answer, p) or { return refused(err) }
+	if !isnil(kind) {
+		unsafe {
+			*kind = part_kind_code(part.kind)
+		}
+	}
+	return put(part.label, buf, cap)
+}
+
+@[export: 'bb_routine_hint']
+pub fn bb_routine_hint(n i32, k i32, answer i32, p i32, buf &char, cap i32) i32 {
+	part := routine_part(n, k, answer, p) or { return refused(err) }
+	return put(part.hint, buf, cap)
+}
+
+@[export: 'bb_routine_text']
+pub fn bb_routine_text(n i32, k i32, data &u8, len i32, p i32, buf &char, cap i32) i32 {
+	r := node_routine(n, k) or { return refused(err) }
+	value := bytes_in('routine_text', data, len) or { return fail(bb_err, err.msg()) }
+	texts := r.answer_texts(value) or { return uds_failed(err) }
+	if p == -1 {
+		return put('', buf, cap)
+	}
+	if p < 0 || int(p) >= texts.len {
+		return fail(bb_err, 'routine ${r.label()}: its answer has no part ${p} (it has ${texts.len})')
+	}
+	return put(texts[int(p)], buf, cap)
+}
+
+@[export: 'bb_uds_routine_described']
+pub fn bb_uds_routine_described(u i32, n i32, k i32, texts &&char, cnt i32, needs &C.bb_write_needs, buf &u8, cap i32) i32 {
+	parts := texts_in('routine_described', texts, cnt) or { return fail(bb_err, err.msg()) }
+	v := run_sys() or { return refused(err) }
+	r := v.routine(n, k) or { return refused(err) }
+	// a gate no connection can meet is refused before the handle is asked
+	refusal := r.plan(uds.ConnState{}, true).refusal
+	if refusal != '' {
+		return fail(bb_err, '${r.label()}: ${refusal}')
+	}
+	reach := v.reaches(n)
+	return exchange(u, fn [r, parts, reach, needs, buf, cap] (mut hd UdsHandle) !i32 {
+		reach.check(hd)!
+		// a text the layout refuses is refused before a lost connection is opened again
+		r.encode_option(parts) or { return error('${r.label()}: not sent — ${err.msg()}') }
+		mut cl := hd.cli()!
+		reach.on_node(hd)!
+		answer := sysview.run_described(mut cl, r, parts) or {
+			if err is sysview.WriteGated {
+				put_needs(err, needs)
+				return error_with_code(err.msg(), int(bb_err_gated))
+			}
+			return err
+		}
+		return hd.answer(answer, buf, cap)
 	})
 }

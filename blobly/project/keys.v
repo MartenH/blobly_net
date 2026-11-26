@@ -102,12 +102,14 @@ fn build_key_table() map[string]KeySection {
 			keys: ['id', 'nid', 'ext']
 		}
 		'uds':         KeySection{
-			keys:  ['rx', 'tx', 'functional', 'session', 'dids', 'dtcs', 'io', 'memory', 'tx_dl']
+			keys:  ['rx', 'tx', 'functional', 'session', 'dids', 'dtcs', 'io', 'memory', 'tx_dl',
+				'routines']
 			lists: {
-				'dids':   'did'
-				'dtcs':   'dtc'
-				'io':     'io'
-				'memory': 'memory'
+				'dids':     'did'
+				'dtcs':     'dtc'
+				'io':       'io'
+				'memory':   'memory'
+				'routines': 'routine'
 			}
 		}
 		'did':         KeySection{
@@ -121,6 +123,9 @@ fn build_key_table() map[string]KeySection {
 		}
 		'memory':      KeySection{
 			keys: ['address', 'size']
+		}
+		'routine':     KeySection{
+			keys: ['id', 'start', 'stop', 'results']
 		}
 		'sender':      KeySection{
 			keys:  ['name', 'key', 'message', 'extended', 'bus', 'trigger', 'cycle_ms', 'id', 'data',

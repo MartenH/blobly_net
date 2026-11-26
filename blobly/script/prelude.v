@@ -733,6 +733,14 @@ end
 --                         sent, when the layout refuses it, the DID has no write gate, or this
 --                         connection has not established the session and level the gate needs
 --                         ("... not written -- ... needs it to switch ..., then unlock ...")
+--   d:routines()          its routine controls (the 0x31 services of an ODX node): {name, id, control
+--                         ("start", "stop", "results"), option, answer = {{label, kind, hint}},
+--                         option_size, answer_size (nil: not known), gate = {sessions, level} or
+--                         nil (any session)}
+--   d:run_routine(name, value)  0x31 of the routine control `name`, its option record encoded from
+--                         value (nil for none; a table by label for several parts), as write
+--                         encodes and gates; returns its answer decoded: nothing for a record of no
+--                         parts, its one part`s value, or a table by part label
 --   d:dtcs() and the other 0x19 calls: each record carries fault, the name of its [[fault]]
 function uds.node(name, opts)
   opts = opts or {}
@@ -753,24 +761,49 @@ function uds.node(name, opts)
   function self:dids() return __node_dids(n) end
   function self:did(did) return __node_did(n, did, by_id(did)) end
   function self:read(did) return __node_read(self.handle, n, did, by_id(did)) end
-  function self:write(did, value)
-    local d = __node_did(n, did, by_id(did))
+  -- the texts of every part of `parts` from a value: a table by label for several (or when given
+  -- one), else the one part`s value
+  local function texts_of(what, d, parts, value)
     local texts = {}
-    if d.by_label or type(value) == "table" then
-      if type(value) ~= "table" then error("write(" .. tostring(did) .. "): its parts go in a table by label", 2) end
+    if #parts > 1 or type(value) == "table" then
+      if type(value) ~= "table" then error(what .. ": its parts go in a table by label", 3) end
       for k in pairs(value) do
         local known = false
-        for _, p in ipairs(d.parts) do if p.label == k then known = true end end
-        if not known then error("write(" .. tostring(did) .. "): no part " .. tostring(k), 2) end
+        for _, p in ipairs(parts) do if p.label == k then known = true end end
+        if not known then error(what .. ": no part " .. tostring(k), 3) end
       end
-      for _, p in ipairs(d.parts) do
-        if value[p.label] == nil then error("write(" .. tostring(did) .. "): part " .. p.label .. " not given", 2) end
+      for _, p in ipairs(parts) do
+        if value[p.label] == nil then error(what .. ": part " .. p.label .. " not given", 3) end
         texts[#texts + 1] = part_text(d, p, value[p.label])
       end
     else
-      texts[1] = part_text(d, d.parts[1], value)
+      texts[1] = part_text(d, parts[1], value)
     end
+    return texts
+  end
+  function self:write(did, value)
+    local d = __node_did(n, did, by_id(did))
+    local parts = d.parts
+    if d.by_label and type(value) ~= "table" then
+      error("write(" .. tostring(did) .. "): its parts go in a table by label", 2)
+    end
+    local texts = texts_of("write(" .. tostring(did) .. ")", d, parts, value)
     __node_write(self.handle, n, did, by_id(did), table.unpack(texts))
+  end
+  function self:routines() return __node_routines(n) end
+  function self:run_routine(name, value)
+    if type(name) ~= "string" then
+      error("run_routine: a routine is its name (a string), not " .. tostring(name), 2)
+    end
+    local r = __node_routine(n, name)
+    local texts = {}
+    if #r.option == 0 then
+      if value ~= nil then error("run_routine(" .. name .. "): its request carries nothing past the identifier", 2) end
+    else
+      if value == nil then error("run_routine(" .. name .. "): no value for its request", 2) end
+      texts = texts_of("run_routine(" .. name .. ")", r, r.option, value)
+    end
+    return __node_run_routine(self.handle, n, name, table.unpack(texts))
   end
   local faults = __node_faults(n)
   local function named(r) if r ~= nil and r.code ~= nil then r.fault = faults[r.code] end return r end
@@ -785,7 +818,8 @@ function uds.node(name, opts)
   -- every call that asks the ECU, only while the connection addresses this node: a DoIP connection
   -- is shared with uds.open, which may retarget it (__node_on also puts the description back)
   for k, f in pairs(self) do
-    if type(f) == "function" and k ~= "close" and k ~= "retarget" and k ~= "dids" and k ~= "did" then
+    if type(f) == "function" and k ~= "close" and k ~= "retarget" and k ~= "dids" and k ~= "did"
+      and k ~= "routines" then
       self[k] = function(s, ...) __node_on(s.handle, n) return f(s, ...) end
     end
   end

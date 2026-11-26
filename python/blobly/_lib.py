@@ -106,8 +106,9 @@ class FlashFailed(BloblyError):
 
 
 class WriteGated(Refused):
-    """A described write (NodeClient.write) not sent, since the client's connection has not
-    established what the DID's write gate needs: `session` the session to switch to first (0: the
+    """A described write (NodeClient.write), or a described routine run (NodeClient.run_routine),
+    not sent, since the client's connection has not established what the DID's write gate (the
+    routine's gate) needs: `session` the session to switch to first (0: the
     one it is in will do), `level` the security level to unlock (0: none), whose seed request is
     security_access(2 * level - 1). The message says what the connection has and what it needs;
     session() and security_access() establish it, and this client's own exchanges are what tell."""
@@ -380,6 +381,13 @@ class BbDid(ctypes.Structure):
                 ("parts", ctypes.c_int32), ("by_label", ctypes.c_uint8), ("read_gated", ctypes.c_uint8), ("read_sessions", ctypes.c_int32),
                 ("read_level", ctypes.c_int32), ("writable", ctypes.c_uint8), ("write_sessions", ctypes.c_int32),
                 ("write_level", ctypes.c_int32)]
+
+
+class BbRoutine(ctypes.Structure):
+    """bb_routine, field for field."""
+    _fields_ = [("id", ctypes.c_uint16), ("control", ctypes.c_uint8), ("gated", ctypes.c_uint8),
+                ("sessions", ctypes.c_int32), ("level", ctypes.c_int32), ("option_size", ctypes.c_int32),
+                ("option_parts", ctypes.c_int32), ("answer_size", ctypes.c_int32), ("answer_parts", ctypes.c_int32)]
 
 
 class BbWriteNeeds(ctypes.Structure):
@@ -716,6 +724,14 @@ def _declare(lib):
         "bb_did_hint": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
         "bb_did_text": ([c_int, c_int, c_char_p, c_int, c_int, c_char_p, c_int], c_int),
         "bb_uds_write_described": ([c_int, c_int, c_int, P(c_char_p), c_int, P(BbWriteNeeds)], c_int),
+        "bb_routine_count": ([c_int], c_int),
+        "bb_routine_info": ([c_int, c_int, P(BbRoutine)], c_int),
+        "bb_routine_name": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_routine_session": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_routine_part": ([c_int, c_int, c_int, c_int, P(c_int), c_char_p, c_int], c_int),
+        "bb_routine_hint": ([c_int, c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_routine_text": ([c_int, c_int, c_char_p, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_routine_described": ([c_int, c_int, c_int, P(c_char_p), c_int, P(BbWriteNeeds), c_char_p, c_int], c_int),
         # raw ISO-TP (isotp.py), UDS timing and the DoIP retarget (uds.py)
         "bb_isotp_open": ([c_int, ctypes.c_int64, ctypes.c_int64, P(BbUdsTarget)], c_int),
         "bb_isotp_send": ([c_int, c_char_p, c_int], c_int),

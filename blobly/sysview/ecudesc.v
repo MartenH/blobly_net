@@ -196,6 +196,8 @@ pub mut:
 	faults []FaultDesc
 	dids   []DidDesc
 	params []ParamDesc
+	// its routine controls (routines.v): an imported description's (ODX); an ecu.toml names none
+	routines []RoutineDesc
 	// the node's own ISO-TP ids ([isotp] rx_id / tx_id): its request and response
 	isotp_req u32
 	isotp_rsp u32
@@ -239,13 +241,16 @@ pub mut:
 }
 
 // security_levels is every 0x27 level the description's gates name — the DIDs' read and write
-// gates and the `[uds] services` rows — each once, lowest first.
+// gates, the routines' and the `[uds] services` rows — each once, lowest first.
 pub fn (d &EcuDesc) security_levels() []int {
 	mut out := []int{}
 	mut all := d.service_levels.clone()
 	for x in d.dids {
 		all << x.read_gate.level
 		all << x.write_gate.level
+	}
+	for r in d.routines {
+		all << r.gate.level
 	}
 	for l in all {
 		if l > 0 && l !in out {

@@ -183,9 +183,9 @@ pub const max_memory_range = 1 << 20
 // VIN it serves, and only a 0x2E write keeps the announcement with it (doip_host.v).
 const io_refused_vin = u32(0xF190)
 
-// declare_io_memory gives a server the block's IO DIDs (0x2F) and memory ranges (0x23/0x3D), the
-// ones validate_content does not refuse, for answers of at most `cap` bytes. Shared by the
-// project's servers and the described ones.
+// declare_io_memory gives a server the block's IO DIDs (0x2F), memory ranges (0x23/0x3D) and
+// routine controls (0x31), the ones validate_content does not refuse, for answers of at most `cap`
+// bytes. Shared by the project's servers and the described ones.
 fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 	max_io := uds.io_value_max(cap)
 	for x in cfg.io {
@@ -201,6 +201,17 @@ fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 			continue // reported by validate_content
 		}
 		srv.declare_memory(m.address, int(m.size))
+	}
+	max_rt := uds.routine_answer_max(cap)
+	for r in cfg.routines {
+		if r.id > 0xFFFF || u16(r.id) in srv.routine_ids {
+			continue // reported by validate_content
+		}
+		for c in r.controls() {
+			if c.answer.len <= max_rt {
+				srv.declare_routine(u16(r.id), c.control, c.answer)
+			}
+		}
 	}
 }
 
@@ -272,6 +283,27 @@ fn validate_content(name string, cfg project.UdsCfg, cap int, carrier string) []
 			warns << 'uds on "${name}": IO DID 0x${x.id:X} is also listed under dids: — 0x22 reads the IO value'
 		}
 		seen_io[x.id] = true
+	}
+	max_rt := uds.routine_answer_max(cap)
+	mut seen_rt := map[u32]bool{}
+	for r in cfg.routines {
+		if r.id > 0xFFFF {
+			warns << 'uds on "${name}": routine 0x${r.id:X} is above the 16-bit range — ignored'
+			continue
+		}
+		if r.id in seen_rt {
+			warns << 'uds on "${name}": routine 0x${r.id:X} is declared more than once — the first is served'
+		}
+		seen_rt[r.id] = true
+		cs := r.controls()
+		if cs.len == 0 {
+			warns << 'uds on "${name}": routine 0x${r.id:X} gives no start, stop or results — ignored'
+		}
+		for c in cs {
+			if c.answer.len > max_rt {
+				warns << 'uds on "${name}": routine 0x${r.id:X} ${['', 'start', 'stop', 'results'][c.control]} answers ${c.answer.len} bytes — over the ${max_rt}-byte ${carrier} limit, ignored'
+			}
+		}
 	}
 	for i, m in cfg.memory {
 		if m.address_text != '' {

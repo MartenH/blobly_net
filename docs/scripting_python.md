@@ -1547,7 +1547,7 @@ message and its code:
 | `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, a DTC list that is not whole records, a negative response that is not `7F <sid> <nrc>`, a snapshot DID whose size cannot be learned). The ECU answered, so the connection is not at fault. |
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). On DoIP: a negative acknowledgement, or a connection that could not be opened; `blobly.ConnectionLost`, its subclass, is the connection gone ([DoIP](#11-doip)). |
 | `blobly.RoutingDenied` | DoIP only, when the client opens: the entity denied the routing activation ([DoIP](#11-doip)). |
-| `blobly.WriteGated` | A `NodeClient.write` the DID's write gate does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
+| `blobly.WriteGated` | A `NodeClient.write` (or `run_routine`) the DID's write gate (the routine's gate) does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
 | `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group, a routine control or I/O control parameter ISO does not define, an address or size its width cannot hold), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (65535 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
@@ -1648,6 +1648,26 @@ is a `"label"` part, read and written as its labels. Its read and write gates ar
 state-chart preconditions — the sessions their 0x10 transitions name and the level a 0x27 sendKey
 unlocks — so `write` raises `WriteGated` until `session()` and `security_access()` have
 established them; a value or gate the ODX states in a way not read is said at start.
+
+**Routines by name.** An ODX node's `0x31` RoutineControl services are its routine controls,
+`node.routines` (a `Routines`, by name: `node.routines.Start_SelfTest`), each a `Routine` — its
+service's `name`, the routine `id`, the `control` (`"start"`, `"stop"`, `"results"`), the parts its
+request carries past the identifier (`option`) and those its answer returns (`answer`), and its
+`gate` (`None`: any session). `diag.run_routine(name, value)` encodes the option as `write` encodes
+a value (one part's value, or the parts by label or as keywords; nothing for a request of no
+record), refuses it as `write` does — `Refused` for a value the layout does not hold, `WriteGated`
+until the connection has the gate's session and level — and returns the answer decoded as `read`
+decodes a DID: `None` for a record of no parts, one part's value, or `{label: value}`.
+
+```python
+import blobly
+
+with blobly.Project("projects/odx-demo.blobnet") as net:
+    with net.nodes.BodyController.uds() as diag:
+        diag.session(0x03)                                   # its gate: the extended session
+        print(diag.run_routine("Start_SelfTest", Level=3))   # Running
+        print(diag.run_routine("RequestResults_SelfTest"))   # {'Status': 'Passed', 'Passes': 42}
+```
 
 ### Raw ISO-TP
 
@@ -2771,6 +2791,7 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.node` | `NodeClient` only: the `Node` it is on. |
 | `diag.read(did)` | `NodeClient` only: 0x22 of `did` (its name or its identifier), decoded by the node's layout — one part's `int`, `bool`, `str` or `bytes`, or `{label: value}` where `by_label`. |
 | `diag.write(did, value)`, `diag.write(did, **parts)` | `NodeClient` only: 0x2E of `did`, encoded by the node's layout. `Refused` (nothing sent) for a value the layout does not hold or a DID with no write gate; `WriteGated` when the connection lacks the gate's session or level. |
+| `diag.run_routine(routine, value)`, `diag.run_routine(routine, **parts)` | `NodeClient` only: 0x31 of the routine control `routine` (its name), its option encoded by the node's layout and gated as `write` is; returns its answer decoded — `None` for a record of no parts, one part's value, or `{label: value}`. |
 
 ### `IsoTp`
 
@@ -2820,7 +2841,7 @@ The fault memory as the ECU reported it.
 | `Extended.dtc`, `Extended.records` | The DTC with its status, and `{record number: bytes}`. |
 | `Extended.occurrence`, `Extended.aging`, `Extended.failed_cycles` | blobly_emb's counters (records 0x01, 0x02, 0x03), `None` where the answer does not carry one. |
 
-### `Nodes`, `Node`, `NodeTarget`, `NodeFaults`, `Fault`
+### `Nodes`, `Node`, `NodeTarget`, `NodeFaults`, `Fault`, `Routines`, `Routine`
 
 `net.nodes` is a `Nodes`: the nodes of the run's system model, in system.toml's order, read like
 `Channels` (`net.nodes.zone_a`, `net.nodes["zone-a"]`, `net.nodes[0]`, `net.nodes.keys()`). A
@@ -2837,12 +2858,18 @@ run's model has a node of its name at its position, and refuses otherwise.
 | `node.authenticates` | Its `[uds] access` is `"authentication"`: it unlocks with `authenticate` (0x29) and answers 0x27 serviceNotSupported. |
 | `node.dids` | Its DIDs, a `Dids`: its own, then the ISO identification DIDs it does not declare. |
 | `node.faults` | Its `[[fault]]`s, a `NodeFaults` (`node.faults.SpeedImplausible`), each a `Fault`. |
+| `node.routines` | Its routine controls, a `Routines` (`node.routines.Start_SelfTest`, by position, `keys()`), each a `Routine`: an ODX node's 0x31 services; a system.toml node names none. |
 | `node.targets` | Where the run reaches it, each a `NodeTarget`. |
 | `node.did(key)` | The listed `Did` that `key` names (its name, or its identifier); `None` for an identifier it does not list; `KeyError` for a name none has. |
 | `node.uds(channel=None)` | A `NodeClient` on it, on `channel` when it is reached on several. `Refused`, saying how it is reached, when no channel of the run reaches it. |
 | `NodeTarget.channel`, `NodeTarget.tx`, `NodeTarget.rx`, `NodeTarget.ext` | The `Channel`, and on CAN the request and response ids and whether they are 29-bit (`None`, `None`, `False` on DoIP). |
 | `Fault.name`, `Fault.dtc`, `Fault.dtc_name` | The fault's name, its 24-bit DTC and SAE J2012's display of it (`U0401-00`). |
-| `nodes.keys()`, `node.faults.keys()` | The names, in order, each once. |
+| `Routine.name`, `Routine.id`, `Routine.control` | Its service's name, the routine identifier, and `"start"`, `"stop"` or `"results"`. |
+| `Routine.option`, `Routine.answer` | The parts its request carries past the identifier and those its positive answer returns, each a `DidPart` (none: the record carries nothing). |
+| `Routine.option_size`, `Routine.answer_size` | Those records' bytes, `None` where the description does not say. |
+| `Routine.gate` | A `Gate`, or `None` where none is declared: it runs in any session, unlocked. |
+| `Routine.index` | Its position in the node's listing. |
+| `nodes.keys()`, `node.faults.keys()`, `node.routines.keys()` | The names, in order, each once. |
 
 ### `Dids`, `Did`, `DidPart`, `Gate`
 

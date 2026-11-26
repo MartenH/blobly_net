@@ -204,3 +204,30 @@ fn test_doip_server_answers_at_the_doip_capacity() {
 	assert srv.handle([u8(0x2F), 0x12, 0x34, 0x02]).len == max_response_doip
 	assert validate_uds_doip(nodes).any(it.contains('IO DID 0x1235 size ${io_max + 1} is not 1..${io_max} bytes'))
 }
+
+// A declared routine's controls answer their records; one past the carrier, a duplicate and one of
+// no control are said and not served.
+fn test_a_project_routine_answers_its_controls() {
+	rt_max := max_response_doip - 4
+	nodes := [
+		doip_node('E', project.UdsCfg{
+			routines: [project.RoutineCfg{
+				id:      0x0203
+				start:   [u8(0)]
+				results: []u8{len: rt_max + 1}
+			}, project.RoutineCfg{
+				id: 0x0203
+			}, project.RoutineCfg{
+				id: 0x0300
+			}]
+		}),
+	]
+	mut srv := uds_nodes_doip(nodes)[0].server
+	assert srv.handle([u8(0x31), 0x01, 0x02, 0x03]) == [u8(0x71), 0x01, 0x02, 0x03, 0x00]
+	assert srv.handle([u8(0x31), 0x03, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x12]
+	assert srv.handle([u8(0x31), 0x01, 0x03, 0x00]) == [u8(0x7F), 0x31, 0x31]
+	warns := validate_uds_doip(nodes)
+	assert warns.any(it.contains('routine 0x203 results answers ${rt_max + 1} bytes'))
+	assert warns.any(it.contains('routine 0x203 is declared more than once'))
+	assert warns.any(it.contains('routine 0x300 gives no start, stop or results'))
+}

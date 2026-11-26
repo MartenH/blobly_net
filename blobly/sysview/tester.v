@@ -355,12 +355,18 @@ pub fn (x DidDesc) label() string {
 // write_sessions is the write gate's sessions as 0x10 sub-functions (gate_session); refused for
 // one no tester here knows, or a gate the description leaves unresolved.
 pub fn (x DidDesc) write_sessions() ![]u8 {
-	if x.write_gate.unresolved != '' {
-		return error('its write gate is not known: ${x.write_gate.unresolved}')
+	return x.write_gate.session_ids() or { error(err.msg().replace('its gate', 'its write gate').replace('served in', 'written in')) }
+}
+
+// session_ids is the gate's sessions as 0x10 sub-functions (gate_session); refused for one no
+// tester here knows, or a gate the description leaves unresolved.
+pub fn (g Gate) session_ids() ![]u8 {
+	if g.unresolved != '' {
+		return error('its gate is not known: ${g.unresolved}')
 	}
 	mut out := []u8{}
-	for s in x.write_gate.sessions {
-		out << gate_session(s) or { return error('written in the "${s}" session, which no tester here knows') }
+	for s in g.sessions {
+		out << gate_session(s) or { return error('served in the "${s}" session, which no tester here knows') }
 	}
 	return out
 }
@@ -391,14 +397,17 @@ pub fn (x DidDesc) write_refusal() ?string {
 	return plan.refusal
 }
 
-// WriteGated is a write not sent because the connection has not established what the DID's write
-// gate needs: `session` the session to switch to (0 = the one it is in will do), `level` the
-// security level to unlock (0 = none), `state` what the connection has.
+// WriteGated is a write (or a described routine run, routines.v) not sent because the connection
+// has not established what the DID's write gate (the routine's gate) needs: `session` the session to
+// switch to (0 = the one it is in will do), `level` the security level to unlock (0 = none), `state`
+// what the connection has.
 pub struct WriteGated {
 	Error
 pub:
 	did     u16
 	name    string
+	// a routine run: its label (RoutineDesc.label), which the message names in place of a DID
+	what    string
 	session u8
 	level   u8
 	state   uds.ConnState
@@ -412,6 +421,9 @@ pub fn (e WriteGated) msg() string {
 		unlock:        e.level
 		authenticates: e.authenticates
 	}.steps()
+	if e.what != '' {
+		return '${e.what}: not sent — this connection has ${e.state.words()}, and its gate needs it to ${steps.join(', then ')} first'
+	}
 	what := if e.name == '' { '0x${e.did:04X}' } else { '0x${e.did:04X} ${e.name}' }
 	return '0x2E ${what}: not written — this connection has ${e.state.words()}, and its write gate needs it to ${steps.join(', then ')} first'
 }

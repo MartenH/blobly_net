@@ -12,13 +12,16 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 from . import _lib
 from ._lib import BloblyError, Refused, WriteGated
 from .project import Named
-from .uds import UdsClient, _cancellable, _data, _int
+from .uds import UdsClient, _cancellable, _data, _int, _put
 
 if TYPE_CHECKING:
     from .project import Channel, Project
 
 # what read() returns: one part's value, or a value of several parts by label
 DidValue: TypeAlias = int | bool | float | str | bytes | dict[str, int | bool | float | str]
+
+# a routine control's number, as RoutineDesc names it
+CONTROLS = {1: "start", 2: "stop", 3: "results"}
 
 # enum bb_did_kind and enum bb_part_kind, as the ecu.toml and the codec name them
 DID_KINDS = {0: "ascii", 1: "bytes", 2: "signal", 3: "param", 4: "param_status", 5: "tx_saturations",
@@ -89,6 +92,29 @@ class Fault:
 
 
 @dataclass(frozen=True)
+class Routine:
+    """A routine control a node describes (an ODX node's 0x31 service): `name` (its service's),
+    `id` the routine identifier, `control` "start", "stop" or "results"; `option` the parts its
+    request carries past the identifier and `answer` those its positive answer returns, each
+    as a Did's parts (none: the record carries nothing), `option_size` / `answer_size` their
+    bytes (None: the description does not say); `gate` None where none is declared (it runs in any
+    session, unlocked). NodeClient.run_routine runs it."""
+    name: str
+    id: int
+    control: Literal["start", "stop", "results"]
+    option: tuple[DidPart, ...]
+    answer: tuple[DidPart, ...]
+    option_size: int | None
+    answer_size: int | None
+    gate: Gate | None
+    index: int  # its position in the node's listing
+
+    def __repr__(self) -> str:
+        gate = "" if self.gate is None else f", in {self.gate}"
+        return f"<Routine {self.name!r} {self.control} 0x{self.id:04X}{gate}>"
+
+
+@dataclass(frozen=True)
 class NodeTarget:
     """Where a node is reached on a channel of the run: on a CAN channel at its request id `tx`
     and response id `rx` (29-bit when `ext`), on a DoIP channel by the channel's own addressing
@@ -108,6 +134,12 @@ class Dids(Named[Did]):
 class NodeFaults(Named[Fault]):
     """A node's faults (Node.faults), by name or by position."""
     _noun = "fault"
+
+
+class Routines(Named[Routine]):
+    """A node's routine controls (Node.routines), by name — `routines.Start_SelfTest` — or by
+    position."""
+    _noun = "routine"
 
 
 class Node:
@@ -150,6 +182,18 @@ class Node:
             name = _lib.string(lib.bb_node_fault, n, k, ctypes.byref(code))
             faults.append(Fault(name, code.value, _lib.string(lib.bb_dtc_name, code.value)))
         self._faults = NodeFaults(faults)
+        routines, r = [], _lib.BbRoutine()
+        for k in range(_lib.check(lib.bb_routine_count(n))):
+            _lib.check(lib.bb_routine_info(n, k, ctypes.byref(r)))
+            gate = Gate(tuple(_lib.string(lib.bb_routine_session, n, k, j) for j in range(r.sessions)), r.level)
+            routines.append(Routine(_lib.string(lib.bb_routine_name, n, k), r.id,
+                                    CONTROLS.get(r.control, "start"),  # type: ignore[arg-type]
+                                    _routine_parts(lib, n, k, 0, r.option_parts),
+                                    _routine_parts(lib, n, k, 1, r.answer_parts),
+                                    None if r.option_size < 0 else r.option_size,
+                                    None if r.answer_size < 0 else r.answer_size,
+                                    gate if r.gated else None, k))
+        self._routines = Routines(routines)
         self._names = {}  # the first of a DTC declared twice names it, as EcuDesc.fault does
         for f in faults:
             self._names.setdefault(f.dtc, f.name)
@@ -215,6 +259,14 @@ class Node:
             return self._faults
 
     @property
+    def routines(self) -> Routines:
+        """Its routine controls as this run's description gives them (an ODX node's 0x31 services;
+        a system.toml node names none)."""
+        with _lib.state_lock:
+            self._live()
+            return self._routines
+
+    @property
     def targets(self) -> list[NodeTarget]:
         """Where this run reaches it."""
         with _lib.state_lock:
@@ -241,6 +293,16 @@ class Node:
 
     def __repr__(self) -> str:
         return f"<Node {self.name}>"
+
+
+def _routine_parts(lib, n, k, answer, count) -> tuple[DidPart, ...]:
+    kind = ctypes.c_int()
+    out = []
+    for p in range(count):
+        label = _lib.string(lib.bb_routine_part, n, k, answer, p, ctypes.byref(kind))
+        out.append(DidPart(label, PART_KINDS.get(kind.value, "bytes"),  # type: ignore[arg-type]
+                           _lib.string(lib.bb_routine_hint, n, k, answer, p)))
+    return tuple(out)
 
 
 def _gate(lib, n, d, write, count, level) -> Gate:
@@ -288,9 +350,9 @@ def _value(part: DidPart, text: str) -> int | bool | str | bytes:
     return bytes.fromhex(text)
 
 
-def _text(did: Did, part: DidPart, v: object) -> str:
+def _text(name: str, part: DidPart, v: object) -> str:
     """A part's Python value as the text the codec reads; its range is the engine's to refuse."""
-    where = f"{did.name or hex(did.id)}.{part.label}"
+    where = f"{name}.{part.label}"
     if part.kind in ("int", "bool"):
         if isinstance(v, bool) and part.kind == "bool":
             return "true" if v else "false"
@@ -314,24 +376,31 @@ def _text(did: Did, part: DidPart, v: object) -> str:
 
 def _texts(did: Did, value: object, fields: dict[str, object]) -> list[str]:
     """The texts of every part of `did` from write()'s arguments."""
-    parts = did.parts
+    return _texts_of(f"write({did.name or hex(did.id)})", did.name or hex(did.id), did.parts,
+                     did.by_label, value, fields)
+
+
+def _texts_of(what: str, name: str, parts: tuple[DidPart, ...], by_label: bool, value: object,
+              fields: dict[str, object]) -> list[str]:
+    """The texts of every part of `parts` from a value, or the parts by keyword; `what` names the
+    call in a refusal, `name` the value."""
     if value is not _UNSET and fields:
-        raise TypeError(f"write({did.name or hex(did.id)}): a value or fields by name, not both")
+        raise TypeError(f"{what}: a value or fields by name, not both")
     if value is _UNSET and not fields:
-        raise TypeError(f"write({did.name or hex(did.id)}): no value")
-    if did.by_label and value is not _UNSET and not isinstance(value, Mapping):
-        raise TypeError(f"write({did.name or hex(did.id)}): its parts go in a mapping by label")
-    if not did.by_label and value is not _UNSET and not isinstance(value, Mapping):
-        return [_text(did, parts[0], value)]
+        raise TypeError(f"{what}: no value")
+    if by_label and value is not _UNSET and not isinstance(value, Mapping):
+        raise TypeError(f"{what}: its parts go in a mapping by label")
+    if not by_label and value is not _UNSET and not isinstance(value, Mapping):
+        return [_text(name, parts[0], value)]
     given = dict(value) if isinstance(value, Mapping) else fields
     labels = [p.label for p in parts]
     unknown = [k for k in given if k not in labels]
     missing = [k for k in labels if k not in given]
     if unknown or missing:
-        raise TypeError(f"write({did.name or hex(did.id)}): its parts are {', '.join(labels)}"
+        raise TypeError(f"{what}: its parts are {', '.join(labels)}"
                         + (f"; no part {', '.join(map(repr, unknown))}" if unknown else "")
                         + (f"; {', '.join(missing)} not given" if missing else ""))
-    return [_text(did, p, given[p.label]) for p in parts]
+    return [_text(name, p, given[p.label]) for p in parts]
 
 
 _UNSET: object = object()
@@ -448,6 +517,55 @@ class NodeClient(UdsClient):
                         e.session, e.level = needs.session, needs.level
                     raise e
             _cancellable([h], work)
+
+    def run_routine(self, routine: str, value: object = _UNSET, /, **fields: object) -> DidValue | None:
+        """0x31 of the routine control `routine` (its name: Node.routines), its option record
+        encoded from `value` — as write() takes a value: one part's value, or every part by label
+        in a mapping or as keywords; nothing for a routine whose request carries nothing past the
+        identifier — and gated as write() is: Refused (nothing sent) for a value the layout does
+        not hold, WriteGated when this client's connection has not established the session and
+        level its gate needs. Returns its answer decoded as read() decodes a DID: None for a record
+        of no parts, its one part's value, or {label: value} for several. UndecodableAnswer when the
+        answer is not what the description lays out."""
+        lib = _lib.lib()
+        needs = _lib.BbWriteNeeds()
+        with self._lock:
+            h = self._handle()
+            with _lib.state_lock:
+                self.node._live()
+                r = self.node._routines[routine]
+                n, run = self.node._index, _lib.state["run"]
+            if not r.option:
+                if value is not _UNSET or fields:
+                    raise TypeError(f"run_routine({r.name}): its request carries nothing past the identifier")
+                texts = []
+            else:
+                texts = [t.encode() for t in _texts_of(f"run_routine({r.name})", r.name, r.option,
+                                                       len(r.option) > 1, value, fields)]
+            parts = (ctypes.c_char_p * len(texts))(*texts)
+
+            def work() -> bytes:
+                try:
+                    return _put(lib.bb_uds_routine_described, h, n, r.index, parts, len(texts), ctypes.byref(needs))
+                except BloblyError as e:
+                    e = self._enrich(h, e)
+                    if isinstance(e, WriteGated):
+                        e.session, e.level = needs.session, needs.level
+                    raise e
+            data = _cancellable([h], work)
+        with _lib.state_lock:
+            if _lib.state["run"] != run:
+                raise BloblyError(f"{self.node.name}: the project was stopped or started while {r.name} "
+                                  "ran; read its answer again", _lib.BB_ERR_STATE)
+            # the answer checked whole, then each part
+            _lib.string(lib.bb_routine_text, n, r.index, data, len(data), -1)
+            got = [_lib.string(lib.bb_routine_text, n, r.index, data, len(data), p) for p in range(len(r.answer))]
+        values = [_value(p, t) for p, t in zip(r.answer, got)]
+        if not values:
+            return None
+        if len(values) == 1:
+            return values[0]
+        return {p.label: v for p, v in zip(r.answer, values)}
 
     def retarget(self, address: int | None = None) -> None:
         """Refused: a NodeClient addresses its node, whose description its reads and writes are

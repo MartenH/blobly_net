@@ -416,3 +416,32 @@ channels:
 	assert twice.channels[0].verify[0].window_malformed
 	assert twice.version == 13
 }
+
+fn test_routines_round_trip() {
+	y := 'project:
+  name: t
+buses:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          routines:
+            - { id: "0x203", start: "00", stop: "", results: "01 00 2A" }
+            - { id: "0xFF0G", results: "01" }
+'
+	p := parse(y) or { panic(err) }
+	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
+	assert u.routines.len == 2 && u.routines[0].id == 0x203
+	assert u.routines[0].controls() == [RoutineAnswer{1, [u8(0)]}, RoutineAnswer{2, []},
+		RoutineAnswer{3, [u8(1), 0, 0x2A]}]
+	assert u.routines[1].controls() == [RoutineAnswer{3, [u8(1)]}]
+	assert u.malformed == ['routine 0xFF0G']
+	assert version_for(p) == 15
+	again := parse(p.to_yaml()) or { panic(err) }
+	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
+	assert v.routines[0].controls() == u.routines[0].controls(), 'routines lost on save'
+	assert again.version == 15
+}

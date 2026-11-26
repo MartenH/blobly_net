@@ -7,8 +7,8 @@ import blobly.udsconn
 
 // nodes.v — uds.nodes and uds.node: a connection by the node's name in the system model
 // (Env.sys, sysview.System.reach), its DIDs listed, read and written by name through the node's
-// layout (sysview's codec and write_described), its DTCs named by its faults — the rules the C
-// ABI's bb_node_* answer by. A DID argument is its identifier when a number
+// layout (sysview's codec and write_described), its routine controls run by name (run_described),
+// its DTCs named by its faults — the rules the C ABI's bb_node_* answer by. A DID argument is its identifier when a number
 // (sysview.EcuDesc.listed_id), else its name (listed_did).
 
 fn (mut env Env) register_nodes() {
@@ -20,6 +20,9 @@ fn (mut env Env) register_nodes() {
 	env.st.register('__node_read', l_node_read)
 	env.st.register('__node_write', l_node_write)
 	env.st.register('__node_on', l_node_on)
+	env.st.register('__node_routines', l_node_routines)
+	env.st.register('__node_routine', l_node_routine)
+	env.st.register('__node_run_routine', l_node_run_routine)
 }
 
 fn l_uds_nodes(l lua.State) i32 {
@@ -111,30 +114,46 @@ fn push_did(l lua.State, x sysview.DidDesc) {
 	if x.size >= 0 {
 		l.set_int('size', x.size)
 	}
+	push_parts(l, x.parts())
+	l.set_field('parts')
+	push_gates(l, x)
+}
+
+// push_parts pushes parts as a list of {label, kind, hint}.
+fn push_parts(l lua.State, parts []sysview.Part) {
 	l.new_table()
-	for i, p in x.parts() {
+	for i, p in parts {
 		l.new_table()
 		l.set_str('label', p.label)
 		l.set_str('kind', part_kind(p.kind))
 		l.set_str('hint', p.hint)
 		l.set_index(i + 1)
 	}
-	l.set_field('parts')
+}
+
+// push_gate sets field `key` of the table on top to the gate's {sessions, level}, nothing where none
+// is declared.
+fn push_gate(l lua.State, key string, g sysview.Gate) {
+	if !g.declared {
+		return
+	}
+	l.new_table()
+	l.new_table()
+	for i, s in g.sessions {
+		l.push_str(s)
+		l.set_index(i + 1)
+	}
+	l.set_field('sessions')
+	l.set_int('level', g.level)
+	l.set_field(key)
+}
+
+fn push_gates(l lua.State, x sysview.DidDesc) {
 	for key, g in {
 		'read':  x.read_gate
 		'write': x.write_gate
 	} {
-		if g.declared {
-			l.new_table()
-			l.new_table()
-			for i, s in g.sessions {
-				l.push_str(s)
-				l.set_index(i + 1)
-			}
-			l.set_field('sessions')
-			l.set_int('level', g.level)
-			l.set_field(key)
-		}
+		push_gate(l, key, g)
 	}
 }
 
@@ -282,4 +301,79 @@ fn (env &Env) on_node(c &UdsConn, node string) ! {
 	if car.kind == .doip && c.ch.rx_id != u32(car.ecu) {
 		return error('${node}: the connection on ${c.chan} is retargeted to 0x${c.ch.rx_id:04X}; retarget it back first')
 	}
+}
+
+// push_routine pushes one routine control as a table: name, id, control ("start", "stop" or
+// "results"), option and answer (each its parts, as a DID's), option_size and answer_size (nil when
+// not known) and gate ({sessions, level}, nil where none is declared: any session, unlocked).
+fn push_routine(l lua.State, r sysview.RoutineDesc) {
+	l.new_table()
+	l.set_str('name', r.name)
+	l.set_int('id', i64(r.id))
+	l.set_str('control', sysview.control_name(r.control))
+	push_parts(l, r.option_parts())
+	l.set_field('option')
+	push_parts(l, r.answer_parts())
+	l.set_field('answer')
+	if r.option.size >= 0 {
+		l.set_int('option_size', r.option.size)
+	}
+	if r.answer.size >= 0 {
+		l.set_int('answer_size', r.answer.size)
+	}
+	push_gate(l, 'gate', r.gate)
+}
+
+fn l_node_routines(l lua.State) i32 {
+	node := node_arg(l, 1) or { return l.fail(err.msg()) }
+	l.new_table()
+	for i, r in node.desc.routines {
+		push_routine(l, r)
+		l.set_index(i + 1)
+	}
+	return 1
+}
+
+fn l_node_routine(l lua.State) i32 {
+	node := node_arg(l, 1) or { return l.fail(err.msg()) }
+	r := node.desc.listed_routine(l.arg_str(2)) or { return l.fail('${node.name}: ${err.msg()}') }
+	push_routine(l, r)
+	return 1
+}
+
+// l_node_run_routine (handle, node, routine, text...): 0x31 of the routine control with the texts of
+// every option part (the prelude spells a value as them), as sysview.run_described runs it; its
+// answer decoded by the layout — nothing for a record of no parts, its one part's value, or a table
+// by label.
+fn l_node_run_routine(l lua.State) i32 {
+	mut env := env_of(l)
+	node := node_arg(l, 2) or { return l.fail(err.msg()) }
+	r := node.desc.listed_routine(l.arg_str(3)) or { return l.fail('${node.name}: ${err.msg()}') }
+	mut texts := []string{}
+	for i in 4 .. l.nargs() + 1 {
+		texts << l.arg_str(i)
+	}
+	mut c, _ := env.conn_arg(l, 1) or { return l.fail('node:run_routine: ${err}') }
+	env.on_node(c, node.name) or { return l.fail(err.msg()) }
+	data := sysview.run_described(mut c.cli, r, texts) or { return l.fail(err.msg()) }
+	got := r.answer_texts(data) or { return l.fail(err.msg()) }
+	parts := r.answer_parts()
+	for i, p in parts {
+		if p.kind == .integer && lua_int(got[i]) == none {
+			return l.fail('routine ${r.label()}: ${p.label} is ${got[i]}, past what a Lua integer holds; diag:routine gives its bytes')
+		}
+	}
+	if parts.len == 0 {
+		return 0
+	}
+	if parts.len == 1 {
+		push_part(l, parts[0], got[0])
+		return 1
+	}
+	l.new_table()
+	for i, p in parts {
+		push_part(l, p, got[i])
+		l.set_field(p.label)
+	}
+	return 1
 }

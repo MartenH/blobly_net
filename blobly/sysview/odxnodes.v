@@ -10,8 +10,8 @@ import blobly.uds
 // model beside system.toml's, so a tester names them, their DIDs and their DTCs as it names a
 // blobly_emb node's. The DIDs are the variant's 0x22/0x2E data identifiers laid out for the DID
 // codec (a scaled field read as a physical number or a label) and gated by the sessions and level
-// their services' preconditions ask for, the faults its DTCs; what the codec cannot hold is read as
-// bytes and said.
+// their services' preconditions ask for, its routine controls (0x31) with their records laid out
+// alike, the faults its DTCs; what the codec cannot hold is read as bytes and said.
 
 // with_odx_nodes is the model with a node added for every `diagnostics:` entry of the project's CAN
 // rows (`proj_dir` resolves their ODX sources), and what reading them had to say. A node named on
@@ -121,9 +121,9 @@ fn (nodes []SysNode) index_of_name(name string) ?int {
 	return none
 }
 
-// odx_desc is a variant as a node's description: its DTCs as faults, its DIDs laid out for the
-// codec (`errs` says each it reads as bytes instead) with the gates their services ask for
-// (`warns` says one that cannot be met).
+// odx_desc is a variant as a node's description: its DTCs as faults, its DIDs and its routine
+// controls' records laid out for the codec (`errs` says each it reads as bytes instead) with the
+// gates their services ask for (`warns` says one that cannot be met).
 fn odx_desc(v odx.Variant) EcuDesc {
 	mut d := EcuDesc{
 		server: true
@@ -148,6 +148,30 @@ fn odx_desc(v odx.Variant) EcuDesc {
 			}
 		}
 		d.dids << did
+	}
+	for r in v.routines {
+		option, owhy := odx_record(r, r.option)
+		answer, awhy := odx_record(r, r.answer)
+		for whose, why in {
+			'its request': owhy
+			'its answer':  awhy
+		} {
+			if why != '' {
+				d.errs << 'routine 0x${r.id:04X} (${r.name}): ${whose}: ${why}; read as bytes'
+			}
+		}
+		gate := odx_gate(r.gate, r.gate.declared)
+		if w := gate.contradiction() {
+			d.warns << 'routine 0x${r.id:04X} (${r.name}): ${w}'
+		}
+		d.routines << RoutineDesc{
+			name:    r.name
+			id:      r.id
+			control: r.control
+			gate:    gate
+			option:  option
+			answer:  answer
+		}
 	}
 	return d
 }
@@ -175,17 +199,52 @@ fn odx_scaling(c odx.Compu) ?Scaling {
 	}
 }
 
-// odx_did is one DID for the codec: integer parts as fields, one text part as a text, else bytes —
-// with the reason when the parts are laid out and the codec still cannot hold them.
+// odx_did is one DID for the codec, with the reason when its parts are laid out and the codec still
+// cannot hold them.
 fn odx_did(x odx.Did) (DidDesc, string) {
+	kind, fields, scaling, why := odx_layout(x.parts)
+	read_gate := odx_gate(x.read_gate, x.read_gate.declared)
+	write_gate := odx_gate(x.write_gate, x.writable)
+	return DidDesc{
+		id:         x.id
+		kind:       kind
+		name:       if x.name != '' { x.name } else { uds.standard_did_name(x.id) }
+		size:       x.size
+		fields:     fields
+		scaling:    scaling
+		read:       if read_gate.declared { read_gate.words() } else { '' }
+		write:      if write_gate.declared { write_gate.words() } else { '' }
+		read_gate:  read_gate
+		write_gate: write_gate
+	}, why
+}
+
+// odx_record is a routine's option or answer record for the codec, as a DID of the routine's
+// identifier and the service's name.
+fn odx_record(r odx.Routine, rec odx.Record) (DidDesc, string) {
+	kind, fields, scaling, why := odx_layout(rec.parts)
+	return DidDesc{
+		id:      r.id
+		kind:    kind
+		name:    r.name
+		size:    rec.size
+		fields:  fields
+		scaling: scaling
+	}, why
+}
+
+// odx_layout is how the codec holds a value of `parts`: integer parts as fields, one text part as a
+// text, else bytes — with the reason when the parts are laid out and the codec still cannot hold
+// them.
+fn odx_layout(parts []odx.Part) (DidKind, []Field, map[string]Scaling, string) {
 	mut kind := DidKind.data
 	mut fields := []Field{}
 	mut scaling := map[string]Scaling{}
 	mut why := ''
-	if x.parts.len == 1 && x.parts[0].kind == .text {
+	if parts.len == 1 && parts[0].kind == .text {
 		kind = .text
-	} else if x.parts.len > 0 && x.parts.all(it.kind in [.unsigned, .signed]) {
-		for q in x.parts {
+	} else if parts.len > 0 && parts.all(it.kind in [.unsigned, .signed]) {
+		for q in parts {
 			typ := '${if q.kind == .signed { 'i' } else { 'u' }}${q.size * 8}'
 			f := Field{q.name, typ}
 			if f.width() != q.size {
@@ -207,21 +266,8 @@ fn odx_did(x odx.Did) (DidDesc, string) {
 			fields = []
 			scaling = map[string]Scaling{}
 		}
-	} else if x.parts.len > 1 {
-		why = 'its parts mix ${x.parts.map(it.kind.str()).join(', ')}, which the codec does not lay out together'
+	} else if parts.len > 1 {
+		why = 'its parts mix ${parts.map(it.kind.str()).join(', ')}, which the codec does not lay out together'
 	}
-	read_gate := odx_gate(x.read_gate, x.read_gate.declared)
-	write_gate := odx_gate(x.write_gate, x.writable)
-	return DidDesc{
-		id:         x.id
-		kind:       kind
-		name:       if x.name != '' { x.name } else { uds.standard_did_name(x.id) }
-		size:       x.size
-		fields:     fields
-		scaling:    scaling
-		read:       if read_gate.declared { read_gate.words() } else { '' }
-		write:      if write_gate.declared { write_gate.words() } else { '' }
-		read_gate:  read_gate
-		write_gate: write_gate
-	}, why
+	return kind, fields, scaling, why
 }
