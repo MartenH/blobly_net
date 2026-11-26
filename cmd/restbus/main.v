@@ -69,7 +69,10 @@ fn main() {
 				eprintln('restbus: ${o.source}: ${err}')
 				exit(1)
 			}
-			if lv.frames == 0 {
+			// a line too long for the stream may still be a frame the loader reads
+			if lv.long_lines > 0 {
+				eprintln('restbus: ${o.source}: ${lv.long_lines} lines longer than the stream reads were skipped; the listing may miss frames a replay plays')
+			} else if lv.frames == 0 {
 				eprintln('restbus: ${o.source}: holds no frames')
 				exit(1)
 			}
