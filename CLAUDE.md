@@ -526,6 +526,12 @@ a merge (a red canary is an issue to file, not a PR to hold).
   It runs the first codex CLI that actually runs (`$CODEX`, else every `codex` on PATH, else the
   VS Code extension's copies newest first); `--check-codex` prints which, or exits 3 when none
   does — reload the Codex extension (pinned by `scripts/codex_local_review_test.sh` in CI).
+  One review runs at a time per user (#568: two at once shared codex's state, and one printed
+  the other's summary): a second run waits on a flock(2) of `~/.codex-local-review.lock` (the
+  `flock` command, else perl's flock — one kernel lock, held while the run or its codex lives),
+  naming the pid it waits for (`CODEX_REVIEW_NO_WAIT=1` refuses, exit 5), and a summary codex's transcript does
+  not record for this run (its workdir, this run's prompt, the summary's first line) is printed
+  under a WARNING.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the

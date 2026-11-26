@@ -18,10 +18,20 @@
 # interrupted extension update once left a 0-byte copy, which the old newest-first pick ran — it
 # exited 0 with nothing written, and the review failed only as "codex wrote no final message".
 #
+# One review at a time per user (#568): two `codex exec review` runs at once share the user's codex
+# state, and one run once printed the other's summary as its own. A run holds an exclusive flock(2)
+# on ~/.codex-local-review.lock (the flock command, else perl's flock) from before the tree is
+# checked until it exits, and says "waiting for another local review (pid N) to finish" while it
+# waits; CODEX_REVIEW_NO_WAIT=1 refuses instead (exit 5).
+# --check-codex and --dry-run take no lock. And the summary is checked against what codex recorded for
+# this run — the transcript's workdir and prompt, and the summary's first line in it — and printed
+# under a WARNING where they disagree.
+#
 # Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (with --check-codex, 0 is a
 # codex found and 3 none, besides the usage and setup exits; a review's own exit can be codex's,
-# which may be any number); 4 the review left the tree dirty or HEAD moved; otherwise codex's own
-# failure, with the transcript's tail instead of findings.
+# which may be any number); 4 the review left the tree dirty or HEAD moved; 5 another local review
+# holds the lock and CODEX_REVIEW_NO_WAIT=1; otherwise codex's own failure, with the transcript's
+# tail instead of findings.
 set -eu
 
 # Before the cd below, everything relative is made the caller's: each relative PATH entry (an
@@ -161,12 +171,65 @@ if [ "$check_codex" = 1 ]; then
 	exit 0
 fi
 
+# The per-user review lock: flock(2) on fd 9 over ~/.codex-local-review.lock, through the flock
+# command or, where that is missing, perl's flock — one kernel lock either way, so two runs whose
+# PATHs differ exclude each other, and the kernel lets go of it however the run ends. codex inherits
+# fd 9, so a codex that outlives a killed run keeps the lock until it ends too; the fetch does not,
+# since an ssh master it leaves running would hold the lock for good. Taken before the tree is
+# checked and HEAD read, so a run that waited reviews the branch as it is once its turn comes.
+lock_file=$HOME/.codex-local-review.lock
+lock_fd() { # lock_fd nb|wait: 0 locked, 1 held by another run, other: no lock could be asked for
+	if command -v flock >/dev/null 2>&1; then
+		if [ "$1" = nb ]; then flock -n 9 || return 1; else flock 9 || return 2; fi
+	elif command -v perl >/dev/null 2>&1; then
+		# the lock belongs to the open file this shell's fd 9 shares, so it outlives perl
+		perl -e 'use Fcntl qw(:flock); open(my $f, ">&=", 9) or exit 2;
+			flock($f, LOCK_EX | ($ARGV[0] eq "nb" ? LOCK_NB : 0)) or exit($ARGV[0] eq "nb" ? 1 : 2)' "$1"
+	else
+		return 3
+	fi
+}
+take_lock() {
+	local holder rc=0
+	exec 9>>"$lock_file"
+	lock_fd nb || rc=$?
+	if [ "$rc" = 1 ]; then
+		holder=$(tr -cd 0-9 2>/dev/null <"$lock_file" || true)
+		holder="pid ${holder:-unknown}"
+		# the run that took it has gone: what holds it is a process the run started (its codex)
+		if [ "$holder" != "pid unknown" ] && ! kill -0 "${holder#pid }" 2>/dev/null; then
+			holder="$holder, ended; a process it started holds $lock_file"
+		fi
+		if [ "${CODEX_REVIEW_NO_WAIT:-}" = 1 ]; then
+			echo "codex-local-review: another local review ($holder) is running; CODEX_REVIEW_NO_WAIT=1 refuses to wait" >&2
+			exit 5
+		fi
+		echo "codex-local-review: waiting for another local review ($holder) to finish" >&2
+		rc=0
+		lock_fd wait || rc=$?
+	fi
+	if [ "$rc" = 3 ]; then
+		echo "codex-local-review: WARNING: no flock or perl to take the per-user lock with; reviewing without it" >&2
+		return
+	elif [ "$rc" != 0 ]; then
+		echo "codex-local-review: WARNING: the per-user lock on $lock_file could not be taken; reviewing without it" >&2
+		return
+	fi
+	printf '%s\n' "$$" >"$lock_file" # the locked file itself, so a waiter can name the holder
+}
+release_lock() { exec 9>&-; }
+if [ "$dry_run" = 0 ]; then
+	trap release_lock EXIT
+	take_lock
+fi
+
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
 	echo "codex-local-review: the working tree is not clean; commit or remove these first:" >&2
 	git status --porcelain --untracked-files=normal >&2
 	exit 1
 fi
-if [ "$base" = origin/main ] && ! git fetch -q origin; then
+# without the lock descriptor: an ssh master the fetch leaves running must not hold the lock
+if [ "$base" = origin/main ] && ! git fetch -q origin 9>&-; then
 	echo "codex-local-review: could not fetch origin; refusing to review against a stale origin/main" >&2
 	exit 1
 fi
@@ -231,6 +294,7 @@ dirty_check() {
 		git status --porcelain --untracked-files=normal >&2
 		rc=4
 	fi
+	release_lock
 	exit "$rc"
 }
 trap dirty_check EXIT
@@ -251,3 +315,18 @@ if [ ! -s "$findings" ]; then
 fi
 cat "$findings"
 echo
+# The summary is the one codex recorded for THIS run (#568), by what codex itself writes: the
+# transcript names this checkout as its workdir and echoes this run's prompt, and the summary's
+# first line is in it (codex prints its final message there too). Nothing asks the model to say so:
+# a review's final message has a fixed shape codex renders itself.
+mismatch=
+grep -qxF -e "workdir: $PWD" -e "workdir: $(pwd -P)" "$out" || mismatch="$mismatch; the transcript is not of this checkout"
+grep -qF "\`git diff $merge_base $head\`" "$out" || mismatch="$mismatch; the transcript does not hold this run's prompt"
+first=$(grep -m 1 '[^[:space:]]' "$findings" || true)
+grep -qxF -- "$first" "$out" || mismatch="$mismatch; the summary is not the transcript's"
+if [ -n "$mismatch" ]; then
+	{
+		echo "codex-local-review: WARNING: this summary may be another review's, not ${head:0:9}'s: ${mismatch#; }."
+		echo "codex-local-review: WARNING: check the transcript: $out"
+	} >&2
+fi
