@@ -356,9 +356,9 @@ pub mut:
 	// Save writes back verbatim (`yaml_as_written`): the entry stays malformed, never bytes it was
 	// not
 	bad map[string]string
-	// the id as written where it is not a clean hex id (the entry is malformed), written back as
-	// given, never the id `parse_id_wide` made of it
-	id_text string
+	// the id as written where it is not a clean hex id (the entry is malformed; an empty or missing
+	// id is ''), written back as given, never the id `parse_id_wide` made of it
+	id_text ?string
 }
 
 // controls are the routine's controls given, each with its answer record: (1 start, 2 stop, 3

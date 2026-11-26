@@ -713,3 +713,19 @@ fn test_a_routine_control_or_identifier_that_is_none_is_refused_never_zero() {
 	assert !w.routines.any(it.name == 'Start_CheckDependencies')
 	assert w.notes.any(it.contains('CODED-VALUE "0xZZ" is not an integer'))
 }
+
+fn test_routine_answers_laid_out_differently_are_bytes_and_said() {
+	v := variant_with('routine_alt', fn (s string) string {
+		return s.replace('<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />', '<POS-RESPONSE-REF ID-REF="PR_SelfTest_Stop" />
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />')
+	})!
+	results := routine_of(v, 'RequestResults_SelfTest')
+	assert results.answer == Record{-1, []}
+	assert v.notes.any(it.contains('routine 0x0203 (RequestResults_SelfTest): its 2 POS-RESPONSEs lay the answer out differently'))
+	// one response named twice is one layout
+	w := variant_with('routine_twice', fn (s string) string {
+		return s.replace('<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />', '<POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />
+              <POS-RESPONSE-REF ID-REF="PR_SelfTest_Results" />')
+	})!
+	assert routine_of(w, 'RequestResults_SelfTest').answer.size == 3
+}

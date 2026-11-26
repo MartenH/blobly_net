@@ -527,6 +527,9 @@ class NodeClient(UdsClient):
         level its gate needs. Returns its answer decoded as read() decodes a DID: None for a record
         of no parts, its one part's value, or {label: value} for several. UndecodableAnswer when the
         answer is not what the description lays out."""
+        if not isinstance(routine, str):
+            # a number would pick a routine by its position
+            raise TypeError(f"run_routine: a routine is named by a string, not {routine!r}")
         lib = _lib.lib()
         needs = _lib.BbWriteNeeds()
         with self._lock:

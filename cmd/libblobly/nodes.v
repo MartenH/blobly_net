@@ -20,6 +20,8 @@ __global (
 	bb_sys       sysview.System
 	bb_sys_dids  [][]sysview.DidDesc
 	bb_sys_parts [][][]sysview.Part // each listed DID's parts
+	// each routine control's option parts and answer parts, by node and routine
+	bb_sys_rparts [][][][]sysview.Part
 )
 
 // sys_publish / sys_retire keep bb_sys the run's; the caller holds bb_mu.
@@ -27,12 +29,14 @@ fn sys_publish(r &headless.Run) {
 	bb_sys = r.sys
 	bb_sys_dids = r.sys.nodes.map(it.desc.listed_dids())
 	bb_sys_parts = bb_sys_dids.map(it.map(it.parts()))
+	bb_sys_rparts = r.sys.nodes.map(it.desc.routines.map([it.option_parts(), it.answer_parts()]))
 }
 
 fn sys_retire() {
 	bb_sys = sysview.System{}
 	bb_sys_dids = [][]sysview.DidDesc{}
 	bb_sys_parts = [][][]sysview.Part{}
+	bb_sys_rparts = [][][][]sysview.Part{}
 }
 
 // SysView is ONE read of the run's model: every call answers from one, so a stop and a start on
@@ -41,6 +45,7 @@ struct SysView {
 	sys  sysview.System
 	dids  [][]sysview.DidDesc
 	parts [][][]sysview.Part
+	rparts [][][][]sysview.Part
 	rows  []project.Channel // the run's rows, as the run has them
 	run  u64               // bb_run_gen
 }
@@ -53,6 +58,7 @@ fn run_sys() !SysView {
 		sys:  bb_sys
 		dids:  bb_sys_dids
 		parts: bb_sys_parts
+		rparts: bb_sys_rparts
 		rows: bb_run_rows
 		run:  bb_run_gen
 	}
@@ -401,10 +407,17 @@ fn node_routine(n i32, k i32) !sysview.RoutineDesc {
 	return v.routine(n, k)
 }
 
+// routine_parts are routine control k's option parts (answer 0) or answer parts, as published.
+fn (v SysView) routine_parts(n i32, k i32, answer i32) ![]sysview.Part {
+	v.routine(n, k)!
+	return v.rparts[int(n)][int(k)][if answer != 0 { 1 } else { 0 }]
+}
+
 // routine_part is part p of routine control k's option record (answer 0) or answer record.
 fn routine_part(n i32, k i32, answer i32, p i32) !sysview.Part {
-	r := node_routine(n, k)!
-	ps := if answer != 0 { r.answer_parts() } else { r.option_parts() }
+	v := run_sys()!
+	r := v.routine(n, k)!
+	ps := v.routine_parts(n, k, answer)!
 	if p < 0 || int(p) >= ps.len {
 		return error('routine ${r.label()}: its ${if answer != 0 { 'answer' } else { 'option' }} has no part ${p} (it has ${ps.len})')
 	}
@@ -424,7 +437,8 @@ pub fn bb_routine_info(n i32, k i32, out &C.bb_routine) i32 {
 	if isnil(out) {
 		return fail(bb_err, 'routine_info: nowhere to put it')
 	}
-	r := node_routine(n, k) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	r := v.routine(n, k) or { return refused(err) }
 	unsafe {
 		out.id = r.id
 		out.control = r.control
@@ -432,9 +446,9 @@ pub fn bb_routine_info(n i32, k i32, out &C.bb_routine) i32 {
 		out.sessions = i32(r.gate.sessions.len)
 		out.level = i32(r.gate.level)
 		out.option_size = i32(r.option.size)
-		out.option_parts = i32(r.option_parts().len)
+		out.option_parts = i32(v.rparts[int(n)][int(k)][0].len)
 		out.answer_size = i32(r.answer.size)
-		out.answer_parts = i32(r.answer_parts().len)
+		out.answer_parts = i32(v.rparts[int(n)][int(k)][1].len)
 	}
 	return ok()
 }
@@ -475,14 +489,13 @@ pub fn bb_routine_hint(n i32, k i32, answer i32, p i32, buf &char, cap i32) i32 
 pub fn bb_routine_text(n i32, k i32, data &u8, len i32, p i32, buf &char, cap i32) i32 {
 	r := node_routine(n, k) or { return refused(err) }
 	value := bytes_in('routine_text', data, len) or { return fail(bb_err, err.msg()) }
-	texts := r.answer_texts(value) or { return uds_failed(err) }
 	if p == -1 {
+		// the answer checked whole
+		r.answer_texts(value) or { return uds_failed(err) }
 		return put('', buf, cap)
 	}
-	if p < 0 || int(p) >= texts.len {
-		return fail(bb_err, 'routine ${r.label()}: its answer has no part ${p} (it has ${texts.len})')
-	}
-	return put(texts[int(p)], buf, cap)
+	text := r.answer_part(value, int(p)) or { return uds_failed(err) }
+	return put(text, buf, cap)
 }
 
 @[export: 'bb_uds_routine_described']
@@ -500,6 +513,7 @@ pub fn bb_uds_routine_described(u i32, n i32, k i32, texts &&char, cnt i32, need
 		reach.check(hd)!
 		// a text the layout refuses is refused before a lost connection is opened again
 		r.encode_option(parts) or { return error('${r.label()}: not sent — ${err.msg()}') }
+		out_buf(buf, cap)!
 		mut cl := hd.cli()!
 		reach.on_node(hd)!
 		answer := sysview.run_described(mut cl, r, parts) or {

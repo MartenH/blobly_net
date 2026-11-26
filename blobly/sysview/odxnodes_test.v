@@ -291,6 +291,12 @@ fn test_routines_are_listed_with_their_records() {
 	results := body_routine('RequestResults_SelfTest')
 	assert !results.gate.declared && record_by_label(results.answer)
 	assert results.answer_texts([u8(1), 0, 42])! == ['Passed', '42']
+	// one part alone reads as it does among the rest
+	assert results.answer_part([u8(1), 0, 42], 1)! == '42'
+	assert body_routine('Start_CheckDependencies').answer_part([u8(0xAB)], 0)! == 'AB'
+	if _ := stop.answer_part([]u8{}, 0) {
+		assert false, 'a part of an answer of none'
+	}
 	// an answer not the size the description gives, or one where it gives none, is undecodable
 	if _ := results.answer_texts([u8(1)]) {
 		assert false, 'an answer of the wrong size decoded'

@@ -672,11 +672,25 @@ fn (db &Db) routine(svc flatxml.Node, params []flatxml.Node, states map[string]S
 	}
 	what := 'routine 0x${id:04X} (${sn})'
 	option := db.record(params, what, 'its request', mut r)
+	// each positive response it may answer with, once each; alternatives laid out unlike one
+	// another leave the answer bytes of no fixed size
+	mut answers := []Record{}
+	mut seen := map[string]bool{}
+	for rref in kids(svc.child('POS-RESPONSE-REFS'), 'POS-RESPONSE-REF') {
+		resp := db.ref(rref) or { continue }
+		if seen[node_key(resp)] {
+			continue
+		}
+		seen[node_key(resp)] = true
+		answers << db.record(kids(resp.child('PARAMS'), 'PARAM'), what, 'its answer', mut r)
+	}
 	mut answer := Record{}
-	if resp := db.ref(svc.child('POS-RESPONSE-REFS').child('POS-RESPONSE-REF')) {
-		answer = db.record(kids(resp.child('PARAMS'), 'PARAM'), what, 'its answer', mut r)
-	} else {
+	if answers.len == 0 {
 		r.notes << '${what}: no POS-RESPONSE, so its answer is not known; read as bytes of no fixed size'
+	} else if answers.any(it != answers[0]) {
+		r.notes << '${what}: its ${answers.len} POS-RESPONSEs lay the answer out differently; read as bytes of no fixed size'
+	} else {
+		answer = answers[0]
 	}
 	return Routine{
 		name:    sn

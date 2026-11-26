@@ -97,6 +97,22 @@ pub fn (r RoutineDesc) answer_texts(data []u8) ![]string {
 	}
 }
 
+// answer_part decodes answer part p alone, as answer_texts would give it.
+pub fn (r RoutineDesc) answer_part(data []u8, p int) !string {
+	if r.answer.size == 0 {
+		return error('routine ${r.label()}: its answer has no part ${p} (it has 0)')
+	}
+	return r.answer.read_part(data, p) or {
+		if err is uds.UndecodableAnswer {
+			return uds.UndecodableAnswer{
+				why:  'routine ${r.label()}: ${err.why.all_after(': ')}'
+				resp: data.clone()
+			}
+		}
+		return err
+	}
+}
+
 // plan is what the run needs first on a connection in state `st`: nothing for a routine of no
 // gate, else the gate's session and level (uds.gate_plan, a write's rule), refused for a gate
 // the description leaves unresolved or one that cannot be met.

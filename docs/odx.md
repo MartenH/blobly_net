@@ -76,7 +76,8 @@ included. A layer reached on two ways passes on what either way passes on.
   service's. A tester runs one by name (`d:run_routine` in Lua, `NodeClient.run_routine` in
   Python, `bb_uds_routine_described` in C): the option encoded by its layout, refused as a gated
   write is until the connection has the gate's session and level, the answer decoded by its
-  layout. A routine control with no `POS-RESPONSE` answers bytes of no fixed size; a control none
+  layout. A routine control with no `POS-RESPONSE`, or several laid out differently, answers bytes of no
+  fixed size, said; a control none
   of the three, or an identifier that is not one 16-bit constant, is said and not read.
 - **DTCs** — every `DTC` of the variant's `DTC-DOPS`, by `SHORT-NAME` and `TROUBLE-CODE`; a node's
   DTC records then carry that name as their `fault`.

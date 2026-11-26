@@ -116,3 +116,6 @@ class TestOdxNode:
         assert diag.run_routine("RequestResults_SelfTest") == {"Status": "Passed", "Passes": 42}
         with pytest.raises(KeyError):
             diag.run_routine("Nope")
+        # a number is no name: it would pick a routine by position
+        with pytest.raises(TypeError, match="named by a string"):
+            diag.run_routine(1)

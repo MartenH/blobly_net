@@ -224,8 +224,8 @@ pub fn (p Project) to_yaml() string {
 					if u.routines.len > 0 {
 						b.writeln('          routines:')
 						for r in u.routines {
-							mut kv := [if r.id_text != '' {
-								'id: ${yaml_flow_scalar(r.id_text)}'
+							mut kv := [if text := r.id_text {
+								'id: ${yaml_flow_scalar(text)}'
 							} else {
 								'id: "0x${r.id:X}"'
 							}]

@@ -433,10 +433,11 @@ buses:
             - { id: "0xFF0G", results: "01" }
             - { id: "0x204", start: 00, results: "1G" }
             - { id: "0x205", start: 0100, stop: 1234, results: 0x0A }
+            - { id: "", start: "00" }
 '
 	p := parse(y) or { panic(err) }
 	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
-	assert u.routines.len == 4 && u.routines[0].id == 0x203
+	assert u.routines.len == 5 && u.routines[0].id == 0x203
 	assert u.routines[0].controls() == [RoutineAnswer{1, [u8(0)]}, RoutineAnswer{2, []},
 		RoutineAnswer{3, [u8(1), 0, 0x2A]}]
 	assert u.routines[1].controls() == [RoutineAnswer{3, [u8(1)]}]
@@ -444,7 +445,8 @@ buses:
 	hint := '(quoted hex bytes, as "01 00")'
 	assert u.malformed == ['routine 0xFF0G', 'routine 0x204 start answer 0 ${hint}',
 		'routine 0x204 results answer 1G ${hint}', 'routine 0x205 start answer 64 ${hint}',
-		'routine 0x205 stop answer 1234 ${hint}', 'routine 0x205 results answer 10 ${hint}']
+		'routine 0x205 stop answer 1234 ${hint}', 'routine 0x205 results answer 10 ${hint}',
+		'routine ']
 	assert u.routines[2].controls() == [] && u.routines[3].controls() == []
 	assert version_for(p) == 15
 	again := parse(p.to_yaml()) or { panic(err) }
