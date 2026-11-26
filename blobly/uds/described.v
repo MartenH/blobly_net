@@ -301,10 +301,10 @@ fn (s &Server) now_ms() i64 {
 }
 
 // physical_only: a request a server ignores when it arrives functionally — SecurityAccess and
-// Authentication, whose seed and key (or challenge and proof) are one tester's exchange (comm/uds
-// handle_functional).
+// Authentication, whose seed and key (or challenge and proof) are one tester's exchange, and
+// InputOutputControl and RoutineControl, each an action on one ECU (comm/uds handle_functional).
 pub fn physical_only(req []u8) bool {
-	return req.len > 0 && (req[0] == 0x27 || req[0] == 0x29)
+	return req.len > 0 && req[0] in [u8(0x27), 0x29, 0x2F, 0x31]
 }
 
 // handle_functional answers a request that arrived on the functional address: a described server

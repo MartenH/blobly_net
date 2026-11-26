@@ -196,7 +196,8 @@ pub mut:
 	faults []FaultDesc
 	dids   []DidDesc
 	params []ParamDesc
-	// its routine controls (routines.v): an imported description's (ODX); an ecu.toml names none
+	// its routine controls (routines.v): an imported description's (ODX); an ecu.toml's
+	// [[routine]] is not read yet (said in errs)
 	routines []RoutineDesc
 	// the node's own ISO-TP ids ([isotp] rx_id / tx_id): its request and response
 	isotp_req u32
@@ -616,6 +617,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			ranges:   field_ranges(pm, 'range')
 		}
 	}
+	// its routines are not read yet: said, so an empty listing is not taken for none declared
+	routines := tarr(doc, 'routine')
+	if routines.len > 0 {
+		d.errs << '${routines.len} [[routine]] not read (not yet: a tester runs them by identifier with routine)'
+	}
 	for f in tarr(doc, 'fault') {
 		fm := f.as_map()
 		name := tstr(fm, 'name')
@@ -849,6 +855,9 @@ fn (mut d EcuDesc) check_access() {
 	}
 	for mut x in d.dids {
 		x.authenticates = d.authenticates()
+	}
+	for mut r in d.routines {
+		r.authenticates = d.authenticates()
 	}
 	if !d.authenticates() {
 		if d.auth_keys.len > 0 {

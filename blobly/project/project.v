@@ -352,6 +352,9 @@ pub mut:
 	start   ?[]u8
 	stop    ?[]u8
 	results ?[]u8
+	// a control's answer as written where it is not whole hex bytes, by control name: the entry is
+	// malformed and a Save writes this back, never bytes it was not
+	bad map[string]string
 }
 
 // controls are the routine's controls given, each with its answer record: (1 start, 2 stop, 3
@@ -1706,14 +1709,19 @@ fn parse_node(n yaml.Any) !NodeCfg {
 				mut rc := RoutineCfg{
 					id: clamp_u32(parse_id_wide(x.value('id').str()))
 				}
-				if v := x.value_opt('start') {
-					rc.start = parse_hex_bytes(v.str())
-				}
-				if v := x.value_opt('stop') {
-					rc.stop = parse_hex_bytes(v.str())
-				}
-				if v := x.value_opt('results') {
-					rc.results = parse_hex_bytes(v.str())
+				for key in ['start', 'stop', 'results'] {
+					v := x.value_opt(key) or { continue }
+					// whole hex bytes only: an unquoted 00 is the number 0 to YAML, one digit
+					bs := hex_bytes_exact(v.str()) or {
+						ucfg.malformed << 'routine ${x.value('id').str()} ${key} "${v.str()}"'
+						rc.bad[key] = v.str()
+						continue
+					}
+					match key {
+						'start' { rc.start = bs }
+						'stop' { rc.stop = bs }
+						else { rc.results = bs }
+					}
 				}
 				ucfg.routines << rc
 			}
@@ -1895,6 +1903,16 @@ fn parse_gencfg(s yaml.Any, dflt_typ string) GenCfg {
 // parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without
 // separators: "DE AD BE EF", "DEADBEEF" and "de:ad" all give [0xDE,0xAD,…].
 // Non-hex characters are skipped; an odd trailing nibble is dropped.
+// hex_bytes_exact reads whole hex bytes, spaced or not ("01 00 2A", "01002A", "" for none); none
+// for anything else (an odd digit, a character that is not hex).
+fn hex_bytes_exact(s string) ?[]u8 {
+	t := s.replace(' ', '')
+	if t.len % 2 != 0 || !t.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return parse_hex_bytes(t)
+}
+
 fn parse_hex_bytes(s string) []u8 {
 	mut nibbles := []u8{}
 	for ch in s.trim_space().trim('"') {

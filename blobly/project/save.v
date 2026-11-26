@@ -232,6 +232,8 @@ pub fn (p Project) to_yaml() string {
 							} {
 								if bs := a {
 									kv << '${name}: "${bs.map('${it:02X}').join(' ')}"'
+								} else if text := r.bad[name] {
+									kv << '${name}: ${yaml_flow_scalar(text)}'
 								}
 							}
 							b.writeln('            - { ${kv.join(', ')} }')

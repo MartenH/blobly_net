@@ -2858,7 +2858,7 @@ run's model has a node of its name at its position, and refuses otherwise.
 | `node.authenticates` | Its `[uds] access` is `"authentication"`: it unlocks with `authenticate` (0x29) and answers 0x27 serviceNotSupported. |
 | `node.dids` | Its DIDs, a `Dids`: its own, then the ISO identification DIDs it does not declare. |
 | `node.faults` | Its `[[fault]]`s, a `NodeFaults` (`node.faults.SpeedImplausible`), each a `Fault`. |
-| `node.routines` | Its routine controls, a `Routines` (`node.routines.Start_SelfTest`, by position, `keys()`), each a `Routine`: an ODX node's 0x31 services; a system.toml node names none. |
+| `node.routines` | Its routine controls, a `Routines` (`node.routines.Start_SelfTest`, by position, `keys()`), each a `Routine`: an ODX node's 0x31 services (an ecu.toml's `[[routine]]` is not read yet). |
 | `node.targets` | Where the run reaches it, each a `NodeTarget`. |
 | `node.did(key)` | The listed `Did` that `key` names (its name, or its identifier); `None` for an identifier it does not list; `KeyError` for a name none has. |
 | `node.uds(channel=None)` | A `NodeClient` on it, on `channel` when it is reached on several. `Refused`, saying how it is reached, when no channel of the run reaches it. |

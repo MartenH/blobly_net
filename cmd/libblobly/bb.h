@@ -1419,7 +1419,7 @@ int bb_did_text(int n, int d, const uint8_t *data, int len, int p, char *buf, in
                                                         the value checked alone, answering "" */
 int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
-/* A node's routine controls (an ODX node's 0x31 services; a system.toml node names none), `k`
+/* A node's routine controls (an ODX node's 0x31 services; an ecu.toml's [[routine]] is not read yet), `k`
  * 0 .. bb_routine_count - 1: each its routine identifier, its control, its gate and the records its
  * request carries and its positive answer returns, laid out as a DID's value (bb_routine_part's
  * kind, as bb_did_part's). bb_uds_routine_described runs routine control k with the `cnt` texts of

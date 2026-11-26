@@ -203,10 +203,12 @@ fn declare_io_memory(mut srv uds.Server, cfg project.UdsCfg, cap int) {
 		srv.declare_memory(m.address, int(m.size))
 	}
 	max_rt := uds.routine_answer_max(cap)
+	mut seen_rt := map[u32]bool{}
 	for r in cfg.routines {
-		if r.id > 0xFFFF || u16(r.id) in srv.routine_ids {
-			continue // reported by validate_content
+		if r.id > 0xFFFF || r.id in seen_rt {
+			continue // reported by validate_content: the first entry of an id is served
 		}
+		seen_rt[r.id] = true
 		for c in r.controls() {
 			if c.answer.len <= max_rt {
 				srv.declare_routine(u16(r.id), c.control, c.answer)

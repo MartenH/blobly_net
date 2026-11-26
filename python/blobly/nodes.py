@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # what read() returns: one part's value, or a value of several parts by label
 DidValue: TypeAlias = int | bool | float | str | bytes | dict[str, int | bool | float | str]
 
-# a routine control's number, as RoutineDesc names it
+# a routine control's number, as RoutineDesc names it (the reader reads no other)
 CONTROLS = {1: "start", 2: "stop", 3: "results"}
 
 # enum bb_did_kind and enum bb_part_kind, as the ecu.toml and the codec name them
@@ -187,7 +187,7 @@ class Node:
             _lib.check(lib.bb_routine_info(n, k, ctypes.byref(r)))
             gate = Gate(tuple(_lib.string(lib.bb_routine_session, n, k, j) for j in range(r.sessions)), r.level)
             routines.append(Routine(_lib.string(lib.bb_routine_name, n, k), r.id,
-                                    CONTROLS.get(r.control, "start"),  # type: ignore[arg-type]
+                                    CONTROLS[r.control],  # type: ignore[arg-type]
                                     _routine_parts(lib, n, k, 0, r.option_parts),
                                     _routine_parts(lib, n, k, 1, r.answer_parts),
                                     None if r.option_size < 0 else r.option_size,
@@ -260,8 +260,8 @@ class Node:
 
     @property
     def routines(self) -> Routines:
-        """Its routine controls as this run's description gives them (an ODX node's 0x31 services;
-        a system.toml node names none)."""
+        """Its routine controls as this run's description gives them: an ODX node's 0x31 services
+        (an ecu.toml's [[routine]] is not read yet)."""
         with _lib.state_lock:
             self._live()
             return self._routines

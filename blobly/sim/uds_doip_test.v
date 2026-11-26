@@ -216,7 +216,8 @@ fn test_a_project_routine_answers_its_controls() {
 				start:   [u8(0)]
 				results: []u8{len: rt_max + 1}
 			}, project.RoutineCfg{
-				id: 0x0203
+				id:   0x0203
+				stop: []u8{}
 			}, project.RoutineCfg{
 				id: 0x0300
 			}]
@@ -225,6 +226,8 @@ fn test_a_project_routine_answers_its_controls() {
 	mut srv := uds_nodes_doip(nodes)[0].server
 	assert srv.handle([u8(0x31), 0x01, 0x02, 0x03]) == [u8(0x71), 0x01, 0x02, 0x03, 0x00]
 	assert srv.handle([u8(0x31), 0x03, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x12]
+	// the duplicate's stop is not served: the first entry of an id is
+	assert srv.handle([u8(0x31), 0x02, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x12]
 	assert srv.handle([u8(0x31), 0x01, 0x03, 0x00]) == [u8(0x7F), 0x31, 0x31]
 	warns := validate_uds_doip(nodes)
 	assert warns.any(it.contains('routine 0x203 results answers ${rt_max + 1} bytes'))

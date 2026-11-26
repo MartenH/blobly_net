@@ -233,10 +233,17 @@ pub fn (mut s Server) declare_routine(id u16, control u8, answer []u8) {
 	s.routine_ids[id] = true
 }
 
-// routine_control answers 0x31: a declared routine control with its record, whatever option record
-// the request carries; 0x31 for a routine none is declared of, 0x12 for a control it does not
-// declare.
+// routine_control answers 0x31 in blobly_emb comm/uds's order: the length to the control (0x13),
+// the control (0x12), the length to the identifier (0x13), the identifier (0x31), a control the
+// routine does not declare (0x12); a declared one answers its record, whatever option record the
+// request carries.
 fn (s &Server) routine_control(req []u8) []u8 {
+	if req.len < 2 {
+		return neg(0x31, 0x13)
+	}
+	if req[1] < routine_start || req[1] > routine_results {
+		return neg(0x31, 0x12)
+	}
 	if req.len < 4 {
 		return neg(0x31, 0x13)
 	}

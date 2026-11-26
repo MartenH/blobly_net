@@ -695,22 +695,23 @@ end
 -- beside one of its databases, or in the parent of its folder), in its order; empty without one.
 function uds.nodes() return __uds_nodes() end
 
--- a part of a DID value as the text the codec of the description reads (sysview.DidDesc.encode)
-local function part_text(did, part, v)
+-- a part of a DID value as the text the codec of the description reads (sysview.DidDesc.encode),
+-- a refusal raised at `level` (the call of the script)
+local function part_text(did, part, v, level)
   local where = (did.name ~= "" and did.name or string.format("0x%04X", did.id)) .. "." .. part.label
   if part.kind == "int" or part.kind == "bool" then
     if type(v) == "boolean" then return v and "true" or "false" end
     if math.type(v) == "integer" then return string.format("%d", v) end
-    error(where .. " is " .. (part.kind == "int" and "an integer" or "true or false") .. ", not " .. tostring(v), 3)
+    error(where .. " is " .. (part.kind == "int" and "an integer" or "true or false") .. ", not " .. tostring(v), level)
   end
   if part.kind == "number" then
     if math.type(v) == "integer" then return string.format("%d", v) end
     if math.type(v) == "float" then return string.format("%.17g", v) end
-    error(where .. " is a number, not " .. tostring(v), 3)
+    error(where .. " is a number, not " .. tostring(v), level)
   end
   if part.kind == "label" and math.type(v) == "integer" then return string.format("%d", v) end
   if type(v) ~= "string" then
-    error(where .. " is a " .. ((part.kind == "text" or part.kind == "label") and "string" or "byte string") .. ", not " .. tostring(v), 3)
+    error(where .. " is a " .. ((part.kind == "text" or part.kind == "label") and "string" or "byte string") .. ", not " .. tostring(v), level)
   end
   if part.kind == "text" or part.kind == "label" then return v end
   return tohex(v)
@@ -774,10 +775,10 @@ function uds.node(name, opts)
       end
       for _, p in ipairs(parts) do
         if value[p.label] == nil then error(what .. ": part " .. p.label .. " not given", 3) end
-        texts[#texts + 1] = part_text(d, p, value[p.label])
+        texts[#texts + 1] = part_text(d, p, value[p.label], 4)
       end
     else
-      texts[1] = part_text(d, parts[1], value)
+      texts[1] = part_text(d, parts[1], value, 4)
     end
     return texts
   end
