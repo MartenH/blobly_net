@@ -30,6 +30,9 @@ const help_docs = [
 	HelpDoc{'CAN bridge protocol', 'docs/bridge_protocol.md'},
 	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
 	HelpDoc{'Security access', 'docs/security_access.md'},
+	// The guides send a reader here for the cmd/ tools the bundle does not carry, so the link must
+	// land on a page rather than be dropped as a link to a file that is not a Help page.
+	HelpDoc{'Building from source', 'docs/building.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
 
@@ -168,29 +171,30 @@ fn rewrite_help_links(html string) string {
 		}
 	}
 	mut out := html
-	for _ in 0 .. 64 { // bounded: each pass rewrites one link, and pages have few
-		start := out.index('<a href="') or { break }
+	mut from := 0
+	// every link on the page, however many: the scan moves past each one it leaves or rewrites
+	for {
+		start := out.index_after('<a href="', from) or { break }
 		qs := start + '<a href="'.len
 		qe := out.index_after('"', qs) or { break }
 		href := out[qs..qe]
 		gt := out.index_after('>', qe) or { break }
 		close := out.index_after('</a>', gt) or { break }
-		text := out[gt + 1..close]
-		mut repl := ''
 		target := href.all_before('#') // `x.md#section` jumps to the page; the section is dropped
-		if target.ends_with('.md') && !href.starts_with('http') {
-			if idx := base_to_idx[target.all_after_last('/')] {
-				repl = '<span class="xref" data-goto="${idx}">${text}</span>'
-			} else {
-				repl = text // not a Help page: keep the words, drop the dead link
-			}
+		if !target.ends_with('.md') || href.starts_with('http') {
+			from = close + '</a>'.len
+			continue
+		}
+		text := out[gt + 1..close]
+		repl := if idx := base_to_idx[target.all_after_last('/')] {
+			'<span class="xref" data-goto="${idx}">${text}</span>'
 		} else {
-			// leave it alone, but mark it so the scan moves past it
-			repl = '<a data-ok href="${href}"' + out[qe + 1..close] + '</a>'
+			text // not a Help page: keep the words, drop the dead link
 		}
 		out = out[..start] + repl + out[close + '</a>'.len..]
+		from = start + repl.len
 	}
-	return out.replace('<a data-ok ', '<a ')
+	return out
 }
 
 // rewrite_help_images points a relative `<img src>` at the image beside its doc, as a file:// URI:
@@ -199,7 +203,8 @@ fn rewrite_help_links(html string) string {
 fn rewrite_help_images(html string, doc_dir string) string {
 	mut out := html
 	mut from := 0
-	for _ in 0 .. 64 { // bounded: each pass rewrites one image, and pages have few
+	// every image on the page: each pass moves past one, or removes it
+	for {
 		start := out.index_after('<img src="', from) or { break }
 		qs := start + '<img src="'.len
 		qe := out.index_after('"', qs) or { break }

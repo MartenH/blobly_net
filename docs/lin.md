@@ -61,7 +61,7 @@ LIN is being added in steps. This page says what exists today and what comes nex
 - **`blobly/lindb`** reads an LDF (LIN 1.3 to 2.2A). Every value it refuses, and every part it
   does not act on (event-triggered and sporadic frames, configuration commands), is listed in its
   notes rather than dropped silently. `dbc/lin_demo.ldf` is the example file.
-- **`lin_monitor`** prints a LIN bus, decoded through an LDF. It can also run a simulated
+- **`lin_monitor`** ([source checkout only](building.md#command-line-tools-source-checkout-only)) prints a LIN bus, decoded through an LDF. It can also run a simulated
   cluster on its own:
 
   ```

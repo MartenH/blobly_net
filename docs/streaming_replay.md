@@ -5,7 +5,7 @@
 > the images in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit
 > offsets, remote and invalidated frames, a DL chain with a straddling record, DZ both types, an
 > unsorted group with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain,
-> UnFinMF) and the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
+> UnFinMF) and the tracked samples; `cmd/mf4_dump --stream` ([source checkout only](building.md#command-line-tools-source-checkout-only)) reads through it and prints the heap
 > high-water mark of either path; `mf4.survey()` is the one-pass survey; `player.Chunker` plays a
 > recording a chunk at a time; and (step 4) every replay — the GUI's Replay panel and Scan,
 > `cmd/restbus`, Lua's `replay.*`, the C ABI and Python's `net.replay` — opens its recording

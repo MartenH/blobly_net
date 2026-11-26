@@ -8,8 +8,9 @@ script runs two ways:
 - **In the GUI**, against a live measurement (the **Script** panel).
 
 Lua is compiled into Blobly Net, and the headless runner brings up a simulated bus + ECU for you
-(no hardware, no Python, no drivers). The runner is built from a source checkout, so it needs the
-V toolchain that `./scripts/setup_env.sh` installs; the GUI's Script panel needs nothing more.
+(no hardware, no Python, no drivers). The runner (`cmd/script`) is built from a source checkout,
+not shipped in the release bundle ([command-line tools](building.md#command-line-tools-source-checkout-only)), so it needs the V toolchain that
+`./scripts/setup_env.sh` installs; the GUI's Script panel needs nothing more.
 
 To drive the engine from Python instead (`pip install blobly`), see
 [scripting_python.md](scripting_python.md).
@@ -1331,7 +1332,8 @@ scripts/runtests.sh powertrain.lua
 ## Appendix — other command-line tools
 
 A selection of the `cmd/` tools (run with
-`v -enable-globals run cmd/<tool>/<file>.v [args]`). The
+`v -enable-globals run cmd/<tool> [args]`). None is in the release bundle: they are built from a
+source checkout, and [building.md](building.md#command-line-tools-source-checkout-only) lists them all. The
 hardware bench tools — `silentcheck`, `vectorcheck`, `kvasercheck`, `crosscheck` — are
 described in [windows_can_hardware.md](windows_can_hardware.md); `cansub_smoke` has only its
 own header comment:

@@ -41,6 +41,11 @@ What's in this folder
   tests/            Lua test scripts the Lua panel can run
   docs/             the guides the in-app Help panel renders
 
+The command-line tools the guides mention (the Lua test runner, restbus,
+vectorcheck and the other bench tools) are not in this folder: they are built
+from a checkout of the source — see "Command-line tools (source checkout
+only)" in docs/building.md.
+
 To make double-clicking a .blobnet file open it in Blobly Net (Windows,
 per-user, no admin):
 

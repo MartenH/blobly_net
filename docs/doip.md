@@ -12,7 +12,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 |---|---|
 | DoIP channel in a project (`doip:<host>:<port>`) | ✅ configuration |
 | Finding an entity and adding it as a channel (Configure → **Discover…**, DoIP section) | ✅ ask one address, or broadcast to the network |
-| DoIP entity — discovery, routing activation, UDS | ✅ (`cmd/script` from a project, the GUI, `cmd/doip_smoke`) |
+| DoIP entity — discovery, routing activation, UDS | ✅ (`cmd/script` from a project, the GUI, `cmd/doip_smoke`; the two tools are [source checkout only](building.md#command-line-tools-source-checkout-only)) |
 | UDS over DoIP end-to-end | ✅ headless and in the GUI — from Lua via `uds.open` on a DoIP channel, from Python via `ch.uds()` ([scripting_python.md](scripting_python.md#11-doip)) |
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
 | **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |

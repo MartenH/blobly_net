@@ -147,7 +147,8 @@ glibc and checked by `auditwheel`; Windows x64 with its MinGW runtime and those 
 the release and then uploaded to **PyPI** by the `pypi` job through Trusted Publishing (no token;
 the `pypi` environment, set up once — `docs/releasing.md`). A CI wheel carries `+git.<sha>`, which
 PyPI refuses. Bundle payload list:
-`scripts/stage_bundle.sh`, once, for both. Its Linux job is pinned to **ubuntu-24.04**, not
+`scripts/stage_bundle.sh`, once, for both. The bundle carries no `cmd/` tool but the app, libblobly
+and (Windows) canbridge; the rest are built from a checkout, as `docs/building.md` says (#198). Its Linux job is pinned to **ubuntu-24.04**, not
 `ubuntu-latest`: a Linux binary does not bundle glibc, so the build host sets the oldest system it
 runs on, and a floating label raises that floor silently. Ubuntu 24.04 is the supported floor,
 and `ci.yml`'s required compiling jobs and canbridge are pinned to the same image (the
@@ -405,6 +406,9 @@ in `cmd`/`blobly`/`libs`, #455, and `ap := app` inside a `mut` receiver or param
 under V3, which crashed the CAN diagnostic press; `scripts/mut_alias.awk`, its fixtures in
 `scripts/mut_alias_test.sh`) and
 `scripts/diagrams_check.sh` (every `docs/*.drawio.svg` is what its script in `docs/diagrams/` draws — a diagram is edited in its script, `python3 docs/diagrams/<name>.py docs`, never by hand; `drawio.py` is the generator, plain SVG plus the mxfile draw.io opens) and
+`scripts/docs_tools_check.sh` (#198: a guide under `docs/` naming a `cmd/` tool the bundle does not
+carry — every one but `blobly_net` and `libblobly` — links to `docs/building.md`'s "Command-line
+tools (source checkout only)", whose table lists it; tested by `docs_tools_check_test.sh`) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as

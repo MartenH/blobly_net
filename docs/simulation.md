@@ -84,7 +84,7 @@ in the DBC and the simulation follows.
 **ARXML.** A `.arxml` entry is read natively (AUTOSAR 4.x system description; `blobly/candb/
 arxml.v`) — the OEM's file stays the source of truth and nothing is regenerated when a new one
 arrives. It is read-only in the DBC editor. For a consumer that needs a DBC (blobly_emb's build,
-or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message attributes and a
+or you, to edit), `cmd/arxml2dbc` ([source checkout only](building.md#command-line-tools-source-checkout-only)) exports one with the E2E contract as message attributes and a
 provenance comment naming the ARXML it came from. What the reader could not resolve or chose
 not to extract (container PDUs, LIN clusters, …) is reported on load — in the Log, on the
 headless runner's stderr, by `cmd/sim_startup_check` — never dropped in silence; and a file
