@@ -62,6 +62,22 @@ fn test_an_interface_is_found_by_name_or_by_an_address_it_holds() {
 	assert join_index(f, 'wg0', true)! == 9, 'an interface with no address is joined by name'
 }
 
+fn test_an_ipv6_address_names_its_interface_in_any_spelling() {
+	f := sample_ifaces()
+	assert join_index(f, 'FE80:0:0:0:1E36:CC8D:9811:D04D', true)! == 2
+	assert join_index(f, 'fe80:0::1e36:cc8d:9811:d04d%eth1', true)! == 2
+	if _ := join_index(f, 'fe80::1e36:cc8d:9811:d04d%eth9', true) {
+		assert false, 'an address of another scope'
+	}
+	lo6 := [NetIface{
+		index4: 1
+		index6: 1
+		name:   'lo'
+		addr:   '::1'
+	}]
+	assert join_index(lo6, '0:0:0:0:0:0:0:1', true)! == 1
+}
+
 fn test_an_interface_the_host_does_not_have_is_refused_naming_those_it_has() {
 	join_index(sample_ifaces(), 'eth9', false) or {
 		assert err.msg() == 'no network interface "eth9" on this host (by name or address; it has lo, eth1, tap1, tap2, Ethernet 2, wg0)'

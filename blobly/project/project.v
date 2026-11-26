@@ -632,6 +632,15 @@ fn iface_scheme_is(iface string, scheme string) bool {
 	return t == scheme || t.starts_with('${scheme}:')
 }
 
+// group_iface_refusal is why a SOME/IP row's `group_iface` cannot stand: it names where a group
+// is joined, and the row joins none. The file's reader and the GUI's editor refuse by it.
+pub fn (ch Channel) group_iface_refusal() ?string {
+	if ch.group_iface != '' && ch.group == '' && ch.kind() == .someip {
+		return 'group_iface ${ch.group_iface} names where a multicast group is joined, but the row joins no group'
+	}
+	return none
+}
+
 // someip_endpoint parses `iface` ("someip:host:port" / "someip:host" / "someip") into the
 // bind host + port, defaulting to 0.0.0.0:30490 — the wildcard, because a listener wants every
 // interface (a multicast join needs it), where a DoIP client wants one peer. Only meaningful
@@ -1363,8 +1372,8 @@ fn parse_channel(c yaml.Any) !Channel {
 	ch.announce_to = c.value('announce_to').default_to('').string()
 	ch.group = c.value('group').default_to('').string().trim_space()
 	ch.group_iface = c.value('group_iface').default_to('').string().trim_space()
-	if ch.group_iface != '' && ch.group == '' && ch.kind() == .someip {
-		return error('channel "${ch.name}": group_iface ${ch.group_iface} names where a multicast group is joined, but the row joins no group')
+	if why := ch.group_iface_refusal() {
+		return error('channel "${ch.name}": ${why}')
 	}
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }

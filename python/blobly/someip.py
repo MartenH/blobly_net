@@ -198,11 +198,11 @@ def listen(window_ms: float = 1000, *, port: int | None = None, group: str | Non
         if not isinstance(channel, Channel):
             raise TypeError(f"someip.listen: channel is a Channel, not {channel!r}")
         use_port = ctypes.c_int()
-        use_group, use_iface = ctypes.create_string_buffer(256), ctypes.create_string_buffer(256)
+        use_group, use_iface = ctypes.create_string_buffer(256), ctypes.create_string_buffer(1024)
         with _lib.state_lock:  # the row's endpoint in this run, read once; the wait holds no lock
             _started("someip.listen", channel)
             host = _lib.string(lambda buf, cap: lib.bb_someip_listener(channel._index, p, g, gi, buf, cap,
                                                                        ctypes.byref(use_port), use_group, 256,
-                                                                       use_iface, 256))
+                                                                       use_iface, 1024))
         host, p, g, gi = host.encode(), use_port.value, use_group.value, use_iface.value
     return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, gi, window))))

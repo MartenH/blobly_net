@@ -50,7 +50,7 @@ static void ct_netif_addr(const struct sockaddr *sa, char *host, int cap) {
 // length the lines need (a caller whose buf was shorter asks again), or a negative error code.
 static int ct_netif_list(char *buf, int cap) {
 	int n = 0;
-	char line[1400];
+	char line[2400];
 	char host[NI_MAXHOST];
 #ifdef _WIN32
 	ULONG size = 16384;
@@ -68,7 +68,7 @@ static int ct_netif_list(char *buf, int cap) {
 		return -(int)r;
 	}
 	for (IP_ADAPTER_ADDRESSES *p = aa; p; p = p->Next) {
-		char name[512] = "";
+		char name[1024] = ""; // a 256-character name as UTF-8
 		if (p->FriendlyName)
 			WideCharToMultiByte(CP_UTF8, 0, p->FriendlyName, -1, name, (int)sizeof(name), NULL, NULL);
 		const char *alias = p->AdapterName ? p->AdapterName : "";

@@ -79,8 +79,7 @@ fn parse_netifaces(text string) []NetIface {
 pub fn join_index(ifaces []NetIface, spec string, v6 bool) !u32 {
 	mut hit := []NetIface{}
 	for f in ifaces {
-		if f.name == spec || (f.alias != '' && f.alias == spec) || (f.addr != ''
-			&& (f.addr == spec || f.addr.all_before('%') == spec)) {
+		if f.name == spec || (f.alias != '' && f.alias == spec) || addr_names(f.addr, spec) {
 			if !hit.any(it.name == f.name) {
 				hit << f
 			}
@@ -104,6 +103,35 @@ pub fn join_index(ifaces []NetIface, spec string, v6 bool) !u32 {
 		return error('interface "${hit[0].name}" has no ${fam} on this host')
 	}
 	return idx
+}
+
+// addr_names is whether the interface address `addr` (as getnameinfo spells it) is the one `spec`
+// names: an IPv6 address by value, whatever its spelling, its `%scope` compared where both give one.
+fn addr_names(addr string, spec string) bool {
+	if addr == '' {
+		return false
+	}
+	a, s := addr.all_before('%'), spec.all_before('%')
+	if addr.contains('%') && spec.contains('%') && addr.all_after('%') != spec.all_after('%') {
+		return false
+	}
+	if a == s {
+		return true
+	}
+	if !a.contains(':') || !s.contains(':') {
+		return false
+	}
+	ka := ip6_text(a) or { return false }
+	return ip6_text(s) or { return false } == ka
+}
+
+// ip6_text is an IPv6 literal in one spelling, none for a string that is not one.
+fn ip6_text(s string) ?string {
+	addrs := net.resolve_addrs('[${s}]:0', .ip6, .udp) or { return none }
+	if addrs.len == 0 {
+		return none
+	}
+	return addrs[0].str()
 }
 
 // join_group_on joins `group` on the socket `c`, on the interface `spec` names (join_index).
