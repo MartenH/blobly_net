@@ -93,6 +93,10 @@ fn test_an_ipv6_zone_names_its_interface_by_number_or_by_name() {
 	}]
 	assert join_index(win, 'fe80::1%Ethernet 2', true)! == 12
 	assert join_index(win, 'fe80::1%12', true)! == 12
+	// a number no index can be names no interface, rather than one it wraps to
+	if _ := join_index(f, 'fe80::1e36:cc8d:9811:d04d%4294967298', true) {
+		assert false, 'a zone past 32 bits'
+	}
 }
 
 // two spellings of one interface name one join; an unknown one names none
@@ -170,6 +174,22 @@ fn test_a_unicast_address_is_not_a_group() {
 	assert false, 'a unicast address joined as a group'
 }
 
+fn test_a_group_with_a_leading_zero_octet_is_refused() {
+	udp_bind('0.0.0.0:0', '239.010.0.1', 'lo') or {
+		assert err.msg().contains('239.010.0.1 is not a multicast address'), err.msg()
+		return
+	}
+	assert false, 'a group the resolver reads as octal'
+}
+
+fn test_a_group_with_a_zone_is_refused_beside_a_named_interface() {
+	udp_bind('[::]:0', 'ff12::b10b:334%eth1', 'lo') or {
+		assert err.msg().contains('names a zone'), err.msg()
+		return
+	}
+	assert false, 'a group naming an interface beside the named one'
+}
+
 // a loopback group of this process's own: the port the OS gave the listener keeps other runs out
 fn loop_group(second int) string {
 	pid := os.getpid()
@@ -242,12 +262,14 @@ fn test_an_ipv6_group_is_joined_on_loopback_by_name() {
 	$if !linux {
 		return
 	}
-	mut c := udp_bind('[::]:0', 'ff12::1:7701', 'lo') or {
-		if err.msg().contains('cannot listen') {
-			return // no IPv6 on this host
+	for group in ['ff12::1:7701', '[ff12::1:7701]'] {
+		mut c := udp_bind('[::]:0', group, 'lo') or {
+			if err.msg().contains('cannot listen') {
+				return // no IPv6 on this host
+			}
+			assert false, err.msg()
+			return
 		}
-		assert false, err.msg()
-		return
+		c.close() or {}
 	}
-	c.close() or {}
 }

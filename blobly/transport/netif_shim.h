@@ -148,10 +148,14 @@ static void ct_netif_strerror(int code, char *buf, int cap) {
 	if (cap <= 0) return;
 	buf[0] = 0;
 #ifdef _WIN32
-	DWORD got = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
-		(DWORD)code, 0, buf, (DWORD)cap, NULL);
-	while (got > 0 && (buf[got - 1] == '\n' || buf[got - 1] == '\r' || buf[got - 1] == '.')) buf[--got] = 0;
-	if (got == 0) snprintf(buf, (size_t)cap, "error %d", code);
+	// the system's text in UTF-16, converted to UTF-8 as the interface names are
+	wchar_t w[512];
+	DWORD got = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+		(DWORD)code, 0, w, (DWORD)(sizeof(w) / sizeof(w[0])), NULL);
+	while (got > 0 && (w[got - 1] == L'\n' || w[got - 1] == L'\r' || w[got - 1] == L'.')) w[--got] = 0;
+	int l = got > 0 ? WideCharToMultiByte(CP_UTF8, 0, w, (int)got, buf, cap - 1, NULL, NULL) : 0;
+	if (l <= 0) snprintf(buf, (size_t)cap, "error %d", code);
+	else buf[l] = 0;
 #else
 	snprintf(buf, (size_t)cap, "%s", strerror(code));
 #endif

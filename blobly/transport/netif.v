@@ -131,9 +131,13 @@ fn addr_names(ifaces []NetIface, addr string, spec string) bool {
 }
 
 // scope_index is the interface index an IPv6 zone names: a number as itself, else the IPv6 index
-// of the interface of that name (or Windows' GUID); none for a zone no interface answers to.
+// of the interface of that name (or Windows' GUID); none for a zone no interface answers to, or a
+// number no index can be.
 fn scope_index(ifaces []NetIface, zone string) ?u32 {
 	if zone != '' && zone.bytes().all(it.is_digit()) {
+		if zone.len > 10 || zone.u64() > 0xFFFF_FFFF {
+			return none
+		}
 		return u32(zone.u64())
 	}
 	for f in ifaces {
@@ -171,11 +175,20 @@ fn ip6_text(s string) ?string {
 	return addrs[0].str()
 }
 
-// join_group_on joins `group` on the socket `c`, on the interface `spec` names (join_index).
-pub fn join_group_on(mut c net.UdpConn, group string, spec string) ! {
+// join_group_on joins `group` on the socket `c`, on the interface `spec` names (join_index). An
+// IPv6 group may be bracketed; one with a `%zone` is refused, since the interface is `spec`'s.
+pub fn join_group_on(mut c net.UdpConn, group_in string, spec string) ! {
+	group := if group_in.starts_with('[') && group_in.ends_with(']') {
+		group_in[1..group_in.len - 1]
+	} else {
+		group_in
+	}
 	v6 := group.contains(':')
+	if group.contains('%') {
+		return error('${group_in} names a zone, and the interface is the one ${spec} names; drop the zone')
+	}
 	if !is_multicast_addr(group) {
-		return error('${group} is not a multicast address')
+		return error('${group_in} is not a multicast address')
 	}
 	idx := join_index(local_netifaces()!, spec, v6)!
 	at := if v6 { '[${group}]:0' } else { '${group}:0' }
@@ -192,13 +205,15 @@ pub fn join_group_on(mut c net.UdpConn, group string, spec string) ! {
 	}
 }
 
-// is_multicast_addr is whether `a` is an IPv4 (224.0.0.0/4) or IPv6 (ff00::/8) multicast literal.
+// is_multicast_addr is whether `a` is an IPv4 (224.0.0.0/4, dotted decimal: an octet with a
+// leading zero is refused, since the resolver reads it as octal) or IPv6 (ff00::/8) multicast literal.
 fn is_multicast_addr(a string) bool {
 	if a.contains(':') {
 		return a.to_lower().starts_with('ff')
 	}
 	p := a.split('.')
-	if p.len != 4 || p.any(it == '' || !it.bytes().all(it.is_digit()) || it.len > 3 || it.int() > 255) {
+	if p.len != 4 || p.any(it == '' || !it.bytes().all(it.is_digit()) || it.len > 3 || it.int() > 255
+		|| (it.len > 1 && it[0] == `0`)) {
 		return false
 	}
 	return p[0].int() >= 224 && p[0].int() <= 239
