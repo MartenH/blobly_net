@@ -84,9 +84,9 @@ jobs:
     # PINNED, NOT FLOATING. A Linux binary does not bundle glibc, so it runs on hosts at least as
     # new as the machine that built it; `ubuntu-latest` advancing would silently raise that floor
     # for every user (codex round 2 on #322). Ubuntu 24.04 is the supported floor, and ci.yml's
-    # compiling jobs are pinned to the same image, so the compiler the release builds with is the
-    # one every PR is tested with. The tarball and the Linux wheel are both built here and share
-    # the floor.
+    # required compiling jobs are pinned to the same image (not the non-required canary-latest),
+    # so the compiler the release builds with is the one every PR is tested with. The tarball and
+    # the Linux wheel are both built here and share the floor.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
