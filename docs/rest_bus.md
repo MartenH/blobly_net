@@ -135,13 +135,20 @@ An ARXML system description is a database entry like a DBC. The shipped fixture
 
 `#Body` names the cluster, which a file with several clusters requires. The cluster carries a
 CAN-FD frame, so the row is CAN-FD; Start warns when it is classic. `ECU_C` follows the rule but
-sends nothing here: its one frame, `Wide`, is event-only.
+sends nothing here: its one frame, `Wide`, is event-only, and nothing changes its signal until a
+generator or a script does.
+
+A PDU's transmission timing is read as a DBC's `GenMsg*` attributes are: its mode as the send
+type (cyclic, event or mixed), its `NUMBER-OF-REPETITIONS` and `REPETITION-PERIOD` as the
+repetitions and their spacing, its `MINIMUM-DELAY` as the least time between two sends. So an
+event or mixed frame is sent on a change and repeated as the file says, by the rules above.
 
 The file is read natively, so it stays the source of truth: nothing is regenerated when the OEM
 sends a new one. What the reader could not resolve, or chose not to extract, is reported on load
-rather than dropped, and so is what the simulation does differently from the file: a frame with
-mixed cyclic and event timing is sent on its cycle only, an event-only frame is not sent, and a
-SecOC layout is carried but not stamped.
+rather than dropped, and so is what the simulation does differently from the file: an event or
+mixed frame is sent on a change of any of its signals (`TRANSFER-PROPERTY`, which says which
+signals trigger a send, is not read), a cyclic `TIME-OFFSET` is not kept, and a SecOC layout is
+carried but not stamped.
 
 **Import ARXML...** in the Configuration panel builds the rows for you. It takes an `.arxml`, an
 `.arxmodel.toml` (several files merged as one description), or an ExtractEditor `.e3proj` (which

@@ -2,6 +2,7 @@ module sim
 
 import blobly.candb
 import blobly.project
+import os
 
 const send_type_dbc = 'BU_: Body
 BO_ 256 Door: 2 Body
@@ -407,4 +408,25 @@ fn test_a_value_set_during_the_start_delay_is_sent_when_it_ends() {
 	})
 	assert w.next_due_ms()? <= 1000.0
 	assert w.recv_wait_ms(300) == loop_wait_ms
+}
+
+// an ARXML frame's transmission timing is on its Message (#339), so an event frame goes out on a
+// change with its NUMBER-OF-REPETITIONS, REPETITION-PERIOD apart, by the same rules as a DBC's
+fn test_an_arxml_event_frame_is_sent_on_a_change_with_its_repetitions() {
+	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'example.arxml')
+	a := candb.load_arxml_file(path)!
+	db := (a.cluster('Body') or { panic(err) }).db
+	// Wide (0x1ABCDE): event only, 2 repetitions 20 ms apart; its Odometer stepping every 0.2 s
+	mut e := Engine{
+		ecus: [build_configured_ecu(db, 'ECU_C', {
+			'Odometer': gen_stepmod(0.2, 100, 0)
+		}, [])]
+	}
+	sent := frames_by(mut e, grid(500, 5)).filter(it[1] == '${0x1ABCDE}').map(it[0])
+	assert sent == ['200.0', '220.0', '240.0', '400.0', '420.0', '440.0']
+	// and with nothing changing it, nothing: no cycle to send it on
+	mut quiet := Engine{
+		ecus: [ecu_from_dbc(db, 'ECU_C')]
+	}
+	assert frames_by(mut quiet, grid(500, 5)).len == 0
 }

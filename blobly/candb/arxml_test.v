@@ -32,9 +32,9 @@ fn test_cluster_and_nodes() {
 	// the file is complete: nothing dangling
 	assert a.report.unresolved == []
 	assert a.report.notes == [
-		'/PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
+		'/PDUs/LampFrame_PDU: event-controlled timing; the simulation sends frame LampFrame on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 		'SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)',
-		'/PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
+		'/PDUs/Wide_PDU: event-controlled timing; the simulation sends frame Wide on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 	]
 	// and the one PDU kind not extracted is counted, not dropped in silence
 	assert a.report.ignored == {
@@ -179,12 +179,65 @@ fn test_extended_fd_event_frame() {
 	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.fd
 	assert f.tx_mode == 'event'
+	assert f.repetitions == 2
+	assert f.repetition_ms == 20
 	assert f.receivers == []
 	od := sig(m, 'Odometer')
 	assert od.start_bit == 64
 	assert od.length == 32
 	assert od.factor == 0.1
 	assert od.unit == 'km'
+}
+
+// the first PDU's transmission timing is on the Message as a DBC's GenMsg* attributes put it, so
+// the simulation sends an event or mixed frame on a change (#339)
+fn test_transmission_timing_is_on_the_message() {
+	c := example_arxml().cluster('Body') or { panic(err) }
+	pt := c.db.lookup(0x100) or { panic('no Powertrain') }
+	assert pt.send_type_name == 'cyclic' && pt.send_type == .cyclic
+	assert pt.cyclic_period() == 100 && !pt.on_change()
+	assert pt.delay_ms == 20 && pt.repetitions == 0 && pt.cycle_fast_ms == 0
+	lamp := c.db.lookup(0x200) or { panic('no LampFrame') }
+	assert lamp.send_type_name == 'cyclicAndSpontaneousWithDelay' && lamp.send_type == .mixed
+	assert lamp.cyclic_period() == 100 && lamp.on_change()
+	assert lamp.delay_ms == 10 && lamp.repetitions == 0
+	wide := c.db.lookup(0x1ABCDE) or { panic('no Wide') }
+	assert wide.send_type_name == 'spontaneousWithRepetition' && wide.send_type == .event
+	assert wide.cyclic_period() == 0 && wide.on_change()
+	assert wide.repetitions == 2 && wide.cycle_fast_ms == 20 && wide.delay_ms == 0
+	// a frame with no timing states no send type
+	diag := c.db.lookup(0x7E0) or { panic('no DiagReq') }
+	assert diag.send_type_name == '' && diag.send_type == .unstated
+	// the export writes them through the writer's GenMsg* rules, and they read back
+	back := parse_dbc(c.export_dbc(ArxmlProvenance{}, example_arxml().report)) or { panic(err) }
+	for m in c.db.messages {
+		r := back.lookup_frame(m.id, m.ext) or { panic('${m.name} not exported') }
+		// cyclic is the definition's default, so a frame stating none reads back as cyclic
+		want := if m.send_type == .unstated { SendType.cyclic } else { m.send_type }
+		assert r.send_type == want, m.name
+		if m.send_type != .unstated {
+			assert r.send_type_name == m.send_type_name, m.name
+		}
+		assert r.repetitions == m.repetitions, m.name
+		assert r.cycle_fast_ms == m.cycle_fast_ms, m.name
+		assert r.delay_ms == m.delay_ms, m.name
+		assert r.cyclic_period() == m.cyclic_period(), m.name
+	}
+}
+
+// the send type names a burst or a minimum delay where Vector's enum has a choice for it
+fn test_arxml_send_type_names_a_burst_or_a_delay() {
+	assert arxml_send_type('cyclic', 0, 20) == 'cyclic'
+	assert arxml_send_type('event', 0, 0) == 'spontaneous'
+	assert arxml_send_type('event', 0, 10) == 'spontaneousWithDelay'
+	assert arxml_send_type('event', 2, 0) == 'spontaneousWithRepetition'
+	assert arxml_send_type('event', 2, 10) == 'spontaneousWithRepetition'
+	assert arxml_send_type('mixed', 0, 0) == 'cyclicAndSpontaneous'
+	assert arxml_send_type('mixed', 3, 10) == 'cyclicAndSpontaneousWithDelay'
+	assert arxml_send_type('', 2, 10) == ''
+	for name in ['spontaneousWithDelay', 'spontaneousWithRepetition', 'cyclicAndSpontaneousWithDelay'] {
+		assert name in send_type_choices
+	}
 }
 
 fn test_n_pdu_frame_is_a_frame_without_signals() {
@@ -351,8 +404,19 @@ fn test_event_bursts_are_carried_and_named_in_the_fragment() {
 	assert f.repetitions == 2
 	assert f.repetition_ms == 20
 	assert c.frame_toml('').contains('# event burst: a change is sent 3 times, 20 ms apart')
-	// and the native load path hears about it too, not only the fragment
-	assert a.report.notes.any(it.contains('event-controlled timing repeats a change 2 more times 20 ms apart; the simulation sends once'))
+	// and the Message carries it, so the simulation sends the burst: nothing left to say but
+	// the trigger the reader does not read (#339)
+	m := c.db.messages[0]
+	assert m.send_type == .event && m.repetitions == 2 && m.cycle_fast_ms == 20
+	assert !a.report.notes.any(it.contains('repeats a change')), a.report.notes.str()
+	// no ECU sends this frame, so nothing is simulated for it and the trigger goes unsaid
+	assert m.sender == '' && !a.report.notes.any(it.contains('event-controlled timing;')), a.report.notes.str()
+	// repetitions with no period are spaced as a change send with no fast cycle, and said
+	bare := burst.replace('<REPETITION-PERIOD><VALUE>0.02</VALUE></REPETITION-PERIOD>', '')
+	b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + bare + arxml_tail) or {
+		panic(err)
+	}
+	assert b.report.notes.any(it.contains('repeats a change 2 more times with no REPETITION-PERIOD; the simulation spaces them by the MINIMUM-DELAY, else by its default change gap'))
 }
 
 fn test_not_autosar_and_not_4x_are_refused() {
@@ -1199,7 +1263,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert c.export_notes().len == 1 && c.export_notes()[0].contains('UNUSED-BIT-PATTERN 0xFF'), c.export_notes().str()
 	assert c.export_dbc(ArxmlProvenance{}, a.report).contains(' notes=${a.report.notes.len + 1}"')
 	assert c.frame_toml('').contains('# the bits no signal covers are 0xFF (UNUSED-BIT-PATTERN)')
-	assert a.report.notes.any(it.contains('/PDUs/P: event-controlled timing only, no cyclic timing'))
+	assert c.db.messages[0].send_type == .event
 	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
 	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
 	assert !integral_literal('0xZZ') && !integral_literal('0x1G') && integral_literal('0xfF') // round 38
@@ -1878,7 +1942,7 @@ fn test_frame_toml_per_ecu() {
 	assert all.contains('[[frame]]\nname = "Powertrain"\nbus  = "Body"\ntx   = { mode = "cyclic", cycle_ms = 100, min_delay_ms = 20 }')
 	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # AUTOSAR PROFILE_01')
 	assert all.contains('# secoc = { key = "…", data_id = 0x2B, fresh_pos = 3, mac_pos = 4, mac_len = 4 }')
-	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   = { mode = "event" }')
+	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\n# event burst: a change is sent 3 times, 20 ms apart — not expressible here, one send is what the mode above gives\ntx   = { mode = "event" }')
 	// a frame nobody sends is still listed when everything is asked for
 	assert all.contains('name = "DiagReq"')
 	assert !all.contains('\nrx   =')
@@ -1896,7 +1960,7 @@ fn test_frame_toml_per_ecu() {
 	// in the keys ecu.toml and system.toml accept; the data rate has none
 	assert all.contains('#   ecu.toml     [bus.Body]  fd = true\n#   system.toml  [bus.Body]  fd = true, bitrate = 500000\n#   (the data phase, 2000000 bit/s, has a key in neither: the platform sets it)')
 	assert !all.contains('baudrate =')
-	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   =')
+	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\n# event burst')
 	// an ECU the cluster never names is a typo, not an empty fragment
 	assert c.ecus() == ['ECU_A', 'ECU_B', 'ECU_C']
 }
@@ -1910,9 +1974,9 @@ fn test_report_lines() {
 	assert l[0].starts_with('unresolved reference: ')
 	assert example_arxml().report.lines() == [
 		'ignored: 1 × N-PDU',
-		'note: /PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
+		'note: /PDUs/LampFrame_PDU: event-controlled timing; the simulation sends frame LampFrame on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 		'note: SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as the bits no signal covers (the frame\'s fill)',
-		'note: /PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
+		'note: /PDUs/Wide_PDU: event-controlled timing; the simulation sends frame Wide on a change of any of its signals, since TRANSFER-PROPERTY (which signals trigger a send) is not read',
 	]
 }
 

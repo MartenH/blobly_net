@@ -214,8 +214,8 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 		}
 	}
 	mut x := DbcExtras{
-		// `notes` too: a file the reader read PARTIALLY — an initial value dropped, a timing mode
-		// the simulation cannot keep — has neither an ignored kind nor a dangling reference, so
+		// `notes` too: a file the reader read PARTIALLY — an initial value dropped, a cyclic phase
+		// the simulation does not model — has neither an ignored kind nor a dangling reference, so
 		// `dropped=0 unresolved=0` stamped it as complete while the detail went to the exporting
 		// process's stderr and not with the artifact (codex on #273 round 21). The count says
 		// "there was more; re-run the export to read it"
