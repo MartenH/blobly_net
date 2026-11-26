@@ -39,6 +39,7 @@ struct Chan {
 	manifest     string
 	kind         project.RowKind // the row's (project.Channel.kind): "is this a CAN wire?" is `== .can`
 	group        string // multicast group the listener joins ('' = unicast only)
+	group_iface  string // the interface it joins the group on ('' = the default interface)
 	// WHICH project row this is, by index. app.chans is built 1:1 from proj.channels, so the
 	// index IS the identity — and a name is not: nothing makes channel names unique, and the one
 	// place that looked the project row up BY NAME could hand a row the carrier of a different

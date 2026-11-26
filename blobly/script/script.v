@@ -900,18 +900,19 @@ fn l_someip_listen(l lua.State) i32 {
 	window := int(env_of(l).bounded_window(ms_up(l, 2)))
 	group := l.arg_str(3)
 	from := l.arg_str(4)
+	group_iface := l.arg_str(5)
 	mut car := ?udsconn.Carrier(none)
 	if from != '' {
 		info := env_of(l).someip_chan(from) or { return l.fail('someip.listen: ${err}') }
 		car = ?udsconn.Carrier(info.carrier)
 	}
-	host, use_port, use_group := udsconn.someip_listener(port, group, from, car) or {
+	at := udsconn.someip_listener(port, group, group_iface, from, car) or {
 		return l.fail('someip.listen: ${err}')
 	}
 	// The claim inside collect() refuses an endpoint another listener in this process holds,
 	// however the script named it — by channel or by bare port, both reach the same socket.
-	cap := someip.collect(host, use_port, window, use_group) or {
-		return l.fail('someip.listen(${use_port}): ${err}')
+	cap := someip.collect(at.host, at.port, window, at.group, at.group_iface) or {
+		return l.fail('someip.listen(${at.port}): ${err}')
 	}
 	if env_of(l).expired() {
 		return timeout_at(l) // the wait was cut

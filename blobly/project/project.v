@@ -27,7 +27,7 @@ import strconv
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 14
+pub const schema_version = 15
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -41,6 +41,12 @@ pub const schema_version = 14
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v15 — the interface a SOME/IP row joins its multicast group on (`group_iface`, #334), which
+	// an older build drops on its next structured save, and the group is joined on the default
+	// interface again with nothing said
+	if p.channels.any(it.kind() == .someip && it.group != '' && it.group_iface != '') {
+		return 15
+	}
 	// v14 — a stated fill for the bits no signal covers (`fill:`, on a row or a generator, #671),
 	// which an older build drops on its next structured save, and the bits go out as 0 again; and a
 	// simulated ECU answering in frames longer than 8 bytes (a node's `uds:` `tx_dl`, #679), which
@@ -603,6 +609,9 @@ pub mut:
 	// group joined on that socket ('' = unicast only). What arrives is shown as trace rows
 	// (message id, type, raw payload); nothing is sent. See docs/ethernet_architecture.md.
 	group string
+	// group_iface is the interface the group is joined on: an interface name or an address it
+	// holds ('' = the default interface, schema v15); refused without a group
+	group_iface string
 	// A LIN row (kind .lin, lin.v): its LDF, role (master | slave | monitor) and the schedule its
 	// master runs from the start; `simulate` is the LDF nodes it plays.
 	ldf      string
@@ -1353,6 +1362,10 @@ fn parse_channel(c yaml.Any) !Channel {
 	}
 	ch.announce_to = c.value('announce_to').default_to('').string()
 	ch.group = c.value('group').default_to('').string().trim_space()
+	ch.group_iface = c.value('group_iface').default_to('').string().trim_space()
+	if ch.group_iface != '' && ch.group == '' && ch.kind() == .someip {
+		return error('channel "${ch.name}": group_iface ${ch.group_iface} names where a multicast group is joined, but the row joins no group')
+	}
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
 	}

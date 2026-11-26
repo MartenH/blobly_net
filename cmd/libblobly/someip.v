@@ -111,36 +111,44 @@ pub fn bb_someip_call(port i32, to &char, req &C.bb_someip_out, timeout_ms i32) 
 }
 
 // bb_someip_listener: where SOME/IP row `r` of the run listens — its bind host into `host` (put's
-// convention: the answer is its length), its port, and its group into `group` (refused when it does
-// not fit) — given the port and group a host asked for, which must not contradict it.
+// convention: the answer is its length), its port, its group into `use_group` and the interface it
+// is joined on into `use_iface` (each refused when it does not fit) — given the port, group and
+// interface a host asked for, which must not contradict it.
 @[export: 'bb_someip_listener']
-pub fn bb_someip_listener(r i32, port i32, group &char, host &char, hcap i32, use_port &i32, use_group &char, gcap i32) i32 {
-	if isnil(use_port) || isnil(use_group) || gcap <= 0 {
+pub fn bb_someip_listener(r i32, port i32, group &char, group_iface &char, host &char, hcap i32, use_port &i32, use_group &char, gcap i32, use_iface &char, icap i32) i32 {
+	if isnil(use_port) || isnil(use_group) || gcap <= 0 || isnil(use_iface) || icap <= 0 {
 		return fail(bb_err, 'someip listener: nowhere to put the answer')
 	}
 	if port < 0 || port > 0xFFFF {
 		return fail(bb_err, 'someip listener: ${port} is not a port')
 	}
 	g := if isnil(group) { '' } else { unsafe { cstring_to_vstring(group) } }
+	gi := if isnil(group_iface) { '' } else { unsafe { cstring_to_vstring(group_iface) } }
 	name, c := run_row('someip listener', r) or { return failed_with(err) }
-	h, p, ug := udsconn.someip_listener(int(port), g, name, ?udsconn.Carrier(c)) or {
+	at := udsconn.someip_listener(int(port), g, gi, name, ?udsconn.Carrier(c)) or {
 		return fail(bb_err, 'someip listen: ${err}')
 	}
-	if ug.len >= int(gcap) {
-		return fail(bb_err, 'someip listener: the group ${ug} does not fit ${gcap} bytes')
+	if at.group.len >= int(gcap) {
+		return fail(bb_err, 'someip listener: the group ${at.group} does not fit ${gcap} bytes')
+	}
+	if at.group_iface.len >= int(icap) {
+		return fail(bb_err, 'someip listener: the interface ${at.group_iface} does not fit ${icap} bytes')
 	}
 	unsafe {
-		*use_port = i32(p)
-		vmemcpy(use_group, ug.str, ug.len)
-		use_group[ug.len] = 0
+		*use_port = i32(at.port)
+		vmemcpy(use_group, at.group.str, at.group.len)
+		use_group[at.group.len] = 0
+		vmemcpy(use_iface, at.group_iface.str, at.group_iface.len)
+		use_iface[at.group_iface.len] = 0
 	}
-	return put(h, host, hcap)
+	return put(at.host, host, hcap)
 }
 
 // bb_someip_listen: what `port` (0: 30490) on `host` (NULL or "": the wildcard) heard for
-// window_ms, joining `group` (NULL or "": none) — a capture.
+// window_ms, joining `group` (NULL or "": none) on the interface `group_iface` names (NULL or "":
+// the default) — a capture.
 @[export: 'bb_someip_listen']
-pub fn bb_someip_listen(host &char, port i32, group &char, window_ms i32) i32 {
+pub fn bb_someip_listen(host &char, port i32, group &char, group_iface &char, window_ms i32) i32 {
 	if window_ms < 0 {
 		return fail(bb_err, 'someip listen: a window of ${window_ms} ms')
 	}
@@ -149,11 +157,12 @@ pub fn bb_someip_listen(host &char, port i32, group &char, window_ms i32) i32 {
 	}
 	h := if isnil(host) { '' } else { unsafe { cstring_to_vstring(host) } }
 	g := if isnil(group) { '' } else { unsafe { cstring_to_vstring(group) } }
-	_, use_port, _ := udsconn.someip_listener(int(port), g, '', none) or {
+	gi := if isnil(group_iface) { '' } else { unsafe { cstring_to_vstring(group_iface) } }
+	at := udsconn.someip_listener(int(port), g, gi, '', none) or {
 		return fail(bb_err, 'someip listen: ${err}')
 	}
-	cap := someip.collect(h, use_port, int(window_ms), g) or {
-		return fail(bb_err, 'someip listen(${use_port}): ${err}')
+	cap := someip.collect(h, at.port, int(window_ms), at.group, at.group_iface) or {
+		return fail(bb_err, 'someip listen(${at.port}): ${err}')
 	}
 	return keep(cap)
 }

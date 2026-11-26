@@ -87,8 +87,7 @@ pub:
 // receives IPv4 senders; an IPv4-only bind cannot see IPv6 announcements at all. And JOINS the
 // group: binding the wildcard receives unicast, but an entity announcing to the derived ff02::1
 // is multicast — without a join this socket never sees it and the window simply times out.
-// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address, so '::'
-// failed with "must be a numeric interface index". The window itself — what ends it, a failed
+// The join is on the default interface (transport.udp_bind). The window itself — what ends it, a failed
 // join returned rather than waited out — is transport.udp_window, shared with someip's listener.
 pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcement {
 	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
@@ -103,7 +102,7 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	defer {
 		transport.release_endpoint(canon, port_, owner)
 	}
-	got := transport.udp_window(addr, group, '0', window_ms) or {
+	got := transport.udp_window(addr, group, '', window_ms) or {
 		return error('cannot listen for announcements: ${err}')
 	}
 	return announcements_in(got, false)

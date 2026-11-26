@@ -170,30 +170,39 @@ def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms
 
 
 def listen(window_ms: float = 1000, *, port: int | None = None, group: str | None = None,
-           channel: "Channel | None" = None) -> SomeipHeard:
+           group_iface: str | None = None, channel: "Channel | None" = None) -> SomeipHeard:
     """Hears for `window_ms` what the network already carries on `port` (None: 30490): a
     blobly_emb node's events to its peer (bind the peer port), a service's events on a multicast
     `group` (joined on the port), SD offers (join the SD group). Nothing is sent and nothing is
     subscribed to, so an event a service sends only to subscribers is not heard.
 
-    `channel`, a SOME/IP Channel of the started project, listens on its bind host, port and group;
-    a `port`, or a `group`, contradicting it is refused. A port another listener of this process
-    holds is refused too: two sockets on one UDP port split its stream."""
+    `group_iface` is the interface the group is joined on, by name or by an address it holds
+    (None: the default interface); one this host does not have is refused, naming the ones it has.
+
+    `channel`, a SOME/IP Channel of the started project, listens on its bind host, port, group and
+    group interface; a `port`, `group` or `group_iface` contradicting it is refused. A port another
+    listener of this process holds is refused too: two sockets on one UDP port split its stream."""
     window = _ms("someip.listen", window_ms)
     p = 0 if port is None else _port("someip.listen", port)
     if group is not None and (not isinstance(group, str) or not group or "\0" in group):
         raise TypeError(f"someip.listen: group is a multicast address, not {group!r}")
+    if group_iface is not None and (not isinstance(group_iface, str) or not group_iface
+                                    or "\0" in group_iface):
+        raise TypeError(f"someip.listen: group_iface is an interface name or address, not {group_iface!r}")
     g = None if group is None else group.encode()
+    gi = None if group_iface is None else group_iface.encode()
     lib = _lib.lib()
     host = None
     if channel is not None:
         from .project import Channel  # project imports this module
         if not isinstance(channel, Channel):
             raise TypeError(f"someip.listen: channel is a Channel, not {channel!r}")
-        use_port, use_group = ctypes.c_int(), ctypes.create_string_buffer(256)
+        use_port = ctypes.c_int()
+        use_group, use_iface = ctypes.create_string_buffer(256), ctypes.create_string_buffer(256)
         with _lib.state_lock:  # the row's endpoint in this run, read once; the wait holds no lock
             _started("someip.listen", channel)
-            host = _lib.string(lambda buf, cap: lib.bb_someip_listener(channel._index, p, g, buf, cap,
-                                                                       ctypes.byref(use_port), use_group, 256))
-        host, p, g = host.encode(), use_port.value, use_group.value
-    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, window))))
+            host = _lib.string(lambda buf, cap: lib.bb_someip_listener(channel._index, p, g, gi, buf, cap,
+                                                                       ctypes.byref(use_port), use_group, 256,
+                                                                       use_iface, 256))
+        host, p, g, gi = host.encode(), use_port.value, use_group.value, use_iface.value
+    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, gi, window))))

@@ -235,27 +235,60 @@ fn test_doip_listener_takes_the_rows_port_and_family() {
 }
 
 fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
-	h, p, g := someip_listener(0, '', '', none)!
-	assert h == '' && p == 30490 && g == ''
-	_, p2, g2 := someip_listener(4000, '239.1.1.1', '', none)!
-	assert p2 == 4000 && g2 == '239.1.1.1'
+	a := someip_listener(0, '', '', '', none)!
+	assert a.host == '' && a.port == 30490 && a.group == '' && a.group_iface == ''
+	b := someip_listener(4000, '239.1.1.1', 'eth1', '', none)!
+	assert b.port == 4000 && b.group == '239.1.1.1' && b.group_iface == 'eth1'
 	row := Carrier{
-		kind: .someip
-		host:   '127.0.0.1'
-		port:   30509
-		group:  ''
+		kind:  .someip
+		host:  '127.0.0.1'
+		port:  30509
+		group: ''
 	}
-	h3, p3, g3 := someip_listener(0, '', 'ETH1', row)!
-	assert h3 == '127.0.0.1' && p3 == 30509 && g3 == ''
-	if _, _, _ := someip_listener(0, '239.1.1.1', 'ETH1', row) {
+	c := someip_listener(0, '', '', 'ETH1', row)!
+	assert c.host == '127.0.0.1' && c.port == 30509 && c.group == ''
+	if _ := someip_listener(0, '239.1.1.1', '', 'ETH1', row) {
 		assert false, 'a group on a unicast row'
 	}
-	if _, _, _ := someip_listener(4000, '', 'ETH1', row) {
+	if _ := someip_listener(4000, '', '', 'ETH1', row) {
 		assert false, 'another port than the row'
 	}
-	if _, _, _ := someip_listener(0, '', 'DoIP1', Carrier{ kind: .doip }) {
+	if _ := someip_listener(0, '', '', 'DoIP1', Carrier{ kind: .doip }) {
 		assert false, 'a DoIP row'
 	}
+}
+
+// the interface a row joins its group on is the row's; another asked of it is refused
+fn test_a_someip_listener_takes_the_rows_group_interface() {
+	row := Carrier{
+		kind:        .someip
+		host:        '0.0.0.0'
+		port:        30490
+		group:       '239.1.1.1'
+		group_iface: 'eth1'
+	}
+	a := someip_listener(0, '', '', 'SD', row)!
+	assert a.group == '239.1.1.1' && a.group_iface == 'eth1'
+	b := someip_listener(0, '239.1.1.1', 'eth1', 'SD', row)!
+	assert b.group_iface == 'eth1'
+	someip_listener(0, '', 'eth2', 'SD', row) or {
+		assert err.msg().contains('joins 239.1.1.1 on eth1'), err.msg()
+		return
+	}
+	assert false, 'another interface than the row'
+}
+
+fn test_a_someip_listener_refuses_an_interface_a_default_row_does_not_name() {
+	row := Carrier{
+		kind:  .someip
+		port:  30490
+		group: '239.1.1.1'
+	}
+	someip_listener(0, '', 'eth1', 'SD', row) or {
+		assert err.msg().contains('on the default interface'), err.msg()
+		return
+	}
+	assert false, 'an interface the row does not join on'
 }
 
 // a raw ISO-TP channel: a CAN row only, both ids given, 29-bit as a UDS connection's

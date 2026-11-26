@@ -19,14 +19,29 @@ pub fn doip_listener(port int, ip6 bool, from string, row ?Carrier) !(int, bool)
 		|| doip.addr_family(car.host) == .ip6
 }
 
-// someip_listener is where a SOME/IP listener listens — bind host, port and multicast group: the
-// port asked for (0: 30490) and the group asked for on the wildcard, or — given `row`, the carrier
-// of the SOME/IP row named `from` — that row's bind host, port and group. A port, or a group,
-// differing from the row's is refused, not overruled; a row with no group is a unicast listener,
-// so a group asked of it differs too.
-pub fn someip_listener(port int, group string, from string, row ?Carrier) !(string, int, string) {
+// SomeipListen is where a SOME/IP listener listens: the bind host ('' the wildcard), the port,
+// the multicast group ('' none) and the interface it is joined on ('' the default).
+pub struct SomeipListen {
+pub:
+	host        string
+	port        int
+	group       string
+	group_iface string
+}
+
+// someip_listener is where a SOME/IP listener listens: the port asked for (0: 30490) and the
+// group and its interface asked for on the wildcard, or — given `row`, the carrier of the SOME/IP
+// row named `from` — that row's bind host, port, group and interface. A port, a group or an
+// interface differing from the row's is refused, not overruled; a row with no group is a unicast
+// listener, so a group asked of it differs too, and a row joining on the default interface
+// differs from one named.
+pub fn someip_listener(port int, group string, group_iface string, from string, row ?Carrier) !SomeipListen {
 	car := row or {
-		return '', transport.listen_port(port, '', none, someip.default_port, 'listener')!, group
+		return SomeipListen{
+			port:        transport.listen_port(port, '', none, someip.default_port, 'listener')!
+			group:       group
+			group_iface: group_iface
+		}
 	}
 	if car.kind != .someip {
 		return error('"${from}" is not a SOME/IP channel')
@@ -35,5 +50,20 @@ pub fn someip_listener(port int, group string, from string, row ?Carrier) !(stri
 		joins := if car.group == '' { 'joins no multicast group' } else { 'joins ${car.group}' }
 		return error('group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
 	}
-	return car.host, transport.listen_port(port, from, car.port, someip.default_port, 'listener')!, car.group
+	if group_iface != '' && group_iface != car.group_iface {
+		on := if car.group == '' {
+			'joins no multicast group'
+		} else if car.group_iface == '' {
+			'joins ${car.group} on the default interface'
+		} else {
+			'joins ${car.group} on ${car.group_iface}'
+		}
+		return error('group_iface ${group_iface} contradicts from = "${from}", whose listener ${on}; give one or the other')
+	}
+	return SomeipListen{
+		host:        car.host
+		port:        transport.listen_port(port, from, car.port, someip.default_port, 'listener')!
+		group:       car.group
+		group_iface: car.group_iface
+	}
 }

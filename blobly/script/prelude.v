@@ -432,10 +432,13 @@ end
 -- heard by a plain bind). An event a service sends only to subscribers is not among them; see
 -- docs/scripting.md and docs/ethernet_architecture.md.
 --
--- opts = { port = 30490, group = "239.x.x.x", from = "ETH1" }. `group` joins that multicast group
--- on the port, and is refused on a unicast bind host (the kernel would drop the group traffic).
--- `from` names a someip channel of the project and takes its bind host, port and group (a port,
--- or a group differing from the channel own, is an error, not overruled). An endpoint another
+-- opts = { port = 30490, group = "239.x.x.x", group_iface = "eth1", from = "ETH1" }. `group` joins
+-- that multicast group on the port, and is refused on a unicast bind host (the kernel would drop
+-- the group traffic). `group_iface` is the interface it is joined on, by name or by an address it
+-- holds (default: the default interface); an interface this host does not have is refused, naming
+-- the ones it has. `from` names a someip channel of the project and takes its bind host, port,
+-- group and group interface (a port, group or interface differing from the channel one is an
+-- error, not overruled). An endpoint another
 -- listener in this process holds is refused and names it, however this call spelled the endpoint:
 -- two sockets on one UDP port SPLIT the stream rather than share it.
 -- Each message: { at_ms=, from="host:port", service=, method=, event=bool, type="notification"|
@@ -447,12 +450,16 @@ function someip.listen(window_ms, opts)
     error("someip.listen: group must be a multicast address (a non-empty string), got " ..
           (type(opts.group) == "string" and "an empty string" or type(opts.group)), 2)
   end
+  if opts.group_iface ~= nil and (type(opts.group_iface) ~= "string" or opts.group_iface == "") then
+    error("someip.listen: group_iface must be an interface name or address (a non-empty string), got " ..
+          (type(opts.group_iface) == "string" and "an empty string" or type(opts.group_iface)), 2)
+  end
   if opts.from ~= nil and (type(opts.from) ~= "string" or opts.from == "") then
     error("someip.listen: from must be a channel name (a non-empty string), got " ..
           (type(opts.from) == "string" and "an empty string" or type(opts.from)), 2)
   end
   local raw, malformed = __someip_listen(opts.port or 0, window_ms or 1000, opts.group or "",
-                                         opts.from or "")
+                                         opts.from or "", opts.group_iface or "")
   return shape_someip(raw), malformed
 end
 

@@ -99,6 +99,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.kind() == .someip && ch.group != '' {
 			b.writeln('    group: ${yaml_scalar(ch.group)}')
 		}
+		if ch.kind() == .someip && ch.group != '' && ch.group_iface != '' {
+			b.writeln('    group_iface: ${yaml_scalar(ch.group_iface)}')
+		}
 		if ch.kind() == .doip {
 			b.writeln('    tester_address: "0x${ch.tester_addr:04X}"')
 			b.writeln('    ecu_address: "0x${ch.ecu_addr:04X}"')

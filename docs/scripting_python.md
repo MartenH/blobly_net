@@ -1880,13 +1880,15 @@ then returns what the port heard for `window_ms`, a `SomeipHeard`: `messages` in
 (a datagram packing several gives each) and how many datagrams were `malformed`, not SOME/IP to
 their end. It unpacks as `messages, malformed`.
 
-**`someip.listen(window_ms=1000, *, port=None, group=None, channel=None)`** hears what the
-network already carries on `port` (`None`: 30490): a node's events to its peer (listen on the peer
-port), a service's events on a multicast `group`, SD offers (join the SD group). Nothing is sent
-and nothing is subscribed to, so an event a service sends only to subscribers is not heard
-([ethernet_architecture.md](ethernet_architecture.md)). `channel`, a SOME/IP row of the started
-project, listens on its bind host, port and group; a `port` or `group` contradicting it is
-refused.
+**`someip.listen(window_ms=1000, *, port=None, group=None, group_iface=None, channel=None)`**
+hears what the network already carries on `port` (`None`: 30490): a node's events to its peer
+(listen on the peer port), a service's events on a multicast `group`, SD offers (join the SD
+group). Nothing is sent and nothing is subscribed to, so an event a service sends only to
+subscribers is not heard ([ethernet_architecture.md](ethernet_architecture.md)). `group_iface`
+is the interface the group is joined on, by name (`"eth1"`, `"Ethernet 2"`) or by an address it
+holds (`None`: the default interface); one this host does not have is refused, naming the ones it
+has. `channel`, a SOME/IP row of the started project, listens on its bind host, port, group and
+group interface; a `port`, `group` or `group_iface` contradicting it is refused.
 
 A port another listener of this process holds is refused, whichever call holds it: two sockets
 on one UDP port split its stream rather than share it. Every wait is its window or timeout, and
@@ -2294,7 +2296,7 @@ the package is named in this section.
 |---|---|
 | `blobly.someip.call(to, request, *, port=None, timeout_ms=1000)` | One request from local `port` (30491) to `to`, an IPv4 `"host:port"`: the RESPONSE or ERROR mirroring it, a `SomeipMessage`. `Timeout` when none came. |
 | `blobly.someip.send(to, msgs, *, port=None, window_ms=1000)` | One `SomeipMessage` or a list sent from local `port` (30491); what the port heard for `window_ms` after, a `SomeipHeard`. |
-| `blobly.someip.listen(window_ms=1000, *, port=None, group=None, channel=None)` | What `port` (30490) heard for `window_ms`, joining `group`, or on SOME/IP `channel`'s endpoint: a `SomeipHeard`. |
+| `blobly.someip.listen(window_ms=1000, *, port=None, group=None, group_iface=None, channel=None)` | What `port` (30490) heard for `window_ms`, joining `group` on the interface `group_iface` names (the default one), or on SOME/IP `channel`'s endpoint: a `SomeipHeard`. |
 
 ### Module `blobly.flash`
 

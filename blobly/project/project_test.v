@@ -1665,6 +1665,41 @@ fn test_someip_round_trip() {
 	assert c.group == '239.1.2.3'
 }
 
+// The interface a group is joined on round-trips, labels the file v15, and is refused without a
+// group to join.
+fn test_someip_group_interface() {
+	orig := Project{
+		name:     'net'
+		channels: [
+			Channel{
+				name:        'ETH1'
+				adapter:     'someip'
+				address:     '0.0.0.0:30491'
+				typ:         'someip'
+				iface:       'someip:0.0.0.0:30491'
+				group:       '239.1.2.3'
+				group_iface: 'Ethernet 2'
+			},
+		]
+	}
+	assert version_for(orig) == 15
+	y := orig.to_yaml()
+	back := parse(y) or { panic(err) }
+	assert back.channels[0].group_iface == 'Ethernet 2'
+	assert back.unknown_keys == []
+	assert version_for(Project{
+		channels: [Channel{
+			...orig.channels[0]
+			group_iface: ''
+		}]
+	}) < 15
+	parse('project:\n  name: s\nchannels:\n  - name: ETH1\n    adapter: someip\n    group_iface: eth1\n') or {
+		assert err.msg().contains('joins no group'), err.msg()
+		return
+	}
+	assert false, 'an interface with no group to join was accepted'
+}
+
 // Two enabled listeners on one endpoint is a config mistake nothing else reports: UDP lets both
 // bind (SO_REUSEADDR) and then splits the stream between them.
 fn test_two_someip_rows_on_one_endpoint_warn() {
