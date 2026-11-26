@@ -224,7 +224,11 @@ pub fn (p Project) to_yaml() string {
 					if u.routines.len > 0 {
 						b.writeln('          routines:')
 						for r in u.routines {
-							mut kv := ['id: "0x${r.id:X}"']
+							mut kv := [if r.id_text != '' {
+								'id: ${yaml_flow_scalar(r.id_text)}'
+							} else {
+								'id: "0x${r.id:X}"'
+							}]
 							for name, a in {
 								'start':   r.start
 								'stop':    r.stop
@@ -233,7 +237,7 @@ pub fn (p Project) to_yaml() string {
 								if bs := a {
 									kv << '${name}: "${bs.map('${it:02X}').join(' ')}"'
 								} else if text := r.bad[name] {
-									kv << '${name}: ${yaml_flow_scalar(text)}'
+									kv << '${name}: ${text}'
 								}
 							}
 							b.writeln('            - { ${kv.join(', ')} }')

@@ -352,9 +352,13 @@ pub mut:
 	start   ?[]u8
 	stop    ?[]u8
 	results ?[]u8
-	// a control's answer as written where it is not whole hex bytes, by control name: the entry is
-	// malformed and a Save writes this back, never bytes it was not
+	// a control's answer where it is not quoted whole hex bytes, by control name, as YAML text a
+	// Save writes back verbatim (`yaml_as_written`): the entry stays malformed, never bytes it was
+	// not
 	bad map[string]string
+	// the id as written where it is not a clean hex id (the entry is malformed), written back as
+	// given, never the id `parse_id_wide` made of it
+	id_text string
 }
 
 // controls are the routine's controls given, each with its answer record: (1 start, 2 stop, 3
@@ -1703,18 +1707,21 @@ fn parse_node(n yaml.Any) !NodeCfg {
 		}
 		if rs := u.value_opt('routines') {
 			for x in rs.array() {
-				if !hex_id_is_clean(x.value('id').str()) {
-					ucfg.malformed << 'routine ${x.value('id').str()}'
-				}
+				id_text := x.value('id').str()
 				mut rc := RoutineCfg{
-					id: clamp_u32(parse_id_wide(x.value('id').str()))
+					id: clamp_u32(parse_id_wide(id_text))
+				}
+				if !hex_id_is_clean(id_text) {
+					ucfg.malformed << 'routine ${id_text}'
+					rc.id_text = id_text
 				}
 				for key in ['start', 'stop', 'results'] {
 					v := x.value_opt(key) or { continue }
-					// whole hex bytes only: an unquoted 00 is the number 0 to YAML, one digit
-					bs := hex_bytes_exact(v.str()) or {
-						ucfg.malformed << 'routine ${x.value('id').str()} ${key} "${v.str()}"'
-						rc.bad[key] = v.str()
+					// a quoted string of whole hex bytes only: YAML has made an unquoted 0100 a
+					// number, whose text is not the digits written
+					bs := answer_bytes(v) or {
+						ucfg.malformed << 'routine ${id_text} ${key} answer ${v.str()} (quoted hex bytes, as "01 00")'
+						rc.bad[key] = yaml_as_written(v)
 						continue
 					}
 					match key {
@@ -1900,19 +1907,34 @@ fn parse_gencfg(s yaml.Any, dflt_typ string) GenCfg {
 	}
 }
 
-// parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without
-// separators: "DE AD BE EF", "DEADBEEF" and "de:ad" all give [0xDE,0xAD,…].
-// Non-hex characters are skipped; an odd trailing nibble is dropped.
-// hex_bytes_exact reads whole hex bytes, spaced or not ("01 00 2A", "01002A", "" for none); none
-// for anything else (an odd digit, a character that is not hex).
-fn hex_bytes_exact(s string) ?[]u8 {
-	t := s.replace(' ', '')
+// answer_bytes reads a YAML string of whole hex bytes, spaced or not ("01 00 2A", "01002A", ""
+// for none); none for anything else — an odd digit, a character that is not hex, or a value YAML
+// read as something other than a string.
+fn answer_bytes(v yaml.Any) ?[]u8 {
+	if v !is string {
+		return none
+	}
+	t := v.str().replace(' ', '')
 	if t.len % 2 != 0 || !t.bytes().all(it.is_hex_digit()) {
 		return none
 	}
 	return parse_hex_bytes(t)
 }
 
+// yaml_as_written is a value as YAML text of its own kind: a string quoted, a number or bool bare,
+// a list or map in flow form — so a Save keeps a value that was not a string from reading back as
+// one.
+fn yaml_as_written(v yaml.Any) string {
+	return match v {
+		string { yaml_flow_scalar(v) }
+		[]yaml.Any, map[string]yaml.Any { v.to_json() }
+		else { v.str() }
+	}
+}
+
+// parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without
+// separators: "DE AD BE EF", "DEADBEEF" and "de:ad" all give [0xDE,0xAD,…].
+// Non-hex characters are skipped; an odd trailing nibble is dropped.
 fn parse_hex_bytes(s string) []u8 {
 	mut nibbles := []u8{}
 	for ch in s.trim_space().trim('"') {

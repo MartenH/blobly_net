@@ -98,26 +98,19 @@ pub fn (r RoutineDesc) answer_texts(data []u8) ![]string {
 }
 
 // plan is what the run needs first on a connection in state `st`: nothing for a routine of no
-// gate, else the gate's session and level as a write's plan (uds.write_plan_by), refused for a gate
+// gate, else the gate's session and level (uds.gate_plan, a write's rule), refused for a gate
 // the description leaves unresolved or one that cannot be met.
 pub fn (r RoutineDesc) plan(st uds.ConnState, can_unlock bool) uds.WritePlan {
 	if !r.gate.declared {
 		return uds.WritePlan{}
 	}
-	sessions := r.gate.session_ids() or {
+	sessions := r.gate.session_ids('its gate', 'served') or {
 		return uds.WritePlan{
 			refusal: 'not run: ${err.msg()}'
 		}
 	}
-	p := uds.write_plan_by(true, st.session, sessions, u8(r.gate.level), st.security.unlocked(),
-		can_unlock, r.authenticates)
-	if p.refusal != '' {
-		return uds.WritePlan{
-			refusal: 'not run: ' + p.refusal.all_after('not writable: ').replace('its write gate',
-				'its gate')
-		}
-	}
-	return p
+	return uds.gate_plan(uds.GateWords{'its gate', 'not run'}, st.session, sessions,
+		u8(r.gate.level), st.security.unlocked(), can_unlock, r.authenticates)
 }
 
 // listed_routine is the routine control called `name`: refused for a name none has (naming those

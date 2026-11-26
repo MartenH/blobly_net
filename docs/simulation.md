@@ -529,7 +529,8 @@ unknown control parameter or a format nibble of 0 answers `requestOutOfRange`; a
 `0x23`/`0x3D` likewise. A project using either key declares `version: 13`.
 
 **Routines** are declared in the block too, each with the record each of its controls answers
-past `71 <control> <id>` (hex bytes, `""` for none):
+past `71 <control> <id>` (hex bytes, quoted — unquoted, YAML reads `00` or `0100` as a number,
+and the node is not started — `""` for none):
 
 ```yaml
           routines:
@@ -1382,10 +1383,10 @@ See [scripting.md](scripting.md) for the test API.
 
 - **Diagnostics are stateless between requests beyond session and security state.** A
   simulated ECU serves the DIDs and DTCs the project — or its description — gives it; it does
-  not model routines
-  (`0x31`) or transfer (`0x34`-`0x37`); memory (`0x23`/`0x3D`) and IO control (`0x2F`) reach
-  only what its `uds:` block declares, and neither writing a DID nor adjusting an IO DID affects
-  the signals the ECU transmits.
+  not model transfer (`0x34`-`0x37`); routines (`0x31`), memory (`0x23`/`0x3D`) and IO control
+  (`0x2F`) reach only what its `uds:` block declares — a routine answers the fixed record given
+  for each control, whatever the request carries — and neither writing a DID nor adjusting an IO
+  DID affects the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
 - **LIN is its own kind of row.** A LIN bus is a project row (`adapter: lin`, schema v12) that

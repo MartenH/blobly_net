@@ -1126,3 +1126,19 @@ fn test_a_refused_bench_key_verifies_no_proof() {
 		assert s.unlocked == 0
 	}
 }
+
+// an ecu.toml's [[routine]] tables are not read yet: said, so an empty listing is not taken for
+// none declared
+fn test_routine_tables_are_said_not_read() {
+	doc := toml.parse_text('[[routine]]
+id = 0x0203
+name = "SelfTest"
+
+[[routine]]
+id = 0x0204
+name = "SensorCalibration"
+') or { panic(err) }
+	d := parse_ecu_desc(doc, map[string][]Field{})
+	assert d.routines.len == 0
+	assert d.errs.any(it.starts_with('2 [[routine]] not read'))
+}

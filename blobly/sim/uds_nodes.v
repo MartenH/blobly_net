@@ -346,7 +346,7 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 			warns << 'uds on "${n.name}": tx_dl is ignored on a DoIP channel — a DoIP message is not cut into CAN frames'
 		}
 		for m in cfg.malformed {
-			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
+			warns << 'uds on "${n.name}": ${m} is not valid — the node is not started'
 		}
 		warns << validate_content(n.name, cfg, max_response_doip, 'DoIP payload')
 		mut usable_dtcs := 0
@@ -505,7 +505,7 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 		warns << validate_content(n.name, cfg, max_response, 'ISO-TP')
 		for m in cfg.malformed {
 			// a stripped character yields a different VALID id, so no range check can see it
-			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
+			warns << 'uds on "${n.name}": ${m} is not valid — the node is not started'
 		}
 		for t in cfg.dtcs {
 			if t.status > 0xFF {

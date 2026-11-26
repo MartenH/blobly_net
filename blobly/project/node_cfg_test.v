@@ -432,20 +432,25 @@ buses:
             - { id: "0x203", start: "00", stop: "", results: "01 00 2A" }
             - { id: "0xFF0G", results: "01" }
             - { id: "0x204", start: 00, results: "1G" }
+            - { id: "0x205", start: 0100, stop: 1234, results: 0x0A }
 '
 	p := parse(y) or { panic(err) }
 	u := p.channels[0].nodes[0].uds or { panic('uds lost') }
-	assert u.routines.len == 3 && u.routines[0].id == 0x203
+	assert u.routines.len == 4 && u.routines[0].id == 0x203
 	assert u.routines[0].controls() == [RoutineAnswer{1, [u8(0)]}, RoutineAnswer{2, []},
 		RoutineAnswer{3, [u8(1), 0, 0x2A]}]
 	assert u.routines[1].controls() == [RoutineAnswer{3, [u8(1)]}]
-	// an unquoted 00 is one digit to YAML: never read as no answer
-	assert u.malformed == ['routine 0xFF0G', 'routine 0x204 start "0"', 'routine 0x204 results "1G"']
-	assert u.routines[2].controls() == []
+	// an answer YAML read as a number is never its digits: an unquoted 00 is 0, 0100 is 64
+	hint := '(quoted hex bytes, as "01 00")'
+	assert u.malformed == ['routine 0xFF0G', 'routine 0x204 start answer 0 ${hint}',
+		'routine 0x204 results answer 1G ${hint}', 'routine 0x205 start answer 64 ${hint}',
+		'routine 0x205 stop answer 1234 ${hint}', 'routine 0x205 results answer 10 ${hint}']
+	assert u.routines[2].controls() == [] && u.routines[3].controls() == []
 	assert version_for(p) == 15
 	again := parse(p.to_yaml()) or { panic(err) }
 	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
 	assert v.routines[0].controls() == u.routines[0].controls(), 'routines lost on save'
-	assert v.malformed.filter(it.contains('0x204')) == u.malformed.filter(it.contains('0x204')), 'a malformed answer is written back as written'
+	// what is malformed stays malformed through a Save: the id as written, a number still a number
+	assert v.malformed == u.malformed, 'a malformed entry is written back as written'
 	assert again.version == 15
 }

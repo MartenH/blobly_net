@@ -9,7 +9,7 @@ import crypto.ed25519 as ed
 // identifier with a size and a layout where the file determines one, each `[[param]]` is a coded
 // value with its fields. blobly_emb's ecucheck validates the file; this reads what it finds and
 // says (`errs`) what it could not use, so a tester never refuses a node for one odd entry.
-// (The format has no RoutineControl: ISO 0x31 routines are out of blobly_emb's scope.)
+// Its `[[routine]]` tables (RoutineControl, 0x31) are not read yet, and said in `errs`.
 
 // Field is one typed field of a signal or a parameter: `u8`/`u16`/`u32`, `i8`/`i16`/`i32`, `bool`.
 pub struct Field {

@@ -291,12 +291,27 @@ pub fn write_plan(declared bool, session u8, allowed []u8, level u8, unlocked u8
 // description says `[uds] access = "authentication"`, so its levels are unlocked with 0x29 05/06 and
 // it answers 0x27 serviceNotSupported. The ONE rule; write_plan is its seed-key case.
 pub fn write_plan_by(declared bool, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool, authenticates bool) WritePlan {
-	svc := if authenticates { '0x29' } else { '0x27' }
 	if !declared {
 		return WritePlan{
 			refusal: 'not writable: the description declares no write gate for it'
 		}
 	}
+	return gate_plan(GateWords{'its write gate', 'not writable'}, session, allowed, level, unlocked,
+		can_unlock, authenticates)
+}
+
+// GateWords is how a gate_plan refusal names the gate and what it refuses: a DID's write ('its
+// write gate', 'not writable'), a routine's run ('its gate', 'not run').
+pub struct GateWords {
+pub:
+	gate    string
+	refused string
+}
+
+// gate_plan is write_plan_by's rule for a DECLARED gate, whatever it gates (a 0x2E, a 0x31): the
+// session to switch to and the level to unlock first, a refusal worded by `words`.
+pub fn gate_plan(words GateWords, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool, authenticates bool) WritePlan {
+	svc := if authenticates { '0x29' } else { '0x27' }
 	// a gated write is sent where its level can be unlocked: never the default session, which
 	// serves no 0x27 — the unlock would leave it, and the write would go out of its gate
 	mut ok := allowed.clone()
@@ -304,7 +319,7 @@ pub fn write_plan_by(declared bool, session u8, allowed []u8, level u8, unlocked
 		ok = allowed.filter(it != default_session)
 		if ok.len == 0 {
 			return WritePlan{
-				refusal: 'not writable: its write gate needs security level ${level} but names only the default session, where ${svc} is not served (ISO 14229-1) — the description contradicts itself'
+				refusal: '${words.refused}: ${words.gate} needs security level ${level} but names only the default session, where ${svc} is not served (ISO 14229-1) — the description contradicts itself'
 			}
 		}
 	}

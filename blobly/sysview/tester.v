@@ -355,18 +355,19 @@ pub fn (x DidDesc) label() string {
 // write_sessions is the write gate's sessions as 0x10 sub-functions (gate_session); refused for
 // one no tester here knows, or a gate the description leaves unresolved.
 pub fn (x DidDesc) write_sessions() ![]u8 {
-	return x.write_gate.session_ids() or { error(err.msg().replace('its gate', 'its write gate').replace('served in', 'written in')) }
+	return x.write_gate.session_ids('its write gate', 'written')
 }
 
 // session_ids is the gate's sessions as 0x10 sub-functions (gate_session); refused for one no
-// tester here knows, or a gate the description leaves unresolved.
-pub fn (g Gate) session_ids() ![]u8 {
+// tester here knows, or a gate the description leaves unresolved — `gate` how the refusal names
+// it, `done` what the gate lets be done in a session ('written', 'run').
+pub fn (g Gate) session_ids(gate string, done string) ![]u8 {
 	if g.unresolved != '' {
-		return error('its gate is not known: ${g.unresolved}')
+		return error('${gate} is not known: ${g.unresolved}')
 	}
 	mut out := []u8{}
 	for s in g.sessions {
-		out << gate_session(s) or { return error('served in the "${s}" session, which no tester here knows') }
+		out << gate_session(s) or { return error('${done} in the "${s}" session, which no tester here knows') }
 	}
 	return out
 }

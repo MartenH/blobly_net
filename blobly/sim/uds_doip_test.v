@@ -90,7 +90,7 @@ fn test_doip_rejects_malformed_and_reports_it() {
 	assert uds_nodes_doip(nodes).len == 0 // not served
 	warns := validate_uds_doip(nodes)
 	assert warns.len > 0 // and not in silence
-	assert warns.any(it.contains('not a valid identifier'))
+	assert warns.any(it.contains('is not valid — the node is not started'))
 }
 
 // The limits are the CARRIER's: a DID one past what a DoIP message carries fits one ISO-TP transfer

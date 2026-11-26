@@ -292,8 +292,14 @@ fn test_routines_are_listed_with_their_records() {
 	assert !results.gate.declared && record_by_label(results.answer)
 	assert results.answer_texts([u8(1), 0, 42])! == ['Passed', '42']
 	// an answer not the size the description gives, or one where it gives none, is undecodable
-	results.answer_texts([u8(1)]) or { assert err is uds.UndecodableAnswer }
-	stop.answer_texts([u8(1)]) or {
+	if _ := results.answer_texts([u8(1)]) {
+		assert false, 'an answer of the wrong size decoded'
+	} else {
+		assert err is uds.UndecodableAnswer
+	}
+	if _ := stop.answer_texts([u8(1)]) {
+		assert false, 'an answer where the description gives none decoded'
+	} else {
 		assert err is uds.UndecodableAnswer && err.msg().contains('the description says none')
 	}
 	// an answer the description does not give is bytes of no fixed size
@@ -301,7 +307,11 @@ fn test_routines_are_listed_with_their_records() {
 	assert deps.answer_parts().map(it.kind) == [PartKind.bytes] && deps.answer.size == -1
 	assert deps.answer_texts([u8(0xAB), 0xCD])! == ['AB CD']
 	assert notes.any(it.contains('Start_CheckDependencies') && it.contains('no POS-RESPONSE'))
-	d.listed_routine('Nope') or { assert err.msg().contains('there are: "Start_SelfTest"') }
+	if _ := d.listed_routine('Nope') {
+		assert false, 'a routine the description does not list was found'
+	} else {
+		assert err.msg().contains('there are: "Start_SelfTest"')
+	}
 }
 
 fn serve_body(mut ch isotp.SoftChannel, srv uds.Server, stop chan bool) {
@@ -327,10 +337,14 @@ fn test_a_routine_is_run_by_name_through_its_gate() {
 	mut cli := uds.new_client(cli_ch)
 	start := body_routine('Start_SelfTest')
 	// a value the codec refuses, and a gate the connection has not met: nothing sent
-	run_described(mut cli, start, ['300']) or {
+	if _ := run_described(mut cli, start, ['300']) {
+		assert false, 'a value the codec refuses was sent'
+	} else {
 		assert err.msg() == '0x31 01 0x0203 Start_SelfTest: not sent — Level: 300 is outside 0..255'
 	}
-	run_described(mut cli, start, ['1']) or {
+	if _ := run_described(mut cli, start, ['1']) {
+		assert false, 'a gated routine ran before its session'
+	} else {
 		assert err is WriteGated
 		g := err as WriteGated
 		assert g.session == uds.extended_session && g.level == 0
@@ -343,4 +357,33 @@ fn test_a_routine_is_run_by_name_through_its_gate() {
 	results := body_routine('RequestResults_SelfTest')
 	cli.diagnostic_session(uds.default_session) or { panic(err) }
 	assert results.answer_texts(run_described(mut cli, results, [])!)! == ['Passed', '42']
+}
+
+// a routine's gate is planned by a write's rule and refused in a run's words
+fn test_a_routine_gate_that_cannot_be_met_is_refused_as_a_run() {
+	contradicts := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared: true
+			sessions: ['default']
+			level:    1
+		}
+	}
+	assert contradicts.plan(uds.ConnState{}, true).refusal == 'not run: its gate needs security level 1 but names only the default session, where 0x27 is not served (ISO 14229-1) — the description contradicts itself'
+	unknown := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared: true
+			sessions: ['vendor']
+		}
+	}
+	assert unknown.plan(uds.ConnState{}, true).refusal == 'not run: served in the "vendor" session, which no tester here knows'
+	unresolved := RoutineDesc{
+		name: 'R'
+		gate: Gate{
+			declared:   true
+			unresolved: 'two levels'
+		}
+	}
+	assert unresolved.plan(uds.ConnState{}, true).refusal == 'not run: its gate is not known: two levels'
 }
