@@ -249,7 +249,7 @@ message goes out unprotected.
 **Against an AUTOSAR receiver, or blobly_emb, use `profile: autosar_p01`**: AUTOSAR E2E Profile 1
 as specified, pinned by vectors from an independent implementation (`sut/e2e_oracle.py`). **A
 16-bit CRC and an 8-bit counter, as CAN-FD payloads usually carry, is `profile: autosar_p05`**:
-AUTOSAR E2E Profile 5 as specified, pinned the same way (blobly_emb implements Profile 1 only). The
+AUTOSAR E2E Profile 5 as specified, pinned the same way (blobly_emb implements both on CAN frames). The
 other profiles are checksum primitives under blobly's own coverage rule, for OEM schemes that no
 AUTOSAR profile describes.
 
@@ -330,8 +330,8 @@ bytes** — `offset` and `length`, both or neither:
   a `verify:` entry with one of these problems is ignored.
 - **From ARXML**, a `PROFILE_05` protection is read from its `OFFSET`: the signals at that bit and
   16 bits on, when they are exactly those two fields and the PDU is the whole frame (a
-  `PROFILE_05` with no `OFFSET` is refused and said). `cmd/arxml2dbc` leaves it out of the DBC it
-  exports, which blobly_emb builds from and which refuses any profile but Profile 1.
+  `PROFILE_05` with no `OFFSET` is refused and said). `cmd/arxml2dbc` exports it as `"P05"` in the
+  DBC and as `profile = "P05"` in the `[[frame]]` fragment, both of which blobly_emb builds from.
 
 ### On each send (the primitives)
 

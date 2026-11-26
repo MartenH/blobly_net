@@ -45,7 +45,7 @@ BA_ "E2ETimeout" BO_ 769 300;
 |---|---|---|
 | `E2ECounterSignal` | STRING | the signal holding the alive counter: for Profile 1, 4 bits — AUTOSAR lets it sit in either nibble, and blobly_net stamps it wherever its signal is; blobly_emb requires the low nibble of a byte other than the CRC's. For Profile 5, a whole byte, the one after the CRC's two |
 | `E2ECrcSignal` | STRING | the signal holding the CRC: for Profile 1, 8 bits, exactly one byte; for Profile 5, 16 bits little-endian (Intel) on a byte boundary, so its low byte comes first |
-| `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1, the one both sides implement. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. `"P05"` is AUTOSAR E2E Profile 5 (CRC-16/CCITT-FALSE, an 8-bit counter 0..255), which blobly_net implements and blobly_emb does not; `"PROFILE_05"` and `"autosar_p05"` read the same. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
+| `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. `"P05"` is AUTOSAR E2E Profile 5 (CRC-16/CCITT-FALSE, an 8-bit counter 0..255), `"PROFILE_05"` and `"autosar_p05"` read the same. Both sides implement P01 and P05 on CAN frames. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
 | `E2EDataId` | INT | the 16-bit Data ID that goes into the CRC. 0 is a valid Data ID, so a message without this attribute has none, and Profiles 1 and 5 refuse it |
 | `E2ETimeout` | INT, ms | the receiver's E2E sender-loss timeout: no *valid* frame within this time and the receiver reports `timeout` (blobly_emb REQ-E2E-002). A sender ignores it. 0 means no timeout. On its own it declares no protection |
 
@@ -117,13 +117,16 @@ Rules both readers follow:
   - In blobly_emb, `[[frame]].e2e` fields that contradict the DBC are refused unless the table
     says `deviates_from_dbc = true`; a field it leaves out is the DBC's.
 - **Writers emit `"P01"` and `"P05"`.** blobly_net's DBC editor writes the attributes from the
-  model; it never writes `autosar_p01` or `autosar_p05`. `cmd/arxml2dbc` ([source checkout only](building.md#command-line-tools-source-checkout-only)) writes `"P01"` only:
-  its DBC is what blobly_emb builds from, and blobly_emb refuses any other profile.
+  model; it never writes `autosar_p01` or `autosar_p05`. `cmd/arxml2dbc` ([source checkout only](building.md#command-line-tools-source-checkout-only)) writes `"P01"` and
+  `"P05"` too, and no other: its DBC is what blobly_emb builds from, and blobly_emb refuses any
+  other profile.
 - **From ARXML**, `cmd/arxml2dbc` exports the contract when the frame's E2E protection is
   PROFILE_01 with DATA-ID-MODE ALL-16-BIT, and its CRC and counter are signals at the declared
-  offsets. A PROFILE_05 protection (its 16-bit CRC signal at its `OFFSET`, its 8-bit counter
-  signal 16 bits on) is applied by blobly_net's own reader but not exported, since blobly_emb
-  implements Profile 1 only; the fragment and the export's notes name it. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
+  offsets, and a PROFILE_05 protection likewise when its 16-bit CRC signal sits at its `OFFSET`
+  and its 8-bit counter signal 16 bits on. The `[[frame]]` fragment carries the same contract:
+  `e2e = { data_id, crc_pos, counter_pos }` for Profile 1, and `e2e = { profile = "P05",
+  data_id, crc_pos, counter_pos }` for Profile 5, `crc_pos` the CRC's low byte and
+  `counter_pos` two bytes on. Other Data ID modes (LOWER-8-BIT, ALTERNATING-8-BIT) cannot be stated with these
   attributes, so they are left out, and the export's notes say so. `E2ETimeout` is not taken
   from an ARXML file: the reader does not take a timeout from the E2E configuration, so the
   export leaves it for the DBC's author to add.

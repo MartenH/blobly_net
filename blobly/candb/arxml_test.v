@@ -637,13 +637,18 @@ fn test_profile_5_is_applied_from_its_offset() {
 	s := c.e2e_signals(m) or { panic('Profile 5 is exported') }
 	assert s.crc == 'Crc' && s.counter == 'Ctr' && s.profile == 'autosar_p05' && s.data_id == 7
 	assert m.e2e[0].profile == 'autosar_p05' && m.e2e[0].crc == 'Crc' && m.e2e[0].counter == 'Ctr'
-	// blobly_emb implements Profile 1 only, so the export leaves it out of the DBC and says so
+	// blobly_emb implements Profile 5 too, so the export writes it as P05 in the DBC and the
+	// fragment, the counter in the byte after the CRC's two, and no note says it is dropped
 	dbc := c.export_dbc(ArxmlProvenance{}, a.report)
-	assert !dbc.contains('E2E')
-	assert c.db.messages[0].e2e[0].profile == 'autosar_p05'
-	assert c.frame_toml('').contains('blobly_emb implements Profile 1 only, so neither this fragment nor the exported DBC carries it')
-	assert !c.frame_toml('').contains('e2e  =')
-	assert a.report.notes.any(it.contains('PROFILE_05 contract is applied by the simulation but not exported as DBC attributes'))
+	assert dbc.contains('BA_ "E2EProfile" BO_ ${m.id} "P05";')
+	assert dbc.contains('BA_ "E2ECrcSignal" BO_ ${m.id} "Crc";')
+	assert dbc.contains('BA_ "E2ECounterSignal" BO_ ${m.id} "Ctr";')
+	assert dbc.contains('BA_ "E2EDataId" BO_ ${m.id} 7;')
+	back := parse_dbc(dbc) or { panic(err) }
+	assert back.messages[0].e2e.len == 1 && back.messages[0].e2e[0].profile == 'autosar_p05'
+	assert back.messages[0].e2e[0].crc == 'Crc' && back.messages[0].e2e[0].counter == 'Ctr'
+	assert c.frame_toml('').contains('e2e  = { profile = "P05", data_id = 0x7, crc_pos = 1, counter_pos = 3 }  # AUTOSAR PROFILE_05')
+	assert !a.report.notes.any(it.contains('not exported as DBC attributes'))
 	// a CRC signal mapped most-significant byte first is not Profile 5's low-byte-first field
 	be := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + p05_pdu_xml.replace('/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>8', '/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-FIRST</PACKING-BYTE-ORDER><START-POSITION>8') + e2e_xml('PROFILE_05', '<OFFSET>8</OFFSET>') + arxml_tail) or { panic(err) }
 	bc := be.cluster('') or { panic(err) }
