@@ -18,9 +18,11 @@ pub:
 	data  []u8
 }
 
-// udp_bind binds `addr` and, when `group` is given, joins it on `iface`. A failed join is
-// RETURNED rather than swallowed: a listener that silently failed to join would wait out its
-// window and report an empty success, indistinguishable from a peer that stayed quiet.
+// udp_bind binds `addr` and, when `group` is given, joins it — on the default interface, or on
+// the interface `iface` names (an interface name or an address it holds, netif.v's join_index);
+// an `iface` without a group joins nothing and is refused. A failed join is RETURNED rather than
+// swallowed: a listener that silently failed to join would wait out its window and report an
+// empty success, indistinguishable from a peer that stayed quiet.
 //
 // NOTE what this canNOT promise. This V sets SO_REUSEADDR inside its private socket constructor,
 // before the bind, so nothing reachable from the public net API turns it off — a second binder
@@ -29,20 +31,22 @@ pub:
 // means it is A reader. Callers that need "nobody else has this endpoint" have to arrange it
 // themselves, and callers that document their behaviour must not promise a refusal.
 pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
+	if iface != '' && group == '' {
+		return error('an interface to join a group on (${iface}) needs a multicast group to join')
+	}
 	mut c := listen_udp_shared(addr) or { return error('cannot listen on ${addr}: ${err}') }
 	if group != '' {
-		// THE SELECTOR'S FORM FOLLOWS THE GROUP'S FAMILY. V parses the IPv6 argument as a numeric
-		// interface INDEX, not an address, so `0.0.0.0` fails there with "must be a numeric
-		// interface index" — the DoIP collector already passes `0` for exactly this reason, and
-		// a v6 group joined with the v4 spelling never receives anything. `iface` is honoured
-		// when the caller names one; the default is chosen here.
-		sel := if iface != '' {
-			iface
-		} else if group.contains(':') {
-			'0' // any interface, IPv6 spelling
-		} else {
-			'0.0.0.0' // any interface, IPv4 spelling
+		if iface != '' {
+			join_group_on(mut c, group, iface) or {
+				c.close() or {}
+				return error('cannot join ${group} on ${iface}: ${err}')
+			}
+			return c
 		}
+		// THE DEFAULT SELECTOR'S FORM FOLLOWS THE GROUP'S FAMILY: V parses the IPv6 argument as a
+		// numeric interface INDEX, not an address, so a v6 group joined with the v4 spelling
+		// `0.0.0.0` never receives anything.
+		sel := if group.contains(':') { '0' } else { '0.0.0.0' }
 		c.join_multicast_group(group, sel) or {
 			// close before returning, or the descriptor leaks and holds the port; these are
 			// opened in a loop by suites that retry.

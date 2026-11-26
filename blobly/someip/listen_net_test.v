@@ -52,7 +52,7 @@ fn test_collect_hears_unicast_and_counts_the_malformed() {
 		packed,
 		ev()[..10],
 	])
-	cap := collect('', port, 700, '')!
+	cap := collect('', port, 700, '', '')!
 	t.wait()
 	assert cap.malformed == 1
 	assert cap.messages.len == 3, 'heard ${cap.messages.len}'
@@ -70,7 +70,7 @@ fn test_collect_hears_a_multicast_group_it_joined() {
 	port := uniq_port(1)
 	group := testports.group()
 	t := spawn send_after('${group}:${port}', 200 * time.millisecond, [ev()])
-	cap := collect('', port, 800, group) or {
+	cap := collect('', port, 800, group, '') or {
 		eprintln('skip: no multicast here: ${err}')
 		t.wait()
 		return
@@ -200,4 +200,13 @@ fn test_call_honours_a_deadline_shorter_than_one_read() {
 	call(uniq_port(0), '127.0.0.1:${uniq_port(1)}', mut cli, []u8{}, 'a test')!
 	assert cli.result.timed_out
 	assert sw.elapsed().milliseconds() < 40, 'a 10 ms deadline took ${sw.elapsed().milliseconds()} ms'
+}
+
+// the interface a group is joined on reaches the join: one this host does not have is refused
+fn test_collect_refuses_a_group_interface_the_host_does_not_have() {
+	collect('', uniq_port(2), 10, testports.group(), 'nosuch0') or {
+		assert err.msg().contains('no network interface "nosuch0"'), err.msg()
+		return
+	}
+	assert false, 'a group joined on an interface the host does not have'
 }

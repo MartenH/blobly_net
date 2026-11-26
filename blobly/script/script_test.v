@@ -182,10 +182,24 @@ fn test_someip_listen_shapes_messages_and_reports_malformed() {
 			local ok, err = pcall(someip.listen, 10, { group = true })
 			check.truthy(not ok and tostring(err):find("group must be", 1, true), tostring(err))
 		end)
+		test("a group interface that is not a name is refused by the prelude", function()
+			local ok, err = pcall(someip.listen, 10, { group_iface = 5 })
+			check.truthy(not ok and tostring(err):find("group_iface must be", 1, true), tostring(err))
+		end)
+		test("a group interface with no group to join is refused", function()
+			local ok, err = pcall(someip.listen, 10, { port = ${port}, group_iface = "lo" })
+			check.truthy(not ok and tostring(err):find("needs a multicast group", 1, true), tostring(err))
+		end)
+		test("an interface this host does not have is refused by name", function()
+			local ok, err = pcall(someip.listen, 10, { port = ${port}, group = "239.14.9.9",
+				group_iface = "nosuch0" })
+			check.truthy(not ok and tostring(err):find(\'no network interface "nosuch0"\', 1, true),
+				tostring(err))
+		end)
 	')!
 	t.wait()
-	assert env.total() == 2
-	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 5
+	assert env.passed() == 5, env.results.filter(!it.ok).map(it.msg).str()
 }
 
 // someip.listen's `from` names a channel and takes its port and group; what it cannot resolve

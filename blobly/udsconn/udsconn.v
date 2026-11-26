@@ -18,9 +18,11 @@ import time
 pub struct Carrier {
 pub:
 	// kind is the row's: a DoIP connection, a SOME/IP listener (host and port are where it
-	// binds, group what it joins), or ISO-TP on its CAN bus
-	kind   project.RowKind
-	group  string
+	// binds, group what it joins and group_iface the interface it joins it on), or ISO-TP on
+	// its CAN bus
+	kind        project.RowKind
+	group       string
+	group_iface string
 	host   string
 	port   int
 	tester u16
@@ -56,10 +58,11 @@ pub fn carrier_of(ch project.Channel) Carrier {
 		.someip {
 			host, port := ch.someip_endpoint()
 			Carrier{
-				kind:  .someip
-				group: ch.group
-				host:  host
-				port:  port
+				kind:        .someip
+				group:       ch.group
+				group_iface: ch.group_iface
+				host:        host
+				port:        port
 			}
 		}
 		.doip {

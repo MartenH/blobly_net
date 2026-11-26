@@ -41,7 +41,7 @@ fn build_key_table() map[string]KeySection {
 			keys:  ['name', 'network', 'adapter', 'address', 'interface', 'protocol', 'type', 'bitrate',
 				'fd', 'data_bitrate', 'sample_point', 'data_sample_point', 'mode', 'listen_only',
 				'j1939', 'builtin_uds', 'enabled', 'announce_count', 'announce_interval_ms',
-				'announce_to', 'group', 'tester_address', 'ecu_address', 'vin', 'eid', 'databases',
+				'announce_to', 'group', 'group_iface', 'tester_address', 'ecu_address', 'vin', 'eid', 'databases',
 				'manifest', 'simulate', 'verify', 'simulation', 'nodes', 'senders', 'diagnostics',
 				'nm', 'timing', 'replay', 'fill']
 			lists: {

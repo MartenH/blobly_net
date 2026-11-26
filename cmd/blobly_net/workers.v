@@ -1857,6 +1857,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	chname := a.chans[ci].name
 	group := a.chans[ci].group
+	group_iface := a.chans[ci].group_iface
 	a.mu.unlock()
 	cfg_host, port := project.Channel{
 		iface: iface
@@ -1920,9 +1921,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —
 	// this V forces SO_REUSEADDR, so another holder of the port splits the stream with us
 	// (transport.udp_bind says so in full); that is why nothing here claims exclusivity.
-	// '' — the selector comes from the group's family (transport.udp_bind); see its twin in
-	// someip.collect for why naming '0.0.0.0' here defeated that.
-	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, '') or {
+	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, group_iface) or {
 		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
 		return
 	}
@@ -1941,7 +1940,13 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	a.chans[ci].running = true
 	a.chans[ci].spawning = false
 	if a.running {
-		grp := if group != '' { ', group ${group}' } else { '' }
+		grp := if group == '' {
+			''
+		} else if group_iface != '' {
+			', group ${group} on ${group_iface}'
+		} else {
+			', group ${group}'
+		}
 		a.log_append_locked('${chname}: SOME/IP listening on ${addr}${grp}')
 	}
 	a.mu.unlock()

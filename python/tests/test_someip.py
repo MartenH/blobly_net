@@ -203,8 +203,36 @@ def test_a_channel_names_the_endpoint(tmp_path, port):
         heard = someip.listen(600, channel=net.channels.ETH1)
         t.join()
         assert [m.method for m in heard.messages] == [0x8001]
-        for kw in ({"port": port + 1}, {"group": "239.1.2.3"}):
+        for kw in ({"port": port + 1}, {"group": "239.1.2.3"}, {"group_iface": "lo"}):
             with pytest.raises(blobly.Refused, match="contradicts"):
                 someip.listen(10, channel=net.channels.ETH1, **kw)
         with pytest.raises(blobly.Refused, match="not a SOME/IP channel"):
             someip.listen(10, channel=net.channels.CAN1)
+
+
+GROUP_ETH = """project:
+  name: someip
+  version: 15
+channels:
+  - name: ETH1
+    adapter: someip
+    address: "0.0.0.0:{port}"
+    group: 239.14.7.7
+    group_iface: nosuch0
+"""
+
+
+def test_a_group_interface_is_the_rows_and_one_the_host_lacks_is_refused(tmp_path, port):
+    with pytest.raises(blobly.Refused, match='no network interface "nosuch0"'):
+        someip.listen(10, port=port, group="239.14.7.7", group_iface="nosuch0")
+    with pytest.raises(blobly.Refused, match="needs a multicast group"):
+        someip.listen(10, port=port, group_iface="lo")
+    with pytest.raises(TypeError):
+        someip.listen(10, port=port, group="239.14.7.7", group_iface="")
+    path = tmp_path / "eth.blobnet"
+    path.write_text(GROUP_ETH.format(port=port), encoding="utf-8")
+    with blobly.Project(str(path)) as net:
+        with pytest.raises(blobly.Refused, match="contradicts"):
+            someip.listen(10, channel=net.channels.ETH1, group_iface="eth9")
+        with pytest.raises(blobly.Refused, match='no network interface "nosuch0"'):
+            someip.listen(10, channel=net.channels.ETH1)

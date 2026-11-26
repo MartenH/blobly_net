@@ -457,7 +457,13 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 				// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
 				// someip.listen({ from = name }), which binds it for the window it asks for.
 				host, port := ch.someip_endpoint()
-				grp := if ch.group != '' { ', group ${ch.group}' } else { '' }
+				grp := if ch.group == '' {
+					''
+				} else if ch.group_iface != '' {
+					', group ${ch.group} on ${ch.group_iface}'
+				} else {
+					', group ${ch.group}'
+				}
 				o.out('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen(1500, { from = "${ch.name}" })')
 				continue
 			}

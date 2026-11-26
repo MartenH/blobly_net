@@ -815,6 +815,7 @@ mut:
 	// DoIP
 	tester_buf []u8
 	group_buf  []u8 // someip: the multicast group to join
+	gif_buf    []u8 // someip: the interface the group is joined on
 	ecu_buf    []u8
 	vin_buf    []u8
 	// Replay
@@ -1438,6 +1439,7 @@ fn (mut app App) rebuild_from_proj() {
 			manifest:       ch.manifest
 			kind:           ch.kind()
 			group:          ch.group
+			group_iface:    ch.group_iface
 			enabled:        ch.enabled
 			replay_src:     if r := ch.replay { app.resolve_asset(r.source) } else { '' }
 			replay_bus:     if r := ch.replay { r.bus } else { '' }

@@ -462,7 +462,13 @@ fn draw_network(mut app App, chans []Chan) {
 			// SOME/IP row read "(nothing attached)" while its own reader filled the trace — the
 			// one place the panel says what a row is doing.
 			if c.kind == .someip {
-				grp := if c.group != '' { ' (group ${c.group})' } else { '' }
+				grp := if c.group == '' {
+					''
+				} else if c.group_iface != '' {
+					' (group ${c.group} on ${c.group_iface})'
+				} else {
+					' (group ${c.group})'
+				}
 				tf << 'Listen${grp}'
 			}
 			if app.send_iface == c.iface {

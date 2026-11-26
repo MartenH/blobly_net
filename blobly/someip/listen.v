@@ -97,14 +97,9 @@ pub fn bind_addr(host string, port int) string {
 // check_group_bind refuses a multicast group on a UNICAST bind address. A socket bound to one
 // address receives only what is addressed to it, so the kernel drops group-addressed datagrams
 // after a perfectly successful IP_ADD_MEMBERSHIP: the listener would sit green and silent. The
-// refusal names the fix rather than quietly rewriting the address the operator configured.
-// KNOWN LIMITATION, stated where the rule is made: the join itself goes to the default-route
-// interface (udp_bind is passed the wildcard), and this refusal closes the only other lever a
-// project had — selecting a NIC through the bind address — without opening a replacement. On a
-// multi-homed host (a bench NIC beside a WSL or VPN interface) a group offered on the other NIC
-// is therefore not heard, and the row sits green. It is a limitation rather than a regression,
-// since neither lever ever worked: a socket bound to a unicast address receives no multicast at
-// all. A per-channel multicast-interface setting is the fix, tracked separately.
+// refusal names the fix rather than quietly rewriting the address the operator configured. The
+// NIC a group is joined on is chosen by the interface the listener names (`group_iface`, #334),
+// never by the bind address.
 pub fn check_group_bind(host string, group string) ! {
 	if group == '' || host == '' || host == '0.0.0.0' || host == '::' || host == '[::]' {
 		return
@@ -112,9 +107,6 @@ pub fn check_group_bind(host string, group string) ! {
 	return error('cannot join ${group} while bound to ${host}: a multicast join needs the wildcard address (leave the host empty, or use 0.0.0.0)')
 }
 
-// collect listens on `host`:`port` for `window_ms` and returns what arrived. `group` non-empty
-// joins that IPv4 multicast group on the bound socket; a join that fails is an error, not a
-// quiet empty window (transport.udp_bind's rule).
 // bind_host_for is the address a listener should bind for this configured host and group.
 //
 // THE WILDCARD HAS A FAMILY, and an interface selector cannot change one: an IPv4 socket cannot
@@ -133,7 +125,11 @@ pub fn bind_host_for(host string, group string) string {
 	return host
 }
 
-pub fn collect(host string, port int, window_ms int, group string) !Capture {
+// collect listens on `host`:`port` for `window_ms` and returns what arrived. `group` non-empty
+// joins that multicast group on the bound socket — on the default interface, or on the one
+// `iface` names (an interface name or an address it holds; '' the default); a join that fails is
+// an error, not a quiet empty window (transport.udp_bind's rule).
+pub fn collect(host string, port int, window_ms int, group string, iface string) !Capture {
 	bind_host := bind_host_for(host, group)
 	check_group_bind(bind_host, group)!
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
@@ -145,11 +141,7 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	}
 	// BOUND ON WHAT WAS CLAIMED, not on the spelling: the registry resolved once, and binding the
 	// name again could land on a different address than the one it is holding.
-	// EMPTY SELECTOR, so udp_bind chooses it from the GROUP's family. Passing '0.0.0.0' here
-	// took the explicit-interface branch and handed an IPv4 spelling to an IPv6 join, which is
-	// the very failure the family default was added for — the fix was unreachable from its own
-	// caller. A caller that genuinely wants one interface names it; these do not.
-	got := transport.udp_window(bind_addr(canon, port), group, '', window_ms)!
+	got := transport.udp_window(bind_addr(canon, port), group, iface, window_ms)!
 	mut cap := Capture{}
 	for d in got {
 		cap.ingest(d)

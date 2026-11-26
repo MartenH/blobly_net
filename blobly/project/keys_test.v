@@ -143,8 +143,9 @@ fn every_writer_branch() Project {
 		name:    'SOMEIP1'
 		adapter: 'someip'
 		address: '0.0.0.0:30490'
-		typ:     'someip'
-		group:   '239.0.0.1'
+		typ:         'someip'
+		group:       '239.0.0.1'
+		group_iface: 'eth1'
 	}
 	lin_bus := lin_row('LIN1', 'body', 'inproc:L', 19200, 'l.ldf', 'master', ['Slave'], 'Normal',
 		true)

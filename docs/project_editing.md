@@ -98,14 +98,14 @@ and `someip` on both.
 
 The two Ethernet adapters are not CAN buses, so the editor hides `protocol`, `bitrate`, `mode`,
 `listen_only` and replay for them; `someip` offers a `group` instead (the multicast group to
-join) and `doip` its logical addresses.
+join) and the interface it is joined on (`group_iface`), and `doip` its logical addresses.
 
 The transport layer is untouched: parse composes `adapter`+`address` into the existing
 `iface` scheme string that `transport.open()` already consumes.
 
 ## Schema (evolved, back-compatible)
 
-`schema_version` bumps to 2 (now 14: a Save writes the version the project's features need,
+`schema_version` bumps to 2 (now 15: a Save writes the version the project's features need,
 `version_for` in `blobly/project/project.v`). New files use `buses:` + `adapter`/`address`/`network`; old
 files (`channels:` + `interface:`) still load — the parser accepts the legacy keys and
 decomposes `interface:` into `adapter`+`address`.

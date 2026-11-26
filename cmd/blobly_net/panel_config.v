@@ -1178,6 +1178,12 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		if vgui.input_text('##cg${i}', mut app.cfg_bufs[i].group_buf) {
 			app.dirty = true
 		}
+		cfg_field('join on', 'The network interface the group is joined on: its name (eth1; Ethernet 2 on Windows) or an address it holds. Empty = the default interface. On a host with several NICs a group offered on another than the default one is otherwise not heard.',
+			sc)
+		vgui.set_next_item_width(220 * sc)
+		if vgui.input_text('##cgi${i}', mut app.cfg_bufs[i].gif_buf) {
+			app.dirty = true
+		}
 	} else {
 		cfg_field('protocol', '', sc)
 		for k, pr in ['can', 'canfd'] {

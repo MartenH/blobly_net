@@ -93,6 +93,7 @@ fn (mut app App) sync_cfg_bufs() {
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
 			group_buf:        mkbuf(ch.group, 48)
+			gif_buf:          mkbuf(ch.group_iface, ch.group_iface.len + 1024)
 			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
 			vin_buf:          mkbuf(ch.vin, 20)
 			replay_src_buf:   mkbuf(rsrc, path_cap(rsrc))
@@ -208,6 +209,14 @@ fn (mut app App) commit_cfg() {
 		}
 		if ch.adapter == 'someip' {
 			ch.group = vgui.buf_str(b.group_buf).trim_space()
+			ch.group_iface = vgui.buf_str(b.gif_buf).trim_space()
+			if why := ch.group_iface_refusal() {
+				app.cfg_invalid << CfgInvalid{
+					idx:  i
+					name: ch.name
+					why:  why
+				}
+			}
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
