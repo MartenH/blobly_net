@@ -72,6 +72,10 @@ pub const cansub_factory_data_timing = CansubTiming{
 	sjw:  4
 }
 
+// cansub_max_sjw is the SJW register's ceiling: measured on a CANsub.4 (02.05.00), 128 is accepted
+// and read back, 129 is answered HTTP 500.
+const cansub_max_sjw = 128
+
 // CansubTiming is one phase's bit timing, in the device's own terms.
 pub struct CansubTiming {
 pub:
@@ -162,15 +166,10 @@ fn cansub_solve(bitrate int, sample_point_pct int, max_seg1 int, max_seg2 int) !
 			brp:  brp
 			seg1: seg1
 			seg2: seg2
-			// SJW is the most the rule allows: min(seg1, seg2), since a resynchronisation may lengthen
-			// phase 1 or shorten phase 2 by at most that much — at the sample points in use, seg2. A fixed 4 quanta, the vendor table's value,
-			// is a FRACTION of the bit that shrinks as the quanta per bit grow: at 500 kbit/s this
-			// solver takes brp 1, 160 quanta, and 4 of them is 2.5% of a bit — too little to follow
-			// the other nodes' edges. Measured on a CANsub.4 (02.05.00) on system_full's compute bus
-			// beside two STM32 FDCANs, receiving only: 20 controller errors a minute at SJW 4, none
-			// at SJW 32 (= seg2), over the same traffic. The device takes every value this produces:
-			// all 27 solutions for 10k..1M at 75/80/87% (SJW 10..80) were written and read back.
-			sjw: if seg1 < seg2 { seg1 } else { seg2 }
+			// SJW is the most the rule allows (sjw_rule). The device takes every value this
+			// produces: all 27 solutions for 10k..1M at 75/80/87% (SJW 10..80) were written and
+			// read back.
+			sjw: sjw_rule(seg1, seg2, cansub_max_sjw)
 		}
 	}
 	return error('the CANsub cannot produce ${bitrate} bit/s at ${sample_point_pct}% from its ${cansub_clock_hz} Hz clock')

@@ -63,6 +63,14 @@ const pcan_data_max_tseg1 = 32
 
 const pcan_data_max_tseg2 = 16
 
+// The SJW ceilings of the same string, from the same documented ranges (PCAN-Basic's FD bit rate
+// string: nom_sjw 1..128, data_sjw 1..16). Each equals its phase's tseg2 ceiling, so with SJW
+// bounded by tseg2 they never bind; they are stated so the bound is the register's and not an
+// accident of the other one.
+const pcan_nom_max_sjw = 128
+
+const pcan_data_max_sjw = 16
+
 const pcan_max_brp = 1024
 
 // PcanTiming is one solved phase.
@@ -89,7 +97,7 @@ const pcan_sample_point_tolerance = 2
 // half a percent off its bus is a fault that appears under load and nowhere else. The smallest
 // prescaler is preferred because more time quanta per bit put the sample point closer to the one
 // asked for and leave the jump width more room.
-fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int) !PcanTiming {
+fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int, max_sjw int) !PcanTiming {
 	if bitrate <= 0 {
 		return error('bitrate ${bitrate} is not a rate')
 	}
@@ -144,9 +152,7 @@ fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int)
 			brp:   brp
 			tseg1: tseg1
 			tseg2: tseg2
-			// SJW cannot exceed tseg2 — it is how much of the phase-2 segment may be swallowed to
-			// resynchronise. Four wherever there is room, which is what PEAK's own examples use.
-			sjw: if tseg2 < 4 { tseg2 } else { 4 }
+			sjw:   sjw_rule(tseg1, tseg2, max_sjw)
 		}
 	}
 	if have_closest {
@@ -161,10 +167,12 @@ fn abs_diff(a int, b int) int {
 
 // pcan_fd_bitrate builds the string CAN_InitializeFD takes, or explains why it cannot.
 pub fn pcan_fd_bitrate(nominal int, data int, sample_point int) !string {
-	nom := pcan_solve_phase(nominal, sample_point, pcan_nom_max_tseg1, pcan_nom_max_tseg2) or {
+	nom := pcan_solve_phase(nominal, sample_point, pcan_nom_max_tseg1, pcan_nom_max_tseg2,
+		pcan_nom_max_sjw) or {
 		return error('arbitration ${nominal}: ${err.msg()}')
 	}
-	dat := pcan_solve_phase(data, sample_point, pcan_data_max_tseg1, pcan_data_max_tseg2) or {
+	dat := pcan_solve_phase(data, sample_point, pcan_data_max_tseg1, pcan_data_max_tseg2,
+		pcan_data_max_sjw) or {
 		return error('data phase ${data}: ${err.msg()}')
 	}
 	return 'f_clock=${pcan_fd_clock_hz},nom_brp=${nom.brp},nom_tseg1=${nom.tseg1},nom_tseg2=${nom.tseg2},nom_sjw=${nom.sjw},data_brp=${dat.brp},data_tseg1=${dat.tseg1},data_tseg2=${dat.tseg2},data_sjw=${dat.sjw}'
