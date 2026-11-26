@@ -149,6 +149,41 @@ fn test_a_line_past_the_longest_is_skipped_and_counted() {
 	assert sv.long_lines == 2 && sv.frames == 3
 }
 
+fn test_a_file_changed_after_it_was_opened_is_read_to_its_opened_size_only() {
+	mut lines := []string{}
+	for k in 0 .. 20_000 {
+		lines << '(${f64(k) * 0.01:.6f}) can0 100#${k % 256:02X}\n'
+	}
+	text := lines.join('')
+	path := stream_tmp('changed', text)
+	defer {
+		os.rm(path) or {}
+	}
+	// (20,000 lines, past what the C library buffers ahead of a read)
+	// appended to after the open: the rows it had then, and no more
+	mut s := open_line_stream_with(path, 64, readahead_rows) or { panic(err) }
+	mut l := Log{}
+	s.next(mut l) or { panic('a first row') }
+	os.write_file(path, text + '(9.0) can0 100#FF\n') or { panic(err) }
+	mut n := 1
+	for {
+		s.next(mut l) or { break }
+		n++
+	}
+	s.close()
+	assert s.err == '' && n == 20_000
+	// cut short after the open: an error, not a clean end
+	os.write_file(path, text) or { panic(err) }
+	mut c := open_line_stream_with(path, 64, readahead_rows) or { panic(err) }
+	c.next(mut l) or { panic('a first row') }
+	os.write_file(path, text[..text.len / 2]) or { panic(err) }
+	for {
+		c.next(mut l) or { break }
+	}
+	c.close()
+	assert c.err.contains('of the ${text.len} it had when opened'), c.err
+}
+
 fn test_a_missing_file_is_an_error() {
 	if _ := open_line_stream('/nonexistent/x.log') {
 		assert false

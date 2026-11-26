@@ -9,7 +9,7 @@ interface RowReader {
 mut:
 	next(mut log canlog.Log) ?canlog.Row
 	failure() string // the read that ended the rows early; '' at a clean end
-	disorder() int   // rows the reader could not put in the loader's order
+	unplaced() int   // rows the reader could not read where the loader reads them
 	size() u64       // the size of the handle opened
 	close()
 }
@@ -28,7 +28,7 @@ fn (mut m Mf4Rows) failure() string {
 	return m.stream.err
 }
 
-fn (mut m Mf4Rows) disorder() int {
+fn (mut m Mf4Rows) unplaced() int {
 	return m.stream.out_of_order
 }
 
@@ -53,8 +53,9 @@ fn (mut l LogRows) failure() string {
 	return l.s.err
 }
 
-fn (mut l LogRows) disorder() int {
-	return l.s.out_of_order
+// rows out of time order, and the lines too long to read, which the loader reads
+fn (mut l LogRows) unplaced() int {
+	return l.s.out_of_order + l.s.long_lines
 }
 
 fn (mut l LogRows) size() u64 {

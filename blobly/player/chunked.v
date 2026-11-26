@@ -90,8 +90,8 @@ pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () boo
 	if s.failure() != '' {
 		return error(s.failure())
 	}
-	if s.disorder() > 0 {
-		return error('${s.disorder()} rows out of time order; not streamable')
+	if s.unplaced() > 0 {
+		return error('${s.unplaced()} rows not read where the loader reads them; not streamable')
 	}
 	mut c := &Chunker{
 		path:  path

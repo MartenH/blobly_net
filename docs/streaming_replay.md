@@ -340,16 +340,19 @@ order with one time's rows in file order, is what `replay.load` loads.
   not a number, which no order places. With none, the rows handed out are the loader's exactly:
   they rise in time, and one time's rows leave the heap by line. A line longer than `max_line`
   (64 KiB) is skipped and counted (`long_lines`), so a binary file or one with no line breaks
-  costs the stream no memory.
+  costs the stream no memory. It reads no further than the size the file had when it was
+  opened, and a file that ends short of it was cut since: an error, not a clean end.
 - **The survey** (`canlog.survey_file`) is one pass of the stream: the labels with their counts,
   the span, and the counters, with `max_queued` and `max_disorder_s` (how far a line fell behind
   the latest time before it). `replay.survey_for` turns it into the loader's bus list
   (`log_buses`: sorted, unnamed), and `log_stream_differs` sends a file with any row out of order,
-  or any line too long, to the loader, with a note; a file with no rows is refused before that,
-  as the loader refuses it. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`.
+  or any line too long, to the loader, with a note — before a survey with no rows is refused,
+  since a line too long may be the file's only frame. `cmd/restbus --list` prints it for a `.log` as for an `.mf4`.
 - **The chunker** reads through `player.RowReader` (`rows.v`): an MF4 stream or a line stream,
-  chosen by the identification block (`mf4.is_mdf_file`, which `replay.is_mdf` now asks). Passes,
-  seeks and the size-and-mtime check are unchanged.
+  chosen by the identification block (`mf4.is_mdf_file`, which `replay.is_mdf` now asks), and
+  refuses a file with any row the reader could not read where the loader reads it
+  (`RowReader.unplaced`: out of order, or a line too long). Passes, seeks and the size-and-mtime
+  check are unchanged.
 - **The switch**: `BLOBLY_LOG_STREAM_MB`, a sibling of the MF4 threshold, 64 MiB by default, 0
   streams every `.log`; `replay.threshold_mb` picks the variable by the file's kind.
 - **Measured** (gcc -O2, a synthetic 96 MB log of 2 M frames on four buses, every fourth line

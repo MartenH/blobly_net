@@ -123,6 +123,10 @@ fn survey_for(path string, mut sink StreamSink) !([]mf4.BusInfo, string) {
 		return sv.buses, stream_differs(sv)
 	}
 	sv := canlog.survey_file_into(path, mut sink)!
+	why := log_stream_differs(sv)
+	if why != '' {
+		return []mf4.BusInfo{}, why
+	}
 	if sv.frames == 0 {
 		return error('${os.base(path)} holds no frames')
 	}
@@ -132,7 +136,7 @@ fn survey_for(path string, mut sink StreamSink) !([]mf4.BusInfo, string) {
 			counts[l] = sv.counts[i]
 		}
 	}
-	return log_buses(counts), log_stream_differs(sv)
+	return log_buses(counts), ''
 }
 
 // StreamSink is what both surveys hand their rows to (mf4.RowSink, canlog.RowSink).

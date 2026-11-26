@@ -474,6 +474,21 @@ fn test_a_log_out_of_order_past_the_look_ahead_loads_with_a_note() {
 	assert got == buses
 }
 
+fn test_a_log_with_a_line_too_long_to_stream_loads_and_is_not_chunked() {
+	path := os.join_path(os.temp_dir(), 'replay_long_${os.getpid()}.log')
+	os.write_file(path, '(1.0) can0 100#AA' + ' '.repeat(canlog.max_line) + '\n') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	assert !str.streamed && str.log.len() == 1 && str.note.contains('lines longer than the stream reads')
+	buses, _ := scan_at(path, src_dbc(), 0) or { panic(err) }
+	assert buses.len == 1 && buses[0].frames == 1
+	if _ := player.open_chunker(path, specs_for(&str, []), player.chunk_rows) {
+		assert false, 'a chunker does not play a file it cannot read as the loader does'
+	}
+}
+
 // The j1939-bam.log pattern repeated as a candump file: BAM transfers straddle chunk boundaries
 // at every offset, and the streamed subtraction decides what the loaded one does.
 fn test_a_streamed_j1939_log_is_subtracted_as_the_loaded_one() {

@@ -60,6 +60,7 @@ mut:
 	read   bool
 	last   f64 // the time of the last row handed out
 	handed bool
+	done   u64 // bytes read of `size`
 }
 
 // open_line_stream opens `path` for streaming.
@@ -169,17 +170,30 @@ fn (mut s LineStream) read_row(mut l Log) {
 	}
 }
 
-// fill reads the next chunk of the file; false at its end or on a failure (`err`).
+// fill reads the next chunk of the file, never past the size it had when opened; false at that
+// size, or on a failure (`err`) — a file that ends short of it was cut since it was opened.
 fn (mut s LineStream) fill() bool {
-	n := s.f.read(mut s.buf) or {
+	left := s.size - s.done
+	if left == 0 {
+		return false
+	}
+	want := if left < u64(s.buf.len) { int(left) } else { s.buf.len }
+	mut dst := s.buf[..want]
+	n := s.f.read(mut dst) or {
 		if err !is os.Eof {
 			s.err = 'read: ${err}'
+			return false
 		}
 		0
 	}
+	if n == 0 {
+		s.err = 'the file ends at byte ${s.done} of the ${s.size} it had when opened'
+		return false
+	}
+	s.done += u64(n)
 	s.pos = 0
 	s.n = n
-	return n > 0
+	return true
 }
 
 // hold parses a line into the heap as the loader's parse_log would push it; false when the
