@@ -31,9 +31,10 @@ fn test_each_way_a_raw_send_or_receive_ends() {
 
 	// a First Frame and nothing after it: kept past the deadline, then given up at N_Cr
 	peer.send(transport.CanFrame{ id: 0x708, data: [u8(0x10), 14, 1, 2, 3, 4, 5, 6] })!
-	c.cr_window_ms = 60
+	// N_Cr ten times the first deadline: a 30 ms wait on a loaded Windows runner overshoots
+	c.cr_window_ms = 300
 	assert ending_of_recv(mut c, 30) == .waited_out
-	assert ending_of_recv(mut c, 200) == .failed
+	assert ending_of_recv(mut c, 600) == .failed
 
 	peer.send(transport.CanFrame{ id: 0x708, data: [u8(0x40), 0, 0, 0, 0, 0, 0, 0] })!
 	assert ending_of_recv(mut c, 200) == .failed
