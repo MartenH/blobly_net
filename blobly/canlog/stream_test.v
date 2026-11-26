@@ -16,7 +16,7 @@ fn stream_tmp(name string, text string) string {
 
 // streamed reads `path` through a stream reading `chunk` bytes at a time and holding `cap` rows.
 fn streamed(path string, chunk int, cap int) (Log, &LineStream) {
-	mut s := open_line_stream_with(path, chunk, cap) or { panic(err) }
+	mut s := open_line_stream_with(path, chunk, cap, whole_file) or { panic(err) }
 	mut l := Log{}
 	mut rows := []Row{}
 	for {
@@ -161,7 +161,7 @@ fn test_a_file_changed_after_it_was_opened_is_read_to_its_opened_size_only() {
 	}
 	// (20,000 lines, past what the C library buffers ahead of a read)
 	// appended to after the open: the rows it had then, and no more
-	mut s := open_line_stream_with(path, 64, readahead_rows) or { panic(err) }
+	mut s := open_line_stream_with(path, 64, readahead_rows, whole_file) or { panic(err) }
 	mut l := Log{}
 	s.next(mut l) or { panic('a first row') }
 	os.write_file(path, text + '(9.0) can0 100#FF\n') or { panic(err) }
@@ -174,7 +174,7 @@ fn test_a_file_changed_after_it_was_opened_is_read_to_its_opened_size_only() {
 	assert s.err == '' && n == 20_000
 	// cut short after the open: an error, not a clean end
 	os.write_file(path, text) or { panic(err) }
-	mut c := open_line_stream_with(path, 64, readahead_rows) or { panic(err) }
+	mut c := open_line_stream_with(path, 64, readahead_rows, whole_file) or { panic(err) }
 	c.next(mut l) or { panic('a first row') }
 	os.write_file(path, text[..text.len / 2]) or { panic(err) }
 	for {
@@ -182,6 +182,20 @@ fn test_a_file_changed_after_it_was_opened_is_read_to_its_opened_size_only() {
 	}
 	c.close()
 	assert c.err.contains('of the ${text.len} it had when opened'), c.err
+	// opened for its first bytes: those rows, however long the file has grown
+	os.write_file(path, text + '(9.0) can0 100#FF\n') or { panic(err) }
+	mut u := open_line_stream_upto(path, u64(text.len)) or { panic(err) }
+	mut m := 0
+	for {
+		u.next(mut l) or { break }
+		m++
+	}
+	u.close()
+	assert u.err == '' && m == 20_000
+	// and refused once the file is shorter than them
+	if _ := open_line_stream_upto(path, u64(text.len) + 100) {
+		assert false
+	}
 }
 
 fn test_a_missing_file_is_an_error() {

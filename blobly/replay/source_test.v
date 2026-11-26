@@ -575,6 +575,37 @@ fn test_a_streamed_file_changed_before_it_is_planned_is_refused() {
 	assert false, 'a file that is not the one surveyed is not planned'
 }
 
+// A candump file is written by appending: one still being recorded plays as the survey read it,
+// on every pass, and one cut short since is refused.
+fn test_a_streamed_log_still_being_written_plays_as_surveyed() {
+	path := os.join_path(os.temp_dir(), 'replay_growing_${os.getpid()}.log')
+	write_log(path, 4000, big_pats(), 2, 0.01, 0.0)
+	defer {
+		os.rm(path) or {}
+	}
+	text := os.read_file(path) or { panic(err) }
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	assert str.streamed && str.size == u64(text.len)
+	os.write_file(path, text + '(99.0) can0 100#FF\n'.repeat(500)) or { panic(err) }
+	mut a := mem.prepare(specs_for(&mem, [])) or { panic(err) }
+	mut b := str.prepare(specs_for(&str, [])) or { panic(err) }
+	assert b.buses == a.buses
+	mut pa := a.player(1.0, false)
+	mut pb := b.player(1.0, false)
+	want := drive(mut pa)
+	got := drive(mut pb)
+	assert b.read_error() == ''
+	b.close()
+	assert got == want
+	os.write_file(path, text[..text.len / 2]) or { panic(err) }
+	str.prepare(specs_for(&str, [])) or {
+		assert err.msg().contains('shorter than'), err.msg()
+		return
+	}
+	assert false, 'a file cut short since it was surveyed is not planned'
+}
+
 fn test_a_streamed_release_is_bounded_where_every_frame_is_due_at_once() {
 	path := os.join_path(os.temp_dir(), 'replay_burst_${os.getpid()}.mf4')
 	mut pats := []Pat{}

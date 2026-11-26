@@ -1228,7 +1228,8 @@ the loaded path's exactly. What differs: the first frame comes after two reads o
 (about a second per million frames), and a **seek re-reads the recording up to its target**,
 the clock held meanwhile; the Replay panel marks a streamed group. A candump `.log` whose lines
 fall back in time by more than two seconds loads whole, with a note in the Log, since only a
-sort of the whole file can place them. The same rule applies to `cmd/restbus` and to a script's
+sort of the whole file can place them. A streamed `.log` still being recorded replays as it was
+when Start opened it. The same rule applies to `cmd/restbus` and to a script's
 replay.
 
 **The panel shows the grouping before it exists.** While stopped, the Replay panel lists the

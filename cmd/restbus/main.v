@@ -75,12 +75,8 @@ fn main() {
 			}
 			println('${o.source}: ${lv.frames} frames, earliest ${lv.t0:.3f} s to latest ${lv.end:.3f} s')
 			println('${'bus':-14} frames')
-			mut order := []int{len: lv.labels.len, init: index}
-			order.sort_with_compare(fn [lv] (a &int, b &int) int {
-				return compare_strings(lv.labels[*a], lv.labels[*b])
-			})
-			for i in order {
-				println('${lv.labels[i]:-14} ${lv.counts[i]}')
+			for b in replay.survey_buses(lv) {
+				println('${b.iface:-14} ${b.frames}')
 			}
 			println('stream: read-ahead high-water ${lv.max_queued} rows, writer disorder ${lv.max_disorder_s * 1000.0:.1f} ms, forced ${lv.forced}, out of order ${lv.out_of_order}, lines too long ${lv.long_lines}')
 			return

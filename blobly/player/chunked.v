@@ -1,7 +1,6 @@
 module player
 
 import blobly.canlog
-import os
 import time
 
 // Chunker plays a recording — an MF4 file or a candump `.log` — a chunk at a time instead of
@@ -45,8 +44,8 @@ pub:
 	t0_s  f64
 	end_s f64
 	kept  int // rows a pass plays
-	size  u64 // the file's size and modification time at the census: a pass over a file that
-	mtime i64 // no longer matches both is refused
+	size  u64 // the bytes read and the file's modification time at the census (0 for a candump
+	mtime i64 // file, RowReader.mtime): a pass over a file that no longer matches both is refused
 pub mut:
 	err string // the first read error; a pass ends there
 mut:
@@ -63,15 +62,21 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 // open_chunker_until is open_chunker, its pass given up (an error, `stopped`) once `stop`,
 // asked every few thousand rows, answers true; nil asks nothing.
 pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () bool) !&Chunker {
+	return open_chunker_upto(path, specs, rows, stop, canlog.whole_file)
+}
+
+// open_chunker_upto is open_chunker_until reading a candump file's first `upto` bytes, as many
+// as its survey read (an MF4 file is read whole).
+pub fn open_chunker_upto(path string, specs []BusSpec, rows int, stop fn () bool, upto u64) !&Chunker {
 	if rows <= 0 {
 		return error('chunk size must be positive, not ${rows}')
 	}
-	mut s := open_rows(path)!
+	mut s := open_rows(path, upto)!
 	defer {
 		s.close()
 	}
 	size := s.size()
-	mtime := os.file_last_mod_unix(path)
+	mtime := s.mtime()
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
 	mut kept := 0
@@ -256,8 +261,8 @@ mut:
 
 // open_pass opens the file for one pass; a file changed since the census is refused.
 fn open_pass(job ReadJob, skip f64) !Pass {
-	mut rows := open_rows(job.path)!
-	if rows.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
+	mut rows := open_rows(job.path, job.size)!
+	if rows.size() != job.size || rows.mtime() != job.mtime {
 		rows.close()
 		return error('${job.path} changed since it was opened')
 	}

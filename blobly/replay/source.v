@@ -60,8 +60,8 @@ pub:
 	streamed bool
 	log      canlog.Log // the whole recording; empty when streamed
 	note     string     // why a file above the threshold plays from memory, if it does
-	size     u64 // a streamed file's size and modification time at the survey: prepare
-	mtime    i64 // refuses a file that no longer matches both
+	size     u64 // a streamed file's size and modification time at the survey (a candump
+	mtime    i64 // file: the bytes surveyed, and 0) — prepare refuses a file that no longer matches
 	// asked while a streamed source is read before it plays (open and prepare); true gives the
 	// read up with `stopped`
 	stop fn () bool = unsafe { nil }
@@ -82,14 +82,18 @@ pub fn open_recording_until(path string, stop fn () bool) !Source {
 // loader's rows (stream_differs, log_stream_differs).
 pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 	mut note := ''
-	size := os.file_size(path)
-	mtime := os.file_last_mod_unix(path)
+	mdf := is_mdf(path)
+	mtime := if mdf { os.file_last_mod_unix(path) } else { i64(0) }
+	mut size := os.file_size(path)
 	if streams(size, mb) {
 		mut sink := StopSink{
 			stop: stop
 		}
-		buses, why := survey_for(path, mut sink)!
+		buses, why, read := survey_for(path, mut sink)!
 		if why == '' {
+			if !mdf {
+				size = read // a candump file still being written plays as the survey read it
+			}
 			return Source{
 				path:     path
 				buses:    buses
@@ -112,31 +116,36 @@ pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 }
 
 // survey_for surveys `path` through the stream of its kind, handing every row to `sink`: its
-// buses as the loader reports them, and why the stream would differ from the loader ('' when
-// it would not).
-fn survey_for(path string, mut sink StreamSink) !([]mf4.BusInfo, string) {
+// buses as the loader reports them, why the stream would differ from the loader ('' when it
+// would not), and the bytes a candump file's survey read (0 for an MF4 file).
+fn survey_for(path string, mut sink StreamSink) !([]mf4.BusInfo, string, u64) {
 	if is_mdf(path) {
 		sv := mf4.survey_file_into(path, mut sink)!
 		if sv.frames == 0 {
 			return error('${os.base(path)} holds no frames')
 		}
-		return sv.buses, stream_differs(sv)
+		return sv.buses, stream_differs(sv), u64(0)
 	}
 	sv := canlog.survey_file_into(path, mut sink)!
 	why := log_stream_differs(sv)
 	if why != '' {
-		return []mf4.BusInfo{}, why
+		return []mf4.BusInfo{}, why, sv.size
 	}
 	if sv.frames == 0 {
 		return error('${os.base(path)} holds no frames')
 	}
+	return survey_buses(sv), '', sv.size
+}
+
+// survey_buses is a candump survey's buses as the loader reports them (log_buses).
+pub fn survey_buses(sv canlog.Survey) []mf4.BusInfo {
 	mut counts := map[string]int{}
 	for i, l in sv.labels {
 		if i < sv.counts.len && sv.counts[i] > 0 {
 			counts[l] = sv.counts[i]
 		}
 	}
-	return log_buses(counts), ''
+	return log_buses(counts)
 }
 
 // StreamSink is what both surveys hand their rows to (mf4.RowSink, canlog.RowSink).
@@ -199,7 +208,7 @@ mut:
 // the same Planner over the same rows, so both decide the same.
 pub fn (s &Source) prepare(specs []player.BusSpec) !Prepared {
 	if s.streamed {
-		mut c := player.open_chunker_until(s.path, specs, player.chunk_rows, s.stop)!
+		mut c := player.open_chunker_upto(s.path, specs, player.chunk_rows, s.stop, s.size)!
 		if c.size != s.size || c.mtime != s.mtime {
 			c.close()
 			return error('${s.path} changed since it was opened')
@@ -260,7 +269,7 @@ pub fn scan_at(path string, db candb.Database, mb i64) !([]mf4.BusInfo, map[stri
 		mut sink := CensusSink{
 			db: db
 		}
-		buses, why := survey_for(path, mut sink)!
+		buses, why, _ := survey_for(path, mut sink)!
 		if why == '' {
 			for b in buses {
 				i := sink.labels.index(b.iface)

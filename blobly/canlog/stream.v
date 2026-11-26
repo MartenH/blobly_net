@@ -37,7 +37,7 @@ struct Held {
 @[heap]
 pub struct LineStream {
 pub:
-	size u64 // the size of the handle opened
+	size u64 // the bytes it reads: the handle's size when opened, or the `upto` it was given
 pub mut:
 	err            string // the read that failed; the stream ends there
 	out_of_order   int    // rows handed out after a later one, or whose time is not a number
@@ -63,14 +63,24 @@ mut:
 	done   u64 // bytes read of `size`
 }
 
-// open_line_stream opens `path` for streaming.
+// whole_file asks open_line_stream_upto for every byte the file has when it is opened.
+pub const whole_file = u64(-1)
+
+// open_line_stream opens `path` for streaming, to the size it has now.
 pub fn open_line_stream(path string) !&LineStream {
-	return open_line_stream_with(path, read_chunk, readahead_rows)
+	return open_line_stream_with(path, read_chunk, readahead_rows, whole_file)
 }
 
-// open_line_stream_with is open_line_stream reading `chunk` bytes at a time and holding at most
-// `cap` rows.
-fn open_line_stream_with(path string, chunk int, cap int) !&LineStream {
+// open_line_stream_upto opens `path` for streaming its first `upto` bytes: a candump file is
+// written by appending, so a file still being recorded reads as it was when it was surveyed. A
+// file now shorter than `upto` is refused.
+pub fn open_line_stream_upto(path string, upto u64) !&LineStream {
+	return open_line_stream_with(path, read_chunk, readahead_rows, upto)
+}
+
+// open_line_stream_with opens `path` reading `chunk` bytes at a time, holding at most `cap`
+// rows, and reading its first `upto` bytes (whole_file: all it has now).
+fn open_line_stream_with(path string, chunk int, cap int, upto u64) !&LineStream {
 	mut f := os.open(path)!
 	f.seek(0, .end) or {
 		f.close()
@@ -84,8 +94,12 @@ fn open_line_stream_with(path string, chunk int, cap int) !&LineStream {
 		f.close()
 		return err
 	}
+	if upto != whole_file && u64(sz) < upto {
+		f.close()
+		return error('${path} is ${sz} bytes, shorter than the ${upto} it had when opened')
+	}
 	return &LineStream{
-		size: u64(sz)
+		size: if upto == whole_file { u64(sz) } else { upto }
 		cap:  cap
 		f:    f
 		buf:  []u8{len: chunk}
@@ -178,7 +192,7 @@ fn (mut s LineStream) fill() bool {
 		return false
 	}
 	want := if left < u64(s.buf.len) { int(left) } else { s.buf.len }
-	mut dst := s.buf[..want]
+	mut dst := unsafe { s.buf[..want] } // the buffer itself, not a copy
 	n := s.f.read(mut dst) or {
 		if err !is os.Eof {
 			s.err = 'read: ${err}'
@@ -307,6 +321,7 @@ pub mut:
 	labels         []string // the buses, in the order the file first names them
 	counts         []int    // frames per label
 	frames         u64
+	size           u64 // the bytes read: the file's size when the survey opened it
 	t0             f64 // the earliest and the latest time a row carried
 	end            f64
 	out_of_order   int
@@ -366,6 +381,7 @@ pub fn survey_file_into(path string, mut sink RowSink) !Survey {
 		return error(s.err)
 	}
 	sv.labels = log.labels
+	sv.size = s.size
 	sv.out_of_order = s.out_of_order
 	sv.forced = s.forced
 	sv.long_lines = s.long_lines
